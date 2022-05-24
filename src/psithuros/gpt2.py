@@ -17,48 +17,33 @@ from psithuros.modeling_utils import ACT2FN
 class Gpt2Conv1D(eqx.Module):
     kernel: Array
     bias: Optional[Array]
-    in_features: int = eqx.static_field()
-    out_features: int = eqx.static_field()
-
-    # TODO: precision/dtype
 
     def __init__(self, *, in_features: int, out_features: int, key):
-        self.in_features = in_features
-        self.out_features = out_features
-
         self.kernel = jrandom.normal(key, [out_features, in_features]) * 0.02
         self.bias = jnp.zeros(out_features)
 
     @jax.jit
     def __call__(self, inputs):
         kernel = jnp.transpose(self.kernel)
-        y = inputs @ kernel
-        # y = lax.dot_general(inputs, kernel, (((inputs.ndim - 1,), (0,)), ((), ())))
-        y = y + self.bias
-
-        return y
+        return inputs @ kernel + self.bias
 
 
 class Gpt2Mlp(eqx.Module):
-    config: GPT2Config = eqx.static_field()
     intermediate_size: int = eqx.static_field()
     act: Callable = eqx.static_field()
     c_fc: Gpt2Conv1D
     c_proj: Gpt2Conv1D
     dropout: nn.Dropout
 
-    # dtype: jnp.dtype = jnp.float32
-
     def __init__(self, config, intermediate_size, *, key):
-        self.config = config
         self.intermediate_size = intermediate_size
-        embed_dim = self.config.hidden_size
+        embed_dim = config.hidden_size
 
         k_fc, k_proj = jrandom.split(key, 2)
         self.c_fc = Gpt2Conv1D(out_features=intermediate_size, in_features=embed_dim, key=k_fc)
         self.c_proj = Gpt2Conv1D(out_features=embed_dim, in_features=intermediate_size, key=k_proj)
-        self.act = ACT2FN[self.config.activation_function]
-        self.dropout = nn.Dropout(p=self.config.resid_pdrop)
+        self.act = ACT2FN[config.activation_function]
+        self.dropout = nn.Dropout(p=config.resid_pdrop)
 
     @partial(jax.jit, static_argnames=["inference"])
     def __call__(self, hidden_states, *, inference: bool, key=None):
@@ -92,8 +77,9 @@ class Gpt2Attention(eqx.Module):
     def head_dim(self):
         return self.embed_dim // self.num_heads
 
-    def __init__(self, config: GPT2Config, *, key, layer_idx: Optional[int]=None, causal: bool = True):
+    def __init__(self, config: GPT2Config, *, key, layer_idx: Optional[int] = None, causal: bool = True):
         self.config = config
+        assert self.embed_dim % self.num_heads == 0, f"embed_dim={self.embed_dim} must be divisible by num_heads={self.num_heads}"
         self.causal = causal
         self.layer_idx = layer_idx
 
@@ -112,19 +98,14 @@ class Gpt2Attention(eqx.Module):
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
     @partial(jax.jit, static_argnums=2)
-    def __call__(
-            self,
-            hidden_states,
-            inference: bool = True,
-            *, key
-    ):
+    def __call__(self, hidden_states, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
 
-        qkv_out = self.c_attn(hidden_states) # [seq_len, 3 * embed_dim]
-        query, key, value = jnp.split(qkv_out, 3, axis=1) # [seq_len, embed_dim]
+        qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
+        query, key, value = jnp.split(qkv_out, 3, axis=1)  # [seq_len, embed_dim]
 
-        query = self._split_heads(query) # [num_heads, seq_len, head_dim]
+        query = self._split_heads(query)  # [num_heads, seq_len, head_dim]
         key = self._split_heads(key)
         value = self._split_heads(value)
 
@@ -159,7 +140,7 @@ class Gpt2Attention(eqx.Module):
         return jnp.transpose(Gpt2Attention._split_state(hidden_states, self.num_heads), axes=(1, 0, 2))
 
     @staticmethod
-    def _merge_heads(hidden_states):
+    def _merge_heads(hidden_states: Array["num_heads", "seq_len", "head_dim"]) -> Array["seq_len", "embed_dim"]:
         return Gpt2Attention._merge_state(jnp.transpose(hidden_states, axes=(1, 0, 2)))
 
     @staticmethod
@@ -177,31 +158,23 @@ class Gpt2Attention(eqx.Module):
     def _mask_attn_weights(w, mask):
         if mask is not None:
             mask = jnp.broadcast_to(mask, w.shape)
-            mask = lax.select(
-                mask > 0,
-                jnp.full(mask.shape, 0.0),  # .astype(self.dtype),
-                jnp.full(mask.shape, -1e4)  # .astype(self.dtype),
-            )
+            mask = lax.select(mask > 0, jnp.full(mask.shape, 0.0), jnp.full(mask.shape, -1e4))
             w = w + mask
         return w
 
 
 class Gpt2Block(eqx.Module):
-    config: GPT2Config = eqx.static_field()
-    dtype: jnp.dtype = jnp.float32
     ln_1: nn.LayerNorm
     attn: Gpt2Attention
     ln_2: nn.LayerNorm
     mlp: Gpt2Mlp
 
     def __init__(self, config, layer_idx, *, key):
-        self.config = config
         hidden_size = config.hidden_size
         inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
 
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        # TODO: is this the same layer norm?
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(config, layer_idx=layer_idx, key=k_attn)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
@@ -209,73 +182,58 @@ class Gpt2Block(eqx.Module):
         self.mlp = Gpt2Mlp(config, inner_dim, key=k_mlp)
 
     @partial(jax.jit, static_argnums=2)
-    def __call__(
-            self,
-            hidden_states,
-            inference=True,
-            *, key
-    ):
+    def __call__(self, hidden_states, inference=True, *, key):
+        k1, k2 = jrandom.split(key, 2) if key is not None else (None, None)
+
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        k1, k2 = jrandom.split(key, 2) if key is not None else (None, None)
         attn_output = self.attn(hidden_states, inference=inference, key=k1)
-        # residual connection
         hidden_states = attn_output + residual
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         feed_forward_hidden_states = self.mlp(hidden_states, inference=inference, key=k2)
-        # residual connection
-        hidden_states = residual + feed_forward_hidden_states
+
+        hidden_states = feed_forward_hidden_states + residual
 
         return hidden_states
 
 
 class Gpt2Model(eqx.Module):
-    config: GPT2Config = eqx.static_field()
-    dtype: jnp.dtype = jnp.float32
     wte: nn.Embedding
     wpe: nn.Embedding
     dropout: nn.Dropout
     blocks: List[Gpt2Block]
     ln_f: nn.LayerNorm
 
-    @property
-    def embed_dim(self) -> int:
-        return self.config.hidden_size
-
-    def __init__(self, config, *, key):
+    def __init__(self, config: GPT2Config, *, key):
         super().__init__()
-        self.config = config
 
         k_wte, k_wpe, k_blocks = jrandom.split(key, 3)
+        embed_dim = config.n_embd
 
         self.wte = nn.Embedding(
-            self.config.vocab_size,
-            self.embed_dim,
-            weight=jrandom.normal(key=k_wte, shape=(self.config.vocab_size, self.embed_dim)),
+            config.vocab_size, embed_dim,
+            weight=jrandom.normal(key=k_wte,
+                                  shape=(config.vocab_size, embed_dim)) * config.initializer_range,
             key=k_wte,
         )
 
-        self.wpe = nn.Embedding(
-            self.config.max_position_embeddings,
-            self.embed_dim,
-            weight=jrandom.normal(key=k_wpe, shape=(self.config.max_position_embeddings, self.embed_dim)),
+        self.wpe = nn.Embedding(config.max_position_embeddings, embed_dim,
+            weight=jrandom.normal(
+                key=k_wpe,
+                shape=(config.max_position_embeddings, embed_dim)
+            ) * config.initializer_range / 2,
             key=k_wpe,
         )
-        self.dropout = nn.Dropout(p=self.config.embd_pdrop)
+        self.dropout = nn.Dropout(p=config.embd_pdrop)
         self.blocks = [
-            Gpt2Block(config, layer_idx=i, key=k) for i, k in enumerate(jrandom.split(k_blocks, self.config.n_layer))
+            Gpt2Block(config, layer_idx=i, key=k) for i, k in enumerate(jrandom.split(k_blocks, config.n_layer))
         ]
-        self.ln_f = nn.LayerNorm(self.embed_dim, eps=self.config.layer_norm_epsilon)
+        self.ln_f = nn.LayerNorm(embed_dim, eps=config.layer_norm_epsilon)
 
     @partial(jax.jit, static_argnums=(2))
-    def __call__(
-            self,
-            input_ids: Array["seq_len"],
-            inference=True,
-            *, key
-    ):
+    def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
         input_embeds = self.wte(input_ids)
         position_embeds = self.wpe(jnp.arange(input_ids.shape[0], dtype="i4"))
 
@@ -295,7 +253,6 @@ class Gpt2Model(eqx.Module):
 class Gpt2LMHeadModel(eqx.Module):
     transformer: Gpt2Model
     lm_head: jnp.ndarray
-    dtype: jnp.dtype = jnp.float32
 
     @property
     def config(self):
@@ -308,12 +265,10 @@ class Gpt2LMHeadModel(eqx.Module):
             self.lm_head = self.transformer.wte.weight
         else:
             self.lm_head = jrandom.normal(k_lm_head,
-                                          (config.vocab_size, config.hidden_size),
-                                          dtype=self.dtype) * config.initializer_range
+                                          (config.vocab_size, config.hidden_size)) * config.initializer_range
 
-    # @jax.jit
-    def __call__(self, input_ids,
-                 inference=True,  *, key):
+    @partial(jax.jit, static_argnums=(2))
+    def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
         hidden_states = self.transformer(input_ids, inference=inference, key=key)
         lm_logits = hidden_states @ jnp.transpose(self.lm_head)
 
