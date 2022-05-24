@@ -8,6 +8,7 @@ import jax.lax as lax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from einops import rearrange
 from equinox.custom_types import Array
 from transformers import GPT2Config
 
@@ -77,7 +78,8 @@ class Gpt2Attention(eqx.Module):
 
     def __init__(self, config: GPT2Config, *, key, layer_idx: Optional[int] = None, causal: bool = True):
         self.config = config
-        assert self.embed_dim % self.num_heads == 0, f"embed_dim={self.embed_dim} must be divisible by num_heads={self.num_heads}"
+        assert self.embed_dim % self.num_heads == 0, \
+            f"embed_dim={self.embed_dim} must be divisible by num_heads={self.num_heads}"
         self.causal = causal
         self.layer_idx = layer_idx
 
@@ -93,6 +95,7 @@ class Gpt2Attention(eqx.Module):
         else:
             self.causal_mask = None
 
+    # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
     @partial(jax.jit, static_argnums=2)
@@ -114,50 +117,29 @@ class Gpt2Attention(eqx.Module):
         else:
             attention_mask = None
 
-        key_d1, key_d2 = jrandom.split(rng_key, 2) if rng_key is not None else (None, None)
-        attn_output = Gpt2Attention._multihead_attn(q=query, k=key, v=value, attention_mask=attention_mask)
+        w = jnp.einsum('... n d, ... m d -> ... n m', query, key)  # [heads, seq_len, seq_len]
+        w = w * lax.rsqrt(float(value.shape[-1]))
 
-        attn_output = self._merge_heads(attn_output)
+        if attention_mask is not None:
+            mask = jnp.broadcast_to(attention_mask, w.shape)
+            w = jnp.where(mask > 0, w, -1E9)
+
+        w = jnn.softmax(w)
+
+        attn_output = jnp.einsum('... n m, ... m d -> ... n d', w, value)  # [heads, seq_len, head_dim]
+
+        attn_output = self._merge_heads(attn_output)  # [seq_len, embed_dim]
         attn_output = self.c_proj(attn_output)
-        attn_output = self.resid_dropout(attn_output, key=key_d2, inference=inference)
+        attn_output = self.resid_dropout(attn_output, key=rng_key, inference=inference)
 
         return attn_output
 
-    @staticmethod
-    def _split_state(hidden_states: Array[..., "embed_dim"], num_split) -> Array[..., "num_split", "head_dim"]:
-        embed_dim = hidden_states.shape[-1]
-        assert embed_dim % num_split == 0
-        return jnp.reshape(hidden_states, (-1, num_split, embed_dim // num_split))
-
-    @staticmethod
-    def _merge_state(hidden_states: Array[..., "num_split", "split_size"]) -> Array[..., "embed_dim"]:
-        return jnp.reshape(hidden_states, (-1, hidden_states.shape[-2] * hidden_states.shape[-1]))
-
     def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["num_heads", "seq_len", "head_dim"]:
-        # assert hidden_states.shape[-1] % self.num_heads == 0
-        return jnp.transpose(Gpt2Attention._split_state(hidden_states, self.num_heads), axes=(1, 0, 2))
+        return rearrange(hidden_states, '... n (h d) -> ... h n d', h=self.num_heads)
 
     @staticmethod
     def _merge_heads(hidden_states: Array["num_heads", "seq_len", "head_dim"]) -> Array["seq_len", "embed_dim"]:
-        return Gpt2Attention._merge_state(jnp.transpose(hidden_states, axes=(1, 0, 2)))
-
-    @staticmethod
-    def _multihead_attn(q, k, v, attention_mask):
-        # q, k, v have shape [heads, sequence, features]
-        w = jnp.matmul(q, k.transpose([0, 2, 1]))
-        w = w * lax.rsqrt(float(v.shape[-1]))
-
-        w = Gpt2Attention._mask_attn_weights(w, attention_mask)
-        w = jnn.softmax(w)
-        a = jnp.matmul(w, v)
-        return a
-
-    @staticmethod
-    def _mask_attn_weights(w, mask):
-        if mask is not None:
-            mask = jnp.broadcast_to(mask, w.shape)
-            w = jnp.where(mask > 0, w, -1E9)
-        return w
+        return rearrange(hidden_states, '... h n d -> ... n (h d)')
 
 
 class Gpt2Block(eqx.Module):
@@ -212,7 +194,8 @@ class Gpt2Model(eqx.Module):
         embed_dim = config.n_embd
 
         self.wte = jrandom.normal(key=k_wte, shape=(config.vocab_size, embed_dim)) * config.initializer_range
-        self.wpe = jrandom.normal(key=k_wpe, shape=(config.max_position_embeddings, embed_dim)) * config.initializer_range / 2
+        self.wpe = jrandom.normal(key=k_wpe,
+                                  shape=(config.max_position_embeddings, embed_dim)) * config.initializer_range / 2
 
         self.dropout = nn.Dropout(p=config.embd_pdrop)
         self.blocks = [
