@@ -29,14 +29,12 @@ class Gpt2Conv1D(eqx.Module):
 
 
 class Gpt2Mlp(eqx.Module):
-    intermediate_size: int = eqx.static_field()
     act: Callable = eqx.static_field()
     c_fc: Gpt2Conv1D
     c_proj: Gpt2Conv1D
     dropout: nn.Dropout
 
     def __init__(self, config, intermediate_size, *, key):
-        self.intermediate_size = intermediate_size
         embed_dim = config.hidden_size
 
         k_fc, k_proj = jrandom.split(key, 2)
@@ -158,8 +156,7 @@ class Gpt2Attention(eqx.Module):
     def _mask_attn_weights(w, mask):
         if mask is not None:
             mask = jnp.broadcast_to(mask, w.shape)
-            mask = lax.select(mask > 0, jnp.full(mask.shape, 0.0), jnp.full(mask.shape, -1e4))
-            w = w + mask
+            w = jnp.where(mask > 0, w, -1E9)
         return w
 
 
@@ -200,32 +197,23 @@ class Gpt2Block(eqx.Module):
 
 
 class Gpt2Model(eqx.Module):
-    wte: nn.Embedding
-    wpe: nn.Embedding
+    config: GPT2Config = eqx.static_field()
+    wte: jnp.ndarray
+    wpe: jnp.ndarray
     dropout: nn.Dropout
     blocks: List[Gpt2Block]
     ln_f: nn.LayerNorm
 
     def __init__(self, config: GPT2Config, *, key):
         super().__init__()
+        self.config = config
 
         k_wte, k_wpe, k_blocks = jrandom.split(key, 3)
         embed_dim = config.n_embd
 
-        self.wte = nn.Embedding(
-            config.vocab_size, embed_dim,
-            weight=jrandom.normal(key=k_wte,
-                                  shape=(config.vocab_size, embed_dim)) * config.initializer_range,
-            key=k_wte,
-        )
+        self.wte = jrandom.normal(key=k_wte, shape=(config.vocab_size, embed_dim)) * config.initializer_range
+        self.wpe = jrandom.normal(key=k_wpe, shape=(config.max_position_embeddings, embed_dim)) * config.initializer_range / 2
 
-        self.wpe = nn.Embedding(config.max_position_embeddings, embed_dim,
-            weight=jrandom.normal(
-                key=k_wpe,
-                shape=(config.max_position_embeddings, embed_dim)
-            ) * config.initializer_range / 2,
-            key=k_wpe,
-        )
         self.dropout = nn.Dropout(p=config.embd_pdrop)
         self.blocks = [
             Gpt2Block(config, layer_idx=i, key=k) for i, k in enumerate(jrandom.split(k_blocks, config.n_layer))
@@ -234,8 +222,8 @@ class Gpt2Model(eqx.Module):
 
     @partial(jax.jit, static_argnums=(2))
     def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
-        input_embeds = self.wte(input_ids)
-        position_embeds = self.wpe(jnp.arange(input_ids.shape[0], dtype="i4"))
+        input_embeds = self.wte[input_ids]
+        position_embeds = self.wpe[jnp.arange(input_ids.shape[0], dtype="i4")]
 
         hidden_states = input_embeds + position_embeds
         hidden_states = self.dropout(hidden_states, inference=inference, key=key)
@@ -262,7 +250,7 @@ class Gpt2LMHeadModel(eqx.Module):
         k_t, k_lm_head = jrandom.split(key, 2)
         self.transformer = Gpt2Model(config, key=k_t)
         if config.tie_word_embeddings:
-            self.lm_head = self.transformer.wte.weight
+            self.lm_head = self.transformer.wte
         else:
             self.lm_head = jrandom.normal(k_lm_head,
                                           (config.vocab_size, config.hidden_size)) * config.initializer_range
