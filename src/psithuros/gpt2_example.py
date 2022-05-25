@@ -83,6 +83,7 @@ def main(
         loss = loss.item()
         print(f"step={step}, loss={loss}")
 
+    model = partial(model, inference=True, key=None)
     pred_ys = jax.vmap(model)(xs)
     num_correct = jnp.sum((pred_ys > 0.5) == ys)
     final_accuracy = (num_correct / dataset_size).item()
