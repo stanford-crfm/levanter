@@ -19,11 +19,13 @@ from psithuros.gpt2 import Gpt2LMHeadModel
 NUM_TOKENS = 2048
 SEQ_LEN = 512
 
-def dataloader(arrays, batch_size, *, key):
+def dataloader(arrays, batch_size, *, key, max_passes=None):
     dataset_size = arrays[0].shape[0]
     assert all(array.shape[0] == dataset_size for array in arrays)
     indices = jnp.arange(dataset_size)
-    while True:
+    i = 0
+    while max_passes is None or i < max_passes:
+        i += 1
         perm = jrandom.permutation(key, indices)
         (key,) = jrandom.split(key, 1)
         start = 0
@@ -46,7 +48,7 @@ def get_data(dataset_size, *, key):
 
 def main(
     dataset_size=10000,
-    batch_size=32,
+    batch_size=256,
     learning_rate=3e-3,
     steps=200,
     seed=5678,
@@ -59,18 +61,19 @@ def main(
 
     model = Gpt2LMHeadModel(config, key=model_key)
 
-    @eqx.filter_value_and_grad
+    @eqx.filter_jit
     def compute_loss(model, x, y, *, inference, key):
         model = partial(model, inference=inference, key=key)
         pred_y = jax.vmap(model)(x)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
-        # return jnp.mean(optax.softmax_cross_entropy(pred_y, pred_y))
+
+    compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
     # Important for efficiency whenever you use JAX: wrap everything into a single JIT
     # region
     @eqx.filter_jit
     def make_step(model, x, y, opt_state: OptState, *, inference, key):
-        loss, grads = compute_loss(model, x, y, inference=inference, key=key)
+        loss, grads = compute_loss_and_grad(model, x, y, inference=inference, key=key)
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
@@ -79,15 +82,29 @@ def main(
     opt_state = optim.init(model)
     keys = jax.random.split(training_key, steps)
     for step, (x, y), k in zip(range(steps), iter_data, keys):
-        loss, model, opt_state = make_step(model, x, y, opt_state, inference=True, key=k)
+        loss, model, opt_state = make_step(model, x, y, opt_state, inference=False, key=k)
         loss = loss.item()
         print(f"step={step}, loss={loss}")
 
-    model = partial(model, inference=True, key=None)
-    pred_ys = jax.vmap(model)(xs)
-    num_correct = jnp.sum((pred_ys > 0.5) == ys)
-    final_accuracy = (num_correct / dataset_size).item()
-    print(f"final_accuracy={final_accuracy}")
+    # test:
+    total_loss = 0.0
+
+    # @eqx.filter_jit
+    # def compute_loss_test(model, x, y):
+    #     model = partial(model, inference=True, key=None)
+    #     pred_y = jax.vmap(model)(x)
+    #     return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
+
+    test_loader = dataloader((xs, ys), batch_size, max_passes=1, key=loader_key)
+
+    for (x, y) in test_loader:
+        loss = compute_loss(model, x, y, inference=True, key=training_key)
+        total_loss += loss.item()
+        print(loss.item())
+
+    # num_correct = jnp.sum((pred_ys > 0.5) == ys)
+    # final_accuracy = (num_correct / dataset_size).item()
+    # print(f"final_accuracy={final_accuracy}")
 
 
 if __name__ == "__main__":
