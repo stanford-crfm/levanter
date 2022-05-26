@@ -1,3 +1,4 @@
 equinox
 transformers
 optax
+einops
