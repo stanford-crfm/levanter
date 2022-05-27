@@ -44,7 +44,7 @@ class Gpt2Mlp(eqx.Module):
         self.act = ACT2FN[config.activation_function]
         self.dropout = nn.Dropout(p=config.resid_pdrop)
 
-    @partial(jax.jit, static_argnames=["inference"])
+    @eqx.filter_jit
     def __call__(self, hidden_states, *, inference: bool, key=None):
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
@@ -96,7 +96,7 @@ class Gpt2Attention(eqx.Module):
     # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
-    @partial(jax.jit, static_argnums=2)
+    @eqx.filter_jit
     def __call__(self, hidden_states, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
@@ -159,7 +159,7 @@ class Gpt2Block(eqx.Module):
 
         self.mlp = Gpt2Mlp(config, inner_dim, key=k_mlp)
 
-    @partial(jax.jit, static_argnums=2)
+    @eqx.filter_jit
     def __call__(self, hidden_states, inference=True, *, key):
         k1, k2 = jrandom.split(key, 2) if key is not None else (None, None)
 
@@ -202,7 +202,7 @@ class Gpt2Model(eqx.Module):
         ]
         self.ln_f = nn.LayerNorm(embed_dim, eps=config.layer_norm_epsilon)
 
-    @partial(jax.jit, static_argnums=(2))
+    @eqx.filter_jit
     def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
         input_embeds = self.wte[input_ids]
         indices = jnp.arange(input_ids.shape[-1], dtype="i4")
@@ -238,7 +238,7 @@ class Gpt2LMHeadModel(eqx.Module):
             self.lm_head = jrandom.normal(k_lm_head,
                                           (config.vocab_size, config.hidden_size)) * config.initializer_range
 
-    @partial(jax.jit, static_argnums=(2))
+    @eqx.filter_jit
     def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
         hidden_states = self.transformer(input_ids, inference=inference, key=key)
         lm_logits = hidden_states @ jnp.transpose(self.lm_head)
