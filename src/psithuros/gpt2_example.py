@@ -11,23 +11,12 @@ from optax import OptState
 from transformers import GPT2Config
 
 from psithuros.gpt2 import Gpt2LMHeadModel
+from psithuros.modeling_utils import replicate
 
 NUM_TOKENS = 2048
 SEQ_LEN = 512
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
-
-def replicate(tree, devices=None):
-    """Replicates arrays to multiple devices.
-    Args:
-      tree: a pytree containing the arrays that should be replicated.
-      devices: the devices the data is replicated to
-        (default: same order as expected by `jax.pmap()`).
-    Returns:
-      A new pytree containing the replicated arrays.
-    """
-    return jax.device_put_replicated(tree, devices or jax.devices())
-
 
 def dataloader(arrays, batch_size, *, key, max_passes=None):
     dataset_size = arrays[0].shape[0]
@@ -55,7 +44,6 @@ def get_data(dataset_size, *, key):
 
     return x, y
 
-
 def main(
     dataset_size=10000,
     batch_size=256,
@@ -76,11 +64,8 @@ def main(
         pred_y = jax.vmap(model)(x)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
 
-    # compute_loss_and_grad = pmap(compute_loss, "device", in_axes=(None, 0, 0, None, None), static_broadcasted_argnums=(3,))
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
-    # Important for efficiency whenever you use JAX: wrap everything into a single JIT
-    # region
     def make_step(model, x, y, opt_state, key):
         loss, grads = compute_loss_and_grad(model, x, y, False, key)
         loss = lax.pmean(loss, "device")
@@ -89,19 +74,16 @@ def main(
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    make_step = pmap(make_step, "device", in_axes=(0, 0, 0, 0, 0))
-
-
+    make_step = pmap(make_step, "device", in_axes=0)
 
     devices = jax.devices()
     assert batch_size % len(devices) == 0
-    # TODO: need to replicate the key?
 
     optim = optax.adam(learning_rate)
     opt_state = optim.init(model)
 
-    model = replicate(model)
-    opt_state = replicate(opt_state)
+    model = replicate(model, devices)
+    opt_state = replicate(opt_state, devices)
 
     keys = jax.random.split(training_key, steps)
 
@@ -113,18 +95,11 @@ def main(
         loss = jnp.mean(loss).item()
         print(f"step={step}, loss={loss}")
 
-    # test:
     total_loss = 0.0
-
-    # @eqx.filter_jit
-    # def compute_loss_test(model, x, y):
-    #     model = partial(model, inference=True, key=None)
-    #     pred_y = jax.vmap(model)(x)
-    #     return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
 
     test_loader = dataloader((xs, ys), batch_size, max_passes=1, key=loader_key)
 
-    compute_loss = pmap(compute_loss, "device", in_axes=(0, 0, 0, 0, 0), static_broadcasted_argnums=(3))
+    compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(3))
     for (x, y) in test_loader:
         key = jax.random.split(training_key, len(devices))
         x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
@@ -132,9 +107,7 @@ def main(
         loss = compute_loss(model, x, y, True, key)
         total_loss += jnp.sum(loss).item()
 
-    # num_correct = jnp.sum((pred_ys > 0.5) == ys)
-    # final_accuracy = (num_correct / dataset_size).item()
-    # print(f"final_accuracy={final_accuracy}")
+    print(f"Final total loss {total_loss}")
 
 
 if __name__ == "__main__":
