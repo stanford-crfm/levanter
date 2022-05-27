@@ -2,3 +2,5 @@ equinox
 transformers
 optax
 einops
+wandb
+pyrallis

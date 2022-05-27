@@ -1,3 +1,5 @@
+import os
+from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
@@ -6,14 +8,16 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
+import pyrallis
+import wandb
 from jax import pmap
+from tqdm import tqdm
 from transformers import GPT2Config
 
-from psithuros.modeling_utils import replicate
+import psithuros
+from psithuros.config import TrainerConfig, WandbConfig
+from psithuros.modeling_utils import replicate, shaped_rng_split
 from psithuros.models.gpt2 import Gpt2LMHeadModel
-
-NUM_TOKENS = 2048
-SEQ_LEN = 512
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
@@ -35,76 +39,112 @@ def dataloader(arrays, batch_size, *, key, max_passes=None):
             end = start + batch_size
 
 
-def get_data(dataset_size, *, key):
+def get_data(dataset_size, seq_len, vocab_size, *, key):
     k_x, k_y = jrandom.split(key, 2)
-    x = jrandom.randint(k_x, [dataset_size, SEQ_LEN], minval=0, maxval=NUM_TOKENS)
-    # y = jrandom.randint(k_y, [dataset_size, SEQ_LEN], minval=0, maxval=NUM_TOKENS)
+    x = jrandom.randint(k_x, [dataset_size, seq_len], minval=0, maxval=vocab_size)
     y = jnp.concatenate( [x[:, 1:], jnp.zeros((dataset_size, 1), dtype=jnp.int32)], axis=1)
 
     return x, y
 
-def main(
-    dataset_size=10000,
-    batch_size=256,
-    learning_rate=3e-3,
-    steps=200,
-    seed=5678,
-):
+@dataclass
+class MyConfig:
+    wandb: WandbConfig = WandbConfig()
+    trainer: TrainerConfig = TrainerConfig()
+
+    # data params
+    dataset_size: int = 10000
+    seq_len: int = 512
+    vocab_size: int = 2048
+
+
+@pyrallis.wrap()
+def main(config: MyConfig):
+    config.wandb.init(config)
+
+    seed = config.trainer.seed
+
     data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-    xs, ys = get_data(dataset_size, key=data_key)
-    iter_data = dataloader((xs, ys), batch_size, key=loader_key)
+    xs, ys = get_data(config.dataset_size, config.seq_len, config.vocab_size, key=data_key)
 
-    config = GPT2Config(vocab_size=NUM_TOKENS, n_positions=SEQ_LEN, n_embd=128, n_ctx=SEQ_LEN, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=SEQ_LEN, type_vocab_size=2, initializer_range=0.02)
+    gpt_config = GPT2Config(vocab_size=config.vocab_size, n_positions=config.seq_len, n_embd=128, n_ctx=config.seq_len, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=config.vocab_size, type_vocab_size=2, initializer_range=0.02)
 
-    model = Gpt2LMHeadModel(config, key=model_key)
+    model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
-    def compute_loss(model, x, y, inference, key):
+    def compute_loss(model, x, y, key, inference):
         model = partial(model, inference=inference, key=key)
         pred_y = jax.vmap(model)(x)
-        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
+        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=config.vocab_size)))
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
-    def make_step(model, x, y, opt_state, key):
-        loss, grads = compute_loss_and_grad(model, x, y, False, key)
+    # train_loss_and_grad = partial(compute_loss_and_grad, inference=False)
+    def train_step(model, x, y, opt_state, key):
+        loss, grads = compute_loss_and_grad(model, x, y, key, inference=False)
         loss = lax.pmean(loss, "device")
         grads = lax.pmean(grads, "device")
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    make_step = pmap(make_step, "device", in_axes=0)
+    train_step = pmap(train_step, "device", in_axes=0)
 
-    devices = jax.devices()
-    assert batch_size % len(devices) == 0
+    devices = config.trainer.devices()
 
-    optim = optax.adam(learning_rate)
+    optim = config.trainer.optimizer()
     opt_state = optim.init(model)
 
     model = replicate(model, devices)
     opt_state = replicate(opt_state, devices)
 
-    keys = jax.random.split(training_key, steps)
+    iter_data = dataloader((xs, ys),  len(devices) * config.trainer.per_device_train_batch_size, key=loader_key)
 
-    for step, (x, y), k in zip(range(steps), iter_data, keys):
-        k = jax.random.split(k, len(devices))
-        x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
-        y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
-        loss, model, opt_state = make_step(model, x, y, opt_state, k)
-        loss = jnp.mean(loss).item()
-        print(f"step={step}, loss={loss}")
+    micro_batch_idx = 0
+    loss = None
+    iter = tqdm(zip(range(config.trainer.train_total_microbatches), iter_data), "train", total=config.trainer.train_total_microbatches)
+    for micro_step, (x, y) in iter:
+        step_idx = micro_step // config.trainer.train_total_microbatches
+        my_key, training_key = jrandom.split(training_key, 2)
+
+        micro_keys = shaped_rng_split(my_key, (len(devices),))
+        micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
+        x = x.reshape(micro_step_shape)
+        y = y.reshape(micro_step_shape)
+
+        my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
+
+        if loss is None:
+            loss = my_loss
+        else:
+            loss += (my_loss - loss) / micro_batch_idx
+
+        micro_batch_idx += 1
+        if micro_batch_idx == config.trainer.train_microbatches_per_step:
+            loss = jnp.mean(loss).item()
+            loss /= config.trainer.train_microbatches_per_step
+            wandb.log({"train/loss": loss}, step=step_idx)
+            iter.set_postfix({"loss": loss})
+            micro_batch_idx = 0
+            loss = None
 
     total_loss = 0.0
+    total_batches = 0
+    test_loader = dataloader((xs, ys), config.trainer.per_device_eval_batch_size * len(devices), max_passes=1, key=loader_key)
 
-    test_loader = dataloader((xs, ys), batch_size, max_passes=1, key=loader_key)
-
-    compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(3))
+    compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(4))
     for (x, y) in test_loader:
-        key = jax.random.split(training_key, len(devices))
-        x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
-        y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
-        loss = compute_loss(model, x, y, True, key)
-        total_loss += jnp.sum(loss).item()
+        my_key, training_key = jrandom.split(training_key, 2)[1]
+
+        micro_step_shape = (len(devices), -1)
+        micro_keys = my_key.reshape(micro_step_shape)
+        x = x.reshape(micro_step_shape)
+        y = y.reshape(micro_step_shape)
+
+        loss, model, opt_state = compute_loss(model, x, y, True, micro_keys)
+        loss = jnp.mean(loss).item()
+        total_batches += 1
+        total_loss += (loss - total_loss) / total_batches
+
+    wandb.log({"test/loss": total_loss})
 
     print(f"Final total loss {total_loss}")
 

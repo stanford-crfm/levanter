@@ -1,12 +1,11 @@
 from functools import partial
-from typing import Callable, Any, Optional, TypeVar
+from typing import Callable, TypeVar, Union, Tuple
 
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import jax.nn as jnn
-
-from equinox.custom_types import Array
+import numpy as np
 from jax import lax
 
 Carry = TypeVar('Carry')
@@ -43,3 +42,18 @@ def replicate(tree, devices=None):
       A new pytree containing the replicated arrays.
     """
     return jax.device_put_replicated(tree, devices or jax.devices())
+
+
+def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrandom.KeyArray:
+    if isinstance(split_shape, int):
+        num_splits = split_shape
+        split_shape = (num_splits, -1)
+    else:
+        num_splits = np.prod(split_shape)
+        split_shape = split_shape + (-1,)
+
+    if num_splits == 1:
+        return jnp.reshape(key, split_shape)
+
+    unshaped = jrandom.split(key, num_splits)
+    return jnp.reshape(unshaped, split_shape)
