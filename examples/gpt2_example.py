@@ -7,11 +7,10 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import optax
 from jax import pmap
-from optax import OptState
 from transformers import GPT2Config
 
-from psithuros.gpt2 import Gpt2LMHeadModel
 from psithuros.modeling_utils import replicate
+from psithuros.models.gpt2 import Gpt2LMHeadModel
 
 NUM_TOKENS = 2048
 SEQ_LEN = 512

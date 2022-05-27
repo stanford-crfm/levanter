@@ -1,15 +1,11 @@
-import math
-from typing import Callable, TypeVar
-
+import equinox as eqx
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
-
-import equinox as eqx
 from optax import OptState
-from palm_lite import PaLM
+
+from psithuros.models.palm_lite import PaLM
 
 NUM_TOKENS = 2048
 SEQ_LEN = 512

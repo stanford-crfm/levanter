@@ -1,13 +1,10 @@
 import math
-from typing import Callable, TypeVar
 
+import equinox as eqx
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax  # https://github.com/deepmind/optax
-
-import equinox as eqx
 from optax import OptState
 
 from psithuros.modeling_utils import fold_left
