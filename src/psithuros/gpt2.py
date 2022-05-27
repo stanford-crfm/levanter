@@ -33,7 +33,7 @@ class Gpt2Mlp(eqx.Module):
     act: Callable = eqx.static_field()
     c_fc: Gpt2Conv1D
     c_proj: Gpt2Conv1D
-    # dropout: nn.Dropout
+    dropout: nn.Dropout
 
     def __init__(self, config, intermediate_size, *, key):
         embed_dim = config.hidden_size
@@ -42,14 +42,14 @@ class Gpt2Mlp(eqx.Module):
         self.c_fc = Gpt2Conv1D(out_features=intermediate_size, in_features=embed_dim, key=k_fc)
         self.c_proj = Gpt2Conv1D(out_features=embed_dim, in_features=intermediate_size, key=k_proj)
         self.act = ACT2FN[config.activation_function]
-        # self.dropout = nn.Dropout(p=config.resid_pdrop)
+        self.dropout = nn.Dropout(p=config.resid_pdrop)
 
     @partial(jax.jit, static_argnames=["inference"])
     def __call__(self, hidden_states, *, inference: bool, key=None):
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
-        # hidden_states = self.dropout(hidden_states, inference=inference, key=key)
+        hidden_states = self.dropout(hidden_states, inference=inference, key=key)
         return hidden_states
 
 
@@ -59,7 +59,7 @@ class Gpt2Attention(eqx.Module):
 
     c_attn: Gpt2Conv1D
     c_proj: Gpt2Conv1D
-    # resid_dropout: nn.Dropout
+    resid_dropout: nn.Dropout
 
     causal_mask: Optional[Array]
 
@@ -86,7 +86,7 @@ class Gpt2Attention(eqx.Module):
         self.c_attn = Gpt2Conv1D(out_features=3 * self.embed_dim, in_features=self.embed_dim, key=k_c)
         self.c_proj = Gpt2Conv1D(out_features=self.embed_dim, in_features=self.embed_dim, key=k_proj)
 
-        # self.resid_dropout = nn.Dropout(p=config.resid_pdrop)
+        self.resid_dropout = nn.Dropout(p=config.resid_pdrop)
 
         if self.causal:
             self.causal_mask = jnp.tril(jnp.ones((config.n_positions, config.n_positions)))
@@ -129,7 +129,7 @@ class Gpt2Attention(eqx.Module):
 
         attn_output = self._merge_heads(attn_output)  # [seq_len, embed_dim]
         attn_output = self.c_proj(attn_output)
-        # attn_output = self.resid_dropout(attn_output, key=rng_key, inference=inference)
+        attn_output = self.resid_dropout(attn_output, key=rng_key, inference=inference)
 
         return attn_output
 
@@ -181,7 +181,7 @@ class Gpt2Model(eqx.Module):
     config: GPT2Config = eqx.static_field()
     wte: jnp.ndarray
     wpe: jnp.ndarray
-    # dropout: nn.Dropout
+    dropout: nn.Dropout
     blocks: List[Gpt2Block]
     ln_f: nn.LayerNorm
 
@@ -196,7 +196,7 @@ class Gpt2Model(eqx.Module):
         self.wpe = jrandom.normal(key=k_wpe,
                                   shape=(config.max_position_embeddings, embed_dim)) * config.initializer_range / 2
 
-        # self.dropout = nn.Dropout(p=config.embd_pdrop)
+        self.dropout = nn.Dropout(p=config.embd_pdrop)
         self.blocks = [
             Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(k_blocks, config.n_layer))
         ]
@@ -209,7 +209,7 @@ class Gpt2Model(eqx.Module):
         position_embeds = self.wpe[indices]
 
         hidden_states = input_embeds + position_embeds
-        # hidden_states = self.dropout(hidden_states, inference=inference, key=key)
+        hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
         keys = jrandom.split(key, len(self.blocks)) if key is not None else [None] * len(self.blocks)
 
