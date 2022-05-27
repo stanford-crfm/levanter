@@ -100,8 +100,8 @@ def main(config: MyConfig):
 
     micro_batch_idx = 0
     loss = None
-    iter = tqdm(zip(range(config.trainer.train_total_microbatches), iter_data), "train", total=config.trainer.train_total_microbatches)
-    for micro_step, (x, y) in iter:
+    pbar = tqdm(desc="train", total=config.trainer.num_train_steps)
+    for micro_step, (x, y) in zip(range(config.trainer.train_total_microbatches), iter_data):
         step_idx = micro_step // config.trainer.train_total_microbatches
         my_key, training_key = jrandom.split(training_key, 2)
 
@@ -120,9 +120,9 @@ def main(config: MyConfig):
         micro_batch_idx += 1
         if micro_batch_idx == config.trainer.train_microbatches_per_step:
             loss = jnp.mean(loss).item()
-            loss /= config.trainer.train_microbatches_per_step
             wandb.log({"train/loss": loss}, step=step_idx)
-            iter.set_postfix({"loss": loss})
+            pbar.set_postfix({"loss": loss})
+            pbar.update()
             micro_batch_idx = 0
             loss = None
 
