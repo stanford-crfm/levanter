@@ -89,7 +89,7 @@ def main(
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    make_step = pmap(make_step, "device", in_axes=(0, 0, 0, 0, None))
+    make_step = pmap(make_step, "device", in_axes=(0, 0, 0, 0, 0))
 
 
 
@@ -106,6 +106,7 @@ def main(
     keys = jax.random.split(training_key, steps)
 
     for step, (x, y), k in zip(range(steps), iter_data, keys):
+        k = jax.random.split(k, len(devices))
         x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
         y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
         loss, model, opt_state = make_step(model, x, y, opt_state, k)
@@ -123,11 +124,12 @@ def main(
 
     test_loader = dataloader((xs, ys), batch_size, max_passes=1, key=loader_key)
 
-    compute_loss = pmap(compute_loss, "device", in_axes=(0, 0, 0, 0, None), static_broadcasted_argnums=(3))
+    compute_loss = pmap(compute_loss, "device", in_axes=(0, 0, 0, 0, 0), static_broadcasted_argnums=(3))
     for (x, y) in test_loader:
+        key = jax.random.split(training_key, len(devices))
         x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
         y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
-        loss = compute_loss(model, x, y, True, training_key)
+        loss = compute_loss(model, x, y, True, key)
         total_loss += jnp.sum(loss).item()
 
     # num_correct = jnp.sum((pred_ys > 0.5) == ys)
