@@ -3,6 +3,7 @@ from typing import Optional, List, Callable
 
 import equinox as eqx
 import equinox.nn as nn
+import psithuros.nn as pnn
 import jax
 import jax.lax as lax
 import jax.nn as jnn
@@ -33,7 +34,7 @@ class Gpt2Mlp(eqx.Module):
     act: Callable = eqx.static_field()
     c_fc: Gpt2Conv1D
     c_proj: Gpt2Conv1D
-    dropout: nn.Dropout
+    dropout: pnn.Dropout
 
     def __init__(self, config, intermediate_size, *, key):
         embed_dim = config.hidden_size
@@ -42,7 +43,7 @@ class Gpt2Mlp(eqx.Module):
         self.c_fc = Gpt2Conv1D(out_features=intermediate_size, in_features=embed_dim, key=k_fc)
         self.c_proj = Gpt2Conv1D(out_features=embed_dim, in_features=intermediate_size, key=k_proj)
         self.act = ACT2FN[config.activation_function]
-        self.dropout = nn.Dropout(p=config.resid_pdrop)
+        self.dropout = pnn.Dropout(p=config.resid_pdrop)
 
     @eqx.filter_jit
     def __call__(self, hidden_states, *, inference: bool, key=None):
@@ -54,39 +55,34 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(eqx.Module):
-    config: GPT2Config = eqx.static_field()
     causal: bool = eqx.static_field()
+    embed_dim: int = eqx.static_field()
+    num_heads: int = eqx.static_field()
 
     c_attn: Gpt2Conv1D
     c_proj: Gpt2Conv1D
-    resid_dropout: nn.Dropout
+    resid_dropout: pnn.Dropout
 
     causal_mask: Optional[Array]
-
-    @property
-    def embed_dim(self):
-        return self.config.hidden_size
-
-    @property
-    def num_heads(self):
-        return self.config.num_attention_heads
 
     @property
     def head_dim(self):
         return self.embed_dim // self.num_heads
 
     def __init__(self, config: GPT2Config, *, key, causal: bool = True):
-        self.config = config
+        self.causal = causal
+        self.embed_dim = config.n_embd
+        self.num_heads = config.n_head
+
         assert self.embed_dim % self.num_heads == 0, \
             f"embed_dim={self.embed_dim} must be divisible by num_heads={self.num_heads}"
-        self.causal = causal
 
         k_c, k_q, k_proj = jrandom.split(key, 3)
 
         self.c_attn = Gpt2Conv1D(out_features=3 * self.embed_dim, in_features=self.embed_dim, key=k_c)
         self.c_proj = Gpt2Conv1D(out_features=self.embed_dim, in_features=self.embed_dim, key=k_proj)
 
-        self.resid_dropout = nn.Dropout(p=config.resid_pdrop)
+        self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
 
         if self.causal:
             self.causal_mask = jnp.tril(jnp.ones((config.n_positions, config.n_positions)))
@@ -181,7 +177,7 @@ class Gpt2Model(eqx.Module):
     config: GPT2Config = eqx.static_field()
     wte: jnp.ndarray
     wpe: jnp.ndarray
-    dropout: nn.Dropout
+    dropout: pnn.Dropout
     blocks: List[Gpt2Block]
     ln_f: nn.LayerNorm
 
@@ -196,7 +192,7 @@ class Gpt2Model(eqx.Module):
         self.wpe = jrandom.normal(key=k_wpe,
                                   shape=(config.max_position_embeddings, embed_dim)) * config.initializer_range / 2
 
-        self.dropout = nn.Dropout(p=config.embd_pdrop)
+        self.dropout = pnn.Dropout(p=config.embd_pdrop)
         self.blocks = [
             Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(k_blocks, config.n_layer))
         ]
