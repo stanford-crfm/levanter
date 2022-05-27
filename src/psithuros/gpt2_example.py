@@ -1,23 +1,33 @@
-import math
 from functools import partial
-from typing import Callable, TypeVar
 
-import chex
+import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
-
-import equinox as eqx
+from jax import pmap
 from optax import OptState
 from transformers import GPT2Config
 
-from palm_lite import PaLM
 from psithuros.gpt2 import Gpt2LMHeadModel
 
 NUM_TOKENS = 2048
 SEQ_LEN = 512
+
+# cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
+
+def replicate(tree, devices=None):
+    """Replicates arrays to multiple devices.
+    Args:
+      tree: a pytree containing the arrays that should be replicated.
+      devices: the devices the data is replicated to
+        (default: same order as expected by `jax.pmap()`).
+    Returns:
+      A new pytree containing the replicated arrays.
+    """
+    return jax.device_put_replicated(tree, devices or jax.devices())
+
 
 def dataloader(arrays, batch_size, *, key, max_passes=None):
     dataset_size = arrays[0].shape[0]
@@ -57,33 +67,49 @@ def main(
     xs, ys = get_data(dataset_size, key=data_key)
     iter_data = dataloader((xs, ys), batch_size, key=loader_key)
 
-    config = GPT2Config(vocab_size=NUM_TOKENS, n_positions=SEQ_LEN, n_embd=128, n_ctx=SEQ_LEN, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=1024, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=SEQ_LEN, type_vocab_size=2, initializer_range=0.02)
+    config = GPT2Config(vocab_size=NUM_TOKENS, n_positions=SEQ_LEN, n_embd=128, n_ctx=SEQ_LEN, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=SEQ_LEN, type_vocab_size=2, initializer_range=0.02)
 
     model = Gpt2LMHeadModel(config, key=model_key)
 
-    @eqx.filter_jit
-    def compute_loss(model, x, y, *, inference, key):
+    def compute_loss(model, x, y, inference, key):
         model = partial(model, inference=inference, key=key)
         pred_y = jax.vmap(model)(x)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=NUM_TOKENS)))
 
+    # compute_loss_and_grad = pmap(compute_loss, "device", in_axes=(None, 0, 0, None, None), static_broadcasted_argnums=(3,))
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
     # Important for efficiency whenever you use JAX: wrap everything into a single JIT
     # region
-    @eqx.filter_jit
-    def make_step(model, x, y, opt_state: OptState, *, inference, key):
-        loss, grads = compute_loss_and_grad(model, x, y, inference=inference, key=key)
+    def make_step(model, x, y, opt_state, key):
+        loss, grads = compute_loss_and_grad(model, x, y, False, key)
+        loss = lax.pmean(loss, "device")
+        grads = lax.pmean(grads, "device")
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
+    make_step = pmap(make_step, "device", in_axes=(0, 0, 0, 0, None))
+
+
+
+    devices = jax.devices()
+    assert batch_size % len(devices) == 0
+    # TODO: need to replicate the key?
+
     optim = optax.adam(learning_rate)
     opt_state = optim.init(model)
+
+    model = replicate(model)
+    opt_state = replicate(opt_state)
+
     keys = jax.random.split(training_key, steps)
+
     for step, (x, y), k in zip(range(steps), iter_data, keys):
-        loss, model, opt_state = make_step(model, x, y, opt_state, inference=False, key=k)
-        loss = loss.item()
+        x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
+        y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
+        loss, model, opt_state = make_step(model, x, y, opt_state, k)
+        loss = jnp.mean(loss).item()
         print(f"step={step}, loss={loss}")
 
     # test:
@@ -97,10 +123,12 @@ def main(
 
     test_loader = dataloader((xs, ys), batch_size, max_passes=1, key=loader_key)
 
+    compute_loss = pmap(compute_loss, "device", in_axes=(0, 0, 0, 0, None), static_broadcasted_argnums=(3))
     for (x, y) in test_loader:
-        loss = compute_loss(model, x, y, inference=True, key=training_key)
-        total_loss += loss.item()
-        print(loss.item())
+        x = x.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
+        y = y.reshape([len(devices), batch_size//len(devices), SEQ_LEN])
+        loss = compute_loss(model, x, y, True, training_key)
+        total_loss += jnp.sum(loss).item()
 
     # num_correct = jnp.sum((pred_ys > 0.5) == ys)
     # final_accuracy = (num_correct / dataset_size).item()
