@@ -77,8 +77,7 @@ def main(config: MyConfig):
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
-    # train_loss_and_grad = partial(compute_loss_and_grad, inference=False)
-    def train_step(model, x, y, opt_state, key):
+    def take_train_step(model, x, y, opt_state, key):
         loss, grads = compute_loss_and_grad(model, x, y, key, inference=False)
         loss = lax.pmean(loss, "device")
         grads = lax.pmean(grads, "device")
@@ -86,60 +85,60 @@ def main(config: MyConfig):
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    train_step = pmap(train_step, "device", in_axes=0)
+    train_step = pmap(take_train_step, "device", in_axes=0)
 
     devices = config.trainer.devices()
 
     optim = config.trainer.optimizer()
     opt_state = optim.init(model)
 
-    model = replicate(model, devices)
-    opt_state = replicate(opt_state, devices)
 
     iter_data = dataloader((xs, ys),  len(devices) * config.trainer.per_device_train_batch_size, key=loader_key)
 
-    micro_batch_idx = 0
-    loss = None
-    pbar = tqdm(desc="train", total=config.trainer.num_train_steps)
-    for micro_step, (x, y) in zip(range(config.trainer.train_total_microbatches), iter_data):
-        step_idx = micro_step // config.trainer.train_total_microbatches
-        my_key, training_key = jrandom.split(training_key, 2)
+    model = replicate(model, devices)
+    opt_state = replicate(opt_state, devices)
+    pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
+    for step in pbar:
+        loss = None
+        for micro_step in range(config.trainer.train_microbatches_per_step):
+            # TODO: replicate data loader instead?
+            x, y = next(iter_data)
 
-        micro_keys = shaped_rng_split(my_key, (len(devices),))
-        micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
-        x = x.reshape(micro_step_shape)
-        y = y.reshape(micro_step_shape)
+            my_key, training_key = jrandom.split(training_key, 2)
+            micro_keys = shaped_rng_split(my_key, (len(devices),))
+            micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
 
-        my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
+            x = x.reshape(micro_step_shape)
+            y = y.reshape(micro_step_shape)
 
-        if loss is None:
-            loss = my_loss
-        else:
-            loss += (my_loss - loss) / micro_batch_idx
+            my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
 
-        micro_batch_idx += 1
-        if micro_batch_idx == config.trainer.train_microbatches_per_step:
-            loss = jnp.mean(loss).item()
-            wandb.log({"train/loss": loss}, step=step_idx)
-            pbar.set_postfix({"loss": loss})
-            pbar.update()
-            micro_batch_idx = 0
-            loss = None
+            if loss is None:
+                loss = my_loss
+            else:
+                loss += (my_loss - loss) / micro_step
+
+        loss = jnp.mean(loss).item()
+        wandb.log({"train/loss": loss}, step=step)
+        pbar.set_postfix({"loss": loss})
+
+    del pbar
 
     total_loss = 0.0
     total_batches = 0
     test_loader = dataloader((xs, ys), config.trainer.per_device_eval_batch_size * len(devices), max_passes=1, key=loader_key)
 
     compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(4))
-    for (x, y) in test_loader:
-        my_key, training_key = jrandom.split(training_key, 2)[1]
+    pbar = tqdm(test_loader, desc="eval", total=len(xs) // (config.trainer.per_device_eval_batch_size * len(devices)))
+    for (x, y) in pbar:
+        my_key, training_key = jrandom.split(training_key, 2)
 
-        micro_step_shape = (len(devices), -1)
-        micro_keys = my_key.reshape(micro_step_shape)
+        micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
+        micro_keys = shaped_rng_split(my_key, (len(devices),))
         x = x.reshape(micro_step_shape)
         y = y.reshape(micro_step_shape)
 
-        loss, model, opt_state = compute_loss(model, x, y, True, micro_keys)
+        loss = compute_loss(model, x, y, micro_keys, True)
         loss = jnp.mean(loss).item()
         total_batches += 1
         total_loss += (loss - total_loss) / total_batches

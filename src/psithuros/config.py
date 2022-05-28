@@ -57,7 +57,7 @@ class TrainerConfig:
 
     # Config related to duration
     num_train_steps: int = 400_000
-    num_eval_steps: int = 10_000
+    steps_per_eval: int = 10_000
 
     num_save_steps: int = 20_000
 
