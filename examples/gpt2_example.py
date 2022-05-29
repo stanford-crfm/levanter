@@ -16,7 +16,9 @@ from transformers import GPT2Config
 
 import psithuros
 from psithuros.config import TrainerConfig, WandbConfig
-from psithuros.modeling_utils import replicate, shaped_rng_split
+from psithuros.logging import log_optimizer_hyperparams
+from psithuros.modeling_utils import RunningMean
+from psithuros.jax_utils import shaped_rng_split, replicate
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -92,14 +94,18 @@ def main(config: MyConfig):
     optim = config.trainer.optimizer()
     opt_state = optim.init(model)
 
-
     iter_data = dataloader((xs, ys),  len(devices) * config.trainer.per_device_train_batch_size, key=loader_key)
 
     model = replicate(model, devices)
     opt_state = replicate(opt_state, devices)
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
     for step in pbar:
-        loss = None
+        loss = RunningMean(shape=1)
+
+        # TODO: factor out optimizer logging
+        log_optimizer_hyperparams(opt_state, step=step)
+        # wandb.log({"learning_rate": opt_state.hyperparams['learning_rate']}, step=step)
+
         for micro_step in range(config.trainer.train_microbatches_per_step):
             # TODO: replicate data loader instead?
             x, y = next(iter_data)
@@ -113,19 +119,15 @@ def main(config: MyConfig):
 
             my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
 
-            if loss is None:
-                loss = my_loss
-            else:
-                loss += (my_loss - loss) / micro_step
+            loss.update(jnp.mean(my_loss))
 
-        loss = jnp.mean(loss).item()
+        loss = loss.value.item()
         wandb.log({"train/loss": loss}, step=step)
         pbar.set_postfix({"loss": loss})
 
     del pbar
 
-    total_loss = 0.0
-    total_batches = 0
+    total_loss = RunningMean(shape=1)
     test_loader = dataloader((xs, ys), config.trainer.per_device_eval_batch_size * len(devices), max_passes=1, key=loader_key)
 
     compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(4))
@@ -140,9 +142,9 @@ def main(config: MyConfig):
 
         loss = compute_loss(model, x, y, micro_keys, True)
         loss = jnp.mean(loss).item()
-        total_batches += 1
-        total_loss += (loss - total_loss) / total_batches
+        total_loss.update(loss)
 
+    total_loss = total_loss.value.item()
     wandb.log({"test/loss": total_loss})
 
     print(f"Final total loss {total_loss}")

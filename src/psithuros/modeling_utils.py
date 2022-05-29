@@ -1,11 +1,8 @@
 from functools import partial
-from typing import Callable, TypeVar, Union, Tuple
+from typing import Callable, TypeVar
 
-import jax
 import jax.nn as jnn
 import jax.numpy as jnp
-import jax.random as jrandom
-import numpy as np
 from jax import lax
 
 Carry = TypeVar('Carry')
@@ -32,28 +29,13 @@ ACT2FN = {
 }
 
 
-def replicate(tree, devices=None):
-    """Replicates arrays to multiple devices.
-    Args:
-      tree: a pytree containing the arrays that should be replicated.
-      devices: the devices the data is replicated to
-        (default: same order as expected by `jax.pmap()`).
-    Returns:
-      A new pytree containing the replicated arrays.
-    """
-    return jax.device_put_replicated(tree, devices or jax.devices())
+class RunningMean(object):
+    """Numerically stable running mean for an arbitrary array"""
 
+    def __init__(self, shape, dtype=jnp.float32):
+        self.value = jnp.zeros(shape, dtype)
+        self.count = 0
 
-def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrandom.KeyArray:
-    if isinstance(split_shape, int):
-        num_splits = split_shape
-        split_shape = (num_splits, -1)
-    else:
-        num_splits = np.prod(split_shape)
-        split_shape = split_shape + (-1,)
-
-    if num_splits == 1:
-        return jnp.reshape(key, split_shape)
-
-    unshaped = jrandom.split(key, num_splits)
-    return jnp.reshape(unshaped, split_shape)
+    def update(self, x):
+        self.count += 1
+        self.value += (x - self.value) / self.count

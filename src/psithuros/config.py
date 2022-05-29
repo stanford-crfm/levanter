@@ -96,20 +96,27 @@ class TrainerConfig:
 
     def optimizer(self):
         """Creates the optimizer, which is gradient-accumulation aware"""
-        components = []
+        # indirection makes it work with optax.inject_hyperparams so we can can log the learning rate
+        def _optimizer(learning_rate):
+            components = []
 
-        if self.max_grad_norm:
-            components.append(optax.clip_by_global_norm(self.max_grad_norm))
+            if self.max_grad_norm:
+                components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
-        components.append(optax.scale_by_adam(self.learning_rate, self.beta1, self.beta2, self.epsilon))
+            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
 
-        if self.weight_decay > 0:
-            # TODO: add weight decay masking??
-            components.append(optax.add_decayed_weights(self.weight_decay))
+            if self.weight_decay > 0:
+                # TODO: add weight decay masking??
+                components.append(optax.add_decayed_weights(self.weight_decay))
 
-        components.append(optax.scale_by_schedule(self.lr_scheduler()))
+            components.append(optax.scale(learning_rate))
 
-        optimizer = optax.chain(*components)
+            optimizer = optax.chain(*components)
+
+
+            return optimizer
+
+        optimizer = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler())
         if self.train_microbatches_per_step > 1:
             optimizer = optax.MultiSteps(optimizer, self.train_microbatches_per_step)
 
