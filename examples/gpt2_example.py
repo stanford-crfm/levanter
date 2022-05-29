@@ -145,7 +145,7 @@ def main(config: MyConfig):
         total_loss.update(loss)
 
     total_loss = total_loss.value.item()
-    wandb.log({"test/loss": total_loss})
+    wandb.log({"eval/loss": total_loss})
 
     print(f"Final total loss {total_loss}")
 
