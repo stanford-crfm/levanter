@@ -1,5 +1,6 @@
 from typing import Optional
 
+import jax.numpy as jnp
 from optax import MultiStepsState
 
 from psithuros.jax_utils import jnp_to_python
@@ -16,6 +17,8 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
         return key
 
     if hasattr(opt_state, "hyperparams"):
-        params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
-        print(params)
+        # we insert the mean because when we replicate the optimization state, the optimizer state is
+        # copied along with any hyperparams...
+        params = {wrap_key(k): jnp_to_python(jnp.mean(v)) for k, v in opt_state.hyperparams.items()}
+        # print(params)
         wandb.log(params, step=step)

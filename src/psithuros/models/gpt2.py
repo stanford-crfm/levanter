@@ -63,7 +63,7 @@ class Gpt2Attention(eqx.Module):
     c_proj: Gpt2Conv1D
     resid_dropout: pnn.Dropout
 
-    causal_mask: Optional[Array]
+    causal_mask: Optional[Array] = eqx.static_field()
 
     @property
     def head_dim(self):
@@ -85,7 +85,7 @@ class Gpt2Attention(eqx.Module):
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
 
         if self.causal:
-            self.causal_mask = jnp.tril(jnp.ones((config.n_positions, config.n_positions)))
+            self.causal_mask = jnp.tril(jnp.ones((config.n_positions, config.n_positions), dtype=jnp.bool_))
         else:
             self.causal_mask = None
 

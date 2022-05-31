@@ -72,7 +72,8 @@ def main(config: TrainGpt2Config):
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
-                            n_positions=config.seq_len, n_embd=128, n_ctx=config.seq_len, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=tokenizer.vocab_size, type_vocab_size=2, initializer_range=0.02)
+                            n_positions=config.seq_len,
+                            n_ctx=config.seq_len)
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
