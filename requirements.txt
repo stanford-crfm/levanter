@@ -5,3 +5,5 @@ einops
 wandb
 pyrallis
 pyarrow
+zstandard
+datasets
