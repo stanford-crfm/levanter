@@ -44,13 +44,11 @@ class WandbConfig:
 
 @dataclass
 class TrainerConfig:
-    wandb: WandbConfig = field(default_factory=WandbConfig)
-
     seed: int = 0
 
     # Config related to batch sizes
     num_devices: Optional[int] = None
-    train_batch_size: int = 32
+    train_batch_size: int = 512
     per_device_train_batch_size: int = -1
 
     per_device_eval_batch_size: int = -1

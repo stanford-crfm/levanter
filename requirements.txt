@@ -4,3 +4,4 @@ optax
 einops
 wandb
 pyrallis
+pyarrow

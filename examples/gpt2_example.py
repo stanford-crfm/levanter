@@ -1,7 +1,9 @@
-import os
+from dataclasses import dataclass
 from dataclasses import dataclass
 from functools import partial
+from typing import Optional
 
+import datasets
 import equinox as eqx
 import jax
 import jax.lax as lax
@@ -12,70 +14,73 @@ import pyrallis
 import wandb
 from jax import pmap
 from tqdm import tqdm
-from transformers import GPT2Config
+from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
 
-import psithuros
 from psithuros.config import TrainerConfig, WandbConfig
+from psithuros.data.text import IndexedDataset, batched
+from psithuros.jax_utils import shaped_rng_split, replicate
 from psithuros.logging import log_optimizer_hyperparams
 from psithuros.modeling_utils import RunningMean
-from psithuros.jax_utils import shaped_rng_split, replicate
 from psithuros.models.gpt2 import Gpt2LMHeadModel
+
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
-def dataloader(arrays, batch_size, *, key, max_passes=None):
-    dataset_size = arrays[0].shape[0]
-    assert all(array.shape[0] == dataset_size for array in arrays)
-    indices = jnp.arange(dataset_size)
-    i = 0
-    while max_passes is None or i < max_passes:
-        i += 1
-        perm = jrandom.permutation(key, indices)
-        (key,) = jrandom.split(key, 1)
-        start = 0
-        end = batch_size
-        while end < dataset_size:
-            batch_perm = perm[start:end]
-            yield tuple(array[batch_perm] for array in arrays)
-            start = end
-            end = start + batch_size
+@dataclass
+class DataParams:
+    id: str
+    name: Optional[str] = None
 
+    tokenizer: str = "gpt2"
 
-def get_data(dataset_size, seq_len, vocab_size, *, key):
-    k_x, k_y = jrandom.split(key, 2)
-    x = jrandom.randint(k_x, [dataset_size, seq_len], minval=0, maxval=vocab_size)
-    y = jnp.concatenate( [x[:, 1:], jnp.zeros((dataset_size, 1), dtype=jnp.int32)], axis=1)
+    def load(self, tokenizer, split, seq_len, cache_dir):
+        dataset = datasets.load_dataset(self.id, name=self.name, split=split)
+        token_iter = (tokenizer(batch) for batch in batched(dataset["text"], 1000))
+        return IndexedDataset.build_or_load(token_iter, f"{cache_dir}/{split}", seq_len)
 
-    return x, y
 
 @dataclass
-class MyConfig:
+class TrainGpt2Config:
+    data: DataParams
     wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
+    cache_dir: str = "cache/"
 
-    # data params
-    dataset_size: int = 10000
     seq_len: int = 512
-    vocab_size: int = 2048
+
+
+def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batch_size, max_passes=None):
+    eos = tokenizer.eos_token_id
+    for i in range(max_passes or 10000):
+        for batch in batched(dataset, batch_size):
+            input_ids = [jnp.array(ex["input_ids"], dtype=jnp.int32) for ex in batch]
+            input_ids = jnp.stack(input_ids)
+            outputs = jnp.concatenate([input_ids[:, 1:], jnp.full((input_ids.shape[0], 1), eos)], axis=1)
+
+            yield input_ids, outputs
 
 
 @pyrallis.wrap()
-def main(config: MyConfig):
+def main(config: TrainGpt2Config):
     config.wandb.init(config)
+    cache_dir = config.cache_dir
 
     seed = config.trainer.seed
 
     data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-    xs, ys = get_data(config.dataset_size, config.seq_len, config.vocab_size, key=data_key)
+    tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
+    dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
+    valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
-    gpt_config = GPT2Config(vocab_size=config.vocab_size, n_positions=config.seq_len, n_embd=128, n_ctx=config.seq_len, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=config.vocab_size, type_vocab_size=2, initializer_range=0.02)
+    gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
+                            n_positions=config.seq_len, n_embd=128, n_ctx=config.seq_len, n_layer=4, n_head=4, n_embd_shared_axes=0, hidden_dim=128, num_attention_heads=4, intermediate_size=128, hidden_act="gelu", hidden_dropout_prob=0.1, attention_probs_dropout_prob=0.1, max_position_embeddings=tokenizer.vocab_size, type_vocab_size=2, initializer_range=0.02)
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
     def compute_loss(model, x, y, key, inference):
         model = partial(model, inference=inference, key=key)
         pred_y = jax.vmap(model)(x)
-        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=config.vocab_size)))
+        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=tokenizer.vocab_size)))
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
@@ -94,7 +99,7 @@ def main(config: MyConfig):
     optim = config.trainer.optimizer()
     opt_state = optim.init(model)
 
-    iter_data = dataloader((xs, ys),  len(devices) * config.trainer.per_device_train_batch_size, key=loader_key)
+    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
 
     model = replicate(model, devices)
     opt_state = replicate(opt_state, devices)
@@ -128,10 +133,10 @@ def main(config: MyConfig):
     del pbar
 
     total_loss = RunningMean(shape=1)
-    test_loader = dataloader((xs, ys), config.trainer.per_device_eval_batch_size * len(devices), max_passes=1, key=loader_key)
+    test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices), max_passes=1)
 
     compute_loss = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(4))
-    pbar = tqdm(test_loader, desc="eval", total=len(xs) // (config.trainer.per_device_eval_batch_size * len(devices)))
+    pbar = tqdm(test_loader, desc="eval")
     for (x, y) in pbar:
         my_key, training_key = jrandom.split(training_key, 2)
 
