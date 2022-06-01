@@ -1,8 +1,20 @@
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 import jax
 import numpy as np
+from chex import PRNGKey
 from jax import random as jrandom, numpy as jnp
+
+
+def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
+    """Splits a random key into multiple random keys. If the key is None, then it replicates the None. Also handles
+    num == 1 case """
+    if key is None:
+        return [None] * num
+    elif num == 1:
+        return jnp.stack(key)
+    else:
+        return jrandom.split(key, num)
 
 
 def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrandom.KeyArray:
@@ -16,7 +28,7 @@ def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrand
     if num_splits == 1:
         return jnp.reshape(key, split_shape)
 
-    unshaped = jrandom.split(key, num_splits)
+    unshaped = maybe_rng_split(key, num_splits)
     return jnp.reshape(unshaped, split_shape)
 
 

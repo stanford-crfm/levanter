@@ -13,6 +13,7 @@ from einops import rearrange
 from equinox.custom_types import Array
 from transformers import GPT2Config
 
+from psithuros import jax_utils
 from psithuros.modeling_utils import ACT2FN
 
 
@@ -157,7 +158,7 @@ class Gpt2Block(eqx.Module):
 
     @eqx.filter_jit
     def __call__(self, hidden_states, inference=True, *, key):
-        k1, k2 = jrandom.split(key, 2) if key is not None else (None, None)
+        k1, k2 = jax_utils.maybe_rng_split(key, 2)
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -207,7 +208,7 @@ class Gpt2Model(eqx.Module):
         hidden_states = input_embeds + position_embeds
         hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
-        keys = jrandom.split(key, len(self.blocks)) if key is not None else [None] * len(self.blocks)
+        keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
         for block, k_block in zip(self.blocks, keys):
             hidden_states = block(hidden_states, inference=inference, key=k_block)

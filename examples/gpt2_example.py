@@ -37,7 +37,7 @@ class DataParams:
     def load(self, tokenizer, split, seq_len, cache_dir):
         dataset = datasets.load_dataset(self.id, name=self.name, split=split)
         token_iter = (tokenizer(batch) for batch in batched(dataset["text"], 1000))
-        return IndexedDataset.build_or_load(token_iter, f"{cache_dir}/{split}", seq_len)
+        return IndexedDataset.build_or_load(token_iter, f"{cache_dir}/{self.id}/{split}", seq_len)
 
 
 @dataclass
@@ -116,8 +116,7 @@ def main(config: TrainGpt2Config):
         with jax.profiler.StepTraceAnnotation("train", step_num=step):
             loss = RunningMean(shape=1)
 
-        # TODO: factor out optimizer logging
-        log_optimizer_hyperparams(opt_state, step=step)
+            log_optimizer_hyperparams(opt_state, step=step)
 
             for micro_step in range(config.trainer.train_microbatches_per_step):
                 # TODO: replicate data loader instead?
@@ -131,10 +130,9 @@ def main(config: TrainGpt2Config):
                     x = x.reshape(micro_step_shape).block_until_ready()
                     y = y.reshape(micro_step_shape).block_until_ready()
 
-                with jax.profiler.TraceAnnotation("actual step"):
-                    my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
-                    # print([b.device() for b in model.lm_head.device_buffers])
-                    model.lm_head.block_until_ready()
+                # with jax.profiler.TraceAnnotation("actual step"):
+                my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)# print([b.device() for b in model.lm_head.device_buffers])
+                model#.lm_head.block_until_ready()
 
                 loss.update(jnp.mean(my_loss))
 
