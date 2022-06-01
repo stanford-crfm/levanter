@@ -81,8 +81,6 @@ def main(config: TrainGpt2Config):
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
-    print(config.trainer.train_microbatches_per_step)
-
     @jax.profiler.annotate_function
     def compute_loss(model, x, y, key, inference):
         model = partial(model, inference=inference, key=key)
