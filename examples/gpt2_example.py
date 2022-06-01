@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import optax
 import pyrallis
+print(jax.devices())
 import wandb
 from jax import pmap
 from tqdm import tqdm
@@ -80,6 +81,9 @@ def main(config: TrainGpt2Config):
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
+    print(config.trainer.train_microbatches_per_step)
+
+    @jax.profiler.annotate_function
     def compute_loss(model, x, y, key, inference):
         model = partial(model, inference=inference, key=key)
         pred_y = jax.vmap(model)(x)
@@ -87,6 +91,7 @@ def main(config: TrainGpt2Config):
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
+    @jax.profiler.annotate_function
     def take_train_step(model, x, y, opt_state, key):
         loss, grads = compute_loss_and_grad(model, x, y, key, inference=False)
         loss = lax.pmean(loss, "device")
@@ -108,32 +113,35 @@ def main(config: TrainGpt2Config):
     opt_state = replicate(opt_state, devices)
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
     for step in pbar:
-        loss = RunningMean(shape=1)
+        with jax.profiler.StepTraceAnnotation("train", step_num=step):
+            loss = RunningMean(shape=1)
 
-        # TODO: factor out optimizer logging
-        log_optimizer_hyperparams(opt_state, step=step)
-        # wandb.log({"learning_rate": opt_state.hyperparams['learning_rate']}, step=step)
+            # TODO: factor out optimizer logging
+            log_optimizer_hyperparams(opt_state, step=step)
+            # wandb.log({"learning_rate": opt_state.hyperparams['learning_rate']}, step=step)
 
-        for micro_step in range(config.trainer.train_microbatches_per_step):
-            # TODO: replicate data loader instead?
-            x, y = next(iter_data)
+            for micro_step in range(config.trainer.train_microbatches_per_step):
+                # TODO: replicate data loader instead?
+                with jax.profiler.TraceAnnotation("data loading"):
+                    x, y = next(iter_data)
 
-            my_key, training_key = jrandom.split(training_key, 2)
-            micro_keys = shaped_rng_split(my_key, (len(devices),))
-            micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
+                    my_key, training_key = jrandom.split(training_key, 2)
+                    micro_keys = shaped_rng_split(my_key, (len(devices),))
+                    micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + x.shape[1:]
 
-            x = x.reshape(micro_step_shape)
-            y = y.reshape(micro_step_shape)
+                    x = x.reshape(micro_step_shape).block_until_ready()
+                    y = y.reshape(micro_step_shape).block_until_ready()
 
-            with jax.profiler.trace("logs"):
-                my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
-                model.block_until_ready()
+                with jax.profiler.TraceAnnotation("actual step"):
+                    my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
+                    # print([b.device() for b in model.lm_head.device_buffers])
+                    model.lm_head.block_until_ready()
 
-            loss.update(jnp.mean(my_loss))
+                loss.update(jnp.mean(my_loss))
 
-        loss = loss.value.item()
-        wandb.log({"train/loss": loss}, step=step)
-        pbar.set_postfix({"loss": loss})
+            loss = loss.value.item()
+            wandb.log({"train/loss": loss}, step=step)
+            pbar.set_postfix({"loss": loss})
 
     del pbar
 
@@ -161,4 +169,5 @@ def main(config: TrainGpt2Config):
 
 
 if __name__ == "__main__":
+    # with jax.profiler.trace("logs"):
     main()

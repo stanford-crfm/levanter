@@ -86,7 +86,7 @@ class TrainerConfig:
     # computed properties
     @property
     def train_microbatches_per_step(self):
-        return self.train_batch_size // self.per_device_train_batch_size
+        return self.train_batch_size // (self.per_device_train_batch_size * self.num_devices)
 
     @property
     def train_total_microbatches(self):
