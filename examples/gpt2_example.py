@@ -5,6 +5,7 @@ from typing import Optional
 import datasets
 import equinox as eqx
 import jax
+import jax.profiler
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -50,13 +51,15 @@ class TrainGpt2Config:
 
 def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batch_size, max_passes=None):
     eos = tokenizer.eos_token_id
-    for i in range(max_passes or 10000):
+    # batch = next(batched(dataset, batch_size))
+    for i in range(max_passes or 400_000):
         for batch in batched(dataset, batch_size):
             input_ids = [jnp.array(ex["input_ids"], dtype=jnp.int32) for ex in batch]
             input_ids = jnp.stack(input_ids)
             outputs = jnp.concatenate([input_ids[:, 1:], jnp.full((input_ids.shape[0], 1), eos)], axis=1)
 
             yield input_ids, outputs
+            # yield input_ids, input_ids
 
 
 @pyrallis.wrap()
@@ -122,7 +125,9 @@ def main(config: TrainGpt2Config):
             x = x.reshape(micro_step_shape)
             y = y.reshape(micro_step_shape)
 
-            my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
+            with jax.profiler.trace("logs"):
+                my_loss, model, opt_state = train_step(model, x, y, opt_state, micro_keys)
+                model.block_until_ready()
 
             loss.update(jnp.mean(my_loss))
 

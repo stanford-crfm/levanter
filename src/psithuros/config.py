@@ -60,7 +60,7 @@ class TrainerConfig:
     num_save_steps: int = 20_000
 
     # Config related to optimizer (always adam for now)
-    learning_rate: float = 5e-5
+    learning_rate: float = 6e-4
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.999
@@ -107,14 +107,15 @@ class TrainerConfig:
                 # TODO: add weight decay masking??
                 components.append(optax.add_decayed_weights(self.weight_decay))
 
-            components.append(optax.scale(learning_rate))
+            # - learning rate for descent
+            components.append(optax.scale(-learning_rate))
 
             optimizer = optax.chain(*components)
-
 
             return optimizer
 
         optimizer = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler())
+        # optimizer = optax.adam(self.learning_rate)
         if self.train_microbatches_per_step > 1:
             optimizer = optax.MultiSteps(optimizer, self.train_microbatches_per_step)
 
