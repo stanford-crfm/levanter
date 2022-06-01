@@ -116,9 +116,8 @@ def main(config: TrainGpt2Config):
         with jax.profiler.StepTraceAnnotation("train", step_num=step):
             loss = RunningMean(shape=1)
 
-            # TODO: factor out optimizer logging
-            log_optimizer_hyperparams(opt_state, step=step)
-            # wandb.log({"learning_rate": opt_state.hyperparams['learning_rate']}, step=step)
+        # TODO: factor out optimizer logging
+        log_optimizer_hyperparams(opt_state, step=step)
 
             for micro_step in range(config.trainer.train_microbatches_per_step):
                 # TODO: replicate data loader instead?

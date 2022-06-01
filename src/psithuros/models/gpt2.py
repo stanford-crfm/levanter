@@ -18,7 +18,7 @@ from psithuros.modeling_utils import ACT2FN
 
 class Gpt2Conv1D(eqx.Module):
     kernel: Array
-    bias: Optional[Array]
+    bias: Array
 
     def __init__(self, *, in_features: int, out_features: int, key):
         self.kernel = jrandom.normal(key, [out_features, in_features]) * 0.02
