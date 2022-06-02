@@ -79,9 +79,9 @@ def main(config: TrainGpt2Config):
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
                             n_positions=config.seq_len,
                             n_ctx=config.seq_len,
-                            n_embd=128,
-                            n_layer=4,
-                            n_head=4
+                            # n_embd=128,
+                            # n_layer=4,
+                            # n_head=4
                             )
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
