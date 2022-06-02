@@ -21,7 +21,7 @@ class WandbConfig:
     group: Optional[str] = None
     mode: Optional[str] = None
 
-    def init(self, hparams=None):
+    def init(self, hparams=None, **extra_hparams):
         import wandb
         if hparams is None:
             hparams = {}
@@ -29,6 +29,9 @@ class WandbConfig:
             hparams = dataclasses.asdict(hparams)
         else:
             hparams = dict(hparams)
+
+        if extra_hparams:
+            hparams.update(extra_hparams)
 
         wandb.init(
             entity=self.entity,
