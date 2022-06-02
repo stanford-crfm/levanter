@@ -48,6 +48,7 @@ class TrainGpt2Config:
     cache_dir: str = "cache/"
 
     seq_len: int = 512
+    dtype: jnp.dtype = jnp.float32
 
 
 def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batch_size, max_passes=None):
@@ -77,9 +78,15 @@ def main(config: TrainGpt2Config):
 
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
                             n_positions=config.seq_len,
-                            n_ctx=config.seq_len)
+                            n_ctx=config.seq_len,
+                            n_embd=128,
+                            n_layer=4,
+                            n_head=4
+                            )
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
+
+    model = jax.tree_map(lambda x: x.astype(config.dtype), model)
 
     @jax.profiler.annotate_function
     def compute_loss(model, x, y, key, inference):

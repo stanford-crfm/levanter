@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 import jax
+import jax.numpy as jnp
 import optax
+import pyrallis
 from pyrallis import field
 
 
@@ -73,7 +75,6 @@ class TrainerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    # TODO: fp16
     # TODO: checkpoints
 
     def devices(self):
@@ -164,4 +165,9 @@ class TrainerConfig:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
 
 
+def register_codecs():
+    pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
+    pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
+
+register_codecs()
