@@ -1,6 +1,6 @@
 mport os
 
-from psithuros.named_tensors import Array, infer_named_axes, with_axis_resources
+from psithuros.named_tensors import Array, infer_named_axes_from_module, with_axis_resources
 
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
 
@@ -66,7 +66,7 @@ with Mesh(devices, ('x',)):
 
 
 @jit
-@infer_named_axes
+@infer_named_axes_from_module
 def named_loss2(w1: Array["inputs", "hidden"], w2: Array["hidden", "classes"], images: Array["batch", "inputs"], labels: Array["batch"]):
   predictions = named_predict(w1, w2, images)
   num_classes = lax.psum(1, 'classes')
