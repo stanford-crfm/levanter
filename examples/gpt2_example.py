@@ -23,6 +23,7 @@ from psithuros.jax_utils import shaped_rng_split, replicate
 from psithuros.logging import log_optimizer_hyperparams
 from psithuros.modeling_utils import RunningMean
 from psithuros.models.gpt2 import Gpt2LMHeadModel
+from psithuros.engine import Engine #, engine_from_loss_fn
 
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -89,37 +90,55 @@ def main(config: TrainGpt2Config):
     model = jax.tree_map(lambda x: x.astype(config.dtype), model)
 
     @jax.profiler.annotate_function
-    def compute_loss(model, x, y, key, inference):
+    def compute_loss(model, batch, key, inference):
+        input_ids, targets = batch
         model = partial(model, inference=inference, key=key)
-        pred_y = jax.vmap(model)(x)
-        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(y, num_classes=tokenizer.vocab_size)))
+        pred_y = jax.vmap(model)(input_ids)
+        return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
+
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
+    def dist_compute_loss_and_grad(model, batch, key):
+        loss, grads = compute_loss_and_grad(model, x, y, key, inference=False)
+        loss = lax.pmean(loss, "device")
+        grads = lax.pmean(grads, "device")
+
+        return loss, grads
+
+
     @jax.profiler.annotate_function
-    def take_train_step(model, x, y, opt_state, key):
+    def take_train_step(state, batch, key):
+        model, opt_state = state
+        x, y = batch
         loss, grads = compute_loss_and_grad(model, x, y, key, inference=False)
         loss = lax.pmean(loss, "device")
         grads = lax.pmean(grads, "device")
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
-        return loss, model, opt_state
+        return (model, opt_state), loss
 
     train_step = pmap(take_train_step, "device", in_axes=0)
 
     devices = config.trainer.devices()
 
+    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
+
+    engine = Engine(take_train_step, iter_data, training_key)
+
     optim = config.trainer.optimizer()
     opt_state = optim.init(model)
 
-    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
 
     model = replicate(model, devices)
     opt_state = replicate(opt_state, devices)
+
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
+    loss = RunningMean(shape=1)
+    for train_state in engine.steps((model, opt_state)):
+        pbar.update(train_state.step)
+
     for step in pbar:
-        with jax.profiler.StepTraceAnnotation("train", step_num=step):
-            loss = RunningMean(shape=1)
 
             log_optimizer_hyperparams(opt_state, step=step)
 
