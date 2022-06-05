@@ -1,7 +1,8 @@
 import dataclasses
 import functools
 import inspect
-from typing import List, Tuple, Dict, Sequence, Union, Optional, Callable, Iterable
+import typing
+from typing import List, Tuple, Dict, Sequence, Union, Optional, Callable, Iterable, _GenericAlias
 
 import equinox as eqx
 import jax
@@ -27,7 +28,7 @@ def infer_named_axes_from_value(value):
     if isinstance(value, eqx.Module):
         return infer_named_axes_from_module(value)
     elif isinstance(value, jax.numpy.ndarray):
-        return [...]
+        return (...,)
     elif isinstance(value, Iterable):
         return [infer_named_axes_from_value(v) for v in value]
 
@@ -57,6 +58,8 @@ def infer_named_axes_from_module(mod: eqx.Module):
 def infer_named_axes_from_annotation(annotation):
     if isinstance(annotation, NamedArray):
         return annotation.names
+    elif type(annotation) is _GenericAlias:
+        return tuple(infer_named_axes_from_annotation(a) for a in typing.get_args(annotation))
     elif issubclass(annotation, eqx.Module):
         # unfortunately need to replicate the logic in Module#tree_flatten
         shapes = []
@@ -65,7 +68,7 @@ def infer_named_axes_from_annotation(annotation):
                 shapes.append(infer_named_axes_from_annotation(field_.type))
 
         return shapes
-    return [...]
+    return (...,)
 
 
 def auto_xmap(fun: Callable = sentinel,
@@ -98,7 +101,7 @@ def auto_xmap(fun: Callable = sentinel,
             raise NotImplementedError("kwargs not yet supported")
         kwarg_shapes = {k: infer_named_axes_from_value(v) for k, v in kwargs.items()}
         # flatten the arguments into pytrees
-        args_leaves, args_treedefs = zip(*[jax.tree_flatten(arg) for arg in args])
+        args_leaves, args_treedefs = jax.tree_flatten(args)
         kwargs_leaves_defs = {k: jax.tree_flatten(v) for k,v in kwargs.items()}
         kwargs_leaves = {k: v[0] for k,v in kwargs_leaves_defs.items()}
         kwargs_treedefs = {k: v[1] for k,v in kwargs_leaves_defs.items()}

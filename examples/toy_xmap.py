@@ -1,6 +1,6 @@
 mport os
 
-from psithuros.named_tensors import Array, infer_named_axes_from_module, with_axis_resources
+from psithuros.named_tensors import Array, infer_named_axes_from_module
 
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
 
@@ -20,6 +20,11 @@ def loss(w1, w2, images, labels):
   losses = jnp.sum(targets * predictions, axis=1)
   return -jnp.mean(losses, axis=0)
 
+dims = {
+    'inputs': 784,
+    'hidden': 512,
+    'classes': 10,
+}
 
 w1 = jnp.zeros((784, 512))
 w2 = jnp.zeros((512, 10))
@@ -64,18 +69,18 @@ devices = np.array(jax.local_devices())
 with Mesh(devices, ('x',)):
   print(loss(w1, w2, images, labels))
 
+import jax.random as jrandom
 
-@jit
-@infer_named_axes_from_module
-def named_loss2(w1: Array["inputs", "hidden"], w2: Array["hidden", "classes"], images: Array["batch", "inputs"], labels: Array["batch"]):
-  predictions = named_predict(w1, w2, images)
-  num_classes = lax.psum(1, 'classes')
-  targets = one_hot(labels, num_classes, axis='classes')
-  losses = lax.psum(targets * predictions, 'classes')
-  return -lax.pmean(losses, 'batch')
+def init(key):
+  return jrandom.normal(key)
 
-loss = with_axis_resources(named_loss2, batch='x')
+init = xmap(init, in_axes=[["inputs", ...]], out_axes=(('inputs', 'hidden')), #, ('hidden', 'classes')),
+            axis_resources={'inputs': 'x', 'hidden': 'y'}, axis_sizes=dims)
 
-devices = np.array(jax.local_devices())
-with Mesh(devices, ('x',)):
-  print(loss(w1, w2, images, labels))
+xy_devices = np.array(jax.local_devices()).reshape((-1, 2))
+
+with Mesh(xy_devices, ('x', 'y')):
+  init(jrandom.split(jax.random.PRNGKey(0), dims['inputs']))
+
+if __name__ == '__main__':
+    pass
