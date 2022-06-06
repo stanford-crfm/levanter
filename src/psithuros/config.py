@@ -62,7 +62,9 @@ class TrainerConfig:
     num_train_steps: int = 400_000
     steps_per_eval: int = 10_000
 
-    num_save_steps: int = 20_000
+    steps_per_save: int = 20_000
+    load_last_checkpoint: bool = True
+    load_checkpoint_path: Optional[str] = None
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4

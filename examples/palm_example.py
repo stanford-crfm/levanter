@@ -144,7 +144,7 @@ def main(config: TrainPalmConfig):
 
                 loss.update(jnp.mean(my_loss))
 
-            loss = loss.value.item()
+            loss = loss.mean.item()
             wandb.log({"train/loss": loss}, step=step)
             pbar.set_postfix({"loss": loss})
 
@@ -167,7 +167,7 @@ def main(config: TrainPalmConfig):
         loss = jnp.mean(loss).item()
         total_loss.update(loss)
 
-    total_loss = total_loss.value.item()
+    total_loss = total_loss.mean.item()
     wandb.log({"eval/loss": total_loss})
 
     print(f"Final total loss {total_loss}")

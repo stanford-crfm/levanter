@@ -33,9 +33,9 @@ class RunningMean(object):
     """Numerically stable running mean for an arbitrary array"""
 
     def __init__(self, shape, dtype=jnp.float32):
-        self.value = jnp.zeros(shape, dtype)
+        self.mean = jnp.zeros(shape, dtype)
         self.count = 0
 
     def update(self, x):
         self.count += 1
-        self.value += (x - self.value) / self.count
+        self.mean += (x - self.mean) / self.count
