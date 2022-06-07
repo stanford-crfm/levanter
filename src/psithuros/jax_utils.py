@@ -32,18 +32,6 @@ def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrand
     return jnp.reshape(unshaped, split_shape)
 
 
-def replicate(tree, devices=None):
-    """Replicates arrays to multiple devices.
-    Args:
-      tree: a pytree containing the arrays that should be replicated.
-      devices: the devices the data is replicated to
-        (default: same order as expected by `jax.pmap()`).
-    Returns:
-      A new pytree containing the replicated arrays.
-    """
-    return jax.device_put_replicated(tree, devices or jax.devices())
-
-
 def jnp_to_python(a: jnp.ndarray):
     if a.shape == () or a.shape == (1,):
         return a.item()
