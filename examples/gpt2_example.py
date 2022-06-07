@@ -21,7 +21,7 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 from psithuros.checkpoint import load_checkpoint, save_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split, replicate, fold_left
+from psithuros.jax_utils import shaped_rng_split
 from psithuros.modeling_utils import RunningMean, accumulate_gradients
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
@@ -75,8 +75,8 @@ def main(config: TrainGpt2Config):
     run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
 
     seed = config.trainer.seed
-
     data_key, loader_key, model_key, training_key, eval_key = jrandom.split(jrandom.PRNGKey(seed), 5)
+
     tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
     dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
@@ -91,6 +91,7 @@ def main(config: TrainGpt2Config):
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
+    # convert to appropriate dtype
     model = jax.tree_map(lambda x: x.astype(config.dtype), model)
 
     optim = config.trainer.optimizer()
@@ -151,17 +152,11 @@ def main(config: TrainGpt2Config):
 
     @engine.add_hook(every=config.trainer.steps_per_save)
     def save(info: StepInfo):
-        # have to dereplicate the model and opt states
         # TODO: when we do model sharding we have to do something cleverer
-        model = info.model
-        # model = jax.tree_map(lambda x: x[0], model)
-        model = jax.device_get(model)
-
-        opt_state = info.opt_state
-        # opt_state = jax.tree_map(lambda x: x[0], opt_state)
-        opt_state = jax.device_get(opt_state)
-
-        save_checkpoint(model, (opt_state, info.next_key), step, f"{run_dir}/step-{info.step}")
+        save_checkpoint(jax.device_get(info.model),
+                        ((jax.device_get(info.opt_state)), info.next_key),
+                        step,
+                        f"{run_dir}/step-{info.step}")
 
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
 
@@ -182,10 +177,10 @@ def main(config: TrainGpt2Config):
 
     if resume_step is not None:
         # step is after the batch, so we need to seek to step
-        resume_step_with_micro = (resume_step + 1) * config.trainer.train_microbatches_per_step
         # TODO: iter_data.seek(resume_step +1)
-        for _ in range(resume_step_with_micro):
+        for _ in range(resume_step + 1):
             next(iter_data)
+        resume_step = resume_step + 1
     else:
         resume_step = 0
 
@@ -206,7 +201,6 @@ def main(config: TrainGpt2Config):
 
         return loss, model, opt_state
 
-    loss = RunningMean()
     for step in range(resume_step, config.trainer.num_train_steps):
         input_ids, targets = next(iter_data)
         micro_step_shape = (config.trainer.train_microbatches_per_step, len(devices), config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
@@ -215,10 +209,11 @@ def main(config: TrainGpt2Config):
         my_key, training_key = jrandom.split(training_key, 2)
         micro_keys = shaped_rng_split(my_key, (config.trainer.train_microbatches_per_step, len(devices)))
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
-        loss.update(step_loss)
-        engine.run_hooks(StepInfo(step, model, opt_state, loss.mean.item(), training_key))
+        engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key))
 
-    evaluate(StepInfo(config.trainer.num_train_steps, model, opt_state, loss.mean, training_key))
+    last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key)
+    evaluate(last_step)
+    save(last_step)
 
 
 if __name__ == "__main__":
