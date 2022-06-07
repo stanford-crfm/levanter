@@ -156,7 +156,7 @@ def main(config: TrainGpt2Config):
 
         save_checkpoint(model, (opt_state, info.next_key), step, f"{run_dir}/step-{info.step}")
 
-    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
+    iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
 
     # load the last checkpoint
     # TODO: add support for sharding
@@ -184,31 +184,27 @@ def main(config: TrainGpt2Config):
 
     @eqx.filter_jit
     def train_step(model, opt_state, input_ids, targets, keys):
-        loss, grads = compute_loss_and_grad(model, input_ids, targets, keys, False)
-        loss = jnp.mean(loss)  # lax.pmean(loss, "device")
-        grads = jax.tree_map(lambda a: jnp.mean(a, axis=0), grads)  # lax.pmean(grads, "device")
-        updates, opt_state = optim.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
+        loss_total = jnp.zeros(())
+        for i in range(config.trainer.train_microbatches_per_step):
+            loss, grads = compute_loss_and_grad(model, input_ids[i], targets[i], keys[i], False)
+            loss = jnp.mean(loss)  # lax.pmean(loss, "device")
+            grads = jax.tree_map(lambda a: jnp.mean(a, axis=0), grads)  # lax.pmean(grads, "device")
+            updates, opt_state = optim.update(grads, opt_state)
+            model = eqx.apply_updates(model, updates)
+            loss_total += loss
 
-        return loss, model, opt_state
+        return loss_total/config.trainer.train_microbatches_per_step, model, opt_state
 
     loss = RunningMean()
     for step in range(resume_step, config.trainer.num_train_steps):
-        for micro_step in range(config.trainer.train_microbatches_per_step):
-            # TODO: replicate data loader instead?
-            with jax.profiler.TraceAnnotation("data loading"):
-                input_ids, targets = next(iter_data)
-
-                my_key, training_key = jrandom.split(training_key, 2)
-                micro_keys = shaped_rng_split(my_key, (len(devices),))
-                micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
-
-                input_ids = input_ids.reshape(micro_step_shape)
-                targets = targets.reshape(micro_step_shape)
-
-            step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
-            loss.update(step_loss)
-
+        input_ids, targets = next(iter_data)
+        micro_step_shape = (config.trainer.train_microbatches_per_step, len(devices), config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
+        input_ids = input_ids.reshape(micro_step_shape)
+        targets = targets.reshape(micro_step_shape)
+        my_key, training_key = jrandom.split(training_key, 2)
+        micro_keys = shaped_rng_split(my_key, (config.trainer.train_microbatches_per_step, len(devices)))
+        step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
+        loss.update(step_loss)
         engine.run_hooks(StepInfo(step, model, opt_state, loss.mean.item(), training_key))
 
     evaluate(StepInfo(config.trainer.num_train_steps, model, opt_state, loss.mean, training_key))
