@@ -24,7 +24,7 @@ from psithuros.data.text import IndexedDataset, batched
 from psithuros.jax_utils import shaped_rng_split
 from psithuros.modeling_utils import RunningMean, accumulate_gradients
 from psithuros.models.gpt2 import Gpt2LMHeadModel
-from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
+from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -99,12 +99,12 @@ def main(config: TrainGpt2Config):
 
     @jax.profiler.annotate_function
     def compute_loss(model, input_ids, targets, key, inference):
-        model = partial(model, inference=inference, key=key)
-        pred_y = jax.vmap(model)(input_ids)
+        model = partial(model, inference=inference)
+        pred_y = jax.vmap(model)(input_ids, key=key)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
-    compute_loss_pmap = pmap(compute_loss, "device", static_broadcasted_argnums=(4))
+    compute_loss_eval = pmap(partial(compute_loss, key=None, inference=True), "device")
 
     devices = config.trainer.devices()
 
@@ -123,21 +123,17 @@ def main(config: TrainGpt2Config):
 
     @engine.add_hook(every=config.trainer.steps_per_eval)
     def evaluate(info: StepInfo):
-        nonlocal eval_key
         total_loss = RunningMean(shape=1)
         test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),
                                  max_passes=1)
 
         pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
         for (input_ids, targets) in pbar:
-            my_key, eval_key = jrandom.split(eval_key, 2)
-
             micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
-            micro_keys = shaped_rng_split(my_key, (len(devices),))
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
-            loss = compute_loss_pmap(info.model, input_ids, targets, micro_keys, True)
+            loss = compute_loss_eval(info.model, input_ids, targets)
             loss = jnp.mean(loss)
             total_loss.update(loss)
             pbar.set_postfix(loss=total_loss.mean.item())
@@ -200,12 +196,15 @@ def main(config: TrainGpt2Config):
     opt_state = jax.device_put_replicated(opt_state, devices)
 
     for step in range(resume_step, config.trainer.num_train_steps):
+        micro_batch_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size)
+
         input_ids, targets = next(iter_data)
-        micro_step_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
-        input_ids = input_ids.reshape(micro_step_shape)
-        targets = targets.reshape(micro_step_shape)
+        input_ids = input_ids.reshape(micro_batch_shape + input_ids.shape[1:])
+        targets = targets.reshape(micro_batch_shape + targets.shape[1:])
+
         my_key, training_key = jrandom.split(training_key, 2)
-        micro_keys = shaped_rng_split(my_key, (len(devices), config.trainer.train_microbatches_per_step))
+        micro_keys = shaped_rng_split(my_key, micro_batch_shape)
+
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
         step_loss = jnp.mean(step_loss).item()
         engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key))
