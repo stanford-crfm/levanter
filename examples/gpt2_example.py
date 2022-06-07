@@ -185,13 +185,15 @@ def main(config: TrainGpt2Config):
     @eqx.filter_jit
     def train_step(model, opt_state, input_ids, targets, keys):
         loss_total = jnp.zeros(())
+        grad_totals = jax.tree_map(jnp.zeros_like, model)
         for i in range(config.trainer.train_microbatches_per_step):
             loss, grads = compute_loss_and_grad(model, input_ids[i], targets[i], keys[i], False)
-            loss = jnp.mean(loss)  # lax.pmean(loss, "device")
-            grads = jax.tree_map(lambda a: jnp.mean(a, axis=0), grads)  # lax.pmean(grads, "device")
-            updates, opt_state = optim.update(grads, opt_state)
-            model = eqx.apply_updates(model, updates)
+            loss = jnp.mean(loss)
+            grad_totals = jax.tree_map(lambda totals, new_grads: totals + jnp.mean(new_grads, axis=0), grad_totals, grads)
             loss_total += loss
+
+        updates, opt_state = optim.update(grad_totals, opt_state)
+        model = eqx.apply_updates(model, updates)
 
         return loss_total/config.trainer.train_microbatches_per_step, model, opt_state
 

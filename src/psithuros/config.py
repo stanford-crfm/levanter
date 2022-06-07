@@ -121,9 +121,6 @@ class TrainerConfig:
             return optimizer
 
         optimizer = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler())
-        # optimizer = optax.adam(self.learning_rate)
-        if self.train_microbatches_per_step > 1:
-            optimizer = optax.MultiSteps(optimizer, self.train_microbatches_per_step)
 
         return optimizer
 
