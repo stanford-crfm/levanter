@@ -13,6 +13,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import optax
 import pyrallis
+
+from psithuros.checkpoint import load_checkpoint, save_checkpoint
+
 print(jax.devices())
 import wandb
 from jax import pmap
@@ -91,7 +94,7 @@ def main(config: TrainGpt2Config):
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
-    model = jax.tree_map(lambda input_ids: input_ids.astype(config.dtype), model)
+    model = jax.tree_map(lambda x: x.astype(config.dtype), model)
 
     optim = config.trainer.optimizer()
     opt_state = optim.init(model)
@@ -157,66 +160,51 @@ def main(config: TrainGpt2Config):
 
     @engine.add_hook(every=config.trainer.steps_per_save)
     def save(info: StepInfo):
-        os.makedirs(f"{run_dir}/step-{info.step}", exist_ok=True)
         # have to dereplicate the model and opt states
         # TODO: when we do model sharding we have to do something cleverer
         model = info.model
-        model = jax.tree_map(lambda input_ids: input_ids[0], model)
+        model = jax.tree_map(lambda x: x[0], model)
         model = jax.device_get(model)
 
-        model_path = f"{run_dir}/step-{info.step}/model.eqx"
-        eqx.tree_serialise_leaves(model_path, model)
-
         opt_state = info.opt_state
-        opt_state = jax.tree_map(lambda input_ids: input_ids[0], opt_state)
+        opt_state = jax.tree_map(lambda x: x[0], opt_state)
         opt_state = jax.device_get(opt_state)
 
-        opt_path = f"{run_dir}/step-{info.step}/opt_state.eqx"
-        eqx.tree_serialise_leaves(opt_path, opt_state)
+        save_checkpoint(model, (opt_state, info.next_key), step, f"{run_dir}/step-{info.step}")
 
-        # have to save the key too. it's just a numpy array?
-        key_path = f"{run_dir}/step-{info.step}/key.npy"
-        jax.numpy.save(key_path, info.next_key)
-
-    # load function to go with it
-    def load(ckpt_dir, model, opt_state):
-        model = eqx.tree_deserialise_leaves(f"{ckpt_dir}/model.eqx", model)
-        opt_state = eqx.tree_deserialise_leaves(f"{ckpt_dir}/opt_state.eqx", opt_state)
-        key = jax.numpy.load(f"{ckpt_dir}/key.npy")
-        return model, opt_state, key
+    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
 
     # load the last checkpoint
+    # TODO: add support for sharding
+    # TODO write some tests for serialization
+    # TODO: need to seek in dataloader
+    # TODO: wandb resume logic?
+    resume_step = None
     if config.trainer.load_last_checkpoint:
-        # first check if it's an actual checkpoint dir, or a dir of checkpoint dirs
-        if config.trainer.load_checkpoint_path and os.path.exists(f"{config.trainer.load_checkpoint_path}/model.eqx"):
-            checkpoint_path = config.trainer.load_checkpoint_path
-        else:
-            checkpoints_dir = config.trainer.load_checkpoint_path or run_dir
-            # load the last checkpoint
-            ckpt_dirs = sorted(glob.glob(f"{checkpoints_dir}/*"))
-            if len(ckpt_dirs) > 0:
-                checkpoint_path = ckpt_dirs[-1]
-            else:
-                checkpoint_path = None
-
-        if checkpoint_path:
-            model, opt_state, key = load(checkpoint_path, model, opt_state)
-            print(f"loaded checkpoint from {checkpoint_path}")
+        checkpoint = load_checkpoint(model, (opt_state, training_key), config.trainer.load_checkpoint_path or run_dir)
+        if checkpoint is not None:
+            model, (opt_state, training_key), resume_step = checkpoint
         elif config.trainer.load_checkpoint_path:
-            raise FileNotFoundError(f"Could not find checkpoint at {config.trainer.load_checkpoint_path}")
+            raise ValueError("No checkpoint found")
+        else:
+            print("No checkpoint found. Starting from scratch")
+
+    if resume_step is not None:
+        # step is after the batch, so we need to seek to step
+        resume_step_with_micro = (resume_step + 1) * config.trainer.train_microbatches_per_step
+        # TODO: iter_data.seek(resume_step +1)
+        for _ in range(resume_step_with_micro):
+            next(iter_data)
+    else:
+        resume_step = 0
+
 
     # replicate to all devices to make pmap happy
     model = replicate(model, devices)
     opt_state = replicate(opt_state, devices)
 
-    # add support for sharding
-    # TODO write some tests for serialization
-    # TODO: need to seek in dataloader
-    # TODO: wandb resume logic
-
     loss = RunningMean(shape=1)
-    iter_data = dataloader(dataset, tokenizer, len(devices) * config.trainer.per_device_train_batch_size)
-    for step in range(config.trainer.num_train_steps):
+    for step in range(resume_step, config.trainer.num_train_steps):
         for micro_step in range(config.trainer.train_microbatches_per_step):
             # TODO: replicate data loader instead?
             with jax.profiler.TraceAnnotation("data loading"):
