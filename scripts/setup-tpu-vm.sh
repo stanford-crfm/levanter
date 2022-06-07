@@ -1,6 +1,14 @@
 set -e
 # broadly based on https://github.com/ayaka14732/tpu-starter
 
+# tcmalloc interferes with intellij remote ide
+sudo patch -b /etc/environment << EOF
+2c2
+< LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
+---
+> #LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
+EOF
+
 sudo apt update
 sudo apt upgrade -y
 
@@ -23,7 +31,3 @@ pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_
 #cat tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl.0 tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl.1 > tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl
 #rm -f tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl.0 tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl.1
 #pip install tensorflow-2.10.0-cp310-cp310-linux_x86_64.whl
-
-
-git clone https://github.com/stanford-crfm/psithuros
-cd psithuros
