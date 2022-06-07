@@ -4,6 +4,7 @@ from typing import Callable, Tuple, TypeVar
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
+import equinox as eqx
 
 from psithuros.jax_utils import fold_left
 
@@ -38,6 +39,7 @@ M = TypeVar('M')
 X = TypeVar('X')
 
 
+@eqx.filter_jit
 def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, inputs: X) -> Tuple[float, M]:
     zero = (jnp.zeros(()), jax.tree_map(jnp.zeros_like, model), 0)
     def compute_and_accumulate(acc, input):
