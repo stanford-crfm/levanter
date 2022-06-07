@@ -1,9 +1,9 @@
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Callable, TypeVar
 
 import jax
 import numpy as np
 from chex import PRNGKey
-from jax import random as jrandom, numpy as jnp
+from jax import random as jrandom, numpy as jnp, lax
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
@@ -49,3 +49,11 @@ def jnp_to_python(a: jnp.ndarray):
         return a.item()
     else:
         return a.tolist()
+
+Carry = TypeVar('Carry')
+X = TypeVar('X')
+Y = TypeVar('Y')
+
+def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, xs: X) -> Carry:
+    res = lax.scan(lambda carry, x: (fn(carry, x), None), init=init, xs=xs)
+    return res[0]

@@ -21,7 +21,7 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 from psithuros.checkpoint import load_checkpoint, save_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split, replicate
+from psithuros.jax_utils import shaped_rng_split, replicate, fold_left
 from psithuros.modeling_utils import RunningMean
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
@@ -186,17 +186,24 @@ def main(config: TrainGpt2Config):
     def train_step(model, opt_state, input_ids, targets, keys):
         loss_total = jnp.zeros(())
         grad_totals = jax.tree_map(jnp.zeros_like, model)
-        for i in range(config.trainer.train_microbatches_per_step):
-            loss, grads = compute_loss_and_grad(model, input_ids[i], targets[i], keys[i], False)
-            loss = jnp.mean(loss)
-            grad_totals = jax.tree_map(lambda totals, new_grads: totals + jnp.mean(new_grads, axis=0), grad_totals, grads)
-            loss_total += loss
 
+        def accumulate(acc, x):
+            loss, grads = compute_loss_and_grad(model, *x, False)
+            loss_acc, grad_acc = acc
+            loss_acc += jnp.mean(loss)
+            grad_acc = jax.tree_map(lambda totals, new_grads: totals + jnp.mean(new_grads, axis=0), grad_acc, grads)
+
+            return loss_acc, grad_acc
+
+        loss_total, grad_totals = fold_left(accumulate, (loss_total, grad_totals), (input_ids, targets, keys))
+
+        loss_total = loss_total/config.trainer.train_microbatches_per_step
         grad_totals = jax.tree_map(lambda x: x / config.trainer.train_microbatches_per_step, grad_totals)
+
         updates, opt_state = optim.update(grad_totals, opt_state)
         model = eqx.apply_updates(model, updates)
 
-        return loss_total/config.trainer.train_microbatches_per_step, model, opt_state
+        return loss_total, model, opt_state
 
     loss = RunningMean()
     for step in range(resume_step, config.trainer.num_train_steps):
