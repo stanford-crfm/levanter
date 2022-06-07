@@ -100,18 +100,8 @@ def main(config: TrainGpt2Config):
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
-    compute_loss_eval = pmap(compute_loss, "device", in_axes=0, static_broadcasted_argnums=(4))
-
-    @jax.profiler.annotate_function
-    def take_train_step(model, input_ids, targets, opt_state, key):
-        loss, grads = compute_loss_and_grad(model, input_ids, targets, key, inference=False)
-        loss = lax.pmean(loss, "device")
-        grads = lax.pmean(grads, "device")
-        updates, opt_state = optim.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        return loss, model, opt_state
-
-    train_step = pmap(take_train_step, "device", in_axes=0)
+    compute_loss_and_grad = pmap(compute_loss_and_grad, axis_name="device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
+    compute_loss_eval = pmap(compute_loss, "device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
 
     devices = config.trainer.devices()
 
@@ -157,11 +147,11 @@ def main(config: TrainGpt2Config):
         # have to dereplicate the model and opt states
         # TODO: when we do model sharding we have to do something cleverer
         model = info.model
-        model = jax.tree_map(lambda x: x[0], model)
+        # model = jax.tree_map(lambda x: x[0], model)
         model = jax.device_get(model)
 
         opt_state = info.opt_state
-        opt_state = jax.tree_map(lambda x: x[0], opt_state)
+        # opt_state = jax.tree_map(lambda x: x[0], opt_state)
         opt_state = jax.device_get(opt_state)
 
         save_checkpoint(model, (opt_state, info.next_key), step, f"{run_dir}/step-{info.step}")
@@ -192,11 +182,17 @@ def main(config: TrainGpt2Config):
     else:
         resume_step = 0
 
-    # replicate to all devices to make pmap happy
-    model = replicate(model, devices)
-    opt_state = replicate(opt_state, devices)
+    @eqx.filter_jit
+    def train_step(model, opt_state, input_ids, targets, keys):
+        loss, grads = compute_loss_and_grad(model, input_ids, targets, keys, False)
+        loss = jnp.mean(loss)  # lax.pmean(loss, "device")
+        grads = jax.tree_map(lambda a: jnp.mean(a, axis=0), grads)  # lax.pmean(grads, "device")
+        updates, opt_state = optim.update(grads, opt_state)
+        model = eqx.apply_updates(model, updates)
 
-    loss = RunningMean(shape=1)
+        return loss, model, opt_state
+
+    loss = RunningMean()
     for step in range(resume_step, config.trainer.num_train_steps):
         for micro_step in range(config.trainer.train_microbatches_per_step):
             # TODO: replicate data loader instead?
@@ -210,11 +206,10 @@ def main(config: TrainGpt2Config):
                 input_ids = input_ids.reshape(micro_step_shape)
                 targets = targets.reshape(micro_step_shape)
 
-            my_loss, model, opt_state = train_step(model, input_ids, targets, opt_state, micro_keys)
+            step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
+            loss.update(step_loss)
 
-            loss.update(jnp.mean(my_loss))
-
-        engine.run_hooks(StepInfo(step, model, opt_state, loss.mean, training_key))
+        engine.run_hooks(StepInfo(step, model, opt_state, loss.mean.item(), training_key))
 
     evaluate(StepInfo(config.trainer.num_train_steps, model, opt_state, loss.mean, training_key))
 

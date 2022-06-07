@@ -32,7 +32,7 @@ ACT2FN = {
 class RunningMean(object):
     """Numerically stable running mean for an arbitrary array"""
 
-    def __init__(self, shape, dtype=jnp.float32):
+    def __init__(self, shape = (), dtype=jnp.float32):
         self.mean = jnp.zeros(shape, dtype)
         self.count = 0
 
