@@ -51,6 +51,9 @@ class TrainGpt2Config:
     run_base_dir: str = "runs/"
 
     seq_len: int = 512
+    hidden_dim: int = 768
+    num_layers: int = 12
+    num_heads: int = 12
     dtype: jnp.dtype = jnp.float32
 
 
@@ -81,9 +84,9 @@ def main(config: TrainGpt2Config):
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
                             n_positions=config.seq_len,
                             n_ctx=config.seq_len,
-                            n_embd=128,
-                            n_layer=4,
-                            n_head=4
+                            n_embd=config.hidden_dim,
+                            n_layer=config.num_layers,
+                            n_head=config.num_heads,
                             )
 
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
