@@ -189,8 +189,6 @@ def main(config: TrainGpt2Config):
             grads = jax.tree_map(lambda g: lax.pmean(g, "device"), grads)
             return loss, grads
 
-            return loss, grads
-
         loss, grads = accumulate_gradients(mean_loss_grad, model, (input_ids, targets, keys))
 
         updates, opt_state = optim.update(grads, opt_state)
@@ -209,6 +207,7 @@ def main(config: TrainGpt2Config):
         my_key, training_key = jrandom.split(training_key, 2)
         micro_keys = shaped_rng_split(my_key, (len(devices), config.trainer.train_microbatches_per_step))
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
+        step_loss = jnp.mean(step_loss).item()
         engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key))
 
     last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key)
