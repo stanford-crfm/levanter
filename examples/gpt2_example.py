@@ -192,6 +192,7 @@ def main(config: TrainGpt2Config):
             grad_totals = jax.tree_map(lambda totals, new_grads: totals + jnp.mean(new_grads, axis=0), grad_totals, grads)
             loss_total += loss
 
+        grad_totals = jax.tree_map(lambda x: x / config.trainer.train_microbatches_per_step, grad_totals)
         updates, opt_state = optim.update(grad_totals, opt_state)
         model = eqx.apply_updates(model, updates)
 
