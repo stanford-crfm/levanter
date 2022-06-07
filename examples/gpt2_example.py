@@ -99,9 +99,14 @@ def main(config: TrainGpt2Config):
         pred_y = jax.vmap(model)(input_ids)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
-    compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
-    compute_loss_and_grad = pmap(compute_loss_and_grad, axis_name="device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
-    compute_loss_eval = pmap(compute_loss, "device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
+    compute_loss = pmap(compute_loss, "device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
+
+    def compute_loss_mean(model, input_ids, targets, key, inference):
+        losses = compute_loss(model, input_ids, targets, key, inference)
+        return jnp.mean(losses)
+
+    compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss_mean)
+    # compute_loss_and_grad = pmap(compute_loss_and_grad, axis_name="device", in_axes=(None, 0, 0, 0, None), static_broadcasted_argnums=(4))
 
     devices = config.trainer.devices()
 
@@ -134,8 +139,7 @@ def main(config: TrainGpt2Config):
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
-            loss = compute_loss_eval(info.model, input_ids, targets, micro_keys, True)
-            loss = jnp.mean(loss).item()
+            loss = compute_loss_mean(info.model, input_ids, targets, micro_keys, True)
             total_loss.update(loss)
             pbar.set_postfix(loss=total_loss.mean.item())
 
@@ -187,8 +191,8 @@ def main(config: TrainGpt2Config):
 
         def mean_loss_grad(model, x):
             loss, grads = compute_loss_and_grad(model, *x, False)
-            loss = jnp.mean(loss)
-            grads = jax.tree_map(lambda new_grads: jnp.mean(new_grads, axis=0), grads)
+            # loss = jnp.mean(loss)
+            # grads = jax.tree_map(lambda new_grads: jnp.mean(new_grads, axis=0), grads)
 
             return loss, grads
 
