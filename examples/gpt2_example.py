@@ -1,31 +1,27 @@
-import glob
-import os
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional
 
+
 import datasets
 import equinox as eqx
 import jax
-import jax.profiler
+print(jax.devices())
 import jax.lax as lax
 import jax.numpy as jnp
+import jax.profiler
 import jax.random as jrandom
 import optax
 import pyrallis
-
-from psithuros.checkpoint import load_checkpoint, save_checkpoint
-
-print(jax.devices())
 import wandb
 from jax import pmap
 from tqdm import tqdm
 from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
 
+from psithuros.checkpoint import load_checkpoint, save_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
 from psithuros.jax_utils import shaped_rng_split, replicate
-from psithuros.logging import log_optimizer_hyperparams
 from psithuros.modeling_utils import RunningMean
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
@@ -60,7 +56,6 @@ class TrainGpt2Config:
 
 def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batch_size, max_passes=None):
     eos = tokenizer.eos_token_id
-    # batch = next(batched(dataset, batch_size))
     for i in range(max_passes or 400_000):
         for batch in batched(dataset, batch_size):
             input_ids = [jnp.array(ex["input_ids"], dtype=jnp.int32) for ex in batch]
@@ -68,7 +63,6 @@ def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batc
             outputs = jnp.concatenate([input_ids[:, 1:], jnp.full((input_ids.shape[0], 1), eos)], axis=1)
 
             yield input_ids, outputs
-            # yield input_ids, input_ids
 
 
 @pyrallis.wrap()
@@ -197,7 +191,6 @@ def main(config: TrainGpt2Config):
             next(iter_data)
     else:
         resume_step = 0
-
 
     # replicate to all devices to make pmap happy
     model = replicate(model, devices)
