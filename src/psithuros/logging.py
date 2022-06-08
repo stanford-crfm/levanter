@@ -1,5 +1,6 @@
 from typing import Optional
 
+import wandb
 import jax.numpy as jnp
 from optax import MultiStepsState
 
@@ -7,7 +8,6 @@ from psithuros.jax_utils import jnp_to_python
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
-    import wandb
     if isinstance(opt_state, MultiStepsState):
         opt_state = opt_state.inner_opt_state
 

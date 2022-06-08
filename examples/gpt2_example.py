@@ -6,6 +6,9 @@ from typing import Optional
 import datasets
 import equinox as eqx
 import jax
+
+from psithuros.logging import log_optimizer_hyperparams
+
 print(jax.devices())
 import jax.lax as lax
 import jax.numpy as jnp
@@ -120,6 +123,7 @@ def main(config: TrainGpt2Config):
     @engine.add_hook(every=1)
     def log_to_wandb(step: StepInfo):
         wandb.log({"train/loss": step.loss}, step=step.step)
+        log_optimizer_hyperparams(step.opt_state, step=step.step)
 
     @engine.add_hook(every=config.trainer.steps_per_eval)
     def evaluate(info: StepInfo):
