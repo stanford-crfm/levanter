@@ -19,6 +19,8 @@ def save_checkpoint(model_state, training_state, step:int, checkpoint_path, *, e
     }
     json.dump(metadata, open(f"{checkpoint_path}/metadata.json", "w"))
 
+    return checkpoint_path
+
 
 def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_latest=True):
     """
