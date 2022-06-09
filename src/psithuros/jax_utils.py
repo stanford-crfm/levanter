@@ -45,3 +45,10 @@ Y = TypeVar('Y')
 def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, xs: X) -> Carry:
     res = lax.scan(lambda carry, x: (fn(carry, x), None), init=init, xs=xs)
     return res[0]
+
+
+def flop_estimate(fn, *args):
+    """Estimates the flop count of a function using XLA/HLO fanciness. See https://github.com/google/flax/discussions/1854"""
+    m = jax.xla_computation(fn)(*args).as_hlo_module()
+    client = jax.lib.xla_bridge.get_backend()
+    return jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)['flops']

@@ -50,3 +50,6 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, inputs:
 
     return total_loss/total_n, jax.tree_map(lambda x: x/total_n, total_grad)
 
+
+def parameter_count(model):
+    return sum(arr.size for arr in jax.tree_leaves(model, eqx.is_inexact_array_like))

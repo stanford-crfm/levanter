@@ -18,6 +18,7 @@ class StepInfo:
     opt_state: Any
     loss: float
     next_key: PRNGKey
+    step_duration: float
 
 
 class TrainerHooks:

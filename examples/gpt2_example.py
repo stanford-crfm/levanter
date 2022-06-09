@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional
@@ -7,7 +8,8 @@ import datasets
 import equinox as eqx
 import jax
 
-from psithuros.logging import log_optimizer_hyperparams
+from psithuros import jax_utils
+from psithuros.logging import log_optimizer_hyperparams, log_performance_stats
 
 print(jax.devices())
 import jax.lax as lax
@@ -24,8 +26,8 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 from psithuros.checkpoint import load_checkpoint, save_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split
-from psithuros.modeling_utils import RunningMean, accumulate_gradients
+from psithuros.jax_utils import shaped_rng_split, flop_estimate
+from psithuros.modeling_utils import RunningMean, accumulate_gradients, parameter_count
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
@@ -121,19 +123,26 @@ def main(config: TrainGpt2Config):
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
     # get the gradient using a wrapper around jax.value_and_grad
-    compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
+    compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
 
     # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
     # typically you want to pmap a vmap (and reshape)
     compute_loss_eval = pmap(partial(compute_loss, key=None, inference=True), "device")
 
-    # because we're running the model on each device in parallel, we need to make sure the model is on each device
-    # (and the optimization state too)
-    model = jax.device_put_replicated(model, devices)
-    opt_state = jax.device_put_replicated(opt_state, devices)
-
     # boilerplate hooks and such
     engine = TrainerHooks()
+
+    # get an estimate of flops for one example
+    flops_per_example = flop_estimate(compute_loss_and_grad,
+                                      model,
+                                      jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                      jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                      shaped_rng_split(model_key, (1,)))
+
+    wandb.config['flops_per_example'] = flops_per_example
+    wandb.config['parameter_count'] = parameter_count(model)
+    wandb.summary['flops_per_example'] = flops_per_example
+    wandb.summary['parameter_count'] = parameter_count(model)
 
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
 
@@ -146,6 +155,8 @@ def main(config: TrainGpt2Config):
     def log_to_wandb(step: StepInfo):
         wandb.log({"train/loss": step.loss}, step=step.step)
         log_optimizer_hyperparams(step.opt_state, step=step.step)
+
+    engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
 
     @engine.add_hook(every=config.trainer.steps_per_eval)
     def evaluate(info: StepInfo):
@@ -181,6 +192,11 @@ def main(config: TrainGpt2Config):
                         step=step,
                         checkpoint_path=f"{run_dir}/step-{info.step}")
 
+
+
+
+
+    # data loader
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
 
     # load the last checkpoint and resume if we want
@@ -206,12 +222,17 @@ def main(config: TrainGpt2Config):
     else:
         resume_step = 0
 
+    # because we're running the model on each device in parallel, we need to make sure the model is on each device
+    # (and the optimization state too)
+    model = jax.device_put_replicated(model, devices)
+    opt_state = jax.device_put_replicated(opt_state, devices)
+
     # parallel training is fairly simple too. The body of the training loop should be a single function.
     # This function is being executed on each device in parallel
     @partial(pmap, axis_name="device")
     def train_step(model, opt_state, input_ids, targets, keys):
         def mean_loss_grad(model, x):
-            loss, grads = compute_loss_and_grad(model, *x, False)
+            loss, grads = compute_loss_and_grad(model, *x)
             loss = lax.pmean(loss, "device")
             grads = lax.pmean(grads, "device")
             return loss, grads
@@ -224,6 +245,7 @@ def main(config: TrainGpt2Config):
         return loss, model, opt_state
 
     for step in range(resume_step, config.trainer.num_train_steps):
+        time_in = time.perf_counter()
         micro_batch_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size)
 
         input_ids, targets = next(iter_data)
@@ -235,9 +257,11 @@ def main(config: TrainGpt2Config):
 
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
         step_loss = jnp.mean(step_loss).item()
-        engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key))
 
-    last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key)
+        time_out = time.perf_counter()
+        engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, time_out - time_in))
+
+    last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key, time_out - time_in)
     evaluate(last_step)
     save(last_step)
 
