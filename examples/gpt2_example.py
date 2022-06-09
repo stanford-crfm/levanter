@@ -82,13 +82,18 @@ def main(config: TrainGpt2Config):
     cache_dir = config.cache_dir
     run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
 
-    seed = config.trainer.seed
-    data_key, loader_key, model_key, training_key, eval_key = jrandom.split(jrandom.PRNGKey(seed), 5)
-
     tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
     dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
+    devices = config.trainer.devices()
+
+    # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
+    # this makes deterministic training pretty easy
+    seed = config.trainer.seed
+    data_key, loader_key, model_key, training_key, eval_key = jrandom.split(jrandom.PRNGKey(seed), 5)
+
+    # initialize the model
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
                             n_positions=config.seq_len,
                             n_ctx=config.seq_len,
@@ -102,20 +107,32 @@ def main(config: TrainGpt2Config):
     # convert to appropriate dtype
     model = jax.tree_map(lambda x: x.astype(config.dtype), model)
 
+    # initialize the optimizer
     optim = config.trainer.optimizer()
+    # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new model
+    # and optimizer state
     opt_state = optim.init(model)
 
-    @jax.profiler.annotate_function
+    # loss function
     def compute_loss(model, input_ids, targets, key, inference):
         model = partial(model, inference=inference)
+        # vmap automagically vectorizes the model over a batch dimension
         pred_y = jax.vmap(model)(input_ids, key=key)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
+    # get the gradient using a wrapper around jax.value_and_grad
     compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
+
+    # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
+    # typically you want to pmap a vmap (and reshape)
     compute_loss_eval = pmap(partial(compute_loss, key=None, inference=True), "device")
 
-    devices = config.trainer.devices()
+    # because we're running the model on each device in parallel, we need to make sure the model is on each device
+    # (and the optimization state too)
+    model = jax.device_put_replicated(model, devices)
+    opt_state = jax.device_put_replicated(opt_state, devices)
 
+    # boilerplate hooks and such
     engine = TrainerHooks()
 
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
@@ -138,11 +155,14 @@ def main(config: TrainGpt2Config):
 
         pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
         for (input_ids, targets) in pbar:
-            micro_step_shape = (len(devices), config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
+            # the function is pmap(vmap(loss(model, input_ids, targets))), so we need to ensure
+            # the inputs have shape (num_devices, batch_size_per_device, seq_len)
+            micro_step_shape = (len(devices), config.trainer.per_device_eval_batch_size) + input_ids.shape[1:]
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
             loss = compute_loss_eval(info.model, input_ids, targets)
+            # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
             total_loss.update(loss)
             pbar.set_postfix(loss=total_loss.mean.item())
@@ -152,19 +172,19 @@ def main(config: TrainGpt2Config):
 
     @engine.add_hook(every=config.trainer.steps_per_save)
     def save(info: StepInfo):
-
         def get_one_copy(tree): jax.device_get(jax.tree_map(lambda x: x[0], tree))
         # TODO: when we do model sharding we have to do something cleverer
-        save_checkpoint(get_one_copy(info.model),
-                        ((get_one_copy(info.opt_state)), info.next_key),
-                        step,
-                        f"{run_dir}/step-{info.step}")
+        # it's actually pretty easy to save the model and the optimizer state
+        # and enable resuming
+        save_checkpoint(model=get_one_copy(info.model),
+                        training_state=((get_one_copy(info.opt_state)), info.next_key),
+                        step=step,
+                        checkpoint_path=f"{run_dir}/step-{info.step}")
 
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
 
-    # load the last checkpoint
+    # load the last checkpoint and resume if we want
     # TODO: add support for sharding
-    # TODO write some tests for serialization
     # TODO: need to seek in dataloader
     # TODO: wandb resume logic?
     resume_step = None
@@ -186,12 +206,14 @@ def main(config: TrainGpt2Config):
     else:
         resume_step = 0
 
+    # parallel training is fairly simple too. The body of the training loop should be a single function.
+    # This function is being executed on each device in parallel
     @partial(pmap, axis_name="device")
     def train_step(model, opt_state, input_ids, targets, keys):
         def mean_loss_grad(model, x):
             loss, grads = compute_loss_and_grad(model, *x, False)
             loss = lax.pmean(loss, "device")
-            grads = jax.tree_map(lambda g: lax.pmean(g, "device"), grads)
+            grads = lax.pmean(grads, "device")
             return loss, grads
 
         loss, grads = accumulate_gradients(mean_loss_grad, model, (input_ids, targets, keys))
@@ -200,9 +222,6 @@ def main(config: TrainGpt2Config):
         model = eqx.apply_updates(model, updates)
 
         return loss, model, opt_state
-
-    model = jax.device_put_replicated(model, devices)
-    opt_state = jax.device_put_replicated(opt_state, devices)
 
     for step in range(resume_step, config.trainer.num_train_steps):
         micro_batch_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size)

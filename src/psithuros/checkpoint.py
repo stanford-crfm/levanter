@@ -6,12 +6,15 @@ from typing import Optional
 
 import equinox as eqx
 
-def save_checkpoint(model_state, training_state, step:int, checkpoint_path, *, exist_ok=False):
+def save_checkpoint(model, training_state, step:int, checkpoint_path, *, exist_ok=False):
     """
     Save a checkpoint to a given path.
+
+    If the path does not exist, it will be created.
+
     """
     os.makedirs(checkpoint_path, exist_ok=exist_ok)
-    eqx.tree_serialise_leaves(f"{checkpoint_path}/model.eqx", model_state)
+    eqx.tree_serialise_leaves(f"{checkpoint_path}/model.eqx", model)
     eqx.tree_serialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state)
     metadata = {
         "step": step,
