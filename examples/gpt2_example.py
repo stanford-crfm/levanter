@@ -116,18 +116,19 @@ def main(config: TrainGpt2Config):
     opt_state = optim.init(model)
 
     # loss function
-    def compute_loss(model, input_ids, targets, key, inference):
-        model = partial(model, inference=inference, key=key)
+    def compute_loss(model, input_ids, targets, key):
         # vmap automagically vectorizes the model over a batch dimension
-        pred_y = jax.vmap(model)(input_ids)
+        # TODO: this shouldn't be necessary, but for some reason it blows up the if o don't
+        # model = partial(model, key=key)
+        pred_y = jax.vmap(model, in_axes=(0, None))(input_ids, key)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
     # get the gradient using a wrapper around jax.value_and_grad
-    compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
+    compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss))
 
     # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
     # typically you want to pmap a vmap (and reshape)
-    compute_loss_pmap = pmap(compute_loss, "device", static_broadcasted_argnums=(4))
+    compute_loss_pmap = pmap(partial(compute_loss, key=None), "device")
 
     # boilerplate hooks and such
     engine = TrainerHooks()
@@ -137,7 +138,8 @@ def main(config: TrainGpt2Config):
                                       model,
                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                      shaped_rng_split(model_key, (1,)))
+                                      model_key)
+                                      # shaped_rng_split(model_key, (1,)))
 
     wandb.config['flops_per_example'] = flops_per_example
     wandb.config['parameter_count'] = parameter_count(model)
@@ -173,7 +175,7 @@ def main(config: TrainGpt2Config):
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
-            loss = compute_loss_pmap(info.model, input_ids, targets, None, True)
+            loss = compute_loss_pmap(info.model, input_ids, targets)
             # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
             total_loss.update(loss)
@@ -192,10 +194,6 @@ def main(config: TrainGpt2Config):
                         training_state=((get_one_copy(info.opt_state)), info.next_key),
                         step=step,
                         checkpoint_path=f"{run_dir}/step-{info.step}")
-
-
-
-
 
     # data loader
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
@@ -254,7 +252,7 @@ def main(config: TrainGpt2Config):
         input_ids = input_ids.reshape(micro_step_shape)
         targets = targets.reshape(micro_step_shape)
         my_key, training_key = jrandom.split(training_key, 2)
-        micro_keys = shaped_rng_split(my_key, (len(devices), config.trainer.train_microbatches_per_step))
+        micro_keys = shaped_rng_split(my_key, micro_batch_shape[:2])
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
         step_loss = jnp.mean(step_loss).item()
 

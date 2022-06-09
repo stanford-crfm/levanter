@@ -236,8 +236,8 @@ class Gpt2LMHeadModel(eqx.Module):
                                           (config.vocab_size, config.hidden_size)) * config.initializer_range
 
     @eqx.filter_jit
-    def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
-        hidden_states = self.transformer(input_ids, inference=inference, key=key)
+    def __call__(self, input_ids: Array["seq_len"], key):
+        hidden_states = self.transformer(input_ids, inference=key is None, key=key)
         lm_logits = hidden_states @ jnp.transpose(self.lm_head)
 
         return lm_logits
