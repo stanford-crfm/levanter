@@ -7,3 +7,5 @@ pyrallis
 pyarrow
 zstandard
 datasets
+fsspec
+gcsfs

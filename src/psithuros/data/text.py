@@ -19,6 +19,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Iterator, Optional, TypeVar, Iterable, List
 
+import fsspec
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -76,7 +77,7 @@ class IndexedDataset:
         current_writer: Optional[pq.ParquetWriter] = None
         current_num_tokens = 0
         tq: tqdm = tqdm(desc=f"file {file_index} progress", total=num_tokens_per_file, unit="token")
-        file_out: Optional[Path] = None
+        file_out = None
 
         # list of (file_name, num_tokens), to be output at the end if we finish the whole iterator
         ledger_files = []
@@ -99,11 +100,12 @@ class IndexedDataset:
                     close_writer()
 
                 if not current_writer:
-                    file_out = Path(f"{cache_dir}/{file_template.format(file_index)}")
-                    file_out.parent.mkdir(parents=True, exist_ok=True)
+                    file_out = f"{cache_dir}/{file_template.format(file_index)}"
                     file_index += 1
 
-                    current_writer = pq.ParquetWriter(file_out, batch.schema, version="2.6", compression="ZSTD")
+                    fs, _, (path,) = fsspec.get_fs_token_paths(file_out)
+
+                    current_writer = pq.ParquetWriter(path, batch.schema, filesystem=fs, version="2.6", compression="ZSTD")
 
                     current_num_tokens = 0
 
@@ -120,7 +122,7 @@ class IndexedDataset:
                 close_writer()
 
             # if we successfully wrote the whole iterator, we can write the ledger
-            with open(ledger_file, "w") as f:
+            with fsspec.open(ledger_file, "w") as f:
                 ledger = {"files": ledger_files}
                 json.dump(ledger, f)
 
@@ -134,7 +136,7 @@ class IndexedDataset:
     def _load_ledger(self):
         ledger_path = os.path.join(self.cache_dir, LEDGER_FILE)
         if os.path.exists(ledger_path):
-            with open(ledger_path, "r") as f:
+            with fsspec.open(ledger_path, "r") as f:
                 return json.load(f)
         else:
             raise FileNotFoundError(f"{self.cache_dir} is not a complete cache")
@@ -145,7 +147,8 @@ def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
     If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
     then the documents returned are actually concatenated documents, where the number is the number of documents
     presented as a batch to the caching process."""
-    for b in pq.read_table(file).to_batches():
+    fs, _, paths = fsspec.get_fs_token_paths(file)
+    for b in pq.read_table(file, filesystem=fs).to_batches():
         if flatten:
             # insert a newaxis to the beginning so that it appears to be bs=1
             yield BatchEncoding(
