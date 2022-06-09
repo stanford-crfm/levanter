@@ -8,7 +8,6 @@ import datasets
 import equinox as eqx
 import jax
 
-from psithuros import jax_utils
 from psithuros.logging import log_optimizer_hyperparams, log_performance_stats
 
 print(jax.devices())
