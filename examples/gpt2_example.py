@@ -29,25 +29,30 @@ from psithuros.modeling_utils import RunningMean, accumulate_gradients
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
-
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
 @dataclass
-class DataParams:
+class HfDatasetParams:
     id: str
     name: Optional[str] = None
 
     tokenizer: str = "gpt2"
+    enforce_eos: bool = True
 
     def load(self, tokenizer, split, seq_len, cache_dir):
+        def tokenize(texts):
+            return tokenizer(texts, return_attention_mask=False)
         dataset = datasets.load_dataset(self.id, name=self.name, split=split)
-        token_iter = (tokenizer(batch) for batch in batched(dataset["text"], 1000))
+        data = dataset["text"]
+        if self.enforce_eos:
+            data = map(lambda x: x + tokenizer.eos_token, data)
+        token_iter = (tokenize(batch) for batch in batched(data, 1000))
         return IndexedDataset.build_or_load(token_iter, f"{cache_dir}/{self.id}/{split}", seq_len)
 
 
 @dataclass
 class TrainGpt2Config:
-    data: DataParams
+    data: HfDatasetParams
     wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
     cache_dir: str = "cache/"
