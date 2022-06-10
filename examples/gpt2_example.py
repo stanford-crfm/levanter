@@ -7,6 +7,7 @@ from typing import Optional
 import datasets
 import equinox as eqx
 import jax
+from jax.experimental.maps import xmap
 
 from psithuros import jax_utils
 from psithuros.logging import log_optimizer_hyperparams, log_performance_stats
@@ -72,11 +73,11 @@ def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batc
     for i in range(max_passes or 400_000):
         for batch in batched(dataset, batch_size):
             input_ids = [jnp.array(ex["input_ids"], dtype=jnp.int32) for ex in batch]
+            # TODO: add masking
             input_ids = jnp.stack(input_ids)
             outputs = jnp.concatenate([input_ids[:, 1:], jnp.full((input_ids.shape[0], 1), eos)], axis=1)
 
             yield input_ids, outputs
-
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
@@ -107,7 +108,7 @@ def main(config: TrainGpt2Config):
     model = Gpt2LMHeadModel(gpt_config, key=model_key)
 
     # convert to appropriate dtype
-    model = jax.tree_map(lambda x: x.astype(config.dtype), model)
+    model = jax.tree_map(lambda array: array.astype(config.dtype), model)
 
     # initialize the optimizer
     optim = config.trainer.optimizer()
@@ -118,13 +119,12 @@ def main(config: TrainGpt2Config):
     # loss function
     def compute_loss(model, input_ids, targets, key):
         # vmap automagically vectorizes the model over a batch dimension
-        # TODO: this shouldn't be necessary, but for some reason it blows up the if o don't
-        # model = partial(model, key=key)
+        # TODO: this shouldn't be necessary, but for some reason it blows up the if i don't
         pred_y = jax.vmap(model, in_axes=(0, None))(input_ids, key)
         return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
 
     # get the gradient using a wrapper around jax.value_and_grad
-    compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss))
+    compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
     # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
     # typically you want to pmap a vmap (and reshape)
