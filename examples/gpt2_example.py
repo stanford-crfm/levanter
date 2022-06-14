@@ -143,8 +143,15 @@ def main(config: TrainGpt2Config):
 
     wandb.config['flops_per_example'] = flops_per_example
     wandb.config['parameter_count'] = parameter_count(model)
+    print(wandb.config['parameter_count'])
     wandb.summary['flops_per_example'] = flops_per_example
     wandb.summary['parameter_count'] = parameter_count(model)
+
+    # estimate memory use
+    loss, grad = compute_loss_and_grad(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+    grad.lm_head.block_until_ready()
+    jax.profiler.save_device_memory_profile("memory.prof")
+    del loss, grad
 
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
 
