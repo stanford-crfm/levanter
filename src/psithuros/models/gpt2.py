@@ -220,24 +220,31 @@ class Gpt2Model(eqx.Module):
 
 class Gpt2LMHeadModel(eqx.Module):
     transformer: Gpt2Model
-    lm_head: jnp.ndarray
+    _lm_head: Optional[jnp.ndarray]
 
     @property
     def config(self):
         return self.transformer.config
 
+    @property
+    def lm_head(self):
+        if self._lm_head:
+            return self._lm_head
+        else:
+            return self.transformer.wte
+
     def __init__(self, config, *, key):
         k_t, k_lm_head = jrandom.split(key, 2)
         self.transformer = Gpt2Model(config, key=k_t)
-        if config.tie_word_embeddings:
-            self.lm_head = self.transformer.wte
-        else:
-            self.lm_head = jrandom.normal(k_lm_head,
+        if not config.tie_word_embeddings:
+            self._lm_head = jrandom.normal(k_lm_head,
                                           (config.vocab_size, config.hidden_size)) * config.initializer_range
+        else:
+            self._lm_head = None
 
     @eqx.filter_jit
     def __call__(self, input_ids: Array["seq_len"], key):
         hidden_states = self.transformer(input_ids, inference=key is None, key=key)
-        lm_logits = hidden_states @ jnp.transpose(self.lm_head)
+        lm_logits = jnp.einsum('... l h, ... v h -> ... l v', hidden_states, self.lm_head)
 
         return lm_logits
