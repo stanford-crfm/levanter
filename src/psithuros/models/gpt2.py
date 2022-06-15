@@ -1,3 +1,4 @@
+import functools
 from functools import partial
 from typing import Optional, List, Callable
 
@@ -22,12 +23,11 @@ class Gpt2Conv1D(eqx.Module):
     bias: Array
 
     def __init__(self, *, in_features: int, out_features: int, key):
-        self.kernel = jrandom.normal(key, [out_features, in_features]) * 0.02
+        self.kernel = jrandom.normal(key, [in_features, out_features]) * 0.02
         self.bias = jnp.zeros(out_features)
 
-    @jax.jit
     def __call__(self, inputs):
-        kernel = jnp.transpose(self.kernel)
+        kernel = self.kernel
         return inputs @ kernel + self.bias
 
 
@@ -46,7 +46,6 @@ class Gpt2Mlp(eqx.Module):
         self.act = ACT2FN[config.activation_function]
         self.dropout = pnn.Dropout(p=config.resid_pdrop)
 
-    @eqx.filter_jit
     def __call__(self, hidden_states, *, inference: bool, key=None):
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
@@ -63,8 +62,6 @@ class Gpt2Attention(eqx.Module):
     c_attn: Gpt2Conv1D
     c_proj: Gpt2Conv1D
     resid_dropout: pnn.Dropout
-
-    causal_mask: Optional[Array] = eqx.static_field()
 
     @property
     def head_dim(self):
@@ -85,10 +82,6 @@ class Gpt2Attention(eqx.Module):
 
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
 
-        if self.causal:
-            self.causal_mask = jnp.tril(jnp.ones((config.n_positions, config.n_positions), dtype=jnp.bool_))
-        else:
-            self.causal_mask = None
 
     # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
@@ -96,6 +89,7 @@ class Gpt2Attention(eqx.Module):
     @eqx.filter_jit
     def __call__(self, hidden_states, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
+        seq_len = hidden_states.shape[-2]
         rng_key = key
 
         qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
@@ -109,7 +103,10 @@ class Gpt2Attention(eqx.Module):
         query_length, key_length = query.shape[-2], key.shape[-2]
 
         if self.causal:
-            attention_mask = self.causal_mask[:query_length, :key_length]
+            causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+            causal_mask = jnp.where(causal_mask, 0.0, -1E9)
+            causal_mask = causal_mask.astype(jnp.bfloat16)
+            attention_mask = causal_mask[:query_length, :key_length]
         else:
             attention_mask = None
 
@@ -117,8 +114,9 @@ class Gpt2Attention(eqx.Module):
         w = w * lax.rsqrt(float(value.shape[-1]))
 
         if attention_mask is not None:
-            mask = jnp.broadcast_to(attention_mask, w.shape)
-            w = jnp.where(mask > 0, w, -1E9)
+            # mask = jnp.broadcast_to(attention_mask, w.shape)
+            # w = jnp.where(mask > 0, w, -1E9)
+            w = w + attention_mask
 
         w = jnn.softmax(w)
 
@@ -210,12 +208,33 @@ class Gpt2Model(eqx.Module):
 
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
-        for block, k_block in zip(self.blocks, keys):
-            hidden_states = block(hidden_states, inference=inference, key=k_block)
+        if inference:
+            for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
+                hidden_states = block(hidden_states, inference=inference, key=k_block)
+        else:
+            hidden_states = recursive_checkpoint([lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)], threshold=2)(hidden_states)
+            # for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
+            #     print(i)
+            #     hidden_states = jax.remat(Gpt2Model.block_remat)(block, hidden_states, key=k_block)
 
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
+
+
+# from https://github.com/google/jax/issues/4285
+def recursive_checkpoint(funs, threshold = 2):
+    if len(funs) == 1:
+        return funs[0]
+    elif len(funs) == 2:
+        f1, f2 = funs
+        return lambda x: f1(f2(x))
+    elif len(funs) <= threshold:
+        return functools.reduce(lambda f, g: lambda x: f(g(x)), funs)
+    else:
+        f1 = recursive_checkpoint(funs[:len(funs)//2])
+        f2 = recursive_checkpoint(funs[len(funs)//2:])
+        return lambda x: f1(jax.remat(f2)(x))
 
 
 class Gpt2LMHeadModel(eqx.Module):
@@ -242,7 +261,6 @@ class Gpt2LMHeadModel(eqx.Module):
         else:
             self._lm_head = None
 
-    @eqx.filter_jit
     def __call__(self, input_ids: Array["seq_len"], key):
         hidden_states = self.transformer(input_ids, inference=key is None, key=key)
         lm_logits = jnp.einsum('... l h, ... v h -> ... l v', hidden_states, self.lm_head)
