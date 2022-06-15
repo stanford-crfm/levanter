@@ -111,9 +111,6 @@ def main(config: TrainGpt2Config):
 
     # initialize the optimizer
     optim = config.trainer.optimizer()
-    # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new model
-    # and optimizer state
-    opt_state = optim.init(model)
 
     # loss function
     def compute_loss(model, input_ids, targets, key):
@@ -146,11 +143,24 @@ def main(config: TrainGpt2Config):
     wandb.summary['flops_per_example'] = flops_per_example
     wandb.summary['parameter_count'] = parameter_count(model)
 
+    jaxpr = jax.make_jaxpr(compute_loss_and_grad)(model, jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                                  jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+    with open("jaxpr_dump.txt", "w") as f:
+        f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
+    del jaxpr
+
     # estimate memory use
-    loss, grad = compute_loss_and_grad(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
-    grad.lm_head.block_until_ready()
+    try:
+        loss, grad = compute_loss_and_grad(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+        grad.lm_head.block_until_ready()
+        del loss, grad
+    finally:
+        jax.profiler.save_device_memory_profile("memory.prof")
+
+    loss = compute_loss(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+    loss.block_until_ready()
     jax.profiler.save_device_memory_profile("memory.prof")
-    del loss, grad
+    del loss
 
     pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
 
@@ -203,6 +213,10 @@ def main(config: TrainGpt2Config):
 
     # data loader
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
+
+    # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new model
+    # and optimizer state
+    opt_state = optim.init(model)
 
     # load the last checkpoint and resume if we want
     # TODO: add support for sharding
