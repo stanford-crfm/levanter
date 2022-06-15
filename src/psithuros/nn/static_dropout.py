@@ -4,6 +4,7 @@ from typing import Optional
 import equinox as eqx
 from equinox.custom_types import Array
 
+import jax
 import jax.random as jrandom
 import jax.numpy as jnp
 
@@ -52,6 +53,11 @@ class Dropout(eqx.Module):
                 "Dropout requires a key when running in non-deterministic mode."
             )
         else:
-            q = 1 - self.p
-            mask = jrandom.bernoulli(key, q, x.shape)
-            return jnp.where(mask, x / q, 0)
+            return Dropout.do_dropout(x, self.p, key)
+
+    # @jax.checkpoint
+    @staticmethod
+    def do_dropout(x: Array, p, key: "jax.random.PRNGKey" = None) -> Array:
+        q = 1 - p
+        mask = jrandom.bernoulli(key, q, x.shape)
+        return jnp.where(mask, x / q, 0)
