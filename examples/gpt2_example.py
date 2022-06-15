@@ -202,7 +202,7 @@ def main(config: TrainGpt2Config):
 
     @engine.add_hook(every=config.trainer.steps_per_save)
     def save(info: StepInfo):
-        def get_one_copy(tree): jax.device_get(jax.tree_map(lambda x: x[0], tree))
+        def get_one_copy(tree): return jax.device_get(jax.tree_map(lambda x: x[0], tree))
         # TODO: when we do model sharding we have to do something cleverer
         # it's actually pretty easy to save the model and the optimizer state
         # and enable resuming
