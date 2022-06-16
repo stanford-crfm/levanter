@@ -221,14 +221,15 @@ def main(config: TrainGpt2Config):
 
     for step in range(resume_step, config.trainer.num_train_steps):
         time_in = time.perf_counter()
-        micro_batch_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size)
+        my_key, training_key = jrandom.split(training_key, 2)
 
         input_ids, targets = next(iter_data)
         micro_step_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
         input_ids = input_ids.reshape(micro_step_shape)
         targets = targets.reshape(micro_step_shape)
-        my_key, training_key = jrandom.split(training_key, 2)
-        micro_keys = shaped_rng_split(my_key, micro_batch_shape[:2])
+
+        micro_keys = shaped_rng_split(my_key, micro_step_shape[:2])
+
         step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
         step_loss = jnp.mean(step_loss).item()
 
