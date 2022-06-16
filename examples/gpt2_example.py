@@ -9,7 +9,9 @@ import equinox as eqx
 import jax
 from jax.experimental.maps import xmap
 
-from psithuros.logging import log_optimizer_hyperparams, log_performance_stats
+import psithuros.callbacks
+from psithuros import callbacks, jax_utils
+from psithuros.logging import log_optimizer_hyperparams, log_performance_stats, pbar_logger, log_to_wandb
 
 print(jax.devices())
 import jax.lax as lax
@@ -26,7 +28,7 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 from psithuros.checkpoint import load_checkpoint, save_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split, flop_estimate
+from psithuros.jax_utils import shaped_rng_split, flops_estimate
 from psithuros.modeling_utils import RunningMean, accumulate_gradients, parameter_count
 from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
@@ -93,7 +95,7 @@ def main(config: TrainGpt2Config):
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
     # this makes deterministic training pretty easy
     seed = config.trainer.seed
-    data_key, loader_key, model_key, training_key, eval_key = jrandom.split(jrandom.PRNGKey(seed), 5)
+    data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
     # initialize the model
     gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
@@ -130,86 +132,40 @@ def main(config: TrainGpt2Config):
     engine = TrainerHooks()
 
     # get an estimate of flops for one example
-    flops_per_example = flop_estimate(compute_loss_and_grad,
-                                      model,
-                                      jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                      jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                      model_key)
-                                      # shaped_rng_split(model_key, (1,)))
+    flops_per_example = flops_estimate(compute_loss_and_grad,
+                                       model,
+                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                       model_key)
 
     wandb.config['flops_per_example'] = flops_per_example
     wandb.config['parameter_count'] = parameter_count(model)
-    print(wandb.config['parameter_count'])
     wandb.summary['flops_per_example'] = flops_per_example
     wandb.summary['parameter_count'] = parameter_count(model)
 
-    jaxpr = jax.make_jaxpr(compute_loss_and_grad)(model, jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                                  jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
-    with open("jaxpr_dump.txt", "w") as f:
-        f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
-    del jaxpr
+    jax_utils.dump_jaxpr("model.jaxpr.txt",
+                         compute_loss_and_grad, model,
+                         jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                         jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
 
-    # estimate memory use
-    try:
-        loss, grad = compute_loss_and_grad(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
-        grad.lm_head.block_until_ready()
-        del loss, grad
-    finally:
-        jax.profiler.save_device_memory_profile("memory.prof")
-
-    loss = compute_loss(model, jnp.ones((1, config.seq_len), dtype=jnp.int32), jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
-    loss.block_until_ready()
-    jax.profiler.save_device_memory_profile("memory.prof")
-    del loss
-
-    pbar = tqdm(range(config.trainer.num_train_steps), desc="train", total=config.trainer.num_train_steps)
-
-    @engine.add_hook(every=1)
-    def update_pbar(step: StepInfo):
-        pbar.update(1)
-        pbar.set_postfix(loss=step.loss)
-
-    @engine.add_hook(every=1)
-    def log_to_wandb(step: StepInfo):
-        wandb.log({"train/loss": step.loss}, step=step.step)
-        log_optimizer_hyperparams(step.opt_state, step=step.step)
-
+    engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
+    engine.add_hook(log_to_wandb, every=1)
     engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
 
-    @engine.add_hook(every=config.trainer.steps_per_eval)
-    def evaluate(info: StepInfo):
-        nonlocal eval_key
-        total_loss = RunningMean(shape=1)
+    def eval_dataloader():
         test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),
                                  max_passes=1)
-
-        pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
-        for (input_ids, targets) in pbar:
-            # the function is pmap(vmap(loss(model, input_ids, targets))), so we need to ensure
-            # the inputs have shape (num_devices, batch_size_per_device, seq_len)
+        for input_ids, targets in test_loader:
             micro_step_shape = (len(devices), config.trainer.per_device_eval_batch_size) + input_ids.shape[1:]
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
-            loss = compute_loss_pmap(info.model, input_ids, targets)
-            # this mean is over the devices, somewhat confusingly
-            loss = jnp.mean(loss)
-            total_loss.update(loss)
-            pbar.set_postfix(loss=total_loss.mean.item())
+            yield input_ids, targets
 
-        total_loss = total_loss.mean.item()
-        wandb.log({"eval/loss": total_loss}, step=info.step)
-
-    @engine.add_hook(every=config.trainer.steps_per_save)
-    def save(info: StepInfo):
-        def get_one_copy(tree): return jax.device_get(jax.tree_map(lambda x: x[0], tree))
-        # TODO: when we do model sharding we have to do something cleverer
-        # it's actually pretty easy to save the model and the optimizer state
-        # and enable resuming
-        save_checkpoint(model=get_one_copy(info.model),
-                        training_state=((get_one_copy(info.opt_state)), info.next_key),
-                        step=step,
-                        checkpoint_path=f"{run_dir}/step-{info.step}")
+    evaluate = callbacks.compute_validation_loss(compute_loss_pmap, eval_dataloader)
+    engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
+    save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
+    engine.add_hook(save, every=config.trainer.steps_per_save)
 
     # data loader
     iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)

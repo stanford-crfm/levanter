@@ -47,8 +47,15 @@ def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, xs: X) -> Carry:
     return res[0]
 
 
-def flop_estimate(fn, *args):
+def flops_estimate(fn, *args):
     """Estimates the flop count of a function using XLA/HLO fanciness. See https://github.com/google/flax/discussions/1854"""
     m = jax.xla_computation(fn)(*args).as_hlo_module()
     client = jax.lib.xla_bridge.get_backend()
-    return jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)['flops']
+    costs = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)
+    return costs['flops']
+
+
+def dump_jaxpr(file, fn, *args, **kwargs):
+    jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
+    with open(file, "w") as f:
+        f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
