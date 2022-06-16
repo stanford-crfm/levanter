@@ -86,7 +86,7 @@ class Gpt2Attention(eqx.Module):
     # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, hidden_states, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         seq_len = hidden_states.shape[-2]
@@ -154,7 +154,7 @@ class Gpt2Block(eqx.Module):
 
         self.mlp = Gpt2Mlp(config, inner_dim, key=k_mlp)
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, hidden_states, inference=True, *, key):
         k1, k2 = jax_utils.maybe_rng_split(key, 2)
 
@@ -197,7 +197,7 @@ class Gpt2Model(eqx.Module):
         ]
         self.ln_f = nn.LayerNorm(embed_dim, eps=config.layer_norm_epsilon)
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, input_ids: Array["seq_len"], inference=True, *, key):
         input_embeds = self.wte[input_ids]
         indices = jnp.arange(input_ids.shape[-1], dtype="i4")
