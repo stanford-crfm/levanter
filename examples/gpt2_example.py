@@ -206,13 +206,9 @@ def main(config: TrainGpt2Config):
     # This function is being executed on each device in parallel
     @partial(pmap, axis_name="device")
     def train_step(model, opt_state, input_ids, targets, keys):
-        def mean_loss_grad(model, x):
-            loss, grads = compute_loss_and_grad(model, *x)
-            loss = lax.pmean(loss, "device")
-            grads = lax.pmean(grads, "device")
-            return loss, grads
-
-        loss, grads = accumulate_gradients(mean_loss_grad, model, (input_ids, targets, keys))
+        loss, grads = accumulate_gradients(compute_loss_and_grad, model, (input_ids, targets, keys))
+        loss = lax.pmean(loss, "device")
+        grads = lax.pmean(grads, "device")
 
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
