@@ -204,7 +204,7 @@ def main(config: TrainGpt2Config):
 
     # parallel training is fairly simple too. The body of the training loop should be a single function.
     # This function is being executed on each device in parallel
-    @partial(pmap, axis_name="device")
+    @partial(pmap, axis_name="device", donate_argnums=(0, 1))
     def train_step(model, opt_state, input_ids, targets, keys):
         def loss_grad(model, x):
             return compute_loss_and_grad(model, *x)
