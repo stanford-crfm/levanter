@@ -10,6 +10,7 @@ from jax.experimental.maps import xmap
 from psithuros.named_tensors import *
 import equinox as eqx
 
+
 class MyModule(eqx.Module):
     named: Array["x", "y"]
     unnamed1: Array
@@ -25,8 +26,6 @@ def show_example(structured):
 
 
 def test_infer_named_axes():
-
-
     mod = MyModule(named=jnp.ones((2, 3)), unnamed1=jnp.ones((2)), unnamed2=jnp.ones((2)), partially_named=jnp.ones((2, 3)), static_field=1)
     show_example(mod)
 
