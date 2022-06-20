@@ -3,10 +3,12 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Optional, List
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import optax
 import pyrallis
+from jax.experimental.maps import Mesh
 from pyrallis import field
 
 
@@ -53,6 +55,8 @@ class TrainerConfig:
 
     # Config related to batch sizes
     num_devices: Optional[int] = None
+    model_shards: int = 1  # how many devices to shard each model over
+
     train_batch_size: int = 512
     per_device_train_batch_size: int = -1
 
@@ -77,8 +81,7 @@ class TrainerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    # TODO: checkpoints
-
+    # computed properties
     def devices(self):
         d = jax.devices()
         if self.num_devices is not None:
@@ -88,11 +91,19 @@ class TrainerConfig:
                 )
             return d[: self.num_devices]
 
+    def device_mesh(self, batch_name: str = "batch", model_name: str = "model"):
+        devices = self.devices()
+        devices = np.array(devices).reshape(self.batch_axis_size, self.model_shards)
+        return Mesh(devices, (batch_name, model_name))
 
-    # computed properties
+    @property
+    def batch_axis_size(self):
+        assert self.num_devices % self.model_shards == 0
+        return self.num_devices // self.model_shards
+
     @property
     def train_microbatches_per_step(self):
-        return self.train_batch_size // (self.per_device_train_batch_size * self.num_devices)
+        return self.train_batch_size // (self.per_device_train_batch_size * self.batch_axis_size)
 
     @property
     def train_total_microbatches(self):
@@ -150,14 +161,19 @@ class TrainerConfig:
         if self.num_devices is None:
             self.num_devices = len(jax.devices())
 
+        if self.num_devices % self.model_shards != 0:
+            raise ValueError(
+                f"num_devices ({self.num_devices}) is not divisible by model_shards ({self.model_shards})"
+            )
+
         if self.per_device_train_batch_size == -1:
             self.per_device_train_batch_size = self.train_batch_size // self.num_devices
 
         # validate size of per_device_train_batch_size
-        if self.train_batch_size % (self.per_device_train_batch_size * self.num_devices) != 0:
+        if self.train_batch_size % (self.per_device_train_batch_size * self.batch_axis_size) != 0:
             raise ValueError(
                 f"train_batch_size ({self.train_batch_size}) must be divisible by "
-                f"per_device_train_batch_size * num_devices ({self.per_device_train_batch_size}, {self.num_devices})"
+                f"per_device_train_batch_size * batch_axis_size ({self.per_device_train_batch_size}, {self.batch_axis_size})"
             )
 
         if self.per_device_eval_batch_size == -1:
