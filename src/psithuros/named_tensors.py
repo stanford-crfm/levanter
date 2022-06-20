@@ -2,13 +2,11 @@ import dataclasses
 import functools
 import inspect
 import typing
-from typing import List, Tuple, Dict, Sequence, Union, Optional, Callable, Iterable, _GenericAlias, Any
+from typing import List, Tuple, Dict, Sequence, Optional, Callable, Any, get_origin, get_args, Annotated
 
 import equinox as eqx
 import jax
 from equinox.custom_types import sentinel
-from equinox.module import _ModuleMeta
-from jax import tree_structure
 from jax.experimental.maps import xmap, AxisName, ResourceSet
 
 
@@ -16,12 +14,34 @@ class Array(jax.numpy.ndarray):
     def __class_getitem__(cls, item):
         if not isinstance(item, tuple):
             item = (item,)
-        return NamedArray(item)
+        return AxisNames(item)
 
 
 @dataclasses.dataclass
-class NamedArray:
+class AxisNames:
     names: Tuple[AxisName, ...]
+
+    def __call__(self, *args, **kwds):
+        raise TypeError(f"Shouldn't call this. Just necessary to trick the type checker")
+
+
+T = typing.TypeVar("T")
+N = typing.TypeVar("N")
+
+# Shaped = Annotated[T, Array[N]]
+
+
+class Shaped(typing.Generic[T]):
+
+    """Supports things like Shaped["shard", Linear] or Shaped[ ("shard", "x", ...), Linear]. The returned type is """
+    def __class_getitem__(cls, item: Tuple[typing.Union[AxisName, Tuple[AxisName, ...]], typing.Type[T]])-> typing.Type[T]:
+        if len(item) != 2:
+            raise ValueError("Shaped[...] only supports two-tuples. If you want to use a tuple of axes, use Shaped[(...), ...]")
+        shapes, tpe = item
+        if not isinstance(shapes, tuple):
+            shapes = (shapes,)
+
+        return typing.Annotated[tpe, AxisNames(shapes)]
 
 
 def infer_named_axes_from_module(mod: eqx.Module):
@@ -44,17 +64,27 @@ def infer_named_axes_from_module(mod: eqx.Module):
 
     return mod.__class__.tree_unflatten(aux, named_shapes)
 
-def infer_leaf_axes(annotation: type)-> List[Tuple[AxisName, ...]]:
-    if type(annotation) == eqx.module._ModuleMeta and issubclass(annotation, eqx.Module):
+def infer_leaf_axes(tpe: type)-> List[Tuple[AxisName, ...]]:
+    origin = get_origin(tpe)
+    if origin is Annotated:
+        args = get_args(tpe)
+        shapeses = [s for s in args[1:] if isinstance(s, AxisNames)]
+        if len(shapeses) != 1:
+            raise ValueError(f"We only support one Shaped[...] in a leaf type, but got {shapeses}")
+        prefix_names = shapeses[0].names
+
+        recursive_leaf_names = infer_leaf_axes(args[0])
+        return [prefix_names + n for n in recursive_leaf_names]
+    elif type(tpe) == eqx.module._ModuleMeta and issubclass(tpe, eqx.Module):
         # unfortunately need to replicate the logic in Module#tree_flatten
         shapes = []
-        for field_ in dataclasses.fields(annotation):  # type: ignore
+        for field_ in dataclasses.fields(tpe):  # type: ignore
             if not field_.metadata.get("static", False):
                 shapes += infer_leaf_axes(field_.type)
         return shapes
-    elif isinstance(annotation, NamedArray):
-        return [annotation.names]
-    elif annotation is Array:
+    elif isinstance(tpe, AxisNames):
+        return [tpe.names]
+    elif tpe is Array:
         return [(...,)]
     else:
         return [(...,)]
@@ -62,7 +92,7 @@ def infer_leaf_axes(annotation: type)-> List[Tuple[AxisName, ...]]:
 def infer_named_axes(value: Any, annotation: Optional[type]):
     if isinstance(value, eqx.Module):
         return infer_named_axes_from_module(value)
-    elif isinstance(annotation, NamedArray):
+    elif isinstance(annotation, AxisNames):
         return annotation.names
     elif isinstance(value, jax.numpy.ndarray):
         return (...,)
@@ -191,4 +221,5 @@ def xmapped_class(cls: typing.Type[eqx.Module]):
 
 
 
-
+__all__ = ["xmapped_class", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
+           "infer_named_axes_from_module", "Shaped"]

@@ -2,13 +2,15 @@ from typing import Tuple
 
 import jax
 import optax
-import pytest
 
 import jax.numpy as jnp
 from jax import tree_structure, tree_flatten, tree_unflatten
+import jax.random as jrandom
 from jax.experimental.maps import xmap
 from psithuros.named_tensors import *
 import equinox as eqx
+
+from psithuros.named_tensors import infer_named_axes_from_module
 
 
 class MyModule(eqx.Module):
@@ -146,3 +148,23 @@ def test_xmap_class_init_with_args_partial_dim():
     assert(mod.array.shape == (2, 3))
     assert(mod.array2.shape == (2, 10))
     assert(mod.unaxised.shape == (10, ))
+
+
+def test_xmap_class_with_shaped_annotation():
+    class Mod(eqx.Module):
+        shaped_linear: Shaped["shard", eqx.nn.Linear]
+        array: Shaped["y", Array["x", ...]]
+        multi_array: Shaped[("shard", "y"), Array]
+
+        def __init__(self, key):
+            self.shaped_linear = eqx.nn.Linear(5, 1, key=key)
+            self.array = jnp.zeros(10)
+            self.multi_array = jnp.zeros(2)
+
+    XMappedModule = xmapped_class(Mod)
+    mod = XMappedModule(jrandom.PRNGKey(0), axis_sizes={"x": 2, "y": 3, "shard": 4})
+    assert(isinstance(mod, Mod))
+    assert(mod.shaped_linear.weight.shape == (4, 1, 5))
+    assert(mod.shaped_linear.bias.shape == (4, 1))
+    assert(mod.array.shape == (3, 2, 10))
+    assert(mod.multi_array.shape == (4, 3, 2))
