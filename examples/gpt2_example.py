@@ -3,15 +3,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Optional
 
-
 import datasets
 import equinox as eqx
 import jax
-from jax.experimental.maps import xmap
 
 import psithuros.callbacks
 from psithuros import callbacks, jax_utils
-from psithuros.logging import log_optimizer_hyperparams, log_performance_stats, pbar_logger, log_to_wandb
+from psithuros.logging import log_performance_stats, pbar_logger, log_to_wandb
 
 print(jax.devices())
 import jax.lax as lax
@@ -22,16 +20,15 @@ import optax
 import pyrallis
 import wandb
 from jax import pmap
-from tqdm import tqdm
 from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
 
-from psithuros.checkpoint import load_checkpoint, save_checkpoint
+from psithuros.checkpoint import load_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
 from psithuros.jax_utils import shaped_rng_split, flops_estimate
-from psithuros.modeling_utils import RunningMean, accumulate_gradients, parameter_count
+from psithuros.modeling_utils import accumulate_gradients, parameter_count
 from psithuros.models.gpt2 import Gpt2LMHeadModel
-from psithuros.trainer_hooks import TrainerHooks, StepInfo  # , engine_from_loss_fn
+from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
