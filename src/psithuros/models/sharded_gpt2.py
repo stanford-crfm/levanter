@@ -110,14 +110,14 @@ class ShardedGpt2Transformer(eqx.Module):
 class ShardedGpt2LMHeadModel(eqx.Module):
     transformer: ShardedGpt2Transformer
     embeddings: Shaped[SHARD, Gpt2Embeddings]
-    num_shards: int
-    embed_size_per_shard: int
+    num_shards: int = eqx.static_field()
+    embed_size_per_shard: int = eqx.static_field()
 
     @property
     def config(self):
         return self.transformer.config
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, config: GPT2Config, *, key: Shaped[SHARD, jrandom.PRNGKey]):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = ShardedGpt2Transformer(config, key=k_t)
         num_shards = jax.lax.psum(1, axis_name=SHARD)

@@ -3,11 +3,13 @@ import functools
 import inspect
 import typing
 from inspect import BoundArguments
-from typing import List, Tuple, Dict, Sequence, Optional, Callable, Any, get_origin, get_args, Annotated
+from typing import List, Tuple, Dict, Sequence, Optional, Callable, Any, get_origin, get_args, Annotated, Union
 
 import equinox as eqx
 import jax
-from equinox.custom_types import sentinel
+from equinox.custom_types import sentinel, PyTree
+import jax.numpy as jnp
+from jax._src.tree_util import flatten_one_level, all_leaves, _registry
 from jax.experimental.maps import xmap, AxisName, ResourceSet
 
 
@@ -25,6 +27,18 @@ class AxisNames:
     def __call__(self, *args, **kwds):
         raise TypeError(f"Shouldn't call this. Just necessary to trick the type checker")
 
+    def concat(self, other: Optional['AxisNames']) -> 'AxisNames':
+        if other is None:
+            return self
+        return AxisNames(tuple(self.names) + tuple(other.names))
+
+    def __hash__(self):
+        return hash(self.names)
+
+    def __eq__(self, other):
+        return self.names == other.names
+
+UnnamedAxes = AxisNames(names=(...,))
 
 T = typing.TypeVar("T")
 N = typing.TypeVar("N")
@@ -65,7 +79,7 @@ def infer_named_axes_from_module(mod: eqx.Module):
 
     return mod.__class__.tree_unflatten(aux, named_shapes)
 
-def infer_leaf_axes(tpe: type)-> List[Tuple[AxisName, ...]]:
+def infer_leaf_axes(tpe: type)-> List[AxisNames]:
     origin = get_origin(tpe)
     if origin is Annotated:
         args = get_args(tpe)
@@ -84,13 +98,13 @@ def infer_leaf_axes(tpe: type)-> List[Tuple[AxisName, ...]]:
                 shapes += infer_leaf_axes(field_.type)
         return shapes
     elif isinstance(tpe, AxisNames):
-        return [tpe.names]
+        return tpe
     elif tpe is Array:
-        return [(...,)]
+        return UnnamedAxes
     else:
-        return [(...,)]
+        return UnnamedAxes
 
-def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Tuple[AxisName, ...]]:
+def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Union[AxisNames, PyTree]]:
     "return value of None means the argument is static and unshaped"
     origin = get_origin(tpe)
     if origin is Annotated:
@@ -98,30 +112,31 @@ def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Tuple[AxisName, 
         shapeses = [s for s in args[1:] if isinstance(s, AxisNames)]
         if len(shapeses) != 1:
             raise ValueError(f"We only support one Shaped[...] in a leaf type, but got {shapeses}")
-        prefix_names = shapeses[0].names
+        prefix_names = shapeses[0]
 
-        recursive_leaf_names = infer_leaf_axes(args[0])
+        recursive_leaf_names = infer_named_axes(value, args[0])
         if recursive_leaf_names is None:
             return prefix_names
         else:
-            return [prefix_names + n for n in recursive_leaf_names]
+            return jax.tree_map(lambda x: prefix_names.concat(x), recursive_leaf_names)
     elif isinstance(value, eqx.Module):
         return infer_named_axes_from_module(value)
     elif isinstance(tpe, AxisNames):
-        return tpe.names
+        return tpe
     elif isinstance(value, jax.numpy.ndarray):
-        return (...,)
+        return UnnamedAxes
     elif tpe is Array:
-        return (...,)
+        return UnnamedAxes
+    elif all_leaves([value]):
+        return UnnamedAxes
     else:
         # TODO exploit tuple types: tuples, lists, dicts, etc.
-        leaves, structure = jax.tree_flatten(value)
-        if jax.treedef_is_leaf(structure):
-            return (...,)
-        else:
-            leaf_axes = [infer_named_axes(leaf, None) for leaf in leaves]
-            return jax.tree_unflatten(structure, leaf_axes)
-
+        handler = _registry.get(type(value))
+        if not handler:
+            raise NotImplementedError("Don't know how to infer axes for type %s" % type(value))
+        children, meta = handler.to_iter(value)
+        leaf_axes = [infer_named_axes(leaf, None) for leaf in children]
+        return handler.from_iter(meta, leaf_axes)
 
 
 def auto_xmap(fun: Callable = sentinel,
@@ -215,8 +230,6 @@ def xmapped_init(cls: typing.Type[eqx.Module],
     # static argnums etc for now. We also don't bother with making sure caching works, since we're typically
     # only doing this once per run
 
-    # first, we need to figure out the names of the axes of the arguments.
-    out_axes = infer_leaf_axes(cls)
     static_argnums = _ensure_tuple(static_argnums)
     static_kwarg_names = _ensure_tuple(static_kwarg_names)
 
@@ -224,6 +237,7 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
     @functools.wraps(cls.__new__)
     def wrapper_function(*args, **kwargs):
+
         bound_args: BoundArguments = sig.bind_partial(*((None, ) + args), **kwargs)
 
         dynamic_args = []
@@ -242,26 +256,63 @@ def xmapped_init(cls: typing.Type[eqx.Module],
                 dynamic_arg_shapes.append(infer_named_axes(arg, param.annotation))
                 dynamic_arg_names.append(name)
 
-        # we hold this on as a non-local that gets updated via function_to_xmap
+
+        # these have to be tuples for xmap, but they break tree_map
+        dynamic_arg_shapes_as_lists = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, dynamic_arg_shapes)
+        dynamic_arg_shapes = tuple(dynamic_arg_shapes)
+
+        # we have to call the ctor twice under xmap.
+        # The first time we get the axis names for the whole thing,
+        # the second time we actually xmap
+
+        # helper function we'll use to get the instance
+        def construct_object(*dynamic_args):
+            # update the signature
+            bound_args.arguments.update(dict(zip(dynamic_arg_names, dynamic_args)))
+            bound_args.apply_defaults()
+            # call the original function, again dropping the first argument which is the dummy self
+            inst = cls(*bound_args.args[1:], **bound_args.kwargs)
+            return inst
+
+        # first pass: get the axis names
+        out_axes = None
+        @functools.wraps(cls.__new__)
+        def initial_xmap(*dynamic_args):
+            # in the first pass we have to remove the names axes from the dynamic args
+            def remove_named_axes(value, axis_spec: AxisNames):
+                axis_spec = [axis for axis in axis_spec.names if axis is not Ellipsis]
+                for _ in axis_spec:
+                    value = value[0]
+                return value
+            # dynamic_args = jax.tree_map(remove_named_axes, dynamic_args, dynamic_arg_shapes)
+            inst = construct_object(*dynamic_args)
+            nonlocal out_axes
+            out_axes = infer_named_axes(inst, cls)
+            return None
+
+        xmap(initial_xmap, in_axes=dynamic_arg_shapes_as_lists, out_axes=[...], axis_sizes=axis_sizes, axis_resources=axis_resources)(*dynamic_args)
+
+        out_axes = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, out_axes)
+
+        # second pass: we actually have our axes.
+
+        # so we can recreate the tree at the end
         result_tree_shape = None
 
         # now we make the function that we will xmap
         def function_to_xmap(*dynamic_args):
-            # update the signature
-            bound_args.arguments.update(dict(zip(dynamic_arg_names, dynamic_args)))
-            bound_args.apply_defaults()
-            # call the original function
-            inst = cls(*bound_args.args[1:], **bound_args.kwargs)
+            inst = construct_object(*dynamic_args)
             nonlocal result_tree_shape
-            leaves, result_tree_shape = jax.tree_flatten(inst)
-            return leaves
+            return inst
+            # leaves, result_tree_shape = jax.tree_flatten(inst)
+            # return leaves
 
         # now we can call xmap
-        f = xmap(function_to_xmap, in_axes=dynamic_arg_shapes, out_axes=out_axes,
+        f = xmap(function_to_xmap, in_axes=dynamic_arg_shapes_as_lists, out_axes=out_axes,
                  axis_resources=axis_resources, axis_sizes=axis_sizes, backend=backend)
-        result_leaves = f(*dynamic_args)
-        result_unflattened = jax.tree_unflatten(result_tree_shape, result_leaves)
-        return result_unflattened
+        inst = f(*dynamic_args)
+        # result_unflattened = jax.tree_unflatten(result_tree_shape, result_leaves)
+        return inst
 
     return wrapper_function
 
