@@ -87,8 +87,7 @@ class MyModuleInit(eqx.Module):
 
 
 def test_xmap_class_init():
-    XMappedModule = xmapped_class(MyModuleInit)
-    mod = XMappedModule(axis_sizes={"x": 2, "y": 3})
+    mod = xmapped_init(MyModuleInit, axis_sizes={"x": 2, "y": 3})()
     assert(isinstance(mod, MyModuleInit))
     assert(mod.named.shape == (2, 3))
     assert(mod.unnamed1.shape == ())
@@ -103,8 +102,7 @@ def test_xmap_class_nested_init():
         def __init__(self):
             self.inner = MyModuleInit()
 
-    XMappedModule = xmapped_class(Mod2)
-    mod2 = XMappedModule(axis_sizes={"x": 2, "y": 3})
+    mod2 = xmapped_init(Mod2, axis_sizes={"x": 2, "y": 3})()
     assert(isinstance(mod2, Mod2))
     mod = mod2.inner
     assert(mod.named.shape == (2, 3))
@@ -122,9 +120,7 @@ def test_xmap_class_init_with_args():
             self.array = in_array
             self.array2 = jnp.zeros(10)
 
-    XMappedModule = xmapped_class(ModWithArgs)
-    in_array = jnp.ones((2, 3))
-    mod = XMappedModule(in_array)
+    mod = xmapped_init(ModWithArgs)(jnp.ones((2, 3)))
     assert(isinstance(mod, ModWithArgs))
     assert(mod.array.shape == (2, 3))
     assert(mod.array2.shape == (2, 10))
@@ -140,10 +136,9 @@ def test_xmap_class_init_with_args_partial_dim():
             self.array2 = jnp.zeros(10)
             self.unaxised = unaxised
 
-    XMappedModule = xmapped_class(ModWithArgs)
     in_array = jnp.ones(3)
     unaxised = jnp.ones(10)
-    mod = XMappedModule(in_array, unaxised, axis_sizes={"x": 2})
+    mod = xmapped_init(ModWithArgs, axis_sizes={"x": 2})(in_array, unaxised)
     assert(isinstance(mod, ModWithArgs))
     assert(mod.array.shape == (2, 3))
     assert(mod.array2.shape == (2, 10))
@@ -161,8 +156,7 @@ def test_xmap_class_with_shaped_annotation():
             self.array = jnp.zeros(10)
             self.multi_array = jnp.zeros(2)
 
-    XMappedModule = xmapped_class(Mod)
-    mod = XMappedModule(jrandom.PRNGKey(0), axis_sizes={"x": 2, "y": 3, "shard": 4})
+    mod = xmapped_init(Mod, axis_sizes={"x": 2, "y": 3, "shard": 4})(jrandom.PRNGKey(0))
     assert(isinstance(mod, Mod))
     assert(mod.shaped_linear.weight.shape == (4, 1, 5))
     assert(mod.shaped_linear.bias.shape == (4, 1))

@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import inspect
 import typing
+from inspect import BoundArguments
 from typing import List, Tuple, Dict, Sequence, Optional, Callable, Any, get_origin, get_args, Annotated
 
 import equinox as eqx
@@ -59,7 +60,7 @@ def infer_named_axes_from_module(mod: eqx.Module):
             raise ValueError(f"Could not find field {name} in {mod.__class__}")
 
         field = fields[name]
-        shape = infer_named_axes(value=value, annotation=field.type)
+        shape = infer_named_axes(value=value, tpe=field.type)
         named_shapes.append(shape)
 
     return mod.__class__.tree_unflatten(aux, named_shapes)
@@ -89,20 +90,38 @@ def infer_leaf_axes(tpe: type)-> List[Tuple[AxisName, ...]]:
     else:
         return [(...,)]
 
-def infer_named_axes(value: Any, annotation: Optional[type]):
-    if isinstance(value, eqx.Module):
+def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Tuple[AxisName, ...]]:
+    "return value of None means the argument is static and unshaped"
+    origin = get_origin(tpe)
+    if origin is Annotated:
+        args = get_args(tpe)
+        shapeses = [s for s in args[1:] if isinstance(s, AxisNames)]
+        if len(shapeses) != 1:
+            raise ValueError(f"We only support one Shaped[...] in a leaf type, but got {shapeses}")
+        prefix_names = shapeses[0].names
+
+        recursive_leaf_names = infer_leaf_axes(args[0])
+        if recursive_leaf_names is None:
+            return prefix_names
+        else:
+            return [prefix_names + n for n in recursive_leaf_names]
+    elif isinstance(value, eqx.Module):
         return infer_named_axes_from_module(value)
-    elif isinstance(annotation, AxisNames):
-        return annotation.names
+    elif isinstance(tpe, AxisNames):
+        return tpe.names
     elif isinstance(value, jax.numpy.ndarray):
         return (...,)
-    elif annotation is Array:
+    elif tpe is Array:
         return (...,)
     else:
         # TODO exploit tuple types: tuples, lists, dicts, etc.
         leaves, structure = jax.tree_flatten(value)
-        leaf_axes = [infer_named_axes(leaf, None) for leaf in leaves]
-        return jax.tree_unflatten(structure, leaf_axes)
+        if jax.treedef_is_leaf(structure):
+            return (...,)
+        else:
+            leaf_axes = [infer_named_axes(leaf, None) for leaf in leaves]
+            return jax.tree_unflatten(structure, leaf_axes)
+
 
 
 def auto_xmap(fun: Callable = sentinel,
@@ -170,56 +189,84 @@ def auto_xmap(fun: Callable = sentinel,
 
     return axis_extracting_function
 
+def _ensure_tuple(x):
+    if x is None:
+        return ()
+    elif isinstance(x, typing.Iterable):
+        return tuple(x)
+    else:
+        return (x,)
 
 
 
-def xmapped_class(cls: typing.Type[eqx.Module]):
+def xmapped_init(cls: typing.Type[eqx.Module],
+                 *,
+                 static_argnums: Optional[Sequence[int]]=None,
+                 static_kwarg_names: Optional[Sequence[str]] = None,
+                 axis_sizes=None, axis_resources=None, backend=None
+                 ):
+
+    axis_sizes = axis_sizes or {}
+    axis_resources = axis_resources or {}
+
 
     # this is pretty tricky to get right.
-    # we want to be able to make it appear that the class __init__ has
-    # an additional named argument "axis_sizes" that is a Dict[AxisName, int],
-    # analogous to the argument to xmap.
-    # To the user, when we call the class, we want them to pass in an axis_sizes
-    # when creating the class.
-    # Underneath, we first call the original __init__ with no arguments so that we can get a PyTree
-    # with the right shape to which we can apply axis_sizes. This gives us "out_axes".
-    # in_axes can be derived from looking at the arguments to the original __init__ and any accompanying types.
-    #
-    # Then we call xmap with the original __init__, the axis_sizes dict, the in_axes, and the out_axes.
+    # It shares a lot in common with equinox's filter_jit etc, though it's a bit less fancy (for now), using
+    # static argnums etc for now. We also don't bother with making sure caching works, since we're typically
+    # only doing this once per run
 
-    # TODO: cache this?
+    # first, we need to figure out the names of the axes of the arguments.
+    out_axes = infer_leaf_axes(cls)
+    static_argnums = _ensure_tuple(static_argnums)
+    static_kwarg_names = _ensure_tuple(static_kwarg_names)
+
+    sig = inspect.signature(cls.__init__)
+
     @functools.wraps(cls.__new__)
-    def xmapped_new(wrapped_cls, *args, axis_sizes=None, axis_resources=None, backend=None, **kwargs):
+    def wrapper_function(*args, **kwargs):
+        bound_args: BoundArguments = sig.bind_partial(*((None, ) + args), **kwargs)
 
-        tree_shape = None
+        dynamic_args = []
+        dynamic_arg_shapes = []
+        dynamic_arg_names = []
 
-        def mk_instance(*args, **kwargs):
-            inst = cls(*args, **kwargs)
-            nonlocal tree_shape
-            leaves, tree_shape = jax.tree_flatten(inst)
+        for i, (name, param) in enumerate(sig.parameters.items()):
+            if i == 0:
+                assert name == "self"
+                continue
+
+            i = i - 1 # drop one for "self"
+            arg = bound_args.arguments[name]
+            if name not in static_kwarg_names and i not in static_argnums:
+                dynamic_args.append(arg)
+                dynamic_arg_shapes.append(infer_named_axes(arg, param.annotation))
+                dynamic_arg_names.append(name)
+
+        # we hold this on as a non-local that gets updated via function_to_xmap
+        result_tree_shape = None
+
+        # now we make the function that we will xmap
+        def function_to_xmap(*dynamic_args):
+            # update the signature
+            bound_args.arguments.update(dict(zip(dynamic_arg_names, dynamic_args)))
+            bound_args.apply_defaults()
+            # call the original function
+            inst = cls(*bound_args.args[1:], **bound_args.kwargs)
+            nonlocal result_tree_shape
+            leaves, result_tree_shape = jax.tree_flatten(inst)
             return leaves
-        # # first, call the original __init__ with the original arguments, which will give us the original
-        # # module, from which we can derive the out_axes
-        # # this gives us the right shape to which we can apply axis_sizes
-        # print(kwargs)
-        # first, infer the axes of all arguments:
-        sig = inspect.signature(cls.__init__)
-        # bind the arguments to the signature, using None as "self" because we don't have or want it
-        bound_sig = sig.bind_partial(*((None,) + args), **kwargs)
-        bound_sig.apply_defaults()
-        # infer the axes of all arguments:
-        arg_shapes = [infer_named_axes(value, sig.parameters[arg_name].annotation) for arg_name, value in bound_sig.arguments.items() if arg_name != "self"]
-        # now infer the out_axes
-        out_axes = infer_leaf_axes(cls)
 
-        leaves = xmap(mk_instance, in_axes=arg_shapes, out_axes=out_axes, axis_sizes=axis_sizes or {}, axis_resources=axis_resources or {})(*args)
-        return jax.tree_unflatten(tree_shape, leaves)
+        # now we can call xmap
+        f = xmap(function_to_xmap, in_axes=dynamic_arg_shapes, out_axes=out_axes,
+                 axis_resources=axis_resources, axis_sizes=axis_sizes, backend=backend)
+        result_leaves = f(*dynamic_args)
+        result_unflattened = jax.tree_unflatten(result_tree_shape, result_leaves)
+        return result_unflattened
 
-    # now return the class with the xmapped __init__
-    return type(cls.__name__ + "Wrapped", (), {"__new__": xmapped_new, "__init__": lambda self: ()})
+    return wrapper_function
 
 
 
 
-__all__ = ["xmapped_class", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
+__all__ = ["xmapped_init", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
            "infer_named_axes_from_module", "Shaped"]
