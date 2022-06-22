@@ -1,4 +1,4 @@
-from typing import Union, Tuple, Optional, Callable, TypeVar
+from typing import Union, Tuple, Optional, Callable, TypeVar, Sequence
 
 import jax
 import numpy as np
@@ -17,13 +17,13 @@ def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
         return jrandom.split(key, num)
 
 
-def shaped_rng_split(key, split_shape: Union[int, Tuple[int, ...]] = 2) -> jrandom.KeyArray:
+def shaped_rng_split(key, split_shape: Union[int, Sequence[int]] = 2) -> jrandom.KeyArray:
     if isinstance(split_shape, int):
         num_splits = split_shape
         split_shape = (num_splits, ) + key.shape
     else:
         num_splits = np.prod(split_shape)
-        split_shape = split_shape + key.shape
+        split_shape = tuple(split_shape) + key.shape
 
     if num_splits == 1:
         return jnp.reshape(key, split_shape)

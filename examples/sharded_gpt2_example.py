@@ -12,7 +12,7 @@ import psithuros.callbacks
 from psithuros import callbacks, jax_utils
 from psithuros.logging import log_performance_stats, pbar_logger, log_to_wandb
 from psithuros.models.sharded_gpt2 import SHARD, ShardedGpt2LMHeadModel
-from psithuros.named_tensors import xmapped_init, infer_leaf_axes
+from psithuros.named_tensors import xmapped_init, infer_leaf_axes, Array, infer_named_axes, AxisNames
 
 print(jax.devices())
 import jax.lax as lax
@@ -34,6 +34,8 @@ from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
+
+BATCH = "batch"
 
 @dataclass
 class HfDatasetParams:
@@ -90,7 +92,7 @@ def main(config: TrainGpt2Config):
     dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
-    with config.trainer.device_mesh(batch_name="batch", model_name=SHARD) as mesh:
+    with config.trainer.device_mesh(batch_name=BATCH, model_name=SHARD) as mesh:
         devices = config.trainer.devices()
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
@@ -107,17 +109,17 @@ def main(config: TrainGpt2Config):
                                 n_head=config.num_heads,
                                 )
 
-        axis_resources = {SHARD: SHARD, "batch": "batch"}
+        axis_resources = {SHARD: SHARD, BATCH: BATCH}
         axis_sizes = mesh.shape
-
-        model_key = jrandom.split(model_key, axis_sizes[SHARD])
-
 
         model = xmapped_init(ShardedGpt2LMHeadModel,
                              static_argnums=(0,),
                              axis_resources=axis_resources,
-                             axis_sizes=axis_sizes)(gpt_config, key=model_key)
+                             axis_sizes=axis_sizes)(gpt_config, key=jrandom.split(model_key, axis_sizes[SHARD]))
 
+        model_axes = infer_named_axes(model, ShardedGpt2LMHeadModel)
+        # model_axes returns a pytree of AxisNames, but xmap needs the inner names
+        model_axes = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, model_axes)
 
         # convert to appropriate dtype
         model = jax.tree_map(lambda array: array.astype(config.dtype), model)
@@ -126,42 +128,81 @@ def main(config: TrainGpt2Config):
         optim = config.trainer.optimizer()
 
         # loss function
-        def compute_loss(model, input_ids, targets, key):
-            # vmap automagically vectorizes the model over a batch dimension
-            # TODO: this shouldn't be necessary, but for some reason it blows up the if i don't
-            pred_y = jax.vmap(model, in_axes=(0, None))(input_ids, key)
-            return jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
+        def compute_loss(model: ShardedGpt2LMHeadModel,
+                         input_ids: Array[BATCH, ...],
+                         targets: Array[BATCH, ...],
+                         key: [SHARD, BATCH, ...]):
+            pred_y = model(input_ids, key)
+            token_loss = jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
+            return jax.lax.pmean(token_loss, BATCH)
+
+        compute_loss_xmap = xmap(partial(compute_loss, key=None),
+                            in_axes=[
+                                model_axes,
+                                [BATCH, ...],
+                                [BATCH, ...],
+                            ],
+                            out_axes=[...],
+                            axis_resources=axis_resources)
+
 
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
+        def foo(model: ShardedGpt2LMHeadModel,
+                input_ids: Array[BATCH, ...],
+                targets: Array[BATCH, ...],
+                key: [SHARD, BATCH, ...]):
+            loss, grad = compute_loss_and_grad(model, input_ids, targets, key)
+            grad = jax.lax.pmean(grad, BATCH)
+            # TODO: this is so gross there has to be a better way!
+            def still_has_shard_axis(x):
+                try:
+                    return SHARD in x.aval.named_shaped
+                except AttributeError:
+                    return False
+            grad = jax.tree_map(lambda x: x if still_has_shard_axis(x) else jax.lax.pmean(x, SHARD), grad)
+            return loss, grad
+
+        compute_loss_and_grad_xmap = xmap(foo, #compute_loss_and_grad,
+                                          in_axes=[
+                                              model_axes,
+                                              [BATCH, ...],
+                                              [BATCH, ...],
+                                              [BATCH, SHARD, ...],
+                                          ],
+                                          out_axes=((...,), model_axes),
+                                          axis_resources=axis_resources)
+
+        compute_loss_and_grad_xmap(model,
+                                   jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
+                                   jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
+                                   jax_utils.shaped_rng_split(model_key, [axis_sizes[BATCH], axis_sizes[SHARD]]))
+
         # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
         # typically you want to pmap a vmap (and reshape)
-        compute_loss_pmap = pmap(partial(compute_loss, key=None), "device")
+        # compute_loss_pmap = pmap(partial(compute_loss, key=None), "device")
 
         # boilerplate hooks and such
         engine = TrainerHooks()
 
         # get an estimate of flops for one example
-        flops_per_example = flops_estimate(compute_loss_and_grad,
-                                           model,
-                                           jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                           jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                           model_key)
+        # flops_per_example = flops_estimate(compute_loss_and_grad_xmap,
+        #                                    model,
+        #                                    jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
+        #                                    jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
+        #                                    jax_utils.shaped_rng_split(model_key, [axis_sizes[SHARD], axis_sizes[BATCH]]))
 
-        wandb.config['flops_per_example'] = flops_per_example
+        # wandb.config['flops_per_example'] = flops_per_example
         wandb.config['parameter_count'] = parameter_count(model)
-        wandb.summary['flops_per_example'] = flops_per_example
+        # wandb.summary['flops_per_example'] = flops_per_example
         wandb.summary['parameter_count'] = parameter_count(model)
 
-        jax_utils.dump_jaxpr("model.jaxpr.txt",
-                             compute_loss_and_grad, model,
-                             jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                             jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
-        engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
+        # engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
 
         def eval_dataloader():
             test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),
@@ -173,10 +214,11 @@ def main(config: TrainGpt2Config):
 
                 yield input_ids, targets
 
-        evaluate = callbacks.compute_validation_loss(compute_loss_pmap, eval_dataloader)
-        engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
-        save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
-        engine.add_hook(save, every=config.trainer.steps_per_save)
+        # evaluate = callbacks.compute_validation_loss(compute_loss_xmap, eval_dataloader)
+        # engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
+        # TODO: model sharded saving
+        # save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
+        # engine.add_hook(save, every=config.trainer.steps_per_save)
 
         # data loader
         iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
@@ -186,7 +228,6 @@ def main(config: TrainGpt2Config):
         opt_state = optim.init(model)
 
         # load the last checkpoint and resume if we want
-        # TODO: add support for sharding
         # TODO: need to seek in dataloader
         # TODO: wandb resume logic?
         resume_step = None
@@ -210,19 +251,18 @@ def main(config: TrainGpt2Config):
 
         # because we're running the model on each device in parallel, we need to make sure the model is on each device
         # (and the optimization state too)
-        model = jax.device_put_replicated(model, devices)
-        opt_state = jax.device_put_replicated(opt_state, devices)
+        # model = jax.device_put_replicated(model, devices)
+        # opt_state = jax.device_put_replicated(opt_state, devices)
 
         # parallel training is fairly simple too. The body of the training loop should be a single function.
         # This function is being executed on each device in parallel
-        @partial(pmap, axis_name="device", donate_argnums=(0, 1))
         def train_step(model, opt_state, input_ids, targets, keys):
             def loss_grad(model, x):
-                return compute_loss_and_grad(model, *x)
+                return compute_loss_and_grad_xmap(model, *x)
 
             loss, grads = accumulate_gradients(loss_grad, model, (input_ids, targets, keys))
-            loss = lax.pmean(loss, "device")
-            grads = lax.pmean(grads, "device")
+            # loss = lax.pmean(loss, "device")
+            # grads = lax.pmean(grads, "device")
 
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
@@ -234,11 +274,17 @@ def main(config: TrainGpt2Config):
             my_key, training_key = jrandom.split(training_key, 2)
 
             input_ids, targets = next(iter_data)
-            micro_step_shape = (len(devices), config.trainer.train_microbatches_per_step, config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
+            micro_step_shape = (config.trainer.train_microbatches_per_step,
+                                config.trainer.batch_axis_size,
+                                config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
-            micro_keys = shaped_rng_split(my_key, micro_step_shape[:2])
+            micro_keys = shaped_rng_split(my_key, (
+                config.trainer.train_microbatches_per_step,
+                config.trainer.batch_axis_size,
+                config.trainer.model_shards,
+                ))
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
             step_loss = jnp.mean(step_loss).item()
@@ -247,8 +293,8 @@ def main(config: TrainGpt2Config):
             engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, time_out - time_in))
 
         last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key, time_out - time_in)
-        evaluate(last_step)
-        save(last_step)
+        # evaluate(last_step)
+        # save(last_step)
 
 
 if __name__ == "__main__":

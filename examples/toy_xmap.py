@@ -1,4 +1,4 @@
-mport os
+import os
 
 from psithuros.named_tensors import Array, infer_named_axes_from_module
 

@@ -5,6 +5,7 @@ import equinox.nn as nn
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from einops import rearrange
 from transformers import GPT2Config
 
 import psithuros.nn as pnn
@@ -138,15 +139,39 @@ class ShardedGpt2LMHeadModel(eqx.Module):
 
     def __call__(self, input_ids: Array["seq_len"], key):
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
+        # my_shard = jax.lax.axis_index(SHARD)
+        my_shard = 0
 
         hidden_states = self.embeddings.embed(input_ids, inference=key is None, key=k_embed)
-        hidden_states = jax.lax.all_gather(hidden_states, axis_name=SHARD, tiled=True)
+        # doesn't work because of https://github.com/google/jax/issues/11193
+        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=SHARD, tiled=True, axis=-1)
+
+        # this doesn't work either
+        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=SHARD, axis=-1)
+        # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[:-2] + (-1,))
+
+        # nor this
+        # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)), SHARD, 0, -1, tiled=True)
+        # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[1:])
+
+
+        print(hidden_states.shape)
+
+        local_hidden_states = hidden_states
+
+        full_size = hidden_states.shape[0:-1] + (self.config.n_embd, )
+        hidden_states = jnp.zeros(full_size, dtype=hidden_states.dtype)
+        hidden_states = jax.lax.dynamic_update_slice_in_dim(hidden_states, local_hidden_states, jnp.array(my_shard * self.embed_size_per_shard), -1)
+        # hidden_states.at[my_shard:my_shard+self.embed_size_per_shard].set(local_hidden_states, indices_are_sorted=True)
+        hidden_states = jax.lax.psum(hidden_states, axis_name=SHARD)
+
+        # hidden_states = jax.lax.scatter(hidden_states, my_shard, hidden_states[my_shard], axis_name=SHARD)
+
 
         hidden_states = self.transformer(hidden_states, inference=key is None, key=k_transformer)
 
         # I don't love this, but we have to re-shard the hidden states by slicing followed up by a psum
-        shard_start_index = jax.lax.axis_index(SHARD) * self.embed_size_per_shard
-        hidden_states = jnp.take(hidden_states, range(shard_start_index, shard_start_index+self.embed_size_per_shard), axis=-1)
+        hidden_states = rearrange(hidden_states, "... (s h) -> ... s h", s=self.num_shards)[..., my_shard, :]
         lm_logits = self.embeddings.unembed(hidden_states)
         lm_logits = jax.lax.psum(lm_logits, axis_name=SHARD)
 
