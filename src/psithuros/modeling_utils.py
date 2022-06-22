@@ -40,14 +40,14 @@ X = TypeVar('X')
 
 
 # TODO: running mean?
-def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, inputs: X) -> Tuple[float, M]:
+def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs: X) -> Tuple[float, M]:
     zero = (jnp.zeros(()), jax.tree_map(jnp.zeros_like, model), 0)
     def compute_and_accumulate(acc, input):
         loss, grad = f(model, input)
         acc_loss, acc_grad, n = acc
 
         return loss + acc_loss, jax.tree_map(jnp.add, acc_grad, grad), n + 1
-    total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, inputs)
+    total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, *inputs)
 
     return total_loss/total_n, jax.tree_map(lambda x: x/total_n, total_grad)
 

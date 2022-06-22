@@ -139,8 +139,8 @@ class ShardedGpt2LMHeadModel(eqx.Module):
 
     def __call__(self, input_ids: Array["seq_len"], key):
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
-        # my_shard = jax.lax.axis_index(SHARD)
-        my_shard = 0
+        my_shard = jax.lax.axis_index(SHARD)
+        # my_shard = 0
 
         hidden_states = self.embeddings.embed(input_ids, inference=key is None, key=k_embed)
         # doesn't work because of https://github.com/google/jax/issues/11193
@@ -154,8 +154,6 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)), SHARD, 0, -1, tiled=True)
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[1:])
 
-
-        print(hidden_states.shape)
 
         local_hidden_states = hidden_states
 

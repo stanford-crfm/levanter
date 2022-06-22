@@ -42,9 +42,13 @@ Carry = TypeVar('Carry')
 X = TypeVar('X')
 Y = TypeVar('Y')
 
-def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, xs: X) -> Carry:
-    res = lax.scan(lambda carry, x: (fn(carry, x), None), init=init, xs=xs)
-    return res[0]
+def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
+    # res = lax.scan(lambda carry, x: (fn(carry, x), None), init=init, xs=xs)
+    # return res[0]
+    ys = zip(*xs)
+    for x in ys:
+        init = fn(init, x)
+    return init
 
 
 def flops_estimate(fn, *args):

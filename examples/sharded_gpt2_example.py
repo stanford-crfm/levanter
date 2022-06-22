@@ -132,9 +132,10 @@ def main(config: TrainGpt2Config):
                          input_ids: Array[BATCH, ...],
                          targets: Array[BATCH, ...],
                          key: [SHARD, BATCH, ...]):
-            pred_y = model(input_ids, key)
+            pred_y = jax.vmap(model)(input_ids, key)
             token_loss = jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
             return jax.lax.pmean(token_loss, BATCH)
+
 
         compute_loss_xmap = xmap(partial(compute_loss, key=None),
                             in_axes=[
@@ -175,9 +176,9 @@ def main(config: TrainGpt2Config):
                                           axis_resources=axis_resources)
 
         compute_loss_and_grad_xmap(model,
-                                   jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
-                                   jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
-                                   jax_utils.shaped_rng_split(model_key, [axis_sizes[BATCH], axis_sizes[SHARD]]))
+                                   jnp.ones((axis_sizes[BATCH], 4, config.seq_len), dtype=jnp.int32),
+                                   jnp.ones((axis_sizes[BATCH], 4, config.seq_len), dtype=jnp.int32),
+                                   jax_utils.shaped_rng_split(model_key, [axis_sizes[BATCH], axis_sizes[SHARD], 4]))
 
         # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
         # typically you want to pmap a vmap (and reshape)
@@ -260,7 +261,7 @@ def main(config: TrainGpt2Config):
             def loss_grad(model, x):
                 return compute_loss_and_grad_xmap(model, *x)
 
-            loss, grads = accumulate_gradients(loss_grad, model, (input_ids, targets, keys))
+            loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)
             # loss = lax.pmean(loss, "device")
             # grads = lax.pmean(grads, "device")
 
@@ -284,6 +285,7 @@ def main(config: TrainGpt2Config):
                 config.trainer.train_microbatches_per_step,
                 config.trainer.batch_axis_size,
                 config.trainer.model_shards,
+                config.trainer.per_device_train_batch_size,
                 ))
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
