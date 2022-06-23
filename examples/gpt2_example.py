@@ -207,7 +207,7 @@ def main(config: TrainGpt2Config):
         def loss_grad(model, x):
             return compute_loss_and_grad(model, *x)
 
-        loss, grads = accumulate_gradients(loss_grad, model, (input_ids, targets, keys))
+        loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)
         loss = lax.pmean(loss, "device")
         grads = lax.pmean(grads, "device")
 

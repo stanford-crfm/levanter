@@ -200,7 +200,6 @@ def main(config: TrainGpt2Config):
         wandb.summary['parameter_count'] = parameter_count(model)
 
 
-
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
         # engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
