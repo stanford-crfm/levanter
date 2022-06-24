@@ -43,7 +43,9 @@ class AxisNames:
         return hash(self.names)
 
     def __eq__(self, other):
-        return self.names == other.names
+        if isinstance(other, AxisNames):
+            return self.names == other.names
+        return False
 
 
 UnnamedAxes = AxisNames(names=(...,))
@@ -68,29 +70,7 @@ class Shaped(typing.Generic[T]):
         return typing.Annotated[tpe, AxisNames(shapes)]
 
 
-def infer_named_axes_from_module(mod: eqx.Module):
-    """Automatically get a "pytree" of named axes for an equinox Module.
-    The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
-    To pass this to xmap, you need to unwrap the names using tree_map:
-    >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
-    """
-    # first split into the pytree
-    dynamic_values, aux = mod.tree_flatten()
-    dynamic_field_names = aux[0]
-    fields: Sequence[dataclasses.Field] = dataclasses.fields(mod)  # type:ignore
-    fields = {f.name: f for f in fields}
 
-    named_shapes: List[Tuple[AxisName, ...]] = []
-
-    for name, value in zip(dynamic_field_names, dynamic_values):
-        if name not in fields:
-            raise ValueError(f"Could not find field {name} in {mod.__class__}")
-
-        field = fields[name]
-        shape = infer_named_axes(value=value, tpe=field.type)
-        named_shapes.append(shape)
-
-    return mod.__class__.tree_unflatten(aux, named_shapes)
 
 
 def infer_leaf_axes(tpe: type)-> List[AxisNames]:
@@ -126,8 +106,12 @@ def _is_named_tuple(x):
     return isinstance(x, tuple) and hasattr(x, '_fields')
 
 
-def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Union[AxisNames, PyTree]]:
-    "return value of None means the argument is static and unshaped"
+def infer_named_axes(value: PyTree, tpe: Optional[type])->Optional[Union[AxisNames, PyTree]]:
+    """Automatically get a "pytree" of named axes for a pytree
+       The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
+       To pass this to xmap, you need to unwrap the names using tree_map:
+       >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
+   """
     origin = get_origin(tpe)
     if origin is Annotated:
         args = get_args(tpe)
@@ -164,6 +148,35 @@ def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Union[AxisNames,
         return handler.from_iter(meta, child_axes)
 
 
+def unwrap_axis_names(tree: Union[AxisNames, PyTree])->Union[AxisNames, PyTree]:
+    return jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, tree)
+
+
+def infer_named_axes_from_module(mod: eqx.Module):
+    """Automatically get a "pytree" of named axes for an equinox Module.
+    The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
+    To pass this to xmap, you need to unwrap the names using tree_map:
+    >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
+    """
+    # first split into the pytree
+    dynamic_values, aux = mod.tree_flatten()
+    dynamic_field_names = aux[0]
+    fields: Sequence[dataclasses.Field] = dataclasses.fields(mod)  # type:ignore
+    fields = {f.name: f for f in fields}
+
+    named_shapes: List[Tuple[AxisName, ...]] = []
+
+    for name, value in zip(dynamic_field_names, dynamic_values):
+        if name not in fields:
+            raise ValueError(f"Could not find field {name} in {mod.__class__}")
+
+        field = fields[name]
+        shape = infer_named_axes(value=value, tpe=field.type)
+        named_shapes.append(shape)
+
+    return mod.__class__.tree_unflatten(aux, named_shapes)
+
+
 def auto_xmap(fun: Callable = sentinel,
               *,
               axis_sizes: Dict[AxisName, int] = None,
@@ -171,7 +184,11 @@ def auto_xmap(fun: Callable = sentinel,
               backend: Optional[str] = None):
     if fun is sentinel:
         return functools.partial(auto_xmap, axis_sizes=axis_sizes, axis_resources=axis_resources, backend=backend)
-    """Wraps xmap to automatically infer tensor names from function signature and dataclass field declarations. This
+    # TODO: this is a work in progress and you should not use it yet.
+    """
+    TODO: this is a work in progress and you should not use it yet.
+    
+    Wraps xmap to automatically infer tensor names from function signature and dataclass field declarations. This
     method knows about types annotated with NamedArray as well as equinox Module dataclasses."""
 
     # we want to make a function that, when it is called with a Module, will:
@@ -192,12 +209,6 @@ def auto_xmap(fun: Callable = sentinel,
         arg_shapes = [infer_named_axes(arg, param.annotation) for (arg, param) in zip(args, sig.parameters.values())]
         if len(kwargs) > 0:
             raise NotImplementedError("kwargs not yet supported")
-        kwarg_shapes = {k: infer_named_axes(v, None) for k, v in kwargs.items()}
-        # flatten the arguments into pytrees
-        args_leaves, args_treedefs = jax.tree_flatten(args)
-        kwargs_leaves_defs = {k: jax.tree_flatten(v) for k,v in kwargs.items()}
-        kwargs_leaves = {k: v[0] for k,v in kwargs_leaves_defs.items()}
-        kwargs_treedefs = {k: v[1] for k,v in kwargs_leaves_defs.items()}
 
         # attempt to figure out the return type
         # TODO: want to handle type vars...
@@ -208,8 +219,6 @@ def auto_xmap(fun: Callable = sentinel,
         @functools.wraps(fun)
         def function_to_xmap(*args, **kwargs):
             # unflatten the arguments into pytrees
-            # args_unflattened = [jax.tree_unflatten(treedef, leaf) for treedef, leaf in zip(args_treedefs, args_leaves)]
-            # kwargs_unflattened = {k: jax.tree_unflatten(kwargs_treedefs[k], kwargs_leaves[k]) for k in kwargs_leaves}
             # call the original function
             results = fun(*args, **kwargs)
             # flatten the results into pytrees
@@ -222,7 +231,7 @@ def auto_xmap(fun: Callable = sentinel,
         # TODO: make this work with the signature for plain arrays
         # TODO: need to handle return type
         # TODO: figure out how to use kwargs shapes
-        f = xmap(function_to_xmap, in_axes=arg_shapes, out_axes=return_axes)
+        f = xmap(function_to_xmap, in_axes=unwrap_axis_names(arg_shapes), out_axes=unwrap_axis_names(return_axes))
         result_leaves = f(*args, **kwargs)
         result_unflattened = jax.tree_unflatten(results_treedefs, result_leaves)
         return result_unflattened
