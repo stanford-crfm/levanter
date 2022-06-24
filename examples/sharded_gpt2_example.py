@@ -25,8 +25,8 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 from psithuros.checkpoint import load_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split
-from psithuros.modeling_utils import accumulate_gradients, parameter_count
+from psithuros.jax_utils import shaped_rng_split, parameter_count
+from psithuros.modeling_utils import accumulate_gradients
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py

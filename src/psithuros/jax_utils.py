@@ -1,5 +1,6 @@
 from typing import Union, Tuple, Optional, Callable, TypeVar, Sequence
 
+import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
@@ -64,3 +65,7 @@ def dump_jaxpr(file, fn, *args, **kwargs):
     jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
     with open(file, "w") as f:
         f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
+
+
+def parameter_count(model):
+    return sum(arr.size for arr in jax.tree_leaves(model, eqx.is_inexact_array_like))

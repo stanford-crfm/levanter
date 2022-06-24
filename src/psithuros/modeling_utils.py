@@ -4,7 +4,6 @@ from typing import Callable, Tuple, TypeVar
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
-import equinox as eqx
 
 from psithuros.jax_utils import fold_left
 
@@ -45,6 +44,7 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     def compute_and_accumulate(acc, input):
         loss, grad = f(model, input)
         acc_loss, acc_grad, n = acc
+        # TODO: verify if we still need this now that we have scan working again
         # in place to preserve ram
         def add(x, y):
             x += y
@@ -56,5 +56,3 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     return total_loss/total_n, jax.tree_map(lambda x: x/total_n, total_grad)
 
 
-def parameter_count(model):
-    return sum(arr.size for arr in jax.tree_leaves(model, eqx.is_inexact_array_like))
