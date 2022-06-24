@@ -98,11 +98,17 @@ def infer_leaf_axes(tpe: type)-> List[AxisNames]:
                 shapes += infer_leaf_axes(field_.type)
         return shapes
     elif isinstance(tpe, AxisNames):
-        return tpe
+        return [tpe]
     elif tpe is Array:
-        return UnnamedAxes
+        return [UnnamedAxes]
     else:
-        return UnnamedAxes
+        return [UnnamedAxes]
+
+def _is_named_tuple(x):
+    # https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple
+    # Python is so dumb
+    return isinstance(x, tuple) and hasattr(x, '_fields')
+
 
 def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Union[AxisNames, PyTree]]:
     "return value of None means the argument is static and unshaped"
@@ -129,14 +135,17 @@ def infer_named_axes(value: Any, tpe: Optional[type])->Optional[Union[AxisNames,
         return UnnamedAxes
     elif all_leaves([value]):
         return UnnamedAxes
+    elif _is_named_tuple(value):
+        child_axes = [infer_named_axes(child, tpe) for child, tpe in zip(value, value.__annotations__.values())]
+
+        return value.__class__(*child_axes)
     else:
-        # TODO exploit tuple types: tuples, lists, dicts, etc.
         handler = _registry.get(type(value))
         if not handler:
             raise NotImplementedError("Don't know how to infer axes for type %s" % type(value))
         children, meta = handler.to_iter(value)
-        leaf_axes = [infer_named_axes(leaf, None) for leaf in children]
-        return handler.from_iter(meta, leaf_axes)
+        child_axes = [infer_named_axes(child, None) for child in children]
+        return handler.from_iter(meta, child_axes)
 
 
 def auto_xmap(fun: Callable = sentinel,

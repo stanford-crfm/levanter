@@ -258,7 +258,7 @@ def main(config: TrainGpt2Config):
         # This function is being executed on each device in parallel
         def train_step(model, opt_state, input_ids, targets, keys):
             def loss_grad(model, x):
-                return compute_loss_and_grad_xmap(model, *x)
+                return foo(model, *x)
 
             loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)
             # loss = lax.pmean(loss, "device")
@@ -268,6 +268,15 @@ def main(config: TrainGpt2Config):
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
+
+        opt_state_axes = infer_named_axes(opt_state, None)
+        opt_state_axes = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, opt_state_axes)
+
+        train_step = xmap(train_step,
+                          in_axes=[model_axes, opt_state_axes, [None, BATCH, ...], [None, BATCH, ...],
+                                   [None, BATCH, SHARD, ...]],
+                          out_axes=((...,), model_axes, opt_state_axes),
+                          axis_resources=axis_resources)
 
         for step in range(resume_step, config.trainer.num_train_steps):
             time_in = time.perf_counter()

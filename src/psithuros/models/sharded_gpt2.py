@@ -65,7 +65,7 @@ class ShardedGpt2Block(eqx.Module):
         attn_output = self.attn(hidden_states, inference=inference, key=k1)
         # sum out the shard dimension. each shard has the whole hidden state now
         attn_output = jax.lax.psum(attn_output, axis_name=SHARD)
-        # attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
         residual = hidden_states
@@ -73,7 +73,7 @@ class ShardedGpt2Block(eqx.Module):
         ff_output = self.mlp(hidden_states)
         ff_output = jax.lax.psum(ff_output, axis_name=SHARD)
         # sum out the shard dimension. each shard has the whole hidden state now
-        # ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
+        ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
         hidden_states = ff_output + residual
 
@@ -100,7 +100,7 @@ class ShardedGpt2Transformer(eqx.Module):
     def __call__(self, hidden_states: Array["seq_len", "embed_dim"], inference=True, *, key):
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
-        if inference:
+        if True:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
