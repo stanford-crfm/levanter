@@ -9,11 +9,18 @@ import equinox as eqx
 import jax
 from equinox.custom_types import sentinel, PyTree
 import jax.numpy as jnp
-from jax._src.tree_util import flatten_one_level, all_leaves, _registry
+from jax._src.tree_util import all_leaves, _registry
 from jax.experimental.maps import xmap, AxisName, ResourceSet
 
 
 class Array(jax.numpy.ndarray):
+    """Type annotation for arrays with axis names. Just used as a type hint. The axis names are used with
+    infer_axes to infer the axes of the array to pass to xmap.
+
+    Example:
+        >>> class MyModule(eqx.Module):
+        >>>     params: Array["x", "y"]
+    """
     def __class_getitem__(cls, item):
         if not isinstance(item, tuple):
             item = (item,)
@@ -39,19 +46,20 @@ class AxisNames:
         return self.names == other.names
 
 UnnamedAxes = AxisNames(names=(...,))
+"""Used for types with no axes specified"""
 
-T = typing.TypeVar("T")
-N = typing.TypeVar("N")
-
-# Shaped = Annotated[T, Array[N]]
+T = typing.TypeVar('T')
 
 
 class Shaped(typing.Generic[T]):
+    """Supports things like Shaped["shard", Linear] or Shaped[ ("shard", "x", ...), Linear]. The returned type is
+    an Annotated type, with the type of the wrapped type as the first element and the AxisNames as the second."""
+    # TODO: currently PyCharm gets confused by these types and thnks it's not the underlying type T. Fix this.
 
-    """Supports things like Shaped["shard", Linear] or Shaped[ ("shard", "x", ...), Linear]. The returned type is """
     def __class_getitem__(cls, item: Tuple[typing.Union[AxisName, Tuple[AxisName, ...]], typing.Type[T]])-> typing.Type[T]:
         if len(item) != 2:
-            raise ValueError("Shaped[...] only supports two-tuples. If you want to use a tuple of axes, use Shaped[(...), ...]")
+            raise ValueError("Shaped[...] only supports two-tuples. If you want to use a tuple of axes, "
+                             "use Shaped[(...), ...]")
         shapes, tpe = item
         if not isinstance(shapes, tuple):
             shapes = (shapes,)
@@ -60,7 +68,11 @@ class Shaped(typing.Generic[T]):
 
 
 def infer_named_axes_from_module(mod: eqx.Module):
-    """Automatically get a "pytree" of named axes for an equinox Module. This can be passed to xmap."""
+    """Automatically get a "pytree" of named axes for an equinox Module.
+    The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
+    To pass this to xmap, you need to unwrap the names using tree_map:
+    >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
+    """
     # first split into the pytree
     dynamic_values, aux = mod.tree_flatten()
     dynamic_field_names = aux[0]
@@ -79,7 +91,9 @@ def infer_named_axes_from_module(mod: eqx.Module):
 
     return mod.__class__.tree_unflatten(aux, named_shapes)
 
+
 def infer_leaf_axes(tpe: type)-> List[AxisNames]:
+    """Infers the leaves from just a type. This doesn't work well yet and you should use infer_named_axes where possible"""
     origin = get_origin(tpe)
     if origin is Annotated:
         args = get_args(tpe)
@@ -103,6 +117,7 @@ def infer_leaf_axes(tpe: type)-> List[AxisNames]:
         return [UnnamedAxes]
     else:
         return [UnnamedAxes]
+
 
 def _is_named_tuple(x):
     # https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple

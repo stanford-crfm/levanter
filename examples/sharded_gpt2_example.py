@@ -8,29 +8,25 @@ import equinox as eqx
 import jax
 from jax.experimental.maps import xmap
 
-import psithuros.callbacks
-from psithuros import callbacks, jax_utils
-from psithuros.logging import log_performance_stats, pbar_logger, log_to_wandb
+from psithuros import jax_utils
+from psithuros.logging import pbar_logger, log_to_wandb
 from psithuros.models.sharded_gpt2 import SHARD, ShardedGpt2LMHeadModel
-from psithuros.named_tensors import xmapped_init, infer_leaf_axes, Array, infer_named_axes, AxisNames
+from psithuros.axis_names import xmapped_init, Array, infer_named_axes, AxisNames
 
 print(jax.devices())
-import jax.lax as lax
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jrandom
 import optax
 import pyrallis
 import wandb
-from jax import pmap
 from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
 
 from psithuros.checkpoint import load_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
-from psithuros.jax_utils import shaped_rng_split, flops_estimate
+from psithuros.jax_utils import shaped_rng_split
 from psithuros.modeling_utils import accumulate_gradients, parameter_count
-from psithuros.models.gpt2 import Gpt2LMHeadModel
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -254,8 +250,6 @@ def main(config: TrainGpt2Config):
         # model = jax.device_put_replicated(model, devices)
         # opt_state = jax.device_put_replicated(opt_state, devices)
 
-        # parallel training is fairly simple too. The body of the training loop should be a single function.
-        # This function is being executed on each device in parallel
         def train_step(model, opt_state, input_ids, targets, keys):
             def loss_grad(model, x):
                 return foo(model, *x)

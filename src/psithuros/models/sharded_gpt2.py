@@ -11,7 +11,7 @@ from transformers import GPT2Config
 import psithuros.nn as pnn
 from psithuros import jax_utils
 from psithuros.models.gpt2 import Gpt2Mlp, Gpt2Attention, Gpt2Embeddings, recursive_checkpoint
-from psithuros.named_tensors import *
+from psithuros.axis_names import *
 
 SHARD = "shard"
 

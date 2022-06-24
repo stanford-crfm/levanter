@@ -7,10 +7,10 @@ import jax.numpy as jnp
 from jax import tree_structure, tree_flatten, tree_unflatten
 import jax.random as jrandom
 from jax.experimental.maps import xmap
-from psithuros.named_tensors import *
+from psithuros.axis_names import *
 import equinox as eqx
 
-from psithuros.named_tensors import infer_named_axes_from_module
+from psithuros.axis_names import infer_named_axes_from_module
 
 
 class MyModule(eqx.Module):

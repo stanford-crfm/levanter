@@ -1,6 +1,6 @@
 import os
 
-from psithuros.named_tensors import Array, infer_named_axes_from_module
+from psithuros.axis_names import Array, infer_named_axes_from_module
 
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
 
