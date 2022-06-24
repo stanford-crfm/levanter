@@ -15,7 +15,7 @@ from jax.experimental.maps import xmap, AxisName, ResourceSet
 
 class Array(jax.numpy.ndarray):
     """Type annotation for arrays with axis names. Just used as a type hint. The axis names are used with
-    infer_axes to infer the axes of the array to pass to xmap.
+    infer_named_axes to infer the axes of the array to pass to xmap.
 
     Example:
         >>> class MyModule(eqx.Module):
@@ -44,6 +44,7 @@ class AxisNames:
 
     def __eq__(self, other):
         return self.names == other.names
+
 
 UnnamedAxes = AxisNames(names=(...,))
 """Used for types with no axes specified"""
@@ -228,6 +229,7 @@ def auto_xmap(fun: Callable = sentinel,
 
     return axis_extracting_function
 
+
 def _ensure_tuple(x):
     if x is None:
         return ()
@@ -237,17 +239,22 @@ def _ensure_tuple(x):
         return (x,)
 
 
-
 def xmapped_init(cls: typing.Type[eqx.Module],
                  *,
                  static_argnums: Optional[Sequence[int]]=None,
                  static_kwarg_names: Optional[Sequence[str]] = None,
                  axis_sizes=None, axis_resources=None, backend=None
                  ):
+    """
+    Wraps a class's constructor to automatically infer axes from field declarations to automatically xmap the function.
+    This method uses infer_named_axes to infer the axes of all arguments, as well as that of the returned module.
+
+    :return: a function that can be called with the same arguments as the original constructor, and will return an
+        xmapped module.
+    """
 
     axis_sizes = axis_sizes or {}
     axis_resources = axis_resources or {}
-
 
     # this is pretty tricky to get right.
     # It shares a lot in common with equinox's filter_jit etc, though it's a bit less fancy (for now), using
@@ -283,7 +290,6 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
         # these have to be tuples for xmap, but they break tree_map
         dynamic_arg_shapes_as_lists = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, dynamic_arg_shapes)
-        dynamic_arg_shapes = tuple(dynamic_arg_shapes)
 
         # we have to call the ctor twice under xmap.
         # The first time we get the axis names for the whole thing,
@@ -320,27 +326,18 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
         # second pass: we actually have our axes.
 
-        # so we can recreate the tree at the end
-        result_tree_shape = None
-
         # now we make the function that we will xmap
         def function_to_xmap(*dynamic_args):
             inst = construct_object(*dynamic_args)
-            nonlocal result_tree_shape
             return inst
-            # leaves, result_tree_shape = jax.tree_flatten(inst)
-            # return leaves
 
         # now we can call xmap
         f = xmap(function_to_xmap, in_axes=dynamic_arg_shapes_as_lists, out_axes=out_axes,
                  axis_resources=axis_resources, axis_sizes=axis_sizes, backend=backend)
         inst = f(*dynamic_args)
-        # result_unflattened = jax.tree_unflatten(result_tree_shape, result_leaves)
         return inst
 
     return wrapper_function
-
-
 
 
 __all__ = ["xmapped_init", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
