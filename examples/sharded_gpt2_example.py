@@ -10,8 +10,9 @@ from jax.experimental.maps import xmap
 
 from psithuros import jax_utils
 from psithuros.logging import pbar_logger, log_to_wandb
-from psithuros.models.sharded_gpt2 import SHARD, ShardedGpt2LMHeadModel
-from psithuros.axis_names import xmapped_init, Array, infer_named_axes, AxisNames
+from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
+from psithuros.axis_names import xmapped_init, Array, infer_named_axes, AxisNames, LogicalAxis, ResourceAxis, \
+    unwrap_axis_names
 
 print(jax.devices())
 import jax.numpy as jnp
@@ -30,8 +31,6 @@ from psithuros.modeling_utils import accumulate_gradients
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
-
-BATCH = "batch"
 
 @dataclass
 class HfDatasetParams:
@@ -88,7 +87,7 @@ def main(config: TrainGpt2Config):
     dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
-    with config.trainer.device_mesh(batch_name=BATCH, model_name=SHARD) as mesh:
+    with config.trainer.device_mesh(data_name=ResourceAxis.DATA, model_name=ResourceAxis.MODEL) as mesh:
         devices = config.trainer.devices()
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
@@ -105,17 +104,17 @@ def main(config: TrainGpt2Config):
                                 n_head=config.num_heads,
                                 )
 
-        axis_resources = {SHARD: SHARD, BATCH: BATCH}
+        axis_resources = {LogicalAxis.PARAMS: ResourceAxis.MODEL, LogicalAxis.BATCH: ResourceAxis.DATA}
         axis_sizes = mesh.shape
 
         model = xmapped_init(ShardedGpt2LMHeadModel,
                              static_argnums=(0,),
                              axis_resources=axis_resources,
-                             axis_sizes=axis_sizes)(gpt_config, key=jrandom.split(model_key, axis_sizes[SHARD]))
+                             axis_sizes=axis_sizes)(gpt_config, key=jrandom.split(model_key, axis_sizes[LogicalAxis.PARAMS]))
 
         model_axes = infer_named_axes(model, ShardedGpt2LMHeadModel)
         # model_axes returns a pytree of AxisNames, but xmap needs the inner names
-        model_axes = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, model_axes)
+        model_axes = unwrap_axis_names(model_axes)
 
         # convert to appropriate dtype
         model = jax.tree_map(lambda array: array.astype(config.dtype), model)
@@ -125,19 +124,18 @@ def main(config: TrainGpt2Config):
 
         # loss function
         def compute_loss(model: ShardedGpt2LMHeadModel,
-                         input_ids: Array[BATCH, ...],
-                         targets: Array[BATCH, ...],
-                         key: [SHARD, BATCH, ...]):
+                         input_ids: Array[LogicalAxis.BATCH, ...],
+                         targets: Array[LogicalAxis.BATCH, ...],
+                         key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
             pred_y = jax.vmap(model)(input_ids, key)
             token_loss = jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
-            return jax.lax.pmean(token_loss, BATCH)
-
+            return jax.lax.pmean(token_loss, LogicalAxis.BATCH)
 
         compute_loss_xmap = xmap(partial(compute_loss, key=None),
                             in_axes=[
                                 model_axes,
-                                [BATCH, ...],
-                                [BATCH, ...],
+                                [LogicalAxis.BATCH, ...],
+                                [LogicalAxis.BATCH, ...],
                             ],
                             out_axes=[...],
                             axis_resources=axis_resources)
@@ -146,39 +144,20 @@ def main(config: TrainGpt2Config):
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
-        def foo(model: ShardedGpt2LMHeadModel,
-                input_ids: Array[BATCH, ...],
-                targets: Array[BATCH, ...],
-                key: [SHARD, BATCH, ...]):
+        def compute_and_reduce_grads(model: ShardedGpt2LMHeadModel,
+                input_ids: Array[LogicalAxis.BATCH, ...],
+                targets: Array[LogicalAxis.BATCH, ...],
+                key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
             loss, grad = compute_loss_and_grad(model, input_ids, targets, key)
-            grad = jax.lax.pmean(grad, BATCH)
+            grad = jax.lax.pmean(grad, LogicalAxis.BATCH)
             # TODO: this is so gross there has to be a better way!
             def still_has_shard_axis(x):
                 try:
-                    return SHARD in x.aval.named_shaped
+                    return LogicalAxis.PARAMS in x.aval.named_shaped
                 except AttributeError:
                     return False
-            grad = jax.tree_map(lambda x: x if still_has_shard_axis(x) else jax.lax.pmean(x, SHARD), grad)
+            grad = jax.tree_map(lambda x: x if still_has_shard_axis(x) else jax.lax.pmean(x, LogicalAxis.PARAMS), grad)
             return loss, grad
-
-        compute_loss_and_grad_xmap = xmap(foo, #compute_loss_and_grad,
-                                          in_axes=[
-                                              model_axes,
-                                              [BATCH, ...],
-                                              [BATCH, ...],
-                                              [BATCH, SHARD, ...],
-                                          ],
-                                          out_axes=((...,), model_axes),
-                                          axis_resources=axis_resources)
-
-        compute_loss_and_grad_xmap(model,
-                                   jnp.ones((axis_sizes[BATCH], 4, config.seq_len), dtype=jnp.int32),
-                                   jnp.ones((axis_sizes[BATCH], 4, config.seq_len), dtype=jnp.int32),
-                                   jax_utils.shaped_rng_split(model_key, [axis_sizes[BATCH], axis_sizes[SHARD], 4]))
-
-        # pmap is like vmap but instead just vectorizing, it also parallelizes the computation over devices
-        # typically you want to pmap a vmap (and reshape)
-        # compute_loss_pmap = pmap(partial(compute_loss, key=None), "device")
 
         # boilerplate hooks and such
         engine = TrainerHooks()
@@ -186,9 +165,9 @@ def main(config: TrainGpt2Config):
         # get an estimate of flops for one example
         # flops_per_example = flops_estimate(compute_loss_and_grad_xmap,
         #                                    model,
-        #                                    jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
-        #                                    jnp.ones((axis_sizes[BATCH], config.seq_len), dtype=jnp.int32),
-        #                                    jax_utils.shaped_rng_split(model_key, [axis_sizes[SHARD], axis_sizes[BATCH]]))
+        #                                    jnp.ones((axis_sizes[LogicalAxis.BATCH], config.seq_len), dtype=jnp.int32),
+        #                                    jnp.ones((axis_sizes[LogicalAxis.BATCH], config.seq_len), dtype=jnp.int32),
+        #                                    jax_utils.shaped_rng_split(model_key, [axis_sizes[LogicalAxis.PARAMS], axis_sizes[LogicalAxis.BATCH]]))
 
         # wandb.config['flops_per_example'] = flops_per_example
         wandb.config['parameter_count'] = parameter_count(model)
@@ -251,8 +230,8 @@ def main(config: TrainGpt2Config):
         # opt_state = jax.device_put_replicated(opt_state, devices)
 
         def train_step(model, opt_state, input_ids, targets, keys):
-            def loss_grad(model, x):
-                return foo(model, *x)
+            def loss_grad(model, *x):
+                return compute_and_reduce_grads(model, *x)
 
             loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)
             # loss = lax.pmean(loss, "device")
@@ -264,11 +243,11 @@ def main(config: TrainGpt2Config):
             return loss, model, opt_state
 
         opt_state_axes = infer_named_axes(opt_state, None)
-        opt_state_axes = jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, opt_state_axes)
+        opt_state_axes = unwrap_axis_names(opt_state_axes)
 
         train_step = xmap(train_step,
-                          in_axes=[model_axes, opt_state_axes, [None, BATCH, ...], [None, BATCH, ...],
-                                   [None, BATCH, SHARD, ...]],
+                          in_axes=[model_axes, opt_state_axes, [None, LogicalAxis.BATCH, ...], [None, LogicalAxis.BATCH, ...],
+                                   [None, LogicalAxis.BATCH, LogicalAxis.PARAMS, ...]],
                           out_axes=((...,), model_axes, opt_state_axes),
                           axis_resources=axis_resources)
 

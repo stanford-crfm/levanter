@@ -12,6 +12,20 @@ import jax.numpy as jnp
 from jax._src.tree_util import all_leaves, _registry
 from jax.experimental.maps import xmap, AxisName, ResourceSet
 
+from psithuros.python_utils import StringHolderEnum
+
+
+# Predefined axis names
+# in compliance with https://github.com/google-research/t5x/blob/main/t5x/partitioning.py
+class ResourceAxis(StringHolderEnum):
+    MODEL = "model"
+    DATA = "data"
+
+
+class LogicalAxis(StringHolderEnum):
+    BATCH = "batch"
+    PARAMS = "params"
+
 
 class Array(jax.numpy.ndarray):
     """Type annotation for arrays with axis names. Just used as a type hint. The axis names are used with
@@ -110,8 +124,10 @@ def infer_named_axes(value: PyTree, tpe: Optional[type])->Optional[Union[AxisNam
     """Automatically get a "pytree" of named axes for a pytree
        The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
        To pass this to xmap, you need to unwrap the names using tree_map:
-       >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
+       >>> axis_names = unwrap_axis_names(axis_names)
    """
+    # TODO: decide if we want an internal method that returns the AxisNames type and an external method that returns the
+    # unwrapped names, which can be directly passed to xmap.
     origin = get_origin(tpe)
     if origin is Annotated:
         args = get_args(tpe)
@@ -149,6 +165,7 @@ def infer_named_axes(value: PyTree, tpe: Optional[type])->Optional[Union[AxisNam
 
 
 def unwrap_axis_names(tree: Union[AxisNames, PyTree])->Union[AxisNames, PyTree]:
+    """Unwraps the AxisNames from a tree. This is useful for passing to xmap"""
     return jax.tree_map(lambda x: x.names if isinstance(x, AxisNames) else x, tree)
 
 
@@ -350,4 +367,4 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
 
 __all__ = ["xmapped_init", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
-           "infer_named_axes_from_module", "Shaped"]
+           "infer_named_axes_from_module", "Shaped", "LogicalAxis", "ResourceAxis"]

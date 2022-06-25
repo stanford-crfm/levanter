@@ -13,8 +13,6 @@ from psithuros import jax_utils
 from psithuros.models.gpt2 import Gpt2Mlp, Gpt2Attention, Gpt2Embeddings, recursive_checkpoint
 from psithuros.axis_names import *
 
-SHARD = "shard"
-
 # We use model sharding in two different ways:
 # For embeddings, we just split the embedding into multiple shards and use all_gather to concatenate them.
 # For the transformer blocks:
@@ -26,15 +24,15 @@ SHARD = "shard"
 
 class ShardedGpt2Block(eqx.Module):
     ln_1: nn.LayerNorm
-    attn: Shaped[SHARD, Gpt2Attention]
+    attn: Shaped[LogicalAxis.PARAMS, Gpt2Attention]
     resid_dropout: pnn.Dropout
     ln_2: nn.LayerNorm
-    mlp: Shaped[SHARD, Gpt2Mlp]
+    mlp: Shaped[LogicalAxis.PARAMS, Gpt2Mlp]
 
     def __init__(self, config: GPT2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        num_shards = jax.lax.psum(1, axis_name=SHARD)
+        num_shards = jax.lax.psum(1, axis_name=LogicalAxis.PARAMS)
         hidden_size = config.hidden_size
         inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
         head_dim = hidden_size // config.n_head
@@ -64,14 +62,14 @@ class ShardedGpt2Block(eqx.Module):
         hidden_states = self.ln_1(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, key=k1)
         # sum out the shard dimension. each shard has the whole hidden state now
-        attn_output = jax.lax.psum(attn_output, axis_name=SHARD)
+        attn_output = jax.lax.psum(attn_output, axis_name=LogicalAxis.PARAMS)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         ff_output = self.mlp(hidden_states)
-        ff_output = jax.lax.psum(ff_output, axis_name=SHARD)
+        ff_output = jax.lax.psum(ff_output, axis_name=LogicalAxis.PARAMS)
         # sum out the shard dimension. each shard has the whole hidden state now
         ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
@@ -115,7 +113,7 @@ class ShardedGpt2Transformer(eqx.Module):
 
 class ShardedGpt2LMHeadModel(eqx.Module):
     transformer: ShardedGpt2Transformer
-    embeddings: Shaped[SHARD, Gpt2Embeddings]
+    embeddings: Shaped[LogicalAxis.PARAMS, Gpt2Embeddings]
     num_shards: int = eqx.static_field()
     embed_size_per_shard: int = eqx.static_field()
 
@@ -123,10 +121,10 @@ class ShardedGpt2LMHeadModel(eqx.Module):
     def config(self):
         return self.transformer.config
 
-    def __init__(self, config: GPT2Config, *, key: Shaped[SHARD, jrandom.PRNGKey]):
+    def __init__(self, config: GPT2Config, *, key: Shaped[LogicalAxis.PARAMS, jrandom.PRNGKey]):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = ShardedGpt2Transformer(config, key=k_t)
-        num_shards = jax.lax.psum(1, axis_name=SHARD)
+        num_shards = jax.lax.psum(1, axis_name=LogicalAxis.PARAMS)
         self.num_shards = num_shards
 
         assert config.n_embd % num_shards == 0, \
@@ -144,21 +142,20 @@ class ShardedGpt2LMHeadModel(eqx.Module):
 
     def __call__(self, input_ids: Array["seq_len"], key):
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
-        my_shard = jax.lax.axis_index(SHARD)
+        my_shard = jax.lax.axis_index(LogicalAxis.PARAMS)
         # my_shard = 0
 
         hidden_states = self.embeddings.embed(input_ids, inference=key is None, key=k_embed)
         # doesn't work because of https://github.com/google/jax/issues/11193
-        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=SHARD, tiled=True, axis=-1)
+        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=LogicalAxis.PARAMS, tiled=True, axis=-1)
 
         # this doesn't work either
-        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=SHARD, axis=-1)
+        # hidden_states = jax.lax.all_gather(hidden_states, axis_name=LogicalAxis.PARAMS, axis=-1)
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[:-2] + (-1,))
 
         # nor this
-        # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)), SHARD, 0, -1, tiled=True)
+        # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)), LogicalAxis.PARAMS, 0, -1, tiled=True)
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[1:])
-
 
         local_hidden_states = hidden_states
 
@@ -166,17 +163,16 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         hidden_states = jnp.zeros(full_size, dtype=hidden_states.dtype)
         hidden_states = jax.lax.dynamic_update_slice_in_dim(hidden_states, local_hidden_states, jnp.array(my_shard * self.embed_size_per_shard), -1)
         # hidden_states.at[my_shard:my_shard+self.embed_size_per_shard].set(local_hidden_states, indices_are_sorted=True)
-        hidden_states = jax.lax.psum(hidden_states, axis_name=SHARD)
+        hidden_states = jax.lax.psum(hidden_states, axis_name=LogicalAxis.PARAMS)
 
-        # hidden_states = jax.lax.scatter(hidden_states, my_shard, hidden_states[my_shard], axis_name=SHARD)
-
+        # hidden_states = jax.lax.scatter(hidden_states, my_shard, hidden_states[my_shard], axis_name=LogicalAxis.PARAMS)
 
         hidden_states = self.transformer(hidden_states, inference=key is None, key=k_transformer)
 
         # I don't love this, but we have to re-shard the hidden states by slicing followed up by a psum
         hidden_states = rearrange(hidden_states, "... (s h) -> ... s h", s=self.num_shards)[..., my_shard, :]
         lm_logits = self.embeddings.unembed(hidden_states)
-        lm_logits = jax.lax.psum(lm_logits, axis_name=SHARD)
+        lm_logits = jax.lax.psum(lm_logits, axis_name=LogicalAxis.PARAMS)
 
         return lm_logits
 

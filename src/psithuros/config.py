@@ -11,6 +11,8 @@ import pyrallis
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
+from psithuros.axis_names import ResourceAxis
+
 
 @dataclass
 class WandbConfig:
@@ -91,10 +93,10 @@ class TrainerConfig:
                 )
             return d[: self.num_devices]
 
-    def device_mesh(self, batch_name: str = "batch", model_name: str = "model"):
+    def device_mesh(self, data_name: str = ResourceAxis.DATA, model_name: str = ResourceAxis.MODEL):
         devices = self.devices()
         devices = np.array(devices).reshape(self.batch_axis_size, self.model_shards)
-        return Mesh(devices, (batch_name, model_name))
+        return Mesh(devices, (data_name, model_name))
 
     @property
     def batch_axis_size(self):
