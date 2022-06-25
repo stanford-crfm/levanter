@@ -204,7 +204,7 @@ def main(config: TrainGpt2Config):
     # This function is being executed on each device in parallel
     @partial(pmap, axis_name="device", donate_argnums=(0, 1))
     def train_step(model, opt_state, input_ids, targets, keys):
-        def loss_grad(model, x):
+        def loss_grad(model, *x):
             return compute_loss_and_grad(model, *x)
 
         loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)

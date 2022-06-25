@@ -41,8 +41,8 @@ X = TypeVar('X')
 # TODO: running mean?
 def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs: X) -> Tuple[float, M]:
     zero = (jnp.zeros(()), jax.tree_map(jnp.zeros_like, model), 0)
-    def compute_and_accumulate(acc, input):
-        loss, grad = f(model, input)
+    def compute_and_accumulate(acc, *input):
+        loss, grad = f(model, *input)
         acc_loss, acc_grad, n = acc
         # TODO: verify if we still need this now that we have scan working again
         # in place to preserve ram
