@@ -106,6 +106,7 @@ def main(config: TrainGpt2Config):
 
         axis_resources = {LogicalAxis.PARAMS: ResourceAxis.MODEL, LogicalAxis.BATCH: ResourceAxis.DATA}
         axis_sizes = mesh.shape
+        axis_sizes = {logical: axis_sizes[physical] for logical, physical in axis_resources.items()}
 
         model = xmapped_init(ShardedGpt2LMHeadModel,
                              static_argnums=(0,),
