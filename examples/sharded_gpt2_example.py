@@ -8,11 +8,11 @@ import equinox as eqx
 import jax
 from jax.experimental.maps import xmap
 
-from psithuros import jax_utils
+from psithuros import callbacks
+from psithuros.axis_names import xmapped_init, Array, infer_named_axes, LogicalAxis, ResourceAxis, \
+    unwrap_axis_names
 from psithuros.logging import pbar_logger, log_to_wandb
 from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
-from psithuros.axis_names import xmapped_init, Array, infer_named_axes, AxisNames, LogicalAxis, ResourceAxis, \
-    unwrap_axis_names
 
 print(jax.devices())
 import jax.numpy as jnp
@@ -189,8 +189,8 @@ def main(config: TrainGpt2Config):
 
                 yield input_ids, targets
 
-        # evaluate = callbacks.compute_validation_loss(compute_loss_xmap, eval_dataloader)
-        # engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
+        evaluate = callbacks.compute_validation_loss(compute_loss_xmap, eval_dataloader)
+        engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
         # save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
         # engine.add_hook(save, every=config.trainer.steps_per_save)
@@ -230,13 +230,7 @@ def main(config: TrainGpt2Config):
         # opt_state = jax.device_put_replicated(opt_state, devices)
 
         def train_step(model, opt_state, input_ids, targets, keys):
-            def loss_grad(model, *x):
-                return compute_and_reduce_grads(model, *x)
-
-            loss, grads = accumulate_gradients(loss_grad, model, input_ids, targets, keys)
-            # loss = lax.pmean(loss, "device")
-            # grads = lax.pmean(grads, "device")
-
+            loss, grads = accumulate_gradients(compute_and_reduce_grads, model, input_ids, targets, keys)
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
 
@@ -276,7 +270,7 @@ def main(config: TrainGpt2Config):
             engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, time_out - time_in))
 
         last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key, time_out - time_in)
-        # evaluate(last_step)
+        evaluate(last_step)
         # save(last_step)
 
 
