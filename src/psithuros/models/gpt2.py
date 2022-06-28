@@ -166,10 +166,10 @@ class Gpt2Block(eqx.Module):
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = self.resid_dropout(hidden_states, inference=inference, key=k3)
+        ff_output = self.mlp(hidden_states)
+        ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
-        hidden_states = hidden_states + residual
+        hidden_states = ff_output + residual
 
         return hidden_states
 
