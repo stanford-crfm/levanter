@@ -1,6 +1,6 @@
 import os
 
-from psithuros.axis_names import Array, infer_named_axes_from_module
+from psithuros import jax_utils
 
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
 
@@ -31,7 +31,7 @@ w2 = jnp.zeros((512, 10))
 images = jnp.zeros((128, 784))
 labels = jnp.zeros(128, dtype=jnp.int32)
 
-# print(loss(w1, w2, images, labels))
+print(loss(w1, w2, images, labels))
 
 
 def named_predict(w1, w2, image):
@@ -62,25 +62,36 @@ import jax
 import numpy as np
 from jax.experimental.maps import Mesh
 
-loss = xmap(loss, in_axes=[...], out_axes=[...],
+loss = xmap(named_loss, in_axes=in_axes, out_axes=[...],
             axis_resources={'batch': 'x'})
 
 devices = np.array(jax.local_devices())
 with Mesh(devices, ('x',)):
-  print(loss(w1, w2, images, labels))
+    print("distributed loss")
+    print(loss(w1, w2, images, labels))
+
+loss = xmap(named_loss, in_axes=in_axes, out_axes=[...],
+            axis_resources={'batch': 'x', 'inputs': 'y'})
+
+xy_devices = np.array(jax.local_devices()).reshape((2, -1))
+with Mesh(xy_devices, ('x', 'y')):
+    print("distributed loss 2")
+    print(loss(w1, w2, images, labels))
 
 import jax.random as jrandom
 
 def init(key):
-  return jrandom.normal(key)
+  return jrandom.normal(key, (dims['inputs'], dims['hidden']))
 
-init = xmap(init, in_axes=[["inputs", ...]], out_axes=(('inputs', 'hidden')), #, ('hidden', 'classes')),
+init = xmap(init, in_axes=[None], out_axes=(('inputs', 'hidden')), #, ('hidden', 'classes')),
             axis_resources={'inputs': 'x', 'hidden': 'y'}, axis_sizes=dims)
 
-xy_devices = np.array(jax.local_devices()).reshape((-1, 2))
 
 with Mesh(xy_devices, ('x', 'y')):
-  init(jrandom.split(jax.random.PRNGKey(0), dims['inputs']))
+  key = jax.random.PRNGKey(0)
+  # result = init(jax_utils.shaped_rng_split(key, (dims['inputs'], dims['hidden'])))
+  result = init(key)
+
 
 if __name__ == '__main__':
     pass
