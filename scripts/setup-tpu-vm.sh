@@ -1,7 +1,7 @@
 # broadly based on https://github.com/ayaka14732/tpu-starter
 
 # tcmalloc interferes with intellij remote ide
-sudo patch -b /etc/environment << EOF
+sudo yes no | patch -b /etc/environment << EOF
 2c2
 < LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
 ---
@@ -12,12 +12,12 @@ EOF
 retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
 
-sudo apt update
-sudo apt upgrade -y
+#sudo apt update
+#sudo apt upgrade -y
+#
+## python 310
+#sudo apt install -y software-properties-common
+#sudo add-apt-repository -y ppa:deadsnakes/ppa
+#sudo apt install -y python3.10-full python3.10-dev nfs-common
 
-# python 310
-sudo apt install -y software-properties-common
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt install -y python3.10-full python3.10-dev nfs-common
-
-echo "source /files/venv310/bin/activate" >> ~/.bashrc
+sudo bash -c 'echo "source /files/venv310/bin/activate" >> /etc/profile.d/activate_shared_venv.sh'
