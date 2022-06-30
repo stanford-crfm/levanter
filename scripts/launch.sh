@@ -1,10 +1,4 @@
-PYTHON=$1
-PDIR=$(dirname "$PYTHON")
-
+umask 000
 cd "$(dirname $0)/.." || exit
 
-source "$PDIR"/activate
-export PYTHONPATH=$(pwd):$(pwd)/src:$PYTHONPATH
-
-
-nohup "$@" &
+PYTHONPATH=$(pwd):$(pwd)/src:$PYTHONPATH nohup "$@"
