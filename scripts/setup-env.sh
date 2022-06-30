@@ -4,7 +4,7 @@ if [ ! -d "$VENV" ]; then
     echo "Creating virtualenv at $VENV"
     python3.10 -m venv $VENV
 fi
-source /files/venv310/bin/activate
+source $VENV/bin/activate
 
 pip install -U pip
 pip install -U wheel
