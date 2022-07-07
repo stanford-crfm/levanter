@@ -1,10 +1,15 @@
 from typing import Union, Tuple, Optional, Callable, TypeVar, Sequence
+import functools as ft
 
 import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
-from jax import random as jrandom, numpy as jnp, lax
+from equinox import combine
+from equinox.compile_utils import Static
+from equinox.custom_types import PyTree
+from jax import random as jrandom, numpy as jnp, lax, linear_util
+from jax._src.api_util import flatten_fun, shaped_abstractify
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
@@ -61,11 +66,69 @@ def flops_estimate(fn, *args):
     return costs['flops']
 
 
+def backward_graph_size(fn, *args):
+    """
+    Estimates the size of the backward graph of a function, in terms of number of parameters.
+    This will sometimes overestimate the size of the graph, for two (known) reasons:
+      1. the provenance of constants hiding inside jitted functions are hard to track
+      2. it's possible that XLA will further optimize some of the code beyond what I can see.
+
+    vjp (which is the "forward" pass) returns a pytree fn that contains everything needed to compute the backward
+    pass, but it includes the parameters and inputs that are needed in the backward pass. But we already "pay"
+    for those in the forward pass/the parameter count, so we don't need to count them twice.
+    """
+
+    # first fine parameters/inputs that we've already priced in (parameters, inputs)
+    input_leaves = jax.tree_leaves((fn, args))
+    input_leaf_ids = {id(x): x for x in input_leaves}
+
+    faxpr = jax.make_jaxpr(fn)(*args)
+    # fold in consts that are only in the jaxpr (and not part of the pytree)
+    for const in faxpr.consts:
+        input_leaf_ids[id(const)] = const
+
+    dynamic, static = eqx.partition((fn, args), eqx.is_array_like)
+
+    def part_fn(dynamic):
+        fn, args = eqx.combine(dynamic, static)
+        return fn(*args)
+
+    primals, vjp_fn = jax.vjp(part_fn, dynamic)
+
+    vjp_leaves = jax.tree_leaves(vjp_fn)
+    new_leaves = {id(x): x for x in vjp_leaves if id(x) not in input_leaf_ids}
+
+    return parameter_count(list(new_leaves.values()))
+
+
 def dump_jaxpr(file, fn, *args, **kwargs):
     jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
     with open(file, "w") as f:
         f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
 
 
-def parameter_count(model):
-    return sum(arr.size for arr in jax.tree_leaves(model, eqx.is_inexact_array_like))
+def parameter_count(model: PyTree):
+    def _is_param_leaf(x):
+        return isinstance(x, jax.ShapeDtypeStruct) or eqx.is_inexact_array(x)
+
+    # especially with jax.vjp, we get duplicate arrays and want to uniq them
+    # NB we need to use object identity here, mostly because of ShapedDtypeStruct
+    leaves = {id(x): x for x in jax.tree_leaves(model) if _is_param_leaf(x)}
+    return sum(x.size for x in leaves.values())
+
+
+def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
+    jaxpr_vjp = jax.make_jaxpr(lambda *x: jax.vjp(fn, *x))(*args)
+    q, vjp_fn = jax.vjp(fn, *args)
+    jaxpr_vjp_fn = jax.make_jaxpr(vjp_fn)(q)
+
+    jaxpr_val_and_grad = jax.make_jaxpr(lambda *x: jax.value_and_grad(fn)(*x))(*args)
+
+    with open(f"{out_prefix}.vg.jaxpr", "w") as f:
+        f.write(jaxpr_val_and_grad.pretty_print(name_stack=True))
+
+    with open(f"{out_prefix}.fwdbwd.jaxpr", "w") as f:
+        f.write(jaxpr_vjp.pretty_print(name_stack=True))
+        f.write(jaxpr_vjp_fn.pretty_print(name_stack=True))
+
+

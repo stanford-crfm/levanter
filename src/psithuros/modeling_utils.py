@@ -18,6 +18,7 @@ ACT2FN = {
     "silu": jnn.silu,
     "swish": jnn.swish,
     "gelu_new": partial(jnn.gelu, approximate=True),
+    "gelu_new_remat": jax.remat(partial(jnn.gelu, approximate=True)),
     "quick_gelu": quick_gelu,
 }
 

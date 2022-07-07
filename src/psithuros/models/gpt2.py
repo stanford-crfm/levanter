@@ -36,13 +36,12 @@ class Gpt2Mlp(eqx.Module):
     c_fc: Gpt2Conv1D
     c_proj: Gpt2Conv1D
 
-    def __init__(self, config, intermediate_size, *, key):
-        embed_dim = config.hidden_size
+    def __init__(self, embed_dim, intermediate_size, activation_fn, *, key):
 
         k_fc, k_proj = jrandom.split(key, 2)
         self.c_fc = Gpt2Conv1D(out_features=intermediate_size, in_features=embed_dim, key=k_fc)
         self.c_proj = Gpt2Conv1D(out_features=embed_dim, in_features=intermediate_size, key=k_proj)
-        self.act = ACT2FN[config.activation_function]
+        self.act = ACT2FN[activation_fn]
 
     def __call__(self, hidden_states):
         hidden_states = self.c_fc(hidden_states)
@@ -74,7 +73,6 @@ class Gpt2Attention(eqx.Module):
         self.c_attn = Gpt2Conv1D(out_features=3 * self.total_head_dim, in_features=in_dim, key=k_c)
         self.c_proj = Gpt2Conv1D(out_features=in_dim, in_features=self.total_head_dim, key=k_proj)
         self.dropout = pnn.Dropout(dropout_prob)
-
 
     # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
@@ -152,7 +150,8 @@ class Gpt2Block(eqx.Module):
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
-        self.mlp = Gpt2Mlp(config, inner_dim, key=k_mlp)
+        self.mlp = Gpt2Mlp(embed_dim=hidden_size,
+                           intermediate_size=inner_dim, activation_fn=config.activation_function, key=k_mlp)
 
     # @eqx.filter_jit
     def __call__(self, hidden_states, inference=True, *, key):
