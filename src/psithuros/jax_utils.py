@@ -1,15 +1,12 @@
-from typing import Union, Tuple, Optional, Callable, TypeVar, Sequence
-import functools as ft
+from pathlib import Path
+from typing import Union, Optional, Callable, TypeVar, Sequence
 
 import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
-from equinox import combine
-from equinox.compile_utils import Static
 from equinox.custom_types import PyTree
-from jax import random as jrandom, numpy as jnp, lax, linear_util
-from jax._src.api_util import flatten_fun, shaped_abstractify
+from jax import random as jrandom, numpy as jnp, lax
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
@@ -93,9 +90,9 @@ def backward_graph_size(fn, *args):
         fn, args = eqx.combine(dynamic, static)
         return fn(*args)
 
-    primals, vjp_fn = jax.vjp(part_fn, dynamic)
+    primals, bkwd_fn = jax.vjp(part_fn, dynamic)
 
-    vjp_leaves = jax.tree_leaves(vjp_fn)
+    vjp_leaves = jax.tree_leaves(bkwd_fn)
     new_leaves = {id(x): x for x in vjp_leaves if id(x) not in input_leaf_ids}
 
     return parameter_count(list(new_leaves.values()))
@@ -109,7 +106,7 @@ def dump_jaxpr(file, fn, *args, **kwargs):
 
 def parameter_count(model: PyTree):
     def _is_param_leaf(x):
-        return isinstance(x, jax.ShapeDtypeStruct) or eqx.is_inexact_array(x)
+        return (isinstance(x, jax.ShapeDtypeStruct) and jnp.issubdtype(x.dtype, jnp.inexact)) or eqx.is_inexact_array(x)
 
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
@@ -119,16 +116,18 @@ def parameter_count(model: PyTree):
 
 def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
     jaxpr_vjp = jax.make_jaxpr(lambda *x: jax.vjp(fn, *x))(*args)
-    q, vjp_fn = jax.vjp(fn, *args)
-    jaxpr_vjp_fn = jax.make_jaxpr(vjp_fn)(q)
+    primals, bkwd_fn = jax.vjp(fn, *args)
+    jaxpr_bkwd_fn = jax.make_jaxpr(bkwd_fn)(primals)
 
     jaxpr_val_and_grad = jax.make_jaxpr(lambda *x: jax.value_and_grad(fn)(*x))(*args)
+
+    Path(out_prefix).parent.mkdir(parents=True, exist_ok=True)
 
     with open(f"{out_prefix}.vg.jaxpr", "w") as f:
         f.write(jaxpr_val_and_grad.pretty_print(name_stack=True))
 
     with open(f"{out_prefix}.fwdbwd.jaxpr", "w") as f:
         f.write(jaxpr_vjp.pretty_print(name_stack=True))
-        f.write(jaxpr_vjp_fn.pretty_print(name_stack=True))
+        f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 

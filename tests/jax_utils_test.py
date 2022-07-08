@@ -4,7 +4,6 @@ import jax.random as jrandom
 import equinox as eqx
 import psithuros.jax_utils as jax_utils
 import psithuros.models.gpt2
-from psithuros.axis_names import Array
 
 
 def test_backward_shape_jit_has_same_shape():
@@ -32,10 +31,13 @@ def test_backward_shape_remat_sin2_holds_no_internals():
     def f(x):
         return g(x)
 
+    jax_utils.dump_fwd_bwd_jaxprs("sin2", g, jnp.ones(()))
+    jax_utils.dump_fwd_bwd_jaxprs("sin2_remat", f, jnp.ones(()))
+
     graph_size_g = jax_utils.backward_graph_size(g, jnp.ones(1,))
-    graph_size_f = jax_utils.backward_graph_size(f, jnp.ones(1,))
 
     assert(graph_size_g == 2)
+    graph_size_f = jax_utils.backward_graph_size(f, jnp.ones(1,))
     assert(graph_size_f == 0)
 
 
@@ -81,24 +83,13 @@ def test_backward_shape_mlp_relu():
     # 3 for output of relu + an unnecessary 3 for the zeros array from relu
     assert(graph_size_mlp == 2 * 3)
 
-def test_backward_shape_mlp_gelu_approx():
-    mlp = psithuros.models.gpt2.Gpt2Mlp(1600, 6400, activation_fn="gelu_new", key=jrandom.PRNGKey(0))
-
-    # graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((5,)))
-    graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((1600,)))
-
-    jax_utils.dump_fwd_bwd_jaxprs("mlp_gelu_new", lambda mlp, x: jnp.sum(mlp(x)), mlp, jnp.ones((1600,)))
-
-    flop_estimate = jax_utils.flops_estimate(jax.value_and_grad(lambda x: jnp.sum(mlp(x))), jnp.ones((1600,)))
-    print(flop_estimate)
-
-    # 3 for output of relu + an unnecessary 3 for the zeros array from relu
-    assert graph_size_mlp == 2 * 3
-
 def test_backward_shape_softmax():
     sz = jax_utils.backward_graph_size(jax.nn.softmax, jnp.arange(5, dtype=jnp.float32))
+    jax_utils.dump_fwd_bwd_jaxprs("softmax", lambda x: jnp.sum(jax.nn.softmax(x)), jnp.arange(5, dtype=jnp.float32))
 
-    assert sz == 12
+    # 2 copies of the unnormalized array (for some reason), 1 for the sum, and 1 for 1/sum^2
+    # TODO: seems like jax should have custom vjp here?
+    assert sz == 5 + 5 + 1 + 1
 
 
 
