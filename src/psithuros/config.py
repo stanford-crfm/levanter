@@ -86,12 +86,20 @@ class TrainerConfig:
     # computed properties
     def devices(self):
         d = jax.devices()
+        # TODO: think about the best way to support multiple nodes here
         if self.num_devices is not None:
             if self.num_devices > len(d):
                 raise ValueError(
                     f"num_devices ({self.num_devices}) is greater than the number of devices ({len(d)})"
                 )
             return d[: self.num_devices]
+
+    def local_devices(self):
+        local_devices = jax.local_devices()
+        if self.num_devices is None:
+            return local_devices
+        devices = self.devices()
+        return [ld for ld in local_devices if ld in devices]
 
     def device_mesh(self, data_name: str = ResourceAxis.DATA, model_name: str = ResourceAxis.MODEL):
         devices = self.devices()
