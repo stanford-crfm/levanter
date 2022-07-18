@@ -53,7 +53,7 @@ class ShardedGpt2Block(eqx.Module):
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
-        self.mlp = Gpt2Mlp(config, inner_dim // num_shards, key=k_mlp)
+        self.mlp = Gpt2Mlp(hidden_size, inner_dim // num_shards, config.activation_function, key=k_mlp)
 
     def __call__(self, hidden_states, inference=True, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
