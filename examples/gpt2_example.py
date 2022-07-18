@@ -89,6 +89,7 @@ def main(config: TrainGpt2Config):
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
 
     devices = config.trainer.devices()
+    local_devices = config.trainer.local_devices()
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
     # this makes deterministic training pretty easy
@@ -196,8 +197,8 @@ def main(config: TrainGpt2Config):
 
     # because we're running the model on each device in parallel, we need to make sure the model is on each device
     # (and the optimization state too)
-    model = jax.device_put_replicated(model, devices)
-    opt_state = jax.device_put_replicated(opt_state, devices)
+    model = jax.device_put_replicated(model, local_devices)
+    opt_state = jax.device_put_replicated(opt_state, local_devices)
 
     # parallel training is fairly simple too. The body of the training loop should be a single function.
     # This function is being executed on each device in parallel
