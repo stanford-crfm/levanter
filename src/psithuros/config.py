@@ -56,8 +56,7 @@ class TrainerConfig:
     seed: int = 0
 
     # Config related to batch sizes
-    num_devices: Optional[int] = None
-    model_shards: int = 1  # how many devices to shard each model over
+    model_axis_size: int = 1  # how many devices to shard each model over
 
     train_batch_size: int = 512
     per_device_train_batch_size: int = -1
@@ -84,43 +83,61 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     # computed properties
-    def devices(self):
-        d = jax.devices()
-        # TODO: think about the best way to support multiple nodes here
-        if self.num_devices is not None:
-            if self.num_devices > len(d):
-                raise ValueError(
-                    f"num_devices ({self.num_devices}) is greater than the number of devices ({len(d)})"
-                )
-            return d[: self.num_devices]
-
-    def local_devices(self):
-        local_devices = jax.local_devices()
-        if self.num_devices is None:
-            return local_devices
-        devices = self.devices()
-        return [ld for ld in local_devices if ld in devices]
-
     def device_mesh(self, data_name: str = ResourceAxis.DATA, model_name: str = ResourceAxis.MODEL):
-        devices = self.devices()
-        devices = np.array(devices).reshape(self.batch_axis_size, self.model_shards)
+        devices = jax.devices()
+        devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (data_name, model_name))
 
     @property
-    def batch_axis_size(self):
-        assert self.num_devices % self.model_shards == 0
-        return self.num_devices // self.model_shards
+    def data_axis_size(self):
+        """size of the data parallel/batch parallel axis."""
+        assert jax.device_count() % self.model_axis_size == 0
+        return jax.device_count() // self.model_axis_size
+
+    @property
+    def per_process_data_axis_size(self):
+        """number of distinct examples processed at once on this node"""
+        local_device_count = jax.local_device_count()
+        local_model_size = self.per_process_model_axis_size
+        return local_device_count // local_model_size
+
+
+    @property
+    def per_process_model_axis_size(self):
+        """size of the model axis for devices on this node. This is local_device_count if the model axis size exceeds the number of devices on this node."""
+        local_device_count = jax.local_device_count()
+        if local_device_count <= self.model_axis_size:
+            return local_device_count
+        else:
+            return self.model_axis_size
+
+
+    @property
+    def train_microbatch_size(self):
+        """number of examples in a microbatch"""
+        return self.train_batch_size // (self.model_axis_size * self.per_device_train_batch_size)
 
     @property
     def train_microbatches_per_step(self):
-        return self.train_batch_size // (self.per_device_train_batch_size * self.batch_axis_size)
+        assert self.train_batch_size % self.train_microbatch_size == 0
+        return self.train_batch_size // self.train_microbatch_size
+
+    @property
+    def per_process_train_microbatch_size(self):
+        """number of examples in a microbatch per process in the training run. typically one process per node"""
+        return self.per_process_data_axis_size * self.per_device_train_batch_size
+
+    @property
+    def per_process_train_batch_size(self):
+        """number of examples processed by this process for an entire batch. typically one process per node"""
+        return self.train_microbatches_per_step * self.per_process_train_microbatch_size
 
     @property
     def train_total_microbatches(self):
         return self.num_train_steps * self.train_microbatches_per_step
 
     def optimizer(self):
-        """Creates the optimizer, which is gradient-accumulation aware"""
+        """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -167,23 +184,25 @@ class TrainerConfig:
 
     # post init
     def __post_init__(self):
-
-        if self.num_devices is None:
-            self.num_devices = len(jax.devices())
-
-        if self.num_devices % self.model_shards != 0:
+        if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
-                f"num_devices ({self.num_devices}) is not divisible by model_shards ({self.model_shards})"
+                f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
             )
 
+        if jax.local_device_count() % self.model_axis_size != 0 and self.model_axis_size % jax.local_device_count() != 0:
+            raise ValueError(
+                "either model_axis_size or local_device_count must be divisible by the other"
+            )
+
+
         if self.per_device_train_batch_size == -1:
-            self.per_device_train_batch_size = self.train_batch_size // self.num_devices
+            self.per_device_train_batch_size = self.train_batch_size // jax.device_count()
 
         # validate size of per_device_train_batch_size
-        if self.train_batch_size % (self.per_device_train_batch_size * self.batch_axis_size) != 0:
+        if self.train_batch_size % (self.per_device_train_batch_size * self.data_axis_size) != 0:
             raise ValueError(
                 f"train_batch_size ({self.train_batch_size}) must be divisible by "
-                f"per_device_train_batch_size * batch_axis_size ({self.per_device_train_batch_size}, {self.batch_axis_size})"
+                f"per_device_train_batch_size * data_axis_size ({self.per_device_train_batch_size}, {self.data_axis_size})"
             )
 
         if self.per_device_eval_batch_size == -1:

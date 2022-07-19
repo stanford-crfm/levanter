@@ -80,7 +80,7 @@ def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batc
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.wandb.init(config)
-    assert config.trainer.model_shards == 1, "This example doesn't support model sharding"
+    assert config.trainer.model_axis_size == 1, "This example doesn't support model sharding"
     cache_dir = config.cache_dir
     run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
 
