@@ -48,6 +48,7 @@ class HfDatasetParams:
         if self.enforce_eos:
             data = map(lambda x: x + tokenizer.eos_token, data)
         token_iter = (tokenize(batch) for batch in batched(data, 1000))
+        # TODO: sharded data loading
         return IndexedDataset.build_or_load(token_iter, f"{cache_dir}/{self.id}/{split}", seq_len)
 
 
@@ -86,6 +87,9 @@ def main(config: TrainGpt2Config):
     tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
     dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
     valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
+
+    global_rank = jax.process_index()
+    world_size = jax.process_count()
 
     with config.trainer.device_mesh(data_name=ResourceAxis.DATA, model_name=ResourceAxis.MODEL) as mesh:
         devices = config.trainer.devices()
@@ -251,16 +255,20 @@ def main(config: TrainGpt2Config):
             my_key, training_key = jrandom.split(training_key, 2)
 
             input_ids, targets = next(iter_data)
+            # take just the examples for this rank
+            input_ids = input_ids[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
+            targets = targets[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
+
             micro_step_shape = (config.trainer.train_microbatches_per_step,
-                                config.trainer.batch_axis_size,
+                                config.trainer.per_process_data_axis_size,
                                 config.trainer.per_device_train_batch_size) + input_ids.shape[1:]
             input_ids = input_ids.reshape(micro_step_shape)
             targets = targets.reshape(micro_step_shape)
 
             micro_keys = shaped_rng_split(my_key, (
                 config.trainer.train_microbatches_per_step,
-                config.trainer.batch_axis_size,
-                config.trainer.model_shards,
+                config.trainer.per_process_data_axis_size,
+                config.trainer.per_process_model_axis_size,
                 config.trainer.per_device_train_batch_size,
                 ))
 
