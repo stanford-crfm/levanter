@@ -92,7 +92,7 @@ def main(config: TrainGpt2Config):
     world_size = jax.process_count()
 
     with config.trainer.device_mesh(data_name=ResourceAxis.DATA, model_name=ResourceAxis.MODEL) as mesh:
-        devices = config.trainer.devices()
+        devices = jax.devices()
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -111,6 +111,7 @@ def main(config: TrainGpt2Config):
         axis_resources = {LogicalAxis.PARAMS: ResourceAxis.MODEL, LogicalAxis.BATCH: ResourceAxis.DATA}
         axis_sizes = mesh.shape
         axis_sizes = {logical: axis_sizes[physical] for logical, physical in axis_resources.items()}
+        print(axis_sizes, axis_resources)
 
         model = xmapped_init(ShardedGpt2LMHeadModel,
                              static_argnums=(0,),
@@ -185,12 +186,13 @@ def main(config: TrainGpt2Config):
         # engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
 
         def eval_dataloader():
-            test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),
+            test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_process_eval_batch_size,
                                      max_passes=1)
             for input_ids, targets in test_loader:
-                micro_step_shape = (len(devices), config.trainer.per_device_eval_batch_size) + input_ids.shape[1:]
-                input_ids = input_ids.reshape(micro_step_shape)
-                targets = targets.reshape(micro_step_shape)
+                eval_shape = (config.trainer.per_process_data_axis_size,
+                 config.trainer.per_device_eval_batch_size) + input_ids.shape[1:]
+                input_ids = input_ids.reshape(eval_shape)
+                targets = targets.reshape(eval_shape)
 
                 yield input_ids, targets
 
@@ -235,6 +237,7 @@ def main(config: TrainGpt2Config):
         # opt_state = jax.device_put_replicated(opt_state, devices)
 
         def train_step(model, opt_state, input_ids, targets, keys):
+            print(input_ids.shape, input_ids.named_shape, targets.shape, targets.named_shape, model.embeddings.position_embeddings.shape, model.embeddings.position_embeddings.named_shape)
             loss, grads = accumulate_gradients(compute_and_reduce_grads, model, input_ids, targets, keys)
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
@@ -271,6 +274,7 @@ def main(config: TrainGpt2Config):
                 config.trainer.per_process_model_axis_size,
                 config.trainer.per_device_train_batch_size,
                 ))
+
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
             step_loss = jnp.mean(step_loss).item()

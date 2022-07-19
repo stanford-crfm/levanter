@@ -101,7 +101,6 @@ class TrainerConfig:
         local_model_size = self.per_process_model_axis_size
         return local_device_count // local_model_size
 
-
     @property
     def per_process_model_axis_size(self):
         """size of the model axis for devices on this node. This is local_device_count if the model axis size exceeds the number of devices on this node."""
@@ -110,7 +109,6 @@ class TrainerConfig:
             return local_device_count
         else:
             return self.model_axis_size
-
 
     @property
     def train_microbatch_size(self):
@@ -131,6 +129,11 @@ class TrainerConfig:
     def per_process_train_batch_size(self):
         """number of examples processed by this process for an entire batch. typically one process per node"""
         return self.train_microbatches_per_step * self.per_process_train_microbatch_size
+
+    @property
+    def per_process_eval_batch_size(self):
+        """number of examples processed by this process for an entire batch during eval. typically one process per node"""
+        return self.per_device_eval_batch_size * self.per_process_data_axis_size
 
     @property
     def train_total_microbatches(self):
