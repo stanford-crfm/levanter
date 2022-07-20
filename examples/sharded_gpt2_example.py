@@ -14,7 +14,8 @@ from psithuros.axis_names import xmapped_init, Array, infer_named_axes, LogicalA
 from psithuros.logging import pbar_logger, log_to_wandb
 from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
 
-print(jax.devices())
+from collections import Counter
+print(Counter([type(dev) for dev in jax.devices()]))
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jrandom
@@ -111,7 +112,6 @@ def main(config: TrainGpt2Config):
         axis_resources = {LogicalAxis.PARAMS: ResourceAxis.MODEL, LogicalAxis.BATCH: ResourceAxis.DATA}
         axis_sizes = mesh.shape
         axis_sizes = {logical: axis_sizes[physical] for logical, physical in axis_resources.items()}
-        print(axis_sizes, axis_resources)
 
         model = xmapped_init(ShardedGpt2LMHeadModel,
                              static_argnums=(0,),
@@ -238,7 +238,6 @@ def main(config: TrainGpt2Config):
         # input_ids and targets are [microsteps, batch_axis, per_device_batch, ...]
         # keys are [microsteps, batch_axis, model_axis, per_device_batch, ...]
         def train_step(model, opt_state, input_ids, targets, keys):
-            print(input_ids.shape, input_ids.named_shape, targets.shape, targets.named_shape, model.embeddings.position_embeddings.shape, model.embeddings.position_embeddings.named_shape)
             loss, grads = accumulate_gradients(compute_and_reduce_grads, model, input_ids, targets, keys)
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
@@ -260,8 +259,6 @@ def main(config: TrainGpt2Config):
 
 
             input_ids, targets = next(iter_data)
-            if step == resume_step:
-                print(input_ids.shape, config.trainer.num_train_steps, config.trainer.train_microbatches_per_step)
             # take just the examples for this rank
             input_ids = input_ids[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
             targets = targets[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
