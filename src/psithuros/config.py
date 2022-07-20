@@ -96,7 +96,7 @@ class TrainerConfig:
 
     @property
     def per_process_data_axis_size(self):
-        """number of distinct examples processed at once on this node"""
+        """number of groups of devices on this node processing distinct examples"""
         local_device_count = jax.local_device_count()
         local_model_size = self.per_process_model_axis_size
         return local_device_count // local_model_size
@@ -210,6 +210,11 @@ class TrainerConfig:
 
         if self.per_device_eval_batch_size == -1:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
+
+        # check some invariants
+        assert self.per_process_train_batch_size % self.per_process_data_axis_size == 0
+        assert self.per_process_eval_batch_size % self.per_process_data_axis_size == 0
+        assert self.train_batch_size == self.train_microbatch_size * self.train_total_microbatches
 
 
 def register_codecs():
