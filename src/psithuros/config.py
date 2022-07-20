@@ -39,6 +39,11 @@ class WandbConfig:
         if extra_hparams:
             hparams.update(extra_hparams)
 
+        # for distributed runs, we only want the primary worker to use wandb, so we disable everyone else
+        mode = self.mode
+        if jax.process_index() != 0:
+            mode = "disabled"
+
         wandb.init(
             entity=self.entity,
             project=self.project,
@@ -46,7 +51,7 @@ class WandbConfig:
             tags=self.tags,
             id=self.id,
             group=self.group,
-            mode=self.mode,
+            mode=mode,
             config=hparams,
         )
 
