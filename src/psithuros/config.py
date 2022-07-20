@@ -113,7 +113,7 @@ class TrainerConfig:
     @property
     def train_microbatch_size(self):
         """number of examples in a microbatch"""
-        return self.train_batch_size // (self.model_axis_size * self.per_device_train_batch_size)
+        return self.data_axis_size * self.per_device_train_batch_size
 
     @property
     def train_microbatches_per_step(self):
@@ -196,7 +196,6 @@ class TrainerConfig:
             raise ValueError(
                 "either model_axis_size or local_device_count must be divisible by the other"
             )
-
 
         if self.per_device_train_batch_size == -1:
             self.per_device_train_batch_size = self.train_batch_size // jax.device_count()
