@@ -180,7 +180,6 @@ def main(config: TrainGpt2Config):
         # wandb.summary['flops_per_example'] = flops_per_example
         wandb.summary['parameter_count'] = parameter_count(model)
 
-
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
         # engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
@@ -236,6 +235,8 @@ def main(config: TrainGpt2Config):
         # model = jax.device_put_replicated(model, devices)
         # opt_state = jax.device_put_replicated(opt_state, devices)
 
+        # input_ids and targets are [microsteps, batch_axis, per_device_batch, ...]
+        # keys are [microsteps, batch_axis, model_axis, per_device_batch, ...]
         def train_step(model, opt_state, input_ids, targets, keys):
             print(input_ids.shape, input_ids.named_shape, targets.shape, targets.named_shape, model.embeddings.position_embeddings.shape, model.embeddings.position_embeddings.named_shape)
             loss, grads = accumulate_gradients(compute_and_reduce_grads, model, input_ids, targets, keys)
@@ -257,7 +258,10 @@ def main(config: TrainGpt2Config):
             time_in = time.perf_counter()
             my_key, training_key = jrandom.split(training_key, 2)
 
+
             input_ids, targets = next(iter_data)
+            if step == resume_step:
+                print(input_ids.shape, config.trainer.num_train_steps, config.trainer.train_microbatches_per_step)
             # take just the examples for this rank
             input_ids = input_ids[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
             targets = targets[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
