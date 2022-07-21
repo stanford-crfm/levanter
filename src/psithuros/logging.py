@@ -36,12 +36,13 @@ def log_performance_stats(tokens_per_example: int, batch_size: int, prefix: Opti
     def log_performance_stats(step_info: StepInfo):
         if step_info.step_duration != 0.0:
             wandb.log({
-                wrap_key("examples_per_second"): float(1.0)/step_info.step_duration * batch_size,
+                wrap_key("examples_per_second"): float(batch_size)/step_info.step_duration,
                 wrap_key("tokens_per_second"): float(tokens_per_example)/step_info.step_duration * batch_size,
                 wrap_key("duration"): step_info.step_duration,
             }, step=step_info.step)
 
     return log_performance_stats
+
 
 def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
     kwargs = copy.copy(tqdm_mkwargs)

@@ -148,7 +148,7 @@ def main(config: TrainGpt2Config):
 
     engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
     engine.add_hook(log_to_wandb, every=1)
-    engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
+    engine.add_hook(log_performance_stats(config.seq_len, config.trainer.train_batch_size))
 
     def eval_dataloader():
         test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),
