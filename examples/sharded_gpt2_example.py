@@ -15,6 +15,9 @@ from psithuros.logging import pbar_logger, log_to_wandb
 from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
 
 from collections import Counter
+
+from psithuros.logging import log_performance_stats
+
 print(Counter([type(dev) for dev in jax.devices()]))
 import jax.numpy as jnp
 import jax.profiler
@@ -168,21 +171,12 @@ def main(config: TrainGpt2Config):
         # boilerplate hooks and such
         engine = TrainerHooks()
 
-        # get an estimate of flops for one example
-        # flops_per_example = flops_estimate(compute_loss_and_grad_xmap,
-        #                                    model,
-        #                                    jnp.ones((axis_sizes[LogicalAxis.BATCH], config.seq_len), dtype=jnp.int32),
-        #                                    jnp.ones((axis_sizes[LogicalAxis.BATCH], config.seq_len), dtype=jnp.int32),
-        #                                    jax_utils.shaped_rng_split(model_key, [axis_sizes[LogicalAxis.PARAMS], axis_sizes[LogicalAxis.BATCH]]))
-
-        # wandb.config['flops_per_example'] = flops_per_example
         wandb.config['parameter_count'] = parameter_count(model)
-        # wandb.summary['flops_per_example'] = flops_per_example
         wandb.summary['parameter_count'] = parameter_count(model)
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
-        # engine.add_hook(log_performance_stats(flops_per_example, config.seq_len, config.trainer.train_batch_size))
+        engine.add_hook(log_performance_stats(config.seq_len, config.trainer.train_batch_size))
 
         def eval_dataloader():
             test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_process_eval_batch_size,
@@ -257,9 +251,9 @@ def main(config: TrainGpt2Config):
             time_in = time.perf_counter()
             my_key, training_key = jrandom.split(training_key, 2)
 
-
             input_ids, targets = next(iter_data)
             # take just the examples for this rank
+            print(input_ids.shape, config.trainer.per_process_train_batch_size, config.trainer.train_batch_size)
             input_ids = input_ids[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
             targets = targets[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
 
@@ -275,7 +269,6 @@ def main(config: TrainGpt2Config):
                 config.trainer.per_process_model_axis_size,
                 config.trainer.per_device_train_batch_size,
                 ))
-
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, targets, micro_keys)
             step_loss = jnp.mean(step_loss).item()
