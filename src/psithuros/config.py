@@ -218,7 +218,6 @@ class TrainerConfig:
         # check some invariants
         assert self.per_process_train_batch_size % self.per_process_data_axis_size == 0
         assert self.per_process_eval_batch_size % self.per_process_data_axis_size == 0
-        assert self.train_batch_size == self.train_microbatch_size * self.train_total_microbatches
 
 
 def register_codecs():
