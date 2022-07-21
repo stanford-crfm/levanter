@@ -27,7 +27,7 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
         wandb.log(params, step=step)
 
 
-def log_performance_stats(flop_count: float, tokens_per_example: int, batch_size: int, prefix: Optional[str] = None):
+def log_performance_stats(tokens_per_example: int, batch_size: int, prefix: Optional[str] = None):
     def wrap_key(key):
         if prefix:
             return f"{prefix}/{key}"
@@ -36,7 +36,7 @@ def log_performance_stats(flop_count: float, tokens_per_example: int, batch_size
     def log_performance_stats(step_info: StepInfo):
         if step_info.step_duration != 0.0:
             wandb.log({
-                wrap_key("flops_per_second"): float(flop_count)/step_info.step_duration * batch_size,
+                wrap_key("examples_per_second"): float(1.0)/step_info.step_duration * batch_size,
                 wrap_key("tokens_per_second"): float(tokens_per_example)/step_info.step_duration * batch_size,
                 wrap_key("duration"): step_info.step_duration,
             }, step=step_info.step)
