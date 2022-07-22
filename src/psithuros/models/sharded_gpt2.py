@@ -149,7 +149,8 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         hidden_states = self.transformer(hidden_states, inference=key is None, key=k_transformer)  # still [seq_len, embed_dim]
 
         # I don't love this, but we have to re-shard the hidden states by slicing followed up by a psum
-        hidden_states = rearrange(hidden_states, "... (s h) -> ... s h", s=self.num_shards)[..., my_shard, :]  # now [seq_len, embed_dim//num_shards]
+        hidden_states = rearrange(hidden_states, "... (s h) -> ... s h", s=self.num_shards)[..., my_shard, :]
+        # hidden_states is now [seq_len, embed_dim//num_shards]
         # each embedding shard is a [vocab_size x embed_dim//num_shards] matrix
         lm_logits = self.embeddings.unembed(hidden_states)  # now [seq_len, vocab_size], but only with information from the current shard
         lm_logits = jax.lax.psum(lm_logits, axis_name=LogicalAxis.PARAMS) # now [seq_len, vocab_size], with all shards
@@ -165,7 +166,8 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[:-2] + (-1,))
 
         # nor this
-        # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)), LogicalAxis.PARAMS, 0, -1, tiled=True)
+        # hidden_states = jax.lax.all_to_all(jax.lax.broadcast(hidden_states, (self.num_shards,)),
+        # LogicalAxis.PARAMS, 0, -1, tiled=True)
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[1:])
 
         local_hidden_states = hidden_states
@@ -173,12 +175,5 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         hidden_states = jnp.zeros(full_size, dtype=hidden_states.dtype)
         hidden_states = jax.lax.dynamic_update_slice_in_dim(hidden_states, local_hidden_states,
                                                             jnp.array(my_shard_index * self.embed_size_per_shard), -1)
-        # hidden_states.at[my_shard:my_shard+self.embed_size_per_shard].set(local_hidden_states, indices_are_sorted=True)
         hidden_states = jax.lax.psum(hidden_states, axis_name=LogicalAxis.PARAMS)
         return hidden_states
-
-
-
-
-
-
