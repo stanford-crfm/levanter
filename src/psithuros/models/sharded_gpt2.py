@@ -97,13 +97,13 @@ class ShardedGpt2Transformer(eqx.Module):
     def __call__(self, hidden_states: Array["seq_len", "embed_dim"], inference=True, *, key):
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
-        if True:
+        if inference or not self.config.gradient_checkpointing:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
             hidden_states = recursive_checkpoint(
                 [lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
-                threshold=2)(hidden_states)
+                threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
 

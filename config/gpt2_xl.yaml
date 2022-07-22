@@ -4,6 +4,8 @@ model:
   num_heads: 32 # todo: we're constrained to have num_heads divisible by the size of the axis split
   num_layers: 40
   seq_len: 1024
+
+  gradient_checkpointing: true
 trainer:
   learning_rate: 1E-4
   model_axis_size: 4
