@@ -31,7 +31,8 @@ class Gpt2Config:
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
-
+    gradient_checkpointing: bool = False
+    gradient_checkpointing_block_size: int = 10
 
 
 class Gpt2Conv1D(eqx.Module):
@@ -209,11 +210,13 @@ class Gpt2Transformer(eqx.Module):
     def __call__(self, hidden_states: Array["seq_len", "embed_dim"], inference=True, *, key):
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
-        if inference:
+        if inference or not self.config.gradient_checkpointing:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
-            hidden_states = recursive_checkpoint([lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)], threshold=2)(hidden_states)
+            hidden_states = recursive_checkpoint(
+                [lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
+                threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
             # for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
             #     print(i)
             #     hidden_states = jax.remat(Gpt2Model.block_remat)(block, hidden_states, key=k_block)
