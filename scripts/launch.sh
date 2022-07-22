@@ -1,4 +1,7 @@
 umask 000
-cd "$(dirname $0)/.." || exit
+PSI_ROOT=$(dirname "$(readlink -f $0)")/..
 
-PYTHONPATH=$(pwd):$(pwd)/src:$PYTHONPATH nohup "$@"
+
+source /files/venv310/bin/activate
+
+PYTHONPATH=$(PSI_ROOT):$(PSI_ROOT)/src:$(PSI_ROOT)/examples:$PYTHONPATH nohup "$@" > "log-$(hostname).log"
