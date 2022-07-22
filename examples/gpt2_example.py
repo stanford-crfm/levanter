@@ -27,7 +27,7 @@ from psithuros.config import TrainerConfig, WandbConfig
 from psithuros.data.text import IndexedDataset, batched
 from psithuros.jax_utils import shaped_rng_split, flops_estimate, parameter_count
 from psithuros.modeling_utils import accumulate_gradients
-from psithuros.models.gpt2 import Gpt2LMHeadModel
+from psithuros.models.gpt2 import Gpt2LMHeadModel, Gpt2Config
 from psithuros.trainer_hooks import TrainerHooks, StepInfo
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -56,13 +56,10 @@ class TrainGpt2Config:
     data: HfDatasetParams
     wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
+    model: Gpt2Config = Gpt2Config()
     cache_dir: str = "cache/"
     run_base_dir: str = "runs/"
 
-    seq_len: int = 512
-    hidden_dim: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
     dtype: jnp.dtype = jnp.float32
 
 
@@ -85,11 +82,11 @@ def main(config: TrainGpt2Config):
     run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
 
     tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
-    dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
-    valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
+    dataset = config.data.load(tokenizer, "train", config.model.seq_len, cache_dir)
+    valid_dataset = config.data.load(tokenizer, "validation", config.model.seq_len, cache_dir)
 
-    devices = config.trainer.devices()
-    local_devices = config.trainer.local_devices()
+    devices = jax.devices()
+    local_devices = jax.local_devices()
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
     # this makes deterministic training pretty easy
@@ -97,15 +94,7 @@ def main(config: TrainGpt2Config):
     data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
     # initialize the model
-    gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
-                            n_positions=config.seq_len,
-                            n_ctx=config.seq_len,
-                            n_embd=config.hidden_dim,
-                            n_layer=config.num_layers,
-                            n_head=config.num_heads,
-                            )
-
-    model = Gpt2LMHeadModel(gpt_config, key=model_key)
+    model = Gpt2LMHeadModel(tokenizer.vocab_size, config.model, key=model_key)
 
     # convert to appropriate dtype
     model = jax.tree_map(lambda array: array.astype(config.dtype), model)
@@ -132,8 +121,8 @@ def main(config: TrainGpt2Config):
     # get an estimate of flops for one example
     flops_per_example = flops_estimate(compute_loss_and_grad,
                                        model,
-                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                                       jnp.ones((1, config.seq_len), dtype=jnp.int32),
+                                       jnp.ones((1, config.model.seq_len), dtype=jnp.int32),
+                                       jnp.ones((1, config.model.seq_len), dtype=jnp.int32),
                                        model_key)
 
     wandb.config['flops_per_example'] = flops_per_example
@@ -143,12 +132,12 @@ def main(config: TrainGpt2Config):
 
     jax_utils.dump_jaxpr("model.jaxpr.txt",
                          compute_loss_and_grad, model,
-                         jnp.ones((1, config.seq_len), dtype=jnp.int32),
-                         jnp.ones((1, config.seq_len), dtype=jnp.int32), model_key)
+                         jnp.ones((1, config.model.seq_len), dtype=jnp.int32),
+                         jnp.ones((1, config.model.seq_len), dtype=jnp.int32), model_key)
 
     engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
     engine.add_hook(log_to_wandb, every=1)
-    engine.add_hook(log_performance_stats(config.seq_len, config.trainer.train_batch_size))
+    engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size))
 
     def eval_dataloader():
         test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_device_eval_batch_size * len(devices),

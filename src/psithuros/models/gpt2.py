@@ -1,4 +1,5 @@
 import functools
+from dataclasses import dataclass
 from functools import partial
 from typing import Optional, List, Callable
 
@@ -12,10 +13,25 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from einops import rearrange
 from equinox.custom_types import Array
-from transformers import GPT2Config
 
 from psithuros import jax_utils
 from psithuros.modeling_utils import ACT2FN
+
+@dataclass
+class Gpt2Config:
+    seq_len: int = 512
+    hidden_dim: int = 768
+    num_layers: int = 12
+    num_heads: int = 12
+
+    initializer_range: float = 0.02
+    embed_pdrop: float = 0.1
+    resid_pdrop: float = 0.1
+    attn_pdrop: float = 0.1
+    layer_norm_epsilon: float = 1e-5
+    activation_function: str = "gelu_new"
+
+
 
 
 class Gpt2Conv1D(eqx.Module):
@@ -134,18 +150,18 @@ class Gpt2Block(eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: pnn.Dropout
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        hidden_size = config.hidden_size
-        inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
-        head_dim = hidden_size // config.n_head
+        hidden_size = config.hidden_dim
+        inner_dim = 4 * hidden_size
+        head_dim = hidden_size // config.num_heads
 
-        assert hidden_size % config.n_head == 0, \
-            f"embed_dim={hidden_size} must be divisible by num_heads={config.n_head}"
+        assert hidden_size % config.num_heads == 0, \
+            f"embed_dim={hidden_size} must be divisible by num_heads={config.num_heads}"
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = Gpt2Attention(hidden_size, num_heads=config.n_head, head_dim=head_dim,
+        self.attn = Gpt2Attention(hidden_size, num_heads=config.num_heads, head_dim=head_dim,
                                   dropout_prob=config.attn_pdrop, key=k_attn, causal=True)
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
@@ -174,18 +190,18 @@ class Gpt2Block(eqx.Module):
 
 
 class Gpt2Transformer(eqx.Module):
-    config: GPT2Config = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
     blocks: List[Gpt2Block]
     ln_f: nn.LayerNorm
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         super().__init__()
         self.config = config
 
-        embed_dim = config.n_embd
+        embed_dim = config.hidden_dim
 
         self.blocks = [
-            Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.n_layer))
+            Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))
         ]
         self.ln_f = nn.LayerNorm(embed_dim, eps=config.layer_norm_epsilon)
 
@@ -272,15 +288,15 @@ class Gpt2LMHeadModel(eqx.Module):
     def config(self):
         return self.transformer.config
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, vocab_size: int, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings(vocab_size=config.vocab_size,
-                                         embed_dim=config.n_embd,
-                                         num_position_embeddings=config.n_positions,
+        self.embeddings = Gpt2Embeddings(vocab_size=vocab_size,
+                                         embed_dim=config.hidden_dim,
+                                         num_position_embeddings=config.seq_len,
                                          initializer_range=config.initializer_range,
-                                         tie_word_embeddings=config.tie_word_embeddings,
-                                         dropout_prob=config.embd_pdrop,
+                                         tie_word_embeddings=True,
+                                         dropout_prob=config.embed_pdrop,
                                          key=k_embeddings)
 
     def __call__(self, input_ids: Array["seq_len"], key):
@@ -290,3 +306,4 @@ class Gpt2LMHeadModel(eqx.Module):
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
+

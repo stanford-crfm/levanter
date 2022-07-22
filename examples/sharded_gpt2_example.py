@@ -12,6 +12,7 @@ from psithuros import callbacks
 from psithuros.axis_names import xmapped_init, Array, infer_named_axes, LogicalAxis, ResourceAxis, \
     unwrap_axis_names
 from psithuros.logging import pbar_logger, log_to_wandb
+from psithuros.models.gpt2 import Gpt2Config
 from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
 
 from collections import Counter
@@ -25,7 +26,7 @@ import jax.random as jrandom
 import optax
 import pyrallis
 import wandb
-from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizerBase
 
 from psithuros.checkpoint import load_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
@@ -61,13 +62,10 @@ class TrainGpt2Config:
     data: HfDatasetParams
     wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
+    model: Gpt2Config = Gpt2Config()
     cache_dir: str = "cache/"
     run_base_dir: str = "runs/"
 
-    seq_len: int = 512
-    hidden_dim: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
     dtype: jnp.dtype = jnp.float32
 
 
@@ -89,8 +87,8 @@ def main(config: TrainGpt2Config):
     run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
 
     tokenizer: GPT2Tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
-    dataset = config.data.load(tokenizer, "train", config.seq_len, cache_dir)
-    valid_dataset = config.data.load(tokenizer, "validation", config.seq_len, cache_dir)
+    dataset = config.data.load(tokenizer, "train", config.model.seq_len, cache_dir)
+    valid_dataset = config.data.load(tokenizer, "validation", config.model.seq_len, cache_dir)
 
     global_rank = jax.process_index()
     world_size = jax.process_count()
@@ -103,23 +101,15 @@ def main(config: TrainGpt2Config):
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-        # initialize the model
-        gpt_config = GPT2Config(vocab_size=tokenizer.vocab_size,
-                                n_positions=config.seq_len,
-                                n_ctx=config.seq_len,
-                                n_embd=config.hidden_dim,
-                                n_layer=config.num_layers,
-                                n_head=config.num_heads,
-                                )
-
         axis_resources = {LogicalAxis.PARAMS: ResourceAxis.MODEL, LogicalAxis.BATCH: ResourceAxis.DATA}
         axis_sizes = mesh.shape
         axis_sizes = {logical: axis_sizes[physical] for logical, physical in axis_resources.items()}
 
+        # initialize the model
         model = xmapped_init(ShardedGpt2LMHeadModel,
-                             static_argnums=(0,),
+                             static_argnums=(0, 1),
                              axis_resources=axis_resources,
-                             axis_sizes=axis_sizes)(gpt_config, key=jrandom.split(model_key, axis_sizes[LogicalAxis.PARAMS]))
+                             axis_sizes=axis_sizes)(tokenizer.vocab_size, config.model, key=jrandom.split(model_key, axis_sizes[LogicalAxis.PARAMS]))
 
         model_axes = infer_named_axes(model, ShardedGpt2LMHeadModel)
         # model_axes returns a pytree of AxisNames, but xmap needs the inner names
@@ -176,7 +166,7 @@ def main(config: TrainGpt2Config):
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
-        engine.add_hook(log_performance_stats(config.seq_len, config.trainer.train_batch_size))
+        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size))
 
         def eval_dataloader():
             test_loader = dataloader(valid_dataset, tokenizer, config.trainer.per_process_eval_batch_size,
@@ -252,8 +242,9 @@ def main(config: TrainGpt2Config):
             my_key, training_key = jrandom.split(training_key, 2)
 
             input_ids, targets = next(iter_data)
+
             # take just the examples for this rank
-            print(input_ids.shape, config.trainer.per_process_train_batch_size, config.trainer.train_batch_size)
+            # TODO: refactor this to its own thing
             input_ids = input_ids[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
             targets = targets[global_rank*config.trainer.per_process_train_batch_size:(global_rank+1)*config.trainer.per_process_train_batch_size]
 
