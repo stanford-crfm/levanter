@@ -80,6 +80,7 @@ def dataloader(dataset: IndexedDataset, tokenizer: PreTrainedTokenizerBase, batc
 
             yield input_ids, outputs
 
+
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.wandb.init(config)
@@ -91,10 +92,8 @@ def main(config: TrainGpt2Config):
     valid_dataset = config.data.load(tokenizer, "validation", config.model.seq_len, cache_dir)
 
     global_rank = jax.process_index()
-    world_size = jax.process_count()
 
     with config.trainer.device_mesh(data_name=ResourceAxis.DATA, model_name=ResourceAxis.MODEL) as mesh:
-        devices = jax.devices()
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -127,29 +126,31 @@ def main(config: TrainGpt2Config):
                          targets: Array[LogicalAxis.BATCH, ...],
                          key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
             pred_y = jax.vmap(model)(input_ids, key)
-            token_loss = jnp.mean(optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
+            token_loss = jnp.mean(
+                optax.softmax_cross_entropy(pred_y, jax.nn.one_hot(targets, num_classes=tokenizer.vocab_size)))
             return jax.lax.pmean(token_loss, LogicalAxis.BATCH)
 
         compute_loss_xmap = xmap(partial(compute_loss, key=None),
-                            in_axes=[
-                                model_axes,
-                                [LogicalAxis.BATCH, ...],
-                                [LogicalAxis.BATCH, ...],
-                            ],
-                            out_axes=[...],
-                            axis_resources=axis_resources)
+                                 in_axes=[
+                                     model_axes,
+                                     [LogicalAxis.BATCH, ...],
+                                     [LogicalAxis.BATCH, ...],
+                                 ],
+                                 out_axes=[...],
+                                 axis_resources=axis_resources)
 
 
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
 
         def compute_and_reduce_grads(model: ShardedGpt2LMHeadModel,
-                input_ids: Array[LogicalAxis.BATCH, ...],
-                targets: Array[LogicalAxis.BATCH, ...],
-                key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
+                                     input_ids: Array[LogicalAxis.BATCH, ...],
+                                     targets: Array[LogicalAxis.BATCH, ...],
+                                     key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
             loss, grad = compute_loss_and_grad(model, input_ids, targets, key)
             grad = jax.lax.pmean(grad, LogicalAxis.BATCH)
-            # TODO: this is so gross there has to be a better way!
+
+            # TODO: this is so gross. there has to be a better way!
             def still_has_shard_axis(x):
                 try:
                     return LogicalAxis.PARAMS in x.aval.named_shaped
@@ -188,8 +189,8 @@ def main(config: TrainGpt2Config):
         # data loader
         iter_data = dataloader(dataset, tokenizer, config.trainer.train_batch_size)
 
-        # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new model
-        # and optimizer state
+        # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
+        # model and optimizer state
         opt_state = optim.init(model)
 
         # load the last checkpoint and resume if we want
@@ -197,7 +198,8 @@ def main(config: TrainGpt2Config):
         # TODO: wandb resume logic?
         resume_step = None
         if config.trainer.load_last_checkpoint:
-            checkpoint = load_checkpoint(model, (opt_state, training_key), config.trainer.load_checkpoint_path or run_dir)
+            checkpoint = load_checkpoint(model, (opt_state, training_key),
+                                         config.trainer.load_checkpoint_path or run_dir)
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
             elif config.trainer.load_checkpoint_path:
@@ -232,7 +234,8 @@ def main(config: TrainGpt2Config):
         opt_state_axes = unwrap_axis_names(opt_state_axes)
 
         train_step = xmap(train_step,
-                          in_axes=[model_axes, opt_state_axes, [None, LogicalAxis.BATCH, ...], [None, LogicalAxis.BATCH, ...],
+                          in_axes=[model_axes, opt_state_axes, [None, LogicalAxis.BATCH, ...],
+                                   [None, LogicalAxis.BATCH, ...],
                                    [None, LogicalAxis.BATCH, LogicalAxis.PARAMS, ...]],
                           out_axes=((...,), model_axes, opt_state_axes),
                           axis_resources=axis_resources)

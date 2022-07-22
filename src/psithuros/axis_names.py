@@ -3,12 +3,11 @@ import functools
 import inspect
 import typing
 from inspect import BoundArguments
-from typing import List, Tuple, Dict, Sequence, Optional, Callable, Any, get_origin, get_args, Annotated, Union
+from typing import List, Tuple, Dict, Sequence, Optional, Callable, get_origin, get_args, Annotated, Union
 
 import equinox as eqx
 import jax
 from equinox.custom_types import sentinel, PyTree
-import jax.numpy as jnp
 from jax._src.tree_util import all_leaves, _registry
 from jax.experimental.maps import xmap, AxisName, ResourceSet
 
@@ -367,4 +366,4 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
 
 __all__ = ["xmapped_init", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
-           "infer_named_axes_from_module", "Shaped", "LogicalAxis", "ResourceAxis"]
+           "infer_named_axes_from_module", "Shaped", "LogicalAxis", "ResourceAxis", "unwrap_axis_names"]
