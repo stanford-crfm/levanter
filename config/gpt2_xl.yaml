@@ -1,0 +1,10 @@
+dtype: bfloat16
+model:
+  hidden_dim: 1600
+  num_heads: 32 # todo: we're constrained to have num_heads divisible by the size of the axis split
+  num_layers: 40
+  seq_len: 1024
+trainer:
+  learning_rate: 1E-4
+  model_axis_size: 4
+  per_device_train_batch_size: 1

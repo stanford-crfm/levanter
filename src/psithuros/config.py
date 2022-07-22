@@ -222,6 +222,7 @@ class TrainerConfig:
 
 def register_codecs():
     pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
+    pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
 
