@@ -6,11 +6,10 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from einops import rearrange
-from transformers import GPT2Config
 
 import psithuros.nn as pnn
 from psithuros import jax_utils
-from psithuros.models.gpt2 import Gpt2Mlp, Gpt2Attention, Gpt2Embeddings, recursive_checkpoint
+from psithuros.models.gpt2 import Gpt2Mlp, Gpt2Attention, Gpt2Embeddings, recursive_checkpoint, Gpt2Config
 from psithuros.axis_names import *
 
 # We use model sharding in two different ways:
@@ -29,20 +28,20 @@ class ShardedGpt2Block(eqx.Module):
     ln_2: nn.LayerNorm
     mlp: Shaped[LogicalAxis.PARAMS, Gpt2Mlp]
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         num_shards = jax.lax.psum(1, axis_name=LogicalAxis.PARAMS)
-        hidden_size = config.hidden_size
-        inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
-        head_dim = hidden_size // config.n_head
-        num_heads_per_shard = config.n_head // num_shards
+        hidden_size = config.hidden_dim
+        inner_dim = 4 * hidden_size
+        head_dim = hidden_size // config.num_heads
+        num_heads_per_shard = config.num_heads // num_shards
 
-        assert hidden_size % config.n_head == 0, \
-            f"embed_dim={hidden_size} must be divisible by num_heads={config.n_head}"
+        assert hidden_size % config.num_heads == 0, \
+            f"embed_dim={hidden_size} must be divisible by num_heads={config.num_heads}"
 
-        assert config.n_head % num_shards == 0, \
-            f"num_heads={config.n_head} must be divisible by num_shards={num_shards}"
+        assert config.num_heads % num_shards == 0, \
+            f"num_heads={config.num_heads} must be divisible by num_shards={num_shards}"
 
         assert inner_dim % num_shards == 0, \
             f"inner_dim={inner_dim} must be divisible by num_shards={num_shards}"
@@ -79,18 +78,18 @@ class ShardedGpt2Block(eqx.Module):
 
 
 class ShardedGpt2Transformer(eqx.Module):
-    config: GPT2Config = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
     blocks: List[ShardedGpt2Block]
     ln_f: nn.LayerNorm
 
-    def __init__(self, config: GPT2Config, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         super().__init__()
         self.config = config
 
-        embed_dim = config.n_embd
+        embed_dim = config.hidden_dim
 
         self.blocks = [
-            ShardedGpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.n_layer))
+            ShardedGpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))
         ]
         self.ln_f = nn.LayerNorm(embed_dim, eps=config.layer_norm_epsilon)
 
@@ -121,23 +120,23 @@ class ShardedGpt2LMHeadModel(eqx.Module):
     def config(self):
         return self.transformer.config
 
-    def __init__(self, config: GPT2Config, *, key: Shaped[LogicalAxis.PARAMS, jrandom.PRNGKey]):
+    def __init__(self, vocab_size: int, config: Gpt2Config, *, key: Shaped[LogicalAxis.PARAMS, jrandom.PRNGKey]):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = ShardedGpt2Transformer(config, key=k_t)
         num_shards = jax.lax.psum(1, axis_name=LogicalAxis.PARAMS)
         self.num_shards = num_shards
 
-        assert config.n_embd % num_shards == 0, \
-            f"embed_dim={config.n_embd} must be divisible by num_shards={num_shards}"
+        assert config.hidden_dim % num_shards == 0, \
+            f"embed_dim={config.hidden_dim} must be divisible by num_shards={num_shards}"
 
-        self.embed_size_per_shard = config.n_embd // num_shards
+        self.embed_size_per_shard = config.hidden_dim // num_shards
 
-        self.embeddings = Gpt2Embeddings(vocab_size=config.vocab_size,
+        self.embeddings = Gpt2Embeddings(vocab_size=vocab_size,
                                          embed_dim=self.embed_size_per_shard,
-                                         num_position_embeddings=config.n_positions,
+                                         num_position_embeddings=config.seq_len,
                                          initializer_range=config.initializer_range,
-                                         tie_word_embeddings=config.tie_word_embeddings,
-                                         dropout_prob=config.embd_pdrop,
+                                         tie_word_embeddings=True,
+                                         dropout_prob=config.embed_pdrop,
                                          key=k_embeddings)
 
     def __call__(self, input_ids: Array["seq_len"], key):
@@ -170,7 +169,7 @@ class ShardedGpt2LMHeadModel(eqx.Module):
         # hidden_states = jnp.reshape(hidden_states, hidden_states.shape[1:])
 
         local_hidden_states = hidden_states
-        full_size = hidden_states.shape[0:-1] + (self.config.n_embd,)
+        full_size = hidden_states.shape[0:-1] + (self.config.hidden_dim,)
         hidden_states = jnp.zeros(full_size, dtype=hidden_states.dtype)
         hidden_states = jax.lax.dynamic_update_slice_in_dim(hidden_states, local_hidden_states,
                                                             jnp.array(my_shard_index * self.embed_size_per_shard), -1)
