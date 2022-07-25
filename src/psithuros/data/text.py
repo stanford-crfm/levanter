@@ -68,7 +68,6 @@ class IndexedDataset:
         build_cache(token_iter, cache_dir, num_shards, file_template)
         return IndexedDataset(cache_dir, seq_len, stride)
 
-
     def _load_ledger(self):
         ledger_path = os.path.join(self.cache_dir, LEDGER_FILE)
         if os.path.exists(ledger_path):
@@ -104,17 +103,20 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
 def build_cache(token_iter: Iterator[BatchEncoding],
                 cache_dir: str,
                 num_shards: int,
-                file_template: str):
+                file_template: str="docs-{}.parquet",
+                fsspec_args: Optional[dict] = None) -> None:
     os.makedirs(cache_dir, exist_ok=True)
-    cache_dir = Path(cache_dir)
     ledger_file = os.path.join(cache_dir, LEDGER_FILE)
 
-    if os.path.exists(ledger_file):
+    fs, _, _ = fsspec.get_fs_token_paths(ledger_file)
+
+    if fs.exists(ledger_file):
         overwatch.info("Found existing indexed dataset at %s", cache_dir)
         return
 
     file_names = [file_template.format(i) for i in range(num_shards)]
-    files: Optional[Sequence[pq.ParquetWriter]] = None
+    files_to_open = []
+    writers: Optional[Sequence[pq.ParquetWriter]] = None
     tokens_written_to_shard = [0] * num_shards
 
     tq: tqdm = tqdm(desc=f"tokens", unit="tk")
@@ -127,43 +129,53 @@ def build_cache(token_iter: Iterator[BatchEncoding],
             shard_to_write_to = min(range(num_shards), key=lambda i: tokens_written_to_shard[i])
             tokens_written_to_shard[shard_to_write_to] += batch_len
 
-            if files is None:
-                fs, _, paths = fsspec.get_fs_token_paths([cache_dir / f for f in file_names])
-                files = [pq.ParquetWriter(path, batch.schema, filesystem=fs, version="2.6", compression="ZSTD") for path
-                         in paths]
+            if writers is None:
+                files_to_open = [fsspec.open(os.path.join(cache_dir, f), "wb", **(fsspec_args or {})).open() for f in file_names]
+                writers = [pq.ParquetWriter(file, batch.schema, version="2.6", compression="ZSTD") for file
+                         in files_to_open]
 
-            files[shard_to_write_to].write_batch(batch)
+            writers[shard_to_write_to].write_batch(batch)
 
             tq.update(batch_len)
 
-        # if we successfully wrote the whole iterator, we can write the ledger
-        with fsspec.open(ledger_file, "w") as f:
-            ledger = {"files": [{"file_name": str(name), "num_tokens": count} for name, count in
-                                zip(file_names, tokens_written_to_shard)]}
-            json.dump(ledger, f)
+        # now close out all the files:
+        if writers is not None:
+            for w in writers:
+                w.close()
 
-        return
-    except (KeyboardInterrupt, InterruptedError):
-        if files:
-            overwatch.error("Interrupted, cleaning up files")
-            for f in files:
+            for f in files_to_open:
                 f.close()
 
-            for f in file_names:
-                f = cache_dir / f
-                if f.exists():
-                    f.unlink()
+        # if we successfully wrote the whole iterator, we can write the ledger
+        with fsspec.open(ledger_file, "w") as w:
+            ledger = {"files": [{"file_name": str(name), "num_tokens": count} for name, count in
+                                zip(file_names, tokens_written_to_shard)]}
+            json.dump(ledger, w)
+        return
+
+    except (KeyboardInterrupt, InterruptedError):
+        if writers:
+            overwatch.error("Interrupted, cleaning up files")
+            for w in writers:
+                w.close()
+            for f in files_to_open:
+                f.close()
+
         raise
 
 
-def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos):
-    def tokenize(texts):
+def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
+    if enforce_eos:
+        tokens = tokenizer([t + tokenizer.eos_token for t in texts], return_attention_mask=False)
+        assert all(t[-1] == tokenizer.eos_token_id for t in tokens['input_ids'])
+        return tokens
+    else:
         return tokenizer(texts, return_attention_mask=False)
 
-    data = dataset["text"]
-    if enforce_eos:
-        data = map(lambda x: x + tokenizer.eos_token, data)
-    token_iter = (tokenize(batch) for batch in batched(data, 1000))
+def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos):
+    data = (x["text"] for x in dataset)
+
+    token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, 1000))
     return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
