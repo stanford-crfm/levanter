@@ -1,0 +1,4 @@
+urls:
+  - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..2}-of-8.jsonl.gz"
+cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/validation/"
+num_shards: 4
