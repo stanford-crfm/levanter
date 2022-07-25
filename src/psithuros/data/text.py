@@ -17,7 +17,7 @@ import logging
 import os
 from itertools import chain
 from pathlib import Path
-from typing import Iterator, Optional, TypeVar, Iterable, List
+from typing import Iterator, Optional, TypeVar, Iterable, List, Sequence
 
 import fsspec
 import numpy as np
@@ -42,7 +42,6 @@ overwatch = logging.getLogger("psithuros.data.text")
 
 LEDGER_FILE = "ledger.json"
 
-
 class IndexedDataset:
     def __init__(self, cache_dir, seq_len: int, stride: Optional[int] = None):
         self.cache_dir = cache_dir
@@ -52,7 +51,7 @@ class IndexedDataset:
 
     def _files(self):
         for entry in self.ledger["files"]:
-            yield entry["file_name"]
+            yield Path(self.cache_dir) / entry["file_name"]
 
     def __iter__(self) -> Iterator[BatchEncoding]:
         for file_name in self._files():
@@ -61,77 +60,14 @@ class IndexedDataset:
 
     @staticmethod
     def build_or_load(token_iter: Iterator[BatchEncoding],
-                      cache_dir: str,
                       seq_len: int,
+                      cache_dir: str,
+                      num_shards: int,
                       stride: Optional[int] = None,
-                      num_tokens_per_file: int = NUM_TOKENS_PER_FILE,
                       file_template: str = 'docs-{}.parquet') -> 'IndexedDataset':
-        os.makedirs(cache_dir, exist_ok=True)
-        ledger_file = os.path.join(cache_dir, LEDGER_FILE)
+        build_cache(token_iter, cache_dir, num_shards, file_template)
+        return IndexedDataset(cache_dir, seq_len, stride)
 
-        if os.path.exists(ledger_file):
-            overwatch.info("Found existing indexed dataset at %s", cache_dir)
-            return IndexedDataset(cache_dir, seq_len, stride)
-
-        file_index = 0
-        current_writer: Optional[pq.ParquetWriter] = None
-        current_num_tokens = 0
-        tq: tqdm = tqdm(desc=f"file {file_index} progress", total=num_tokens_per_file, unit="token")
-        file_out = None
-
-        # list of (file_name, num_tokens), to be output at the end if we finish the whole iterator
-        ledger_files = []
-
-        def close_writer():
-            nonlocal current_writer, file_out, file_index, current_num_tokens
-            if current_writer is not None:
-                current_writer.close()
-                current_writer = None
-
-            if current_num_tokens > 0:
-                ledger_files.append({"file_name": str(file_out), "num_tokens": current_num_tokens})
-
-        try:
-            for tokens in token_iter:
-                batch = _as_record_batch(tokens)
-                batch_len = sum(len(t) for t in tokens["input_ids"])
-
-                if current_writer and current_num_tokens + batch_len > num_tokens_per_file:
-                    close_writer()
-
-                if not current_writer:
-                    file_out = f"{cache_dir}/{file_template.format(file_index)}"
-                    file_index += 1
-
-                    fs, _, (path,) = fsspec.get_fs_token_paths(file_out)
-
-                    current_writer = pq.ParquetWriter(path, batch.schema, filesystem=fs, version="2.6", compression="ZSTD")
-
-                    current_num_tokens = 0
-
-                    tq.reset()
-                    tq.set_description(f"file {file_index} progress")
-
-                current_writer.write_batch(batch)
-                current_num_tokens += batch_len
-                tq.update(batch_len)
-
-            if current_writer:
-                tq.reset(current_num_tokens)
-                tq.update(current_num_tokens)
-                close_writer()
-
-            # if we successfully wrote the whole iterator, we can write the ledger
-            with fsspec.open(ledger_file, "w") as f:
-                ledger = {"files": ledger_files}
-                json.dump(ledger, f)
-
-            return IndexedDataset(cache_dir, seq_len, stride)
-        except (KeyboardInterrupt, InterruptedError):
-            current_writer.close()
-            current_writer = None
-            file_out.unlink(missing_ok=True)
-            raise
 
     def _load_ledger(self):
         ledger_path = os.path.join(self.cache_dir, LEDGER_FILE)
@@ -165,9 +101,73 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     return pa.RecordBatch.from_arrays(list(columns), names)
 
 
-T = TypeVar('T')
-T_co = TypeVar('T_co', covariant=True)
+def build_cache(token_iter: Iterator[BatchEncoding],
+                cache_dir: str,
+                num_shards: int,
+                file_template: str):
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_dir = Path(cache_dir)
+    ledger_file = os.path.join(cache_dir, LEDGER_FILE)
 
+    if os.path.exists(ledger_file):
+        overwatch.info("Found existing indexed dataset at %s", cache_dir)
+        return
+
+    file_names = [file_template.format(i) for i in range(num_shards)]
+    files: Optional[Sequence[pq.ParquetWriter]] = None
+    tokens_written_to_shard = [0] * num_shards
+
+    tq: tqdm = tqdm(desc=f"tokens", unit="tk")
+
+    try:
+        for tokens in token_iter:
+            batch = _as_record_batch(tokens)
+            batch_len = sum(len(t) for t in tokens["input_ids"])
+
+            shard_to_write_to = min(range(num_shards), key=lambda i: tokens_written_to_shard[i])
+            tokens_written_to_shard[shard_to_write_to] += batch_len
+
+            if files is None:
+                fs, _, paths = fsspec.get_fs_token_paths([cache_dir / f for f in file_names])
+                files = [pq.ParquetWriter(path, batch.schema, filesystem=fs, version="2.6", compression="ZSTD") for path
+                         in paths]
+
+            files[shard_to_write_to].write_batch(batch)
+
+            tq.update(batch_len)
+
+        # if we successfully wrote the whole iterator, we can write the ledger
+        with fsspec.open(ledger_file, "w") as f:
+            ledger = {"files": [{"file_name": str(name), "num_tokens": count} for name, count in
+                                zip(file_names, tokens_written_to_shard)]}
+            json.dump(ledger, f)
+
+        return
+    except (KeyboardInterrupt, InterruptedError):
+        if files:
+            overwatch.error("Interrupted, cleaning up files")
+            for f in files:
+                f.close()
+
+            for f in file_names:
+                f = cache_dir / f
+                if f.exists():
+                    f.unlink()
+        raise
+
+
+def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos):
+    def tokenize(texts):
+        return tokenizer(texts, return_attention_mask=False)
+
+    data = dataset["text"]
+    if enforce_eos:
+        data = map(lambda x: x + tokenizer.eos_token, data)
+    token_iter = (tokenize(batch) for batch in batched(data, 1000))
+    return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
+
+
+T = TypeVar('T')
 
 def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
     """Yields batches of the given size from the given iterable."""
@@ -235,20 +235,12 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
 
 
 if __name__ == '__main__':
-    import numpy
     import datasets
     tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained('gpt2')
     dataset = datasets.load_dataset("dlwh/wikitext_103_detokenized", split="train")
 
-    def batch_tokenize(ds: datasets.Dataset, tokenizer, batch_size: int, text_column="text") -> Iterator[BatchEncoding]:
-        """Yields batches of tokenized sentences from the given dataset."""
-        for batch in batched(ds[text_column], batch_size):
-            yield tokenizer(batch)
+    indexed = preprocess_dataset(dataset, tokenizer, seq_len=512, cache_dir="cache/wikitext-103-indexed", num_shards=8, enforce_eos=True)
 
-    token_iter = batch_tokenize(dataset, tokenizer, batch_size=1000)
-    indexer = IndexedDataset.build_or_load(batch_tokenize(dataset, tokenizer, batch_size=1000),
-                                           "cache/wikitext-103-indexed", seq_len=512, stride=None)
-
-    for i, batch in enumerate(indexer):
+    for i, batch in enumerate(indexed):
         print(i, batch)
 
