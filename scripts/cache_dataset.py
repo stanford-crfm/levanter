@@ -1,17 +1,16 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Optional, Sequence, List
+from typing import Optional, List
 
 import braceexpand as braceexpand
 import datasets
+import fsspec
 import pyrallis
-from datasets import Split
 from fsspec.core import OpenFile
 from transformers import PreTrainedTokenizerFast, AutoTokenizer
 
-from psithuros.data.text import IndexedDataset, preprocess_dataset, batched, tokenize_batch, build_cache
-import fsspec
+from psithuros.data.text import preprocess_dataset, batched, tokenize_batch, build_cache
 
 
 @dataclass
@@ -58,12 +57,6 @@ def main(args: CacheDatasetArgs):
 
         token_iter = (tokenize_batch(tokenizer, batch, args.enforce_eos) for batch in batched(gen(), 1000))
         build_cache(token_iter, cache_dir=args.cache_dir, num_shards=args.num_shards)
-
-
-
-
-
-
 
 
 if __name__ == '__main__':
