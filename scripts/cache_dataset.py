@@ -1,5 +1,4 @@
 import json
-import os
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -10,24 +9,27 @@ import pyrallis
 from fsspec.core import OpenFile
 from transformers import PreTrainedTokenizerFast, AutoTokenizer
 
-from psithuros.data.text import preprocess_dataset, batched, tokenize_batch, build_cache
+from psithuros.data.text import batched, tokenize_batch, build_cache
 
 
 @dataclass
 class CacheDatasetArgs:
     id: Optional[str] = None
     name: Optional[str] = None
+    splits: str = "train,validation"
+
     urls: List[str] = ()
+
     tokenizer: str = "gpt2"
     enforce_eos: bool = True
     cache_dir: str = "cache/"
-    splits: str = "train,validation"
     num_shards: int = 128
     stream: bool = True
 
 
 @pyrallis.wrap()
 def main(args: CacheDatasetArgs):
+    """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
     tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained(args.tokenizer)
 
     if args.id is None and len(args.urls) == 0:
@@ -37,10 +39,9 @@ def main(args: CacheDatasetArgs):
     elif args.id:
         dataset = datasets.load_dataset(args.id, name=args.name, streaming=args.stream)
         for split in args.splits.split(","):
-            cache_dir = os.path.join(args.cache_dir, args.id, split)
             # seqlen doesn't matter for just building
-            preprocess_dataset(dataset[split], tokenizer, seq_len=1024, cache_dir=cache_dir, num_shards=args.num_shards,
-                               enforce_eos=args.enforce_eos)
+            data_split = dataset[split]
+            text_iter = (x["text"] for x in data_split)
     elif args.urls:
         # build a big generator over the files via fsspec
         urls = [u for url in args.urls for u in braceexpand.braceexpand(url)]
@@ -48,15 +49,17 @@ def main(args: CacheDatasetArgs):
             files  = fsspec.open_files(urls, "rb", compression="infer")
             file: OpenFile
             for file in files:
-                fin = file.open()
-                try:
-                    for line in fin.readlines():
+                with file as f:
+                    for line in f.readlines():
                         yield json.loads(line.decode("utf-8"))["text"]
-                finally:
-                    fin.close()
 
-        token_iter = (tokenize_batch(tokenizer, batch, args.enforce_eos) for batch in batched(gen(), 1000))
-        build_cache(token_iter, cache_dir=args.cache_dir, num_shards=args.num_shards)
+        text_iter = gen()
+
+    token_iter = (tokenize_batch(tokenizer, batch, args.enforce_eos) for batch in batched(text_iter, 1000))
+
+    # TODO: think about doing this on apache beam or something fancy. Maybe nothing fancy we can do for HF datasets, but
+    # for pure-url based ones, shouldn't be hard.
+    build_cache(token_iter, args.cache_dir, args.num_shards)
 
 
 if __name__ == '__main__':
