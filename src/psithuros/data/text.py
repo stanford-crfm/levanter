@@ -9,14 +9,13 @@
 # {
 #   "files": { "file_name": <name>, "num_tokens": <num_tokens>},
 # }
-# We don't actually use the num_tokens field, but it's useful for sanity checking.
+# We don't currently use the num_tokens field, but it's useful for sanity checking.
 # The ledger is written last, so we can always check to see if we were interrupted.
 import copy
 import json
 import logging
 import os
 from itertools import chain
-from pathlib import Path
 from typing import Iterator, Optional, TypeVar, Iterable, List, Sequence
 
 import fsspec
@@ -26,37 +25,31 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 from transformers import BatchEncoding, AutoTokenizer, PreTrainedTokenizerFast
 
-# As a heuristic, we're aiming for files that are around ~250MB
-# Typically we're training on sequences of length ~1024 and batch size up to 512, so better to make it divisible by that.
-# 4bytes * 512 * 1024 = 2Mi, so we'll go with 128 * 512 * 1024 = 67108864 tokens, which is about 256MiB
-
-NUM_TOKENS_PER_FILE = 67108864
-
 overwatch = logging.getLogger("psithuros.data.text")
 
 # TASKS:
 # TODO: figure out directory structure for caching multiple sources
 # TODO: if we're super careful we can compute the number of samples (for a given batch size and stride) in advance
 #       if we do that, we can implement a Map-style dataset, which is somewhat preferable when not streaming
-# TODO: bring in sprucfluo/simultaneous caching and streaming if we want.
+# TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
 
 class IndexedDataset:
-    def __init__(self, cache_dir, seq_len: int, stride: Optional[int] = None):
-        self.cache_dir = cache_dir
-        self.ledger = self._load_ledger()
+    def __init__(self, doc_cache, seq_len: int, stride: Optional[int]):
+        self.doc_cache = doc_cache
         self.seq_len = seq_len
         self.stride = stride
 
-    def _files(self):
-        for entry in self.ledger["files"]:
-            yield Path(self.cache_dir) / entry["file_name"]
+    def shard(self, process_id: int, num_processes: int) -> "IndexedDataset":
+        """
+        Split the dataset into num_processes shards.
+        """
+        return IndexedDataset(self.doc_cache.shard(process_id, num_processes), self.seq_len, self.stride)
 
     def __iter__(self) -> Iterator[BatchEncoding]:
-        for file_name in self._files():
-            for entry in read_cache_file(file_name, flatten=True):
-                yield from concatenate_and_group_texts(entry, self.seq_len, self.stride)
+        for doc in self.doc_cache:
+            yield from concatenate_and_group_texts(doc, self.seq_len, self.stride)
 
     @staticmethod
     def build_or_load(token_iter: Iterator[BatchEncoding],
@@ -66,15 +59,51 @@ class IndexedDataset:
                       stride: Optional[int] = None,
                       file_template: str = 'docs-{}.parquet') -> 'IndexedDataset':
         build_cache(token_iter, cache_dir, num_shards, file_template)
-        return IndexedDataset(cache_dir, seq_len, stride)
+        doc_cache = TokenizedDocumentCache.load(cache_dir, True)
+        return IndexedDataset(doc_cache, seq_len, stride)
 
-    def _load_ledger(self):
-        ledger_path = os.path.join(self.cache_dir, LEDGER_FILE)
-        if os.path.exists(ledger_path):
-            with fsspec.open(ledger_path, "r") as f:
-                return json.load(f)
-        else:
-            raise FileNotFoundError(f"{self.cache_dir} is not a complete cache")
+
+def _load_ledger(cache_dir):
+    ledger_path = os.path.join(cache_dir, LEDGER_FILE)
+    if os.path.exists(ledger_path):
+        with fsspec.open(ledger_path, "r") as f:
+            return json.load(f)
+    else:
+        raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+
+
+class TokenizedDocumentCache:
+    def __init__(self, cache_dir, cache_files, flatten_docs):
+        self.cache_dir = cache_dir
+        self.cache_files = cache_files
+        self.flatten_docs = flatten_docs
+
+    def __iter__(self):
+        for cache_file in self.cache_files:
+            full_path = os.path.join(self.cache_dir, cache_file)
+            for entry in read_cache_file(full_path, self.flatten_docs):
+                yield entry
+
+    @staticmethod
+    def load(cache_dir, flatten_docs=True):
+        ledger = _load_ledger(cache_dir)
+        return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
+
+    def shard(self, shard_index, num_shards):
+        if num_shards <= shard_index:
+            raise ValueError(f"Shard index {shard_index} is out of range")
+        if len(self.cache_files) % num_shards != 0:
+            raise ValueError(f"Number of shards {num_shards} does not divide evenly into the number of files")
+
+        if num_shards == 1:
+            return self
+
+        return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
+
+    @staticmethod
+    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool, file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
+        cache_files = build_cache(token_iter, cache_dir, num_shards, file_template)
+        return TokenizedDocumentCache(cache_files, flatten_docs)
 
 
 def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
@@ -172,6 +201,7 @@ def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
     else:
         return tokenizer(texts, return_attention_mask=False)
 
+
 def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos):
     data = (x["text"] for x in dataset)
 
@@ -180,6 +210,7 @@ def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enfor
 
 
 T = TypeVar('T')
+
 
 def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
     """Yields batches of the given size from the given iterable."""
