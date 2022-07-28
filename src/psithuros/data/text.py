@@ -102,8 +102,9 @@ class TokenizedDocumentCache:
 
     @staticmethod
     def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool, file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
-        cache_files = build_cache(token_iter, cache_dir, num_shards, file_template)
-        return TokenizedDocumentCache(cache_files, flatten_docs)
+        build_cache(token_iter, cache_dir, num_shards, file_template)
+        cache_files = [e["file_name"] for e in _load_ledger(cache_dir)["files"]]
+        return TokenizedDocumentCache(cache_dir, cache_files, flatten_docs)
 
 
 def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
@@ -125,7 +126,15 @@ def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
 
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
-    names, columns = zip(*[(k, pa.array(v)) for k, v in doc.items()])
+    # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
+    def _as_array(x):
+        if isinstance(x, np.ndarray) and x.ndim > 1:
+            return [_as_array(y) for y in x]
+        elif isinstance(x, np.ndarray):
+            return list(x)
+        else:
+            return pa.array(x)
+    names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
     return pa.RecordBatch.from_arrays(list(columns), names)
 
 
