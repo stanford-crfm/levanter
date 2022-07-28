@@ -8,8 +8,8 @@ import datasets
 import fsspec
 from transformers import AutoTokenizer
 
-from psithuros.data.text import tokenize_batch, build_cache
-
+from psithuros.data.text import tokenize_batch, build_cache, TokenizedDocumentCache
+from psithuros.data.utils import batched
 
 @dataclass
 class LMDatasetConfig:
@@ -55,9 +55,9 @@ class LMDatasetConfig:
                             text += self.the_tokenizer.eos_token
                         yield text
 
-    def __post_init__(self):
-        if self.id is None and len(self.train_urls) == 0 and len(self.validation_urls) == 0:
-            raise ValueError("Either id or urls must be provided")
+    # def __post_init__(self):
+    #     if self.id is None and len(self.train_urls) == 0 and len(self.validation_urls) == 0:
+    #         raise ValueError("Either id or urls must be provided")
 
 
 @dataclass
@@ -72,19 +72,9 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         doc_iter = self.doc_iterator(split)
         token_iter = (tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, 1000))
 
-        build_cache(token_iter, cache_dir, self.num_shards)
+        return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, self.num_shards, self.enforce_eos)
 
 
-T = TypeVar('T')
-
-def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
-    """Yields batches of the given size from the given iterable."""
-    batch = []
-    for item in iterable:
-        batch.append(item)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
 
 
 __all__ = ["LMDatasetConfig", "CachedLMDatasetConfig", "batched"]

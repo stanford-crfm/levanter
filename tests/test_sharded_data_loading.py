@@ -33,7 +33,7 @@ def test_sharded_data_loading_model_axis_2():
     mesh = Mesh(np.array(devices).reshape(-1, model_axis_size), (ResourceAxis.DATA, ResourceAxis.MODEL))
     with mesh:
 
-        mesh_info = MeshInfo(mesh, 4, per_device_parallelism=1)
+        mesh_info = MeshInfo(mesh, batch_size=4, per_device_parallelism=1)
         seq_len = 128
         cache = _small_dataset(seq_len)
         dataset = ShardedIndexedDataset(cache, mesh_info, seq_len)

@@ -25,7 +25,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 from transformers import BatchEncoding, AutoTokenizer, PreTrainedTokenizerFast
 
-from psithuros.data import batched
+from psithuros.data.utils import batched
 
 overwatch = logging.getLogger("psithuros.data.text")
 
@@ -91,6 +91,11 @@ class TokenizedDocumentCache:
         ledger = _load_ledger(cache_dir)
         return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
 
+    @staticmethod
+    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool, file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
+        build_cache(token_iter, cache_dir, num_shards, file_template)
+        return TokenizedDocumentCache.load(cache_dir, flatten_docs)
+
     def shard(self, shard_index, num_shards):
         if num_shards <= shard_index:
             raise ValueError(f"Shard index {shard_index} is out of range")
@@ -102,11 +107,7 @@ class TokenizedDocumentCache:
 
         return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
 
-    @staticmethod
-    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool, file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
-        build_cache(token_iter, cache_dir, num_shards, file_template)
-        cache_files = [e["file_name"] for e in _load_ledger(cache_dir)["files"]]
-        return TokenizedDocumentCache(cache_dir, cache_files, flatten_docs)
+
 
 
 def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:

@@ -9,11 +9,13 @@ from jax.interpreters.pxla import PartitionSpec
 
 from psithuros.mesh import MeshInfo
 from psithuros.data.text import IndexedDataset, TokenizedDocumentCache
+from psithuros.data.utils import batched
 
 In = TypeVar("In")
 Ex = TypeVar("Ex")
 
 # TODO: maybe generify this to work on more than just single sequence inputs
+# TODO: write tests to verify this works when data spans multiple processes
 # ExampleShape = Union[Tuple[int, ...], Sequence[Tuple[int, ...]]]
 
 # This is hard for me to think about.
@@ -37,12 +39,14 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         process_data_pos = self.mesh_info.process_mesh_position[0]
         num_data_process_groups = self.mesh_info.process_mesh_size[0]
 
+        assert num_data_process_groups <= self.mesh_info.process_count
+
         self.indexed_dataset = IndexedDataset(doc_cache, seq_len, stride=None).shard(
             process_data_pos,
             num_data_process_groups,
         )
 
-    def __iter__(self)-> Iterator[GlobalDeviceArray]:
+    def __iter__(self) -> Iterator[GlobalDeviceArray]:
         # TODO: support not infinite iterators
         def loop_gen():
             while True:
