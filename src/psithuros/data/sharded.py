@@ -7,7 +7,7 @@ from jax.experimental.global_device_array import GlobalDeviceArray
 import numpy as np
 from jax.interpreters.pxla import PartitionSpec
 
-from psithuros.config import MeshInfo
+from psithuros.mesh import MeshInfo
 from psithuros.data.text import IndexedDataset, TokenizedDocumentCache
 
 In = TypeVar("In")

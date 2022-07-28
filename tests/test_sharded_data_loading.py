@@ -10,7 +10,7 @@ from jax.interpreters.pxla import PartitionSpec
 from transformers import BatchEncoding
 
 from psithuros.axis_names import ResourceAxis
-from psithuros.config import MeshInfo
+from psithuros.mesh import MeshInfo
 from psithuros.data.text import TokenizedDocumentCache
 from psithuros.data.sharded import ShardedIndexedDataset
 
