@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional, List
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pyrallis
 from jax.experimental.maps import Mesh

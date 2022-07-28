@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from itertools import chain
-from typing import Iterator, Optional, TypeVar, Iterable, List, Sequence
+from typing import Iterator, Optional, TypeVar, Sequence
 
 import fsspec
 import numpy as np
@@ -24,6 +24,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 from transformers import BatchEncoding, AutoTokenizer, PreTrainedTokenizerFast
+
+from psithuros.data import batched
 
 overwatch = logging.getLogger("psithuros.data.text")
 
@@ -218,17 +220,6 @@ def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enfor
     return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
-T = TypeVar('T')
-
-
-def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
-    """Yields batches of the given size from the given iterable."""
-    batch = []
-    for item in iterable:
-        batch.append(item)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
 
 
 def concatenate_and_group_texts(encoding: BatchEncoding, seq_len: int,
