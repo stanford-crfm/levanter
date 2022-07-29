@@ -1,6 +1,7 @@
+#!/bin/bash
+set -e
 umask 000
 PSI_ROOT=$(dirname "$(readlink -f $0)")/..
-
 
 source /files/venv310/bin/activate
 
