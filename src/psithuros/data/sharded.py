@@ -1,15 +1,13 @@
 import itertools
 from math import prod
-from typing import Callable, TypeVar, Iterable, Sequence, Union, Tuple, Iterator
+from typing import TypeVar, Iterable, Sequence, Tuple, Iterator
 
-import jax
-from jax.experimental.global_device_array import GlobalDeviceArray
 import numpy as np
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 
-from psithuros.mesh import MeshInfo
 from psithuros.data.text import IndexedDataset, TokenizedDocumentCache
-from psithuros.data.utils import batched
+from psithuros.mesh import MeshInfo
 
 In = TypeVar("In")
 Ex = TypeVar("Ex")
@@ -34,12 +32,15 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
                  doc_cache: TokenizedDocumentCache,
                  mesh_info: MeshInfo,
                  seq_len: int,
+                 microbatched: bool = True
                  ):
         self.mesh_info = mesh_info
+        self.microbatched = microbatched
         process_data_pos = self.mesh_info.process_mesh_position[0]
         num_data_process_groups = self.mesh_info.process_mesh_size[0]
 
         assert num_data_process_groups <= self.mesh_info.process_count
+
 
         self.indexed_dataset = IndexedDataset(doc_cache, seq_len, stride=None).shard(
             process_data_pos,
@@ -56,6 +57,12 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         it = loop_gen()
 
         batch_shape = self.batch_shape()
+        if self.microbatched:
+            pspec = PartitionSpec(None, self.mesh_info.data_axis_name, None)
+        else:
+            pspec = PartitionSpec(self.mesh_info.data_axis_name, None)
+
+        assert len(batch_shape) == len(pspec)
 
         def callback(indices: Sequence[Tuple[slice, ...]]):
             # TODO: it seems like we may want to just directly index into the tokenized dataset somehow. This seems a bit
@@ -68,7 +75,7 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
                 my_indices = tuple(s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
                 assert (s[2] == 1 for s in my_indices)
                 slice_sizes = [s[1] - s[0] for s in my_indices]
-                num_examples = prod(slice_sizes[0:2])
+                num_examples = prod(slice_sizes[0:-1])
                 if my_indices not in data_for_group:
                     data_for_group[my_indices] = np.stack(list([ex['input_ids'] for ex in itertools.islice(it, num_examples)])).reshape(*slice_sizes)
                 out.append(data_for_group[my_indices])
@@ -79,10 +86,13 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
             yield GlobalDeviceArray.from_batched_callback(
                 batch_shape,
                 self.mesh_info.mesh,
-                PartitionSpec(None, self.mesh_info.data_axis_name, None),
+                pspec,
                 callback,
             )
 
     def batch_shape(self):
-        return (self.mesh_info.microbatches_per_step, self.mesh_info.microbatch_size, self.indexed_dataset.seq_len)
+        if self.microbatched:
+            return (self.mesh_info.microbatches_per_step, self.mesh_info.microbatch_size, self.indexed_dataset.seq_len)
+        else:
+            return (self.mesh_info.batch_size, self.indexed_dataset.seq_len)
 
