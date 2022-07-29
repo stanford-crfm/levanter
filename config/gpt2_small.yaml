@@ -1,0 +1,16 @@
+data:
+  train_urls:
+      - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_train.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+      - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
+  cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/"
+dtype: bfloat16
+model:
+  hidden_dim: 768
+  num_heads: 12 # todo: we're constrained to have num_heads divisible by the size of the axis split
+  num_layers: 12
+  seq_len: 1024
+trainer:
+  learning_rate: 3E-4
+  model_axis_size: 1
+  per_device_train_batch_size: 1
