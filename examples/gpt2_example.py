@@ -24,7 +24,8 @@ from transformers import GPT2Config, AutoTokenizer, GPT2Tokenizer, PreTrainedTok
 
 from psithuros.checkpoint import load_checkpoint
 from psithuros.config import TrainerConfig, WandbConfig
-from psithuros.data.text import IndexedDataset, batched
+from psithuros.data.text import IndexedDataset
+from psithuros.data import batched
 from psithuros.jax_utils import shaped_rng_split, flops_estimate, parameter_count
 from psithuros.modeling_utils import accumulate_gradients
 from psithuros.models.gpt2 import Gpt2LMHeadModel, Gpt2Config

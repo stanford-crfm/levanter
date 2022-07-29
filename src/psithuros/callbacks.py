@@ -36,8 +36,8 @@ M = TypeVar("M")
 X = TypeVar("X")
 Y = TypeVar("Y")
 
-def compute_validation_loss(loss_fn: Callable[[M, X, Y], jax.numpy.ndarray],
-                            dataloader: Callable[[], Iterator[Tuple[X, Y]]]):
+def compute_validation_loss(loss_fn: Callable[[M, ...], jax.numpy.ndarray],
+                            dataloader: Callable[[], Iterator[tuple]]):
     def compute_loss(info: StepInfo):
         total_loss = RunningMean(shape=1)
         test_loader = dataloader()
