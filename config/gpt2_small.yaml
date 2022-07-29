@@ -7,7 +7,7 @@ data:
 dtype: bfloat16
 model:
   hidden_dim: 768
-  num_heads: 12 # todo: we're constrained to have num_heads divisible by the size of the axis split
+  num_heads: 12
   num_layers: 12
   seq_len: 1024
 trainer:
