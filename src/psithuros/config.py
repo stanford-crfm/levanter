@@ -1,17 +1,19 @@
 # Various Pyrallis configs
 import dataclasses
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Optional, List
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pyrallis
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
 from psithuros.axis_names import ResourceAxis
+from psithuros.mesh import MeshInfo
 
 
 @dataclass
@@ -87,11 +89,19 @@ class TrainerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    # computed properties
-    def device_mesh(self, data_name: str = ResourceAxis.DATA, model_name: str = ResourceAxis.MODEL):
+    @cached_property
+    def device_mesh(self):
         devices = jax.devices()
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
-        return Mesh(devices, (data_name, model_name))
+        return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
+
+    @cached_property
+    def train_mesh_info(self):
+        return MeshInfo(self.device_mesh, self.train_batch_size, self.per_device_train_batch_size)
+
+    @cached_property
+    def eval_mesh_info(self):
+        return MeshInfo(self.device_mesh, self.per_device_eval_batch_size * self.data_axis_size, self.per_device_eval_batch_size)
 
     @property
     def data_axis_size(self):
@@ -100,52 +110,17 @@ class TrainerConfig:
         return jax.device_count() // self.model_axis_size
 
     @property
-    def per_process_data_axis_size(self):
-        """number of groups of devices on this node processing distinct examples"""
-        local_device_count = jax.local_device_count()
-        local_model_size = self.per_process_model_axis_size
-        return local_device_count // local_model_size
-
-    @property
-    def per_process_model_axis_size(self):
-        """size of the model axis for devices on this node. This is local_device_count if the model axis size exceeds the number of devices on this node."""
-        local_device_count = jax.local_device_count()
-        if local_device_count <= self.model_axis_size:
-            return local_device_count
-        else:
-            return self.model_axis_size
-
-    @property
-    def train_microbatch_size(self):
-        """number of examples in a microbatch"""
-        return self.data_axis_size * self.per_device_train_batch_size
-
-    @property
-    def train_microbatches_per_step(self):
-        assert self.train_batch_size % self.train_microbatch_size == 0
-        return self.train_batch_size // self.train_microbatch_size
-
-    @property
-    def per_process_train_microbatch_size(self):
-        """number of examples in a microbatch per process in the training run. typically one process per node"""
-        return self.per_process_data_axis_size * self.per_device_train_batch_size
-
-    @property
-    def per_process_train_batch_size(self):
-        """number of examples processed by this process for an entire batch. typically one process per node"""
-        return self.train_microbatches_per_step * self.per_process_train_microbatch_size
-
-    @property
-    def per_process_eval_batch_size(self):
+    def local_eval_batch_size(self):
         """number of examples processed by this process for an entire batch during eval. typically one process per node"""
-        return self.per_device_eval_batch_size * self.per_process_data_axis_size
+        return self.eval_mesh_info.local_batch_size
 
     @property
     def train_total_microbatches(self):
-        return self.num_train_steps * self.train_microbatches_per_step
+        return self.num_train_steps * self.train_mesh_info.microbatches_per_step
 
     def optimizer(self):
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -214,10 +189,6 @@ class TrainerConfig:
 
         if self.per_device_eval_batch_size == -1:
             self.per_device_eval_batch_size = self.per_device_train_batch_size
-
-        # check some invariants
-        assert self.per_process_train_batch_size % self.per_process_data_axis_size == 0
-        assert self.per_process_eval_batch_size % self.per_process_data_axis_size == 0
 
 
 def register_codecs():
