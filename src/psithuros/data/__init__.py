@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional, List, Iterable, Iterator, TypeVar
 
+import braceexpand
 import datasets
 import fsspec
 from transformers import AutoTokenizer
@@ -46,6 +47,8 @@ class LMDatasetConfig:
                 urls = self.validation_urls
             else:
                 raise ValueError(f"Unknown split {split}")
+
+            urls = [url for pat in urls for url in braceexpand.braceexpand(pat)]
             files = fsspec.open_files(urls, "rb", compression="infer")
             for file in files:
                 with file as f:
@@ -76,7 +79,6 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         num_shards = self.num_train_shards if split == "train" else self.num_val_shards
 
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, self.enforce_eos)
-
 
 
 __all__ = ["LMDatasetConfig", "CachedLMDatasetConfig", "batched"]
