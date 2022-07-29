@@ -67,7 +67,9 @@ class IndexedDataset:
 
 def _load_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
-    if os.path.exists(ledger_path):
+
+    fs, _, _ = fsspec.get_fs_token_paths(ledger_path)
+    if fs.exists(ledger_path):
         with fsspec.open(ledger_path, "r") as f:
             return json.load(f)
     else:

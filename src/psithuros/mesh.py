@@ -12,7 +12,7 @@ from psithuros.axis_names import ResourceAxis
 @dataclass
 class MeshInfo:
     mesh: Mesh
-    batch_size: Optional[int]
+    batch_size: int
     per_device_parallelism: int  # how many inputs we can execute per device
 
     process_index: int = jax.process_index()
@@ -76,7 +76,7 @@ class MeshInfo:
         """
         upper_left_position = np.array([np.min(axis) for axis in self.local_device_grid_positions])
         local_mesh_size = self.mesh.local_mesh.devices.shape
-        pos = upper_left_position / local_mesh_size
+        pos = upper_left_position // local_mesh_size
         assert len(pos) == 2
         return pos[0], pos[1]
 

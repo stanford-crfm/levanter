@@ -57,11 +57,13 @@ def main(config: TrainGpt2Config):
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(config.data.build_or_load_document_cache("train"),
                                     config.trainer.train_mesh_info,
-                                    config.model.seq_len)
+                                    config.model.seq_len,
+                                    microbatched=True)
 
     eval_dataset = ShardedIndexedDataset(config.data.build_or_load_document_cache("validation"),
                                           config.trainer.eval_mesh_info,
-                                          config.model.seq_len)
+                                          config.model.seq_len,
+                                          microbatched=False)
 
     with config.trainer.device_mesh as mesh:
 
@@ -95,7 +97,6 @@ def main(config: TrainGpt2Config):
         def compute_loss(model: ShardedGpt2LMHeadModel,
                          input_ids: Array[LogicalAxis.BATCH, ...],
                          key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
-            print(f"compute_loss: {input_ids.shape} {key.shape}")
             pred_y = model(input_ids, key)
             token_loss = jnp.mean(
                 optax.softmax_cross_entropy(pred_y[:-1], jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size)))
@@ -141,7 +142,7 @@ def main(config: TrainGpt2Config):
         def eval_dataloader():
             # TODO: only do one pass
             for batch in itertools.islice(eval_dataset, 50):
-                yield batch
+                yield (batch, )
 
         evaluate = callbacks.compute_validation_loss(compute_loss_xmap, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
@@ -218,8 +219,6 @@ def main(config: TrainGpt2Config):
                 # train_mesh_info.per_device_parallelism
             ))
 
-            print(micro_keys.shape, input_ids.shape)
-
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
             step_loss = jnp.mean(step_loss).item()
 
@@ -228,7 +227,15 @@ def main(config: TrainGpt2Config):
 
         last_step = StepInfo(config.trainer.num_train_steps, model, opt_state, step_loss, training_key,
                              time_out - time_in)
-        evaluate(last_step)
+
+        try:
+            evaluate(last_step)
+        except:
+            print("Failed to evaluate")
+            import traceback
+            traceback.print_exc()
+            import sys
+            sys.exit(1)  # leave
         # save(last_step)
 
 
