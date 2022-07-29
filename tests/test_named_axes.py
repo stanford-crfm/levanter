@@ -39,39 +39,6 @@ def test_infer_named_axes():
     assert axes == expected_axes
 
 
-def test_auto_xmap_identity():
-    def identity(x: Array["x", "y"]) -> Array["x", "y"]:
-        return x
-
-    arr = jnp.ones((2, 3))
-
-    fun = auto_xmap(identity)
-    assert jnp.all(jnp.isclose(fun(arr), arr))
-
-
-def test_auto_xmap_identity_module():
-    mod = MyModule(named=jnp.ones((2, 3)), unnamed1=jnp.ones((2)), unnamed2=jnp.ones((2)), partially_named=jnp.ones((2, 3)), static_field=1)
-
-    def identity(x) -> MyModule:
-        return x
-
-    fun = auto_xmap(identity)
-    assert fun(mod) == mod
-
-
-@pytest.mark.skip(reason="doesn't work and possibly can't be fixed. Need to use type params or something")
-def test_auto_xmap_optax():
-    mod = MyModule(named=jnp.ones((2, 3)), unnamed1=jnp.ones((2)), unnamed2=jnp.ones((2)), partially_named=jnp.ones((2, 3)), static_field=1)
-    adam = optax.adam(1E-4)
-    opt = adam.init(mod)
-
-    def identity(x, opt) -> Tuple[MyModule, MyModule]:
-        return x, opt
-
-    fun = auto_xmap(identity)
-    assert fun(mod, opt) == (mod, opt)
-
-
 class MyModuleInit(eqx.Module):
     named: Array["x", "y"]
     unnamed1: Array
