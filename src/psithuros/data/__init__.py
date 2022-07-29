@@ -63,7 +63,8 @@ class LMDatasetConfig:
 @dataclass
 class CachedLMDatasetConfig(LMDatasetConfig):
     cache_dir: str = "cache/"
-    num_shards: int = 128
+    num_train_shards: int = 128
+    num_val_shards: int = 32
 
     def build_or_load_document_cache(self, split: str):
         cache_dir = os.path.join(self.cache_dir, f"{split}")
@@ -72,8 +73,9 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         doc_iter = self.doc_iterator(split)
         token_iter = (tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, 1000))
 
-        return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, self.num_shards, self.enforce_eos)
+        num_shards = self.num_train_shards if split == "train" else self.num_val_shards
 
+        return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, self.enforce_eos)
 
 
 
