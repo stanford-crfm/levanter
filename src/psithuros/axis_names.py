@@ -193,67 +193,6 @@ def infer_named_axes_from_module(mod: eqx.Module):
     return mod.__class__.tree_unflatten(aux, named_shapes)
 
 
-def auto_xmap(fun: Callable = sentinel,
-              *,
-              axis_sizes: Dict[AxisName, int] = None,
-              axis_resources: Dict[AxisName, ResourceSet] = None,
-              backend: Optional[str] = None):
-    if fun is sentinel:
-        return functools.partial(auto_xmap, axis_sizes=axis_sizes, axis_resources=axis_resources, backend=backend)
-    # TODO: this is a work in progress and you should not use it yet.
-    """
-    TODO: this is a work in progress and you should not use it yet.
-    
-    Wraps xmap to automatically infer tensor names from function signature and dataclass field declarations. This
-    method knows about types annotated with NamedArray as well as equinox Module dataclasses."""
-
-    # we want to make a function that, when it is called with a Module, will:
-    # 1. infer the names of the axes from the Module's dataclass
-    # 2. flatten the module into leaves and treedefs
-    # 3. create a new function that will take the leaves as input and unflatten it into a Module
-    # 4. call xmap with the new function
-    # 5. apply the xmapped function to the flattened module (which will unflatten it)
-
-    sig = inspect.signature(fun)
-
-    @functools.wraps(fun)
-    def axis_extracting_function(*args, **kwargs):
-        # inspect the function signature for all args and such.
-        # We need the signature for figuring out the names of axes for passed-in arrays as well as what type
-        # we're expected to return
-        # infer the axes of all arguments:
-        arg_shapes = [infer_named_axes(arg, param.annotation) for (arg, param) in zip(args, sig.parameters.values())]
-        if len(kwargs) > 0:
-            raise NotImplementedError("kwargs not yet supported")
-
-        # attempt to figure out the return type
-        # TODO: want to handle type vars...
-        return_axes = infer_leaf_axes(sig.return_annotation)
-
-        results_treedefs = None
-
-        @functools.wraps(fun)
-        def function_to_xmap(*args, **kwargs):
-            # unflatten the arguments into pytrees
-            # call the original function
-            results = fun(*args, **kwargs)
-            # flatten the results into pytrees
-            nonlocal results_treedefs
-            results_leaves, results_treedefs = jax.tree_flatten(results)
-            return results_leaves
-
-        # now we can call xmap
-        # TODO: need to do a compile cache thing!
-        # TODO: make this work with the signature for plain arrays
-        # TODO: need to handle return type
-        # TODO: figure out how to use kwargs shapes
-        f = xmap(function_to_xmap, in_axes=unwrap_axis_names(arg_shapes), out_axes=unwrap_axis_names(return_axes))
-        result_leaves = f(*args, **kwargs)
-        result_unflattened = jax.tree_unflatten(results_treedefs, result_leaves)
-        return result_unflattened
-
-    return axis_extracting_function
-
 
 def _ensure_tuple(x):
     if x is None:
@@ -365,5 +304,5 @@ def xmapped_init(cls: typing.Type[eqx.Module],
     return wrapper_function
 
 
-__all__ = ["xmapped_init", "auto_xmap", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
+__all__ = ["xmapped_init", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
            "infer_named_axes_from_module", "Shaped", "LogicalAxis", "ResourceAxis", "unwrap_axis_names"]
