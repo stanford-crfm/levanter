@@ -172,7 +172,7 @@ def infer_named_axes_from_module(mod: eqx.Module):
     """Automatically get a "pytree" of named axes for an equinox Module.
     The leaves of this PyTree are AxisNames, which is just a wrapper around a list of names.
     To pass this to xmap, you need to unwrap the names using tree_map:
-    >>> axis_names = jax.tree_map(lambda x: x.names, infer_named_axes(mod))
+    >>> axis_names = jax.tree_map(lambda x: x.axes, infer_named_axes(mod))
     """
     # first split into the pytree
     dynamic_values, aux = mod.tree_flatten()
@@ -201,6 +201,7 @@ def _ensure_tuple(x):
         return tuple(x)
     else:
         return (x,)
+
 
 
 def xmapped_init(cls: typing.Type[eqx.Module],
