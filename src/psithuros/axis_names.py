@@ -10,7 +10,9 @@ import jax
 from equinox.custom_types import sentinel, PyTree
 from jax._src.tree_util import all_leaves, _registry
 from jax.experimental.maps import xmap, AxisName, ResourceSet
+from jax.interpreters.pxla import PartitionSpec
 
+from hapax import Axis, NamedArray
 from psithuros.python_utils import StringHolderEnum
 
 
@@ -38,6 +40,7 @@ class Array(jax.numpy.ndarray):
         if not isinstance(item, tuple):
             item = (item,)
         return AxisNames(item)
+
 
 
 @dataclasses.dataclass
@@ -307,3 +310,23 @@ def xmapped_init(cls: typing.Type[eqx.Module],
 
 __all__ = ["xmapped_init", "infer_leaf_axes", "infer_named_axes", "Array", "AxisNames",
            "infer_named_axes_from_module", "Shaped", "LogicalAxis", "ResourceAxis", "unwrap_axis_names"]
+
+
+
+def infer_resource_partitions(module: eqx.Module, axis_resources: Dict[str, str]) -> PyTree:
+    """
+    Infer the resource partitions for a module. To be used with pjit.
+    The basic idea is to tree all NamedArrays as leaves for the purposes of this function,
+    and to create PartitionSpecs from those names plus axis_resources
+    """
+
+    def named_array_is_leaf(x):
+        return isinstance(x, NamedArray)
+
+    def partition_spec(node: typing.Any):
+        if isinstance(node, NamedArray):
+            return PartitionSpec(*tuple(axis_resources.get(axis.name, None) for axis in node.axes))
+        else:
+            return None
+
+    return jax.tree_map(partition_spec, module, is_leaf=named_array_is_leaf)
