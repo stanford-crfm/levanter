@@ -36,7 +36,7 @@ class NamedArray:
     def __array__(self):
         return self.array.__array__()
 
-    shape = property(lambda self: self.array.shape)
+    # shape = property(lambda self: self.array.shape)
     dtype = property(lambda self: self.array.dtype)
     ndim = property(lambda self: self.array.ndim)
     size = property(lambda self: self.array.size)
@@ -184,6 +184,12 @@ class NamedArray:
 
     def var(self, axis: Optional[AxisSpec] = None,dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
         return hapax.var(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+
+
+    # operators
+    def __add__(self, other) -> Any:
+        # TODO: check shape and broadcast
+        raise NotImplementedError
 
 
 def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:

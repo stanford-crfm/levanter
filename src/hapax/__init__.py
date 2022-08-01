@@ -2,7 +2,9 @@ from .core import *
 # creation routines
 # we could codegen these or do it dynamically, but Codex will do it for us and it's a bit less weird this way
 from .core import _ensure_sequence
+import hapax.random as random
 from .wrap import wrap_elemwise_unary, wrap_reduction_call
+
 
 
 def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
@@ -131,6 +133,7 @@ cumproduct = wrap_reduction_call(jnp.cumproduct)
 __all__ = ["Axis", "NamedArray", "AxisSpec",
            "named", "dot",
            "zeros", "ones", "full", "zeros_like", "ones_like", "full_like",
+           "random"
            ]
 
 
