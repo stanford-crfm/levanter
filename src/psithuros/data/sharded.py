@@ -41,7 +41,6 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
 
         assert num_data_process_groups <= self.mesh_info.process_count
 
-
         self.indexed_dataset = IndexedDataset(doc_cache, seq_len, stride=None).shard(
             process_data_pos,
             num_data_process_groups,
