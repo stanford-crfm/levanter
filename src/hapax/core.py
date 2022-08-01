@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from typing import Sequence, Union, Any, Dict, TypeVar, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
+from jax.interpreters.partial_eval import DynamicJaxprTracer
+from jaxlib.xla_extension import DeviceArray
 
 import hapax
 
@@ -15,23 +18,22 @@ class Axis:
 AxisSpec = Union[Axis, Sequence[Axis]]
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class NamedArray:
     array: jnp.ndarray
     axes: Sequence[Axis]
 
     def __post_init__(self):
-        try:
-            s = jnp.shape(self.array)
-        except AttributeError:
-            # we might not get a shape if we're dealing with pytrees for partition specs etc
-            return
-        if s != tuple(a.size for a in self.axes):
-            raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
-
+        pass
         # ensure unique axes for now
-        if len(set(a.name for a in self.axes)) != len(self.axes):
-            raise ValueError(f"Axes must be unique, but {self.axes} are not")
+        # if len(set(a.name for a in self.axes)) != len(self.axes):
+        #     raise ValueError(f"Axes must be unique, but {self.axes} are not")
+
+        # if isinstance(self.array, jax.core.Tracer) or isinstance(self.array, DeviceArray):
+        #     s = jnp.shape(self.array)
+        #     if s != tuple(a.size for a in self.axes):
+        #         raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
 
     def __array__(self):
         return self.array.__array__()
@@ -41,6 +43,13 @@ class NamedArray:
     ndim = property(lambda self: self.array.ndim)
     size = property(lambda self: self.array.size)
     nbytes = property(lambda self: self.array.nbytes)
+
+    def tree_flatten(self) -> Any:
+        return ((self.array,), self.axes)
+
+    @classmethod
+    def tree_unflatten(cls, aux, tree: Any) -> Any:
+        return cls(*tree, axes=aux)
 
     def lookup_indices(self, axis: AxisSpec):
         """
@@ -63,6 +72,10 @@ class NamedArray:
 
     def any(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
         return hapax.any(self, axis=axis, out=out, keepdims=keepdims)
+
+    # def select(self, axis: Axis, index: Union[int, 'NamedArray', jnp.ndarray]) -> Any:
+    #     if isinstance(index, NamedArray):
+    #         index = index.array
 
     # TODO
     # def argmax(self, axis: Optional[int] = None, out=None, keepdims=None) -> Any:
@@ -190,6 +203,28 @@ class NamedArray:
     def __add__(self, other) -> Any:
         # TODO: check shape and broadcast
         raise NotImplementedError
+
+    def __mul__(self, other):
+        if jnp.isscalar(other):
+            return NamedArray(self.array * other, self.axes)
+
+        raise NotImplementedError
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __truediv__(self, other):
+        if jnp.isscalar(other):
+            return NamedArray(self.array / other, self.axes)
+
+        raise NotImplementedError
+
+    def __rtruediv__(self, other):
+        if jnp.isscalar(other):
+            return NamedArray(other / self.array, self.axes)
+
+        raise NotImplementedError
+
 
 
 def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:

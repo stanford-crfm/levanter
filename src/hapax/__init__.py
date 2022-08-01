@@ -9,9 +9,11 @@ from .wrap import wrap_elemwise_unary, wrap_reduction_call
 
 def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 0"""
-    shape = _ensure_sequence(shape)
-    x_shape = tuple(x.size for x in shape)
-    return NamedArray(jnp.zeros(shape=x_shape, dtype=dtype), shape)
+    if isinstance(shape, Axis):
+        return NamedArray(jnp.zeros(shape=shape.size, dtype=dtype), (shape, ))
+    else:
+        x_shape = tuple(x.size for x in shape)
+        return NamedArray(jnp.zeros(shape=x_shape, dtype=dtype), shape)
 
 
 def ones(shape: AxisSpec, dtype=None) -> NamedArray:
