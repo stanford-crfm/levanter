@@ -9,17 +9,17 @@ import jax
 from jax import vmap
 from jax.experimental.maps import xmap
 from jax.experimental.pjit import pjit
+from jax.interpreters.pxla import PartitionSpec
 
+from hapax import Axis
 from psithuros import callbacks
 from psithuros.axis_names import xmapped_init, Array, infer_named_axes, LogicalAxis, ResourceAxis, \
-    unwrap_axis_names
+    unwrap_axis_names, infer_resource_partitions
 from psithuros.data import CachedLMDatasetConfig
 from psithuros.data.sharded import ShardedIndexedDataset
 from psithuros.logging import log_performance_stats
 from psithuros.logging import pbar_logger, log_to_wandb
-from psithuros.models.gpt2 import Gpt2Config
-from psithuros.models.pjit_gpt2 import PjitGpt2LMHeadModel
-from psithuros.models.sharded_gpt2 import ShardedGpt2LMHeadModel
+from psithuros.models.named_gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 print(Counter([type(dev) for dev in jax.devices()]))
 import jax.numpy as jnp
@@ -75,50 +75,52 @@ def main(config: TrainGpt2Config):
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         # initialize the model
-        model = PjitGpt2LMHeadModel(
-            tokenizer.vocab_size,
+        vocab = Axis("vocab", len(tokenizer))
+        model = Gpt2LMHeadModel(
+            vocab,
             config.model,
             key=model_key)
+
+        resource_partitions = {
+            "hidden": ResourceAxis.MODEL,
+            # "mlp": ResourceAxis.MODEL,
+            "batch": ResourceAxis.DATA,
+        }
+
+        model_resources = infer_resource_partitions(model, resource_partitions)
+
+        model = pjit(lambda m: m, in_axis_resources=None, out_axis_resources=model_resources)(model)
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
 
         # loss function
-        def compute_loss(model: ShardedGpt2LMHeadModel,
+        def compute_loss(model: Gpt2LMHeadModel,
                          input_ids,
                          key):
-            pred_y = vmap(model)(input_ids, key)
+            pred_y = model(input_ids, key)
             token_loss = jnp.mean(
-                optax.softmax_cross_entropy(pred_y[:, -1], jax.nn.one_hot(input_ids[:, 1:], num_classes=tokenizer.vocab_size)))
-            # return jax.lax.pmean(token_loss, LogicalAxis.BATCH)
+                optax.softmax_cross_entropy(pred_y[-1], jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size)))
 
             return token_loss
 
-        compute_loss_pjit = pjit(partial(compute_loss, key=None),
-                                 in_axes=[
-                                     model_axes,
-                                     [LogicalAxis.BATCH, ...],
-                                 ],
-                                 out_axes=[...],
-                                 axis_resources=axis_resources)
+        compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0])
+
+
+        compute_loss_pjit = pjit(partial(compute_loss_vmap, key=None),
+                                 in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None), None),
+                                 out_axis_resources=None)
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(compute_loss)
+        def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
+            return jnp.mean(compute_loss_vmap(model, input_ids, key))
+        compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
 
-        def compute_and_reduce_grads(model: ShardedGpt2LMHeadModel,
-                                     input_ids: Array[LogicalAxis.BATCH, ...],
-                                     key: [LogicalAxis.PARAMS, LogicalAxis.BATCH, ...]):
+        def compute_and_reduce_grads(model: Gpt2LMHeadModel,
+                                     input_ids,
+                                     key):
             loss, grad = compute_loss_and_grad(model, input_ids, key)
-            grad = jax.lax.pmean(grad, LogicalAxis.BATCH)
-
-            # TODO: this is so gross. there has to be a better way!
-            def still_has_shard_axis(x):
-                try:
-                    return LogicalAxis.PARAMS in x.aval.named_shaped
-                except AttributeError:
-                    return False
-
-            grad = jax.tree_map(lambda x: x if still_has_shard_axis(x) else jax.lax.pmean(x, LogicalAxis.PARAMS), grad)
+            grad = jax.tree_map(lambda x: jnp.mean(x, axis=0), grad)
             return loss, grad
 
         # boilerplate hooks and such
@@ -136,7 +138,7 @@ def main(config: TrainGpt2Config):
             for batch in itertools.islice(eval_dataset, 50):
                 yield (batch, )
 
-        evaluate = callbacks.compute_validation_loss(compute_loss_xmap, eval_dataloader)
+        evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
         # save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
@@ -186,14 +188,11 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        opt_state_axes = infer_named_axes(opt_state, None)
-        opt_state_axes = unwrap_axis_names(opt_state_axes)
+        opt_state_axes = infer_resource_partitions(opt_state, resource_partitions)
 
-        train_step = xmap(train_step,
-                          in_axes=[model_axes, opt_state_axes, [None, LogicalAxis.BATCH, ...],
-                                   [None, LogicalAxis.BATCH, LogicalAxis.PARAMS, ...]],
-                          out_axes=((...,), model_axes, opt_state_axes),
-                          axis_resources=axis_resources)
+        train_step = pjit(train_step,
+                          in_axis_resources=(model_resources, opt_state_axes, PartitionSpec(None, ResourceAxis.DATA, None), None),
+                          out_axis_resources=(None, model_resources, opt_state_axes))
 
         train_mesh_info = config.trainer.train_mesh_info
 
@@ -207,8 +206,6 @@ def main(config: TrainGpt2Config):
             micro_keys = shaped_rng_split(my_key, (
                 train_mesh_info.microbatches_per_step,
                 train_mesh_info.local_data_axis_size,
-                train_mesh_info.local_model_axis_size,
-                # train_mesh_info.per_device_parallelism
             ))
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
