@@ -225,7 +225,6 @@ class NamedArray:
         raise NotImplementedError
 
 
-
 def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
     """Returns the tensor product of two NamedArrays. The axes `axis` are contracted over,
     and any other axes that are shared between the arrays are batched over. Non-contracted Axes in one
