@@ -106,18 +106,14 @@ def main(config: TrainGpt2Config):
 
         compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0])
 
-
-        compute_loss_pjit = pjit(partial(compute_loss_vmap, key=None),
-                                 in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None), None),
-                                 out_axis_resources=None)
-
         # get the gradient using a wrapper around jax.value_and_grad
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
             return jnp.mean(compute_loss_vmap(model, input_ids, key))
         compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
 
         def compute_and_reduce_grads(model: Gpt2LMHeadModel, input_ids, key):
-            loss, grad = compute_loss_and_grad(model, input_ids, key)
+            # loss, grad = compute_loss_and_grad(model, input_ids, key)
+            loss, grad = compute_loss_and_grad(model, input_ids, None)
             # print(grad.embeddings.token_embeddings.axes, grad.embeddings.token_embeddings.array.shape)
             # grad = jax.tree_map(lambda x: jnp.mean(x, axis=0), grad)
             return loss, grad
@@ -137,6 +133,10 @@ def main(config: TrainGpt2Config):
             for batch in itertools.islice(eval_dataset, 50):
                 yield (batch, )
 
+
+        compute_loss_pjit = pjit(partial(mean_loss, key=None),
+                                 in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
+                                 out_axis_resources=None)
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
@@ -204,7 +204,7 @@ def main(config: TrainGpt2Config):
             # take just the examples for this rank
             micro_keys = shaped_rng_split(my_key, (
                 train_mesh_info.microbatches_per_step,
-                train_mesh_info.local_data_axis_size,
+                train_mesh_info.data_axis_size
             ))
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
