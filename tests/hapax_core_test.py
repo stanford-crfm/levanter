@@ -65,3 +65,23 @@ def test_reduction_functions():
     assert jnp.all(jnp.equal(hax.sum(m1, axis=(Height, Width, Depth)).array, jnp.sum(m1.array, axis=(0, 1, 2))))
     assert jnp.all(jnp.equal(hax.sum(m1, axis=(Width, Height, Depth)).array, jnp.sum(m1.array, axis=(1, 0, 2))))
 
+
+def test_split():
+    Height = Axis("Height", 2)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    D10 = Axis("Depth", Depth.size * 10)
+
+    rand_m = hpx.random.uniform(PRNGKey(0), (Height, Width, D10))
+    m = rand_m.array
+
+    splits = hpx.split(rand_m, axis=D10, new_axes=[Depth] * 10)
+
+    assert splits[0].axes == (Height, Width, Depth)
+    assert len(splits) == 10
+
+    usplits = jnp.split(m, 10, axis=2)
+
+    for i in range(10):
+        assert jnp.all(jnp.equal(splits[i].array, usplits[i]))
