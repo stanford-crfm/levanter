@@ -4,7 +4,7 @@ import jax.random as jrandom
 
 import functools
 
-from haliax import _ensure_sequence
+from haliax import _ensure_tuple
 from haliax.core import *
 
 
@@ -14,10 +14,13 @@ def _wrap_random_function(func):
     """Wrap a jax random function to return a NamedArray and takes axes as inputs"""
     @functools.wraps(func)
     def wrapper(key: jrandom.KeyArray, shape: AxisSpec, *args, **kwargs):
-        shape = _ensure_sequence(shape)
-        lens = [ax.size for ax in shape]
+        if isinstance(shape, Axis):
+            return NamedArray(func(key, shape.size, *args, **kwargs), (shape, ))
+        else:
+            shape = _ensure_tuple(shape)
+            lens = [ax.size for ax in shape]
 
-        return NamedArray(func(key, lens, *args, **kwargs), shape)
+            return NamedArray(func(key, lens, *args, **kwargs), shape)
     return wrapper
 
 

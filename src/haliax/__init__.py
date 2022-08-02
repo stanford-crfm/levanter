@@ -1,12 +1,13 @@
 from .core import *
-# creation routines
-# we could codegen these or do it dynamically, but Codex will do it for us and it's a bit less weird this way
-from .core import _ensure_sequence
+from .core import _ensure_tuple
 import haliax.random as random
-from .wrap import wrap_elemwise_unary, wrap_reduction_call
+from .wrap import wrap_elemwise_unary, wrap_reduction_call, wrap_normalization_call
+import numpy as np
+
+_sum = sum
 
 
-
+# creation routines
 def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 0"""
     return full(shape, 0, dtype)
@@ -37,6 +38,27 @@ def ones_like(a: NamedArray, dtype=None) -> NamedArray:
 def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to `fill_value`"""
     return NamedArray(jnp.full_like(a.array, fill_value, dtype=dtype), a.axes)
+
+
+# splitting and stacking etc
+def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis])-> Sequence[NamedArray]:
+    # check the lengths of the new axes
+    if axis not in a.axes:
+        raise ValueError(f"Axis {axis} not found in {a.axes}")
+
+    total_len = _sum(x.size for x in new_axes)
+    if total_len != axis.size:
+        raise ValueError(f"The total length of the new axes {total_len} does not match the length of the axis {axis}")
+
+    index = a.lookup_indices(axis)
+
+    # now we can split the array
+    offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
+
+    new_arrays = np.split(a.array, indices_or_sections=offsets, axis=index)
+    new_axes = [[ax2 if ax2 is not axis else new_axis for ax2 in a.axes] for new_axis in new_axes]
+
+    return [NamedArray(x, ax) for x, ax in zip(new_arrays, new_axes)]
 
 
 # elementwise unary operations
@@ -103,7 +125,6 @@ trunc = wrap_elemwise_unary(jnp.trunc)
 
 
 # Reduction functions
-
 all = wrap_reduction_call(jnp.all)
 amax = wrap_reduction_call(jnp.amax)
 any = wrap_reduction_call(jnp.any)
@@ -121,16 +142,27 @@ var = wrap_reduction_call(jnp.var)
 
 
 # "Normalization" functions that use an axis but don't change the shape
-cumsum = wrap_reduction_call(jnp.cumsum)
-cumprod = wrap_reduction_call(jnp.cumprod)
-cumproduct = wrap_reduction_call(jnp.cumproduct)
+cumsum = wrap_normalization_call(jnp.cumsum)
+cumprod = wrap_normalization_call(jnp.cumprod)
+cumproduct = wrap_normalization_call(jnp.cumproduct)
 
 
 __all__ = ["Axis", "NamedArray", "AxisSpec",
            "named", "dot",
            "zeros", "ones", "full", "zeros_like", "ones_like", "full_like",
-           "random"
-           ]
+           "random",
+           "abs", "absolute", "angle", "arccos", "arccosh", "arcsin", "arcsinh",
+           "arctan", "arctanh", "around", "bitwise_not", "cbrt", "ceil", "conj",
+           "conjugate", "copy", "cos", "cosh", "deg2rad", "degrees", "exp",
+           "exp2", "expm1", "fabs", "fix", "floor", "frexp", "i0", "imag",
+           "iscomplex", "isfinite", "isinf", "isnan", "isneginf", "isposinf",
+           "isreal", "log", "log10", "log1p", "log2", "logical_not", "ndim",
+           "negative", "positive", "rad2deg", "radians", "real", "reciprocal",
+           "rint", "round", "sign", "signbit", "sin", "sinc", "sinh", "square",
+           "sqrt", "tan", "tanh", "trunc", "all", "amax", "any", "max", "mean",
+           "min", "prod", "product", "sometrue", "std", "sum", "var", "cumsum",
+           "cumprod", "cumproduct"]
+
 
 
 

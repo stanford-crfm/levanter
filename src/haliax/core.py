@@ -22,9 +22,11 @@ AxisSpec = Union[Axis, Sequence[Axis]]
 @dataclass(frozen=True)
 class NamedArray:
     array: jnp.ndarray
-    axes: Sequence[Axis]
+    axes: Tuple[Axis, ...]
 
     def __post_init__(self):
+        if not isinstance(self.axes, tuple):
+            object.__setattr__(self, 'axes', tuple(self.axes))
         # ensure unique axes for now
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
@@ -171,6 +173,9 @@ class NamedArray:
     # def sort(self, axis: Optional[int] = -1, kind='quicksort', order=None) -> Any:
     #     ...
 
+    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence['NamedArray']:
+        return hapax.split(self, axis=axis, new_axes=new_axes)
+
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
     #     return haliax.squeeze(self, axis=axis)
 
@@ -262,9 +267,9 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
 T = TypeVar('T')
 
 
-def _ensure_sequence(x: Union[T, Sequence[T]]) -> Sequence[T]:
+def _ensure_tuple(x: Union[T, Tuple[T, ...]]) -> Tuple[T, ...]:
     if isinstance(x, Sequence):
-        return x
+        return tuple(x)
     return (x,)
 
 
