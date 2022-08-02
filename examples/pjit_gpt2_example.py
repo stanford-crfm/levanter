@@ -46,7 +46,9 @@ class TrainGpt2Config:
     wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
+
     run_base_dir: str = "runs/"
+    checkpoint_dir: str = "checkpoints/"
 
     dtype: jnp.dtype = jnp.float32
 
@@ -54,7 +56,9 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.wandb.init(config)
-    run_dir = f"{config.run_base_dir}/{wandb.run.name or wandb.run.id}"
+    run_name = wandb.run.name or wandb.run.id
+    run_dir = f"{config.run_base_dir}/{run_name}"
+    checkpoint_dir = f"{config.checkpoint_dir}/{run_name}"
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(config.data.build_or_load_document_cache("train"),
@@ -87,7 +91,6 @@ def main(config: TrainGpt2Config):
             config.model,
             key=model_key)
 
-
         model_resources = infer_resource_partitions(model, resource_partitions)
 
         # convert to appropriate dtype
@@ -117,7 +120,6 @@ def main(config: TrainGpt2Config):
                                  out_axis_resources=None)
 
         # get the gradient using a wrapper around jax.value_and_grad
-
         compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
 
         # boilerplate hooks and such
@@ -138,7 +140,7 @@ def main(config: TrainGpt2Config):
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
-        save = callbacks.save_model(run_dir)
+        save = callbacks.save_model(checkpoint_dir)
         engine.add_hook(save, every=config.trainer.steps_per_save)
 
         # data loader
@@ -170,11 +172,6 @@ def main(config: TrainGpt2Config):
             resume_step = resume_step + 1
         else:
             resume_step = 0
-
-        # because we're running the model on each device in parallel, we need to make sure the model is on each device
-        # (and the optimization state too)
-        # model = jax.device_put_replicated(model, devices)
-        # opt_state = jax.device_put_replicated(opt_state, devices)
 
         # input_ids is [microsteps, batch_axis, per_device_batch, ...]
         # keys are [microsteps, batch_axis, model_axis, per_device_batch, ...]
@@ -226,5 +223,4 @@ def main(config: TrainGpt2Config):
 
 
 if __name__ == "__main__":
-    # with jax.profiler.trace("logs"):
     main()
