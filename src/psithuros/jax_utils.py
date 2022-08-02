@@ -41,9 +41,11 @@ def jnp_to_python(a: jnp.ndarray):
     else:
         return a.tolist()
 
+
 Carry = TypeVar('Carry')
 X = TypeVar('X')
 Y = TypeVar('Y')
+
 
 def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
     # lax.scan that calls an xmapped function seems to break jax.
@@ -131,3 +133,5 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
         f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 
+def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
+    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)

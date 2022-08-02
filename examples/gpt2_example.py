@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 
 import psithuros.callbacks
+import psithuros.jax_utils
 from psithuros import callbacks, jax_utils
 from psithuros.logging import log_performance_stats, pbar_logger, log_to_wandb
 
@@ -152,7 +153,7 @@ def main(config: TrainGpt2Config):
 
     evaluate = callbacks.compute_validation_loss(compute_loss_pmap, eval_dataloader)
     engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
-    save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
+    save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.jax_utils.get_nth_rank, rank=0))
     engine.add_hook(save, every=config.trainer.steps_per_save)
 
     # data loader
