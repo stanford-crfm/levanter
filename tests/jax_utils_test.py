@@ -3,7 +3,8 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import equinox as eqx
 import psithuros.jax_utils as jax_utils
-import psithuros.models.gpt2
+from hapax import Axis
+from psithuros.models.gpt2 import Gpt2Mlp
 
 
 def test_backward_shape_jit_has_same_shape():
@@ -75,7 +76,7 @@ def test_backward_shape_sigmoid():
 
 
 def test_backward_shape_mlp_relu():
-    mlp = psithuros.models.gpt2.Gpt2Mlp(5, 3, activation_fn="relu", key=jrandom.PRNGKey(0))
+    mlp = Gpt2Mlp(Axis("q", 5), Axis("z", 3), activation_fn="relu", key=jrandom.PRNGKey(0))
 
     # graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((5,)))
     graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((5,)))

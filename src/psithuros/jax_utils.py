@@ -41,19 +41,15 @@ def jnp_to_python(a: jnp.ndarray):
     else:
         return a.tolist()
 
+
 Carry = TypeVar('Carry')
 X = TypeVar('X')
 Y = TypeVar('Y')
 
+
 def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
-    # lax.scan that calls an xmapped function seems to break jax.
     res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
     return res[0]
-    # ys = zip(*xs)
-    # for x in ys:
-    #     init = fn(init, x)
-    # return init
-
 
 def flops_estimate(fn, *args):
     """Estimates the flop count of a function using XLA/HLO fanciness. See https://github.com/google/flax/discussions/1854"""
@@ -131,3 +127,5 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
         f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 
+def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
+    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
