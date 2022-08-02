@@ -1,23 +1,16 @@
-from typing import Callable, TypeVar, Tuple, Iterator
+from typing import Callable, TypeVar, Iterator
 
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import wandb
 from tqdm import tqdm
 
 from psithuros.modeling_utils import RunningMean
 from psithuros.trainer_hooks import StepInfo
 from psithuros.checkpoint import save_checkpoint
-from psithuros import jax_utils
-
-
-def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
-    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
 
 
 def save_model(run_dir, prepare_fn=None):
-
     if not prepare_fn:
         prepare_fn = lambda x: x
 
@@ -32,9 +25,11 @@ def save_model(run_dir, prepare_fn=None):
 
     return save
 
+
 M = TypeVar("M")
 X = TypeVar("X")
 Y = TypeVar("Y")
+
 
 def compute_validation_loss(loss_fn: Callable[[M, ...], jax.numpy.ndarray],
                             dataloader: Callable[[], Iterator[tuple]]):
@@ -52,6 +47,5 @@ def compute_validation_loss(loss_fn: Callable[[M, ...], jax.numpy.ndarray],
 
         total_loss = total_loss.mean.item()
         wandb.log({"eval/loss": total_loss}, step=info.step)
-
 
     return compute_loss
