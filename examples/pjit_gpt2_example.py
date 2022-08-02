@@ -138,8 +138,8 @@ def main(config: TrainGpt2Config):
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
-        # save = callbacks.save_model(run_dir, prepare_fn=partial(psithuros.callbacks.get_nth_rank, rank=0))
-        # engine.add_hook(save, every=config.trainer.steps_per_save)
+        save = callbacks.save_model(run_dir)
+        engine.add_hook(save, every=config.trainer.steps_per_save)
 
         # data loader
         iter_data = iter(dataset)
@@ -222,7 +222,7 @@ def main(config: TrainGpt2Config):
             traceback.print_exc()
             import sys
             sys.exit(1)  # leave
-        # save(last_step)
+        save(last_step)
 
 
 if __name__ == "__main__":
