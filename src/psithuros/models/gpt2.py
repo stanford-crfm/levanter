@@ -1,5 +1,6 @@
 import functools
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional, List, Callable
 
 import equinox as eqx
@@ -11,18 +12,10 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
 from einops import rearrange
+from equinox.custom_types import Array
 
 from psithuros import jax_utils
-from psithuros.axis_names import Array
 from psithuros.modeling_utils import ACT2FN
-from psithuros.python_utils import StringHolderEnum
-
-
-class ParamAxes(StringHolderEnum):
-    EMBED = "embed"
-    MLP = "mlp"
-    VOCAB = "vocab"
-
 
 @dataclass
 class Gpt2Config:
@@ -249,9 +242,9 @@ def recursive_checkpoint(funs, threshold = 2):
 
 
 class Gpt2Embeddings(eqx.Module):
-    token_embeddings: Array["vocab_size", "embed_dim"]
-    position_embeddings: Array["num_position_embeddings", "embed_dim"]
-    token_out_embeddings: Optional[Array["vocab_size", "embed_dim"]]
+    token_embeddings: jnp.ndarray
+    position_embeddings: jnp.ndarray
+    token_out_embeddings: Optional[jnp.ndarray]
     dropout: pnn.Dropout
 
     def __init__(self,
