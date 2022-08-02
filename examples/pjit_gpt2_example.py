@@ -103,7 +103,7 @@ def main(config: TrainGpt2Config):
                          key):
             pred_y = model(input_ids, key)
             token_loss = jnp.mean(
-                optax.softmax_cross_entropy(pred_y[-1], jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size)))
+                optax.softmax_cross_entropy(pred_y[:-1], jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size)))
 
             return token_loss
 
@@ -119,13 +119,6 @@ def main(config: TrainGpt2Config):
         # get the gradient using a wrapper around jax.value_and_grad
 
         compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
-
-        def compute_and_reduce_grads(model: Gpt2LMHeadModel, input_ids, key):
-            # loss, grad = compute_loss_and_grad(model, input_ids, key)
-            loss, grad = compute_loss_and_grad(model, input_ids, None)
-            # print(grad.embeddings.token_embeddings.axes, grad.embeddings.token_embeddings.array.shape)
-            # grad = jax.tree_map(lambda x: jnp.mean(x, axis=0), grad)
-            return loss, grad
 
         # boilerplate hooks and such
         engine = TrainerHooks()
@@ -186,7 +179,7 @@ def main(config: TrainGpt2Config):
         # input_ids is [microsteps, batch_axis, per_device_batch, ...]
         # keys are [microsteps, batch_axis, model_axis, per_device_batch, ...]
         def train_step(model, opt_state, input_ids, keys):
-            loss, grads = accumulate_gradients(compute_and_reduce_grads, model, input_ids, keys)
+            loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
 
