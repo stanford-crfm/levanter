@@ -116,11 +116,10 @@ def main(config: TrainGpt2Config):
             return jnp.mean(compute_loss_vmap(model, input_ids, key))
         compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
 
-        def compute_and_reduce_grads(model: Gpt2LMHeadModel,
-                                     input_ids,
-                                     key):
+        def compute_and_reduce_grads(model: Gpt2LMHeadModel, input_ids, key):
             loss, grad = compute_loss_and_grad(model, input_ids, key)
-            grad = jax.tree_map(lambda x: jnp.mean(x, axis=0), grad)
+            # print(grad.embeddings.token_embeddings.axes, grad.embeddings.token_embeddings.array.shape)
+            # grad = jax.tree_map(lambda x: jnp.mean(x, axis=0), grad)
             return loss, grad
 
         # boilerplate hooks and such
