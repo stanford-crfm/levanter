@@ -74,6 +74,12 @@ def main(config: TrainGpt2Config):
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
+        resource_partitions = {
+            "hidden": ResourceAxis.MODEL,
+            # "mlp": ResourceAxis.MODEL,
+            "batch": ResourceAxis.DATA,
+        }
+
         # initialize the model
         vocab = Axis("vocab", len(tokenizer))
         model = Gpt2LMHeadModel(
@@ -81,14 +87,11 @@ def main(config: TrainGpt2Config):
             config.model,
             key=model_key)
 
-        resource_partitions = {
-            "hidden": ResourceAxis.MODEL,
-            # "mlp": ResourceAxis.MODEL,
-            "batch": ResourceAxis.DATA,
-        }
 
         model_resources = infer_resource_partitions(model, resource_partitions)
 
+        # convert to appropriate dtype
+        model = jax.tree_map(lambda array: array.astype(config.dtype), model)
         model = pjit(lambda m: m, in_axis_resources=None, out_axis_resources=model_resources)(model)
 
         # initialize the optimizer
@@ -106,9 +109,15 @@ def main(config: TrainGpt2Config):
 
         compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0])
 
-        # get the gradient using a wrapper around jax.value_and_grad
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
             return jnp.mean(compute_loss_vmap(model, input_ids, key))
+
+        compute_loss_pjit = pjit(partial(mean_loss, key=None),
+                                 in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
+                                 out_axis_resources=None)
+
+        # get the gradient using a wrapper around jax.value_and_grad
+
         compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
 
         def compute_and_reduce_grads(model: Gpt2LMHeadModel, input_ids, key):
@@ -133,10 +142,6 @@ def main(config: TrainGpt2Config):
             for batch in itertools.islice(eval_dataset, 50):
                 yield (batch, )
 
-
-        compute_loss_pjit = pjit(partial(mean_loss, key=None),
-                                 in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
-                                 out_axis_resources=None)
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
