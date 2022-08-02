@@ -48,14 +48,8 @@ Y = TypeVar('Y')
 
 
 def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
-    # lax.scan that calls an xmapped function seems to break jax.
     res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
     return res[0]
-    # ys = zip(*xs)
-    # for x in ys:
-    #     init = fn(init, x)
-    # return init
-
 
 def flops_estimate(fn, *args):
     """Estimates the flop count of a function using XLA/HLO fanciness. See https://github.com/google/flax/discussions/1854"""

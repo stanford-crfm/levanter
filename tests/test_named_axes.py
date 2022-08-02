@@ -1,66 +1,66 @@
-from typing import Tuple
-
-import jax
-import optax
-
-import jax.numpy as jnp
-import pytest
-from jax import tree_structure, tree_flatten, tree_unflatten
-import jax.random as jrandom
-from jax.experimental.maps import xmap
-from psithuros.axis_names import *
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+from equinox.custom_types import Array
+from jax.interpreters import pxla
+from jax.interpreters.pxla import PartitionSpec, ShardedAxis, Replicated
 
-from psithuros.axis_names import infer_named_axes_from_module, UnnamedAxes
+import hapax as hpx
+from hapax import NamedArray, Axis
+from psithuros.axis_names import *
 
 
 class MyModule(eqx.Module):
-    named: Array["x", "y"]
+    named: NamedArray
     unnamed1: Array
-    unnamed2: Array[...]
-    partially_named: Array["x", ...]
     static_field: int = eqx.static_field()
 
-def show_example(structured):
-  flat, tree = tree_flatten(structured)
-  unflattened = tree_unflatten(tree, flat)
-  print("structured={}\n  flat={}\n  tree={}\n  unflattened={}".format(
-      structured, flat, tree, unflattened))
+
+dim1 = Axis("dim1", 1)
+dim2 = Axis("dim2", 2)
+dim3 = Axis("dim3", 4)
+
+resource_map = {
+    "dim2": ResourceAxis.DATA,
+    "dim3": ResourceAxis.MODEL,
+}
 
 
 def test_infer_named_axes():
-    mod = MyModule(named=jnp.ones((2, 3)), unnamed1=jnp.ones((2)), unnamed2=jnp.ones((2)), partially_named=jnp.ones((2, 3)), static_field=1)
+    mod = MyModule(named=hpx.ones((dim1, dim2, dim3)), unnamed1=jnp.ones(dim2.size), static_field=1)
 
-    axes = infer_named_axes_from_module(mod)
+    axes: MyModule = infer_resource_partitions(mod, resource_map)
 
-    structure = jax.tree_structure(mod)
-    expected_axes = jax.tree_unflatten(structure, [AxisNames(("x", "y")), UnnamedAxes, UnnamedAxes, AxisNames(("x", ...,))])
-
-    assert axes == expected_axes
+    assert(axes.named == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL))
+    assert(axes.unnamed1 == None)
 
 
 class MyModuleInit(eqx.Module):
-    named: Array["x", "y"]
+    named: NamedArray
     unnamed1: Array
-    unnamed2: Array[...]
-    partially_named: Array["x", ...]
+    named2: NamedArray
     static_field: int = eqx.static_field()
 
     def __init__(self):
-        self.named = jnp.ones(())
+        self.named = hpx.ones((dim2, dim3))
         self.unnamed1 = jnp.ones(())
-        self.unnamed2 = jnp.ones(())
-        self.partially_named = jnp.ones(10)
+        self.named2 = hpx.ones(dim3)
         self.static_field = 1
 
 
-def test_xmap_class_init():
-    mod = xmapped_init(MyModuleInit, axis_sizes={"x": 2, "y": 3})()
-    assert(isinstance(mod, MyModuleInit))
-    assert(mod.named.shape == (2, 3))
-    assert(mod.unnamed1.shape == ())
-    assert(mod.unnamed2.shape == ())
-    assert(mod.partially_named.shape == (2, 10))
+def test_pjit_class_init():
+    devices = jax.devices()
+    with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+        mod = named_pjit_init(MyModuleInit, axis_resources=resource_map)()
+
+    assert mod.named.array.shape == (dim2.size, dim3.size)
+    assert mod.named.array.sharding_spec.mesh_mapping == (ShardedAxis(0), ShardedAxis(1))
+
+    assert mod.unnamed1.shape == ()
+    assert mod.unnamed1.sharding_spec.mesh_mapping == (Replicated(1), Replicated(1))
+    assert mod.named2.array.shape == (dim3.size, )
+    assert mod.named2.array.sharding_spec.mesh_mapping == (Replicated(1), ShardedAxis(0))
 
 
 def test_xmap_class_nested_init():
@@ -70,63 +70,31 @@ def test_xmap_class_nested_init():
         def __init__(self):
             self.inner = MyModuleInit()
 
-    mod2 = xmapped_init(Mod2, axis_sizes={"x": 2, "y": 3})()
-    assert(isinstance(mod2, Mod2))
+    devices = jax.devices()
+    with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+        mod2 = named_pjit_init(Mod2, axis_resources=resource_map)()
+
     mod = mod2.inner
-    assert(mod.named.shape == (2, 3))
+    assert(mod.named.array.shape == (dim2.size, dim3.size))
     assert(mod.unnamed1.shape == ())
-    assert(mod.unnamed2.shape == ())
-    assert(mod.partially_named.shape == (2, 10))
+    assert(mod.named2.array.shape == (dim3.size, ))
 
 
-def test_xmap_class_init_with_args():
+def test_pjit_class_init_with_args():
     class ModWithArgs(eqx.Module):
-        array: Array["x", "y"]
-        array2: Array["x", ...]
+        array: NamedArray
+        array2: NamedArray
 
-        def __init__(self, in_array: Array["x", "y"]):
+        def __init__(self, in_array: NamedArray):
             self.array = in_array
-            self.array2 = jnp.zeros(10)
+            self.array2 = hpx.zeros(dim3)
 
-    mod = xmapped_init(ModWithArgs)(jnp.ones((2, 3)))
-    assert(isinstance(mod, ModWithArgs))
-    assert(mod.array.shape == (2, 3))
-    assert(mod.array2.shape == (2, 10))
-
-def test_xmap_class_init_with_args_partial_dim():
-    class ModWithArgs(eqx.Module):
-        array: Array["x", "y"]
-        array2: Array["x", ...]
-        unaxised: Array[...]
-
-        def __init__(self, in_array: Array["y"], unaxised: Array[...]):
-            self.array = in_array
-            self.array2 = jnp.zeros(10)
-            self.unaxised = unaxised
-
-    in_array = jnp.ones(3)
-    unaxised = jnp.ones(10)
-    mod = xmapped_init(ModWithArgs, axis_sizes={"x": 2})(in_array, unaxised)
-    assert(isinstance(mod, ModWithArgs))
-    assert(mod.array.shape == (2, 3))
-    assert(mod.array2.shape == (2, 10))
-    assert(mod.unaxised.shape == (10, ))
+    devices = jax.devices()
+    with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+        mod = named_pjit_init(ModWithArgs, axis_resources=resource_map)(hpx.ones((dim1, dim2)))
+    assert isinstance(mod, ModWithArgs)
+    assert mod.array.array.shape == (dim1.size, dim2.size)
+    assert mod.array2.array.shape == (dim3.size, )
 
 
-def test_xmap_class_with_shaped_annotation():
-    class Mod(eqx.Module):
-        shaped_linear: Shaped["shard", eqx.nn.Linear]
-        array: Shaped["y", Array["x", ...]]
-        multi_array: Shaped[("shard", "y"), Array]
 
-        def __init__(self, key):
-            self.shaped_linear = eqx.nn.Linear(5, 1, key=key)
-            self.array = jnp.zeros(10)
-            self.multi_array = jnp.zeros(2)
-
-    mod = xmapped_init(Mod, axis_sizes={"x": 2, "y": 3, "shard": 4})(jrandom.PRNGKey(0))
-    assert(isinstance(mod, Mod))
-    assert(mod.shaped_linear.weight.shape == (4, 1, 5))
-    assert(mod.shaped_linear.bias.shape == (4, 1))
-    assert(mod.array.shape == (3, 2, 10))
-    assert(mod.multi_array.shape == (4, 3, 2))
