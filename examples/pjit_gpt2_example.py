@@ -7,14 +7,12 @@ from functools import partial
 import equinox as eqx
 import jax
 from jax import vmap
-from jax.experimental.maps import xmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from hapax import Axis
 from psithuros import callbacks
-from psithuros.axis_names import xmapped_init, Array, infer_named_axes, LogicalAxis, ResourceAxis, \
-    unwrap_axis_names, infer_resource_partitions
+from psithuros.axis_names import ResourceAxis, infer_resource_partitions
 from psithuros.data import CachedLMDatasetConfig
 from psithuros.data.sharded import ShardedIndexedDataset
 from psithuros.logging import log_performance_stats

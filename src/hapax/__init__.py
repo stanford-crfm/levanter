@@ -9,25 +9,19 @@ from .wrap import wrap_elemwise_unary, wrap_reduction_call
 
 def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 0"""
-    if isinstance(shape, Axis):
-        return NamedArray(jnp.zeros(shape=shape.size, dtype=dtype), (shape, ))
-    else:
-        x_shape = tuple(x.size for x in shape)
-        return NamedArray(jnp.zeros(shape=x_shape, dtype=dtype), shape)
-
+    return full(shape, 0, dtype)
 
 def ones(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 1"""
-    shape = _ensure_sequence(shape)
-    x_shape = tuple(x.size for x in shape)
-    return NamedArray(jnp.ones(shape=x_shape, dtype=dtype), shape)
-
+    return full(shape, 1, dtype)
 
 def full(shape: AxisSpec, fill_value, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to `fill_value`"""
-    shape = _ensure_sequence(shape)
-    x_shape = tuple(x.size for x in shape)
-    return NamedArray(jnp.full(shape=x_shape, fill_value=fill_value, dtype=dtype), shape)
+    if isinstance(shape, Axis):
+        return NamedArray(jnp.full(shape=shape.size, fill_value=fill_value, dtype=dtype), (shape, ))
+    else:
+        x_shape = tuple(x.size for x in shape)
+        return NamedArray(jnp.full(shape=x_shape, fill_value=fill_value, dtype=dtype), shape)
 
 
 def zeros_like(a: NamedArray, dtype=None) -> NamedArray:
