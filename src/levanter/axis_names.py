@@ -27,9 +27,9 @@ class LogicalAxis(StringHolderEnum):
 T = typing.TypeVar('T')
 
 
-def infer_resource_partitions(module: eqx.Module, axis_resources: Dict[str, str]) -> PyTree:
+def infer_resource_partitions(tree: PyTree, axis_resources: Dict[str, str]) -> PyTree:
     """
-    Infer the resource partitions for a module. To be used with pjit.
+    Infer the resource partitions for a module, to be used with pjit.
     The basic idea is to tree all NamedArrays as leaves for the purposes of this function,
     and to create PartitionSpecs from those names plus axis_resources
     """
@@ -43,7 +43,7 @@ def infer_resource_partitions(module: eqx.Module, axis_resources: Dict[str, str]
         else:
             return None
 
-    return jax.tree_map(partition_spec, module, is_leaf=named_array_is_leaf)
+    return jax.tree_map(partition_spec, tree, is_leaf=named_array_is_leaf)
 
 
 def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
