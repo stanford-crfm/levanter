@@ -85,3 +85,41 @@ def test_split():
 
     for i in range(10):
         assert jnp.all(jnp.equal(splits[i].array, usplits[i]))
+
+
+def test_take():
+    Height = Axis("Height", 2)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hpx.random.uniform(PRNGKey(0), (Height, Width, Depth))
+
+    assert jnp.all(jnp.equal(hpx.take(named1, Height, 0).array, named1.array[0]))
+
+    Index = Axis("Index", 5)
+    indices = hpx.ones(Index, dtype=jnp.int32)
+
+    named2 = hpx.take(named1, Height, indices)
+    assert named2.axes == (Index, Width, Depth)
+
+    named2 = hpx.take(named1, Width, indices)
+    assert named2.axes == (Height, Index, Depth)
+
+    named2 = hpx.take(named1, Depth, indices)
+    assert named2.axes == (Height, Width, Index)
+
+    Index2 = Axis("Index2", 3)
+
+    indices2 = hpx.ones((Index, Index2), dtype=jnp.int32)
+
+    named2 = hpx.take(named1, Height, indices2)
+    assert named2.axes == (Index, Index2, Width, Depth)
+
+    named2 = hpx.take(named1, Width, indices2)
+    assert named2.axes == (Height, Index, Index2, Depth)
+
+    named2 = hpx.take(named1, Depth, indices2)
+    assert named2.axes == (Height, Width, Index, Index2)
+
+
+
+
