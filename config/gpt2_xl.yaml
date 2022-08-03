@@ -14,5 +14,5 @@ model:
   gradient_checkpointing: true
 trainer:
   learning_rate: 1E-4
-  model_axis_size: 4
+  model_axis_size: 2
   per_device_train_batch_size: 1
