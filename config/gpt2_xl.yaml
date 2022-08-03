@@ -1,7 +1,7 @@
 dtype: bfloat16
 model:
   hidden_dim: 1600
-  num_heads: 32 # todo: we're constrained to have num_heads divisible by the size of the axis split
+  num_heads: 25
   num_layers: 40
   seq_len: 1024
 
