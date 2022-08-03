@@ -3,7 +3,6 @@ from typing import Sequence, Union, Any, Dict, TypeVar, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.interpreters.partial_eval import DynamicJaxprTracer
 from jaxlib.xla_extension import DeviceArray
 
 import haliax
@@ -143,7 +142,7 @@ class NamedArray:
     # def nonzero(self, *, size=None, fill_value=None) -> Any:
     #     ...
 
-    def prod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None, initial=None, where=None) -> Any:
+    def prod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None, initial=None, where=None):
         return haliax.prod(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
 
     # def ptp(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, out=None,
@@ -198,9 +197,8 @@ class NamedArray:
     # def trace(self, offset=0, axis1: int = 0, axis2: int = 1, dtype=None,
     #           out=None) -> Any:
 
-    def var(self, axis: Optional[AxisSpec] = None,dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
+    def var(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
         return haliax.var(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
-
 
     # operators
     def __add__(self, other) -> Any:
@@ -284,7 +282,7 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
 T = TypeVar('T')
 
 
-def _ensure_tuple(x: Union[T, Tuple[T, ...]]) -> Tuple[T, ...]:
+def _ensure_tuple(x: Union[Sequence[T, ...], T]) -> Tuple[T, ...]:
     if isinstance(x, Sequence):
         return tuple(x)
     return (x,)
@@ -297,7 +295,7 @@ def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
             raise ValueError(f'Shape of array {jnp.shape(a)} does not match size of axis {axis.size}')
         return NamedArray(a, (axis, ))
     else:
-        shape = _ensure_tuple(axis)
+        shape: Tuple[Axis, ...] = _ensure_tuple(axis)
         # verify the shape is correct
         if jnp.shape(a) != tuple(x.size for x in shape):
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
