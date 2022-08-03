@@ -184,7 +184,7 @@ class NamedArray:
 
     def sum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None,
             initial=None, where=None) -> Any:
-        return haliax.sum(self, axis=axis, )
+        return haliax.sum(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
 
     def take(self, axis: Axis, index: Union[int, 'NamedArray']) -> Any:
         return hapax.take(self, axis=axis, index=index)
