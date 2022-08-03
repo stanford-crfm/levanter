@@ -186,9 +186,8 @@ class NamedArray:
             initial=None, where=None) -> Any:
         return haliax.sum(self, axis=axis, )
 
-    # def take(self, indices, axis: Optional[int] = None, out=None,
-    #          mode=None) -> Any:
-    #     ...
+    def take(self, axis: Axis, index: Union[int, 'NamedArray']) -> Any:
+        return hapax.take(self, axis=axis, index=index)
 
     def tobytes(self, order='C') -> Any:
         return self.array.tobytes(order=order)
@@ -230,6 +229,24 @@ class NamedArray:
         raise NotImplementedError
 
 
+def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedArray:
+    """
+    Selects elements from an array along an axis, by an index or by another named array
+    """
+    axis_index = array.lookup_indices(axis)
+    if axis_index is None:
+        raise ValueError(f"axis {axis} not found in {array}")
+    if isinstance(index, int):
+        # just drop the axis
+        new_array = jnp.take(array.array, index, axis=axis_index)
+        new_axes = array.axes[:axis_index] + array.axes[axis_index+1:]
+    else:
+        new_array = jnp.take(array.array, index.array, axis=axis_index)
+        new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index+1:]
+    # new axes come from splicing the old axis with
+    return NamedArray(new_array, new_axes)
+
+
 def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
     """Returns the tensor product of two NamedArrays. The axes `axis` are contracted over,
     and any other axes that are shared between the arrays are batched over. Non-contracted Axes in one
@@ -256,7 +273,7 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
         array_specs.append(spec)
 
     # now compute the output axes:
-    output_axes = [ax for ax in axis_mappings.keys() if ax not in axis]
+    output_axes = tuple(ax for ax in axis_mappings.keys() if ax not in axis)
     output_spec = ' '.join(str(axis_mappings[ax]) for ax in output_axes)
 
     output = jnp.einsum(', '.join(array_specs) + "-> " + output_spec, *[a.array for a in arrays], precision=precision)
@@ -275,11 +292,15 @@ def _ensure_tuple(x: Union[T, Tuple[T, ...]]) -> Tuple[T, ...]:
 
 def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
-    shape = _ensure_sequence(axis)
-    # verify the shape is correct
-    if jnp.shape(a) != tuple(x.size for x in shape):
-        raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
+    if isinstance(axis, Axis):
+        if jnp.shape(a) != axis.size:
+            raise ValueError(f'Shape of array {jnp.shape(a)} does not match size of axis {axis.size}')
+        return NamedArray(a, (axis, ))
+    else:
+        shape = _ensure_tuple(axis)
+        # verify the shape is correct
+        if jnp.shape(a) != tuple(x.size for x in shape):
+            raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
 
-    return NamedArray(a, shape)
-
+        return NamedArray(a, shape)
 
