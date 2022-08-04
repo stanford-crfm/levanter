@@ -6,7 +6,7 @@ import jax
 import numpy as np
 from jax.experimental.maps import Mesh
 
-from psithuros.axis_names import ResourceAxis
+from levanter.axis_names import ResourceAxis
 
 
 @dataclass

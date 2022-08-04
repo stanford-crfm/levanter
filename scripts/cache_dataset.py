@@ -2,8 +2,8 @@ import os
 
 import pyrallis
 
-from psithuros.data import CachedLMDatasetConfig, batched
-from psithuros.data.text import tokenize_batch, build_cache
+from levanter.data import CachedLMDatasetConfig, batched
+from levanter.data.text import tokenize_batch, build_cache
 
 
 @pyrallis.wrap()

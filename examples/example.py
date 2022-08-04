@@ -7,7 +7,7 @@ import jax.random as jrandom
 import optax  # https://github.com/deepmind/optax
 from optax import OptState
 
-from psithuros.modeling_utils import fold_left
+from levanter.modeling_utils import fold_left
 
 
 def dataloader(arrays, batch_size, *, key):

@@ -2,9 +2,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import equinox as eqx
-import psithuros.jax_utils as jax_utils
+import levanter.jax_utils as jax_utils
 from hapax import Axis
-from psithuros.models.gpt2 import Gpt2Mlp
+from levanter.models.gpt2 import Gpt2Mlp
 
 
 def test_backward_shape_jit_has_same_shape():

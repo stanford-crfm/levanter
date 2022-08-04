@@ -9,8 +9,8 @@ import datasets
 import fsspec
 from transformers import AutoTokenizer
 
-from psithuros.data.text import tokenize_batch, build_cache, TokenizedDocumentCache
-from psithuros.data.utils import batched
+from levanter.data.text import tokenize_batch, build_cache, TokenizedDocumentCache
+from levanter.data.utils import batched
 
 @dataclass
 class LMDatasetConfig:

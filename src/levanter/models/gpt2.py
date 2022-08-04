@@ -6,7 +6,7 @@ import equinox as eqx
 import equinox.nn as nn
 from equinox.custom_types import Array
 
-import psithuros.nn as pnn
+import levanter.nn as pnn
 import jax
 import jax.lax as lax
 import jax.nn as jnn
@@ -16,8 +16,8 @@ from einops import rearrange
 
 from hapax import Axis, NamedArray
 import hapax as hpx
-from psithuros import jax_utils
-from psithuros.modeling_utils import ACT2FN
+from levanter import jax_utils
+from levanter.modeling_utils import ACT2FN
 
 
 @dataclass

@@ -9,10 +9,10 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 from transformers import BatchEncoding
 
-from psithuros.axis_names import ResourceAxis
-from psithuros.mesh import MeshInfo
-from psithuros.data.text import TokenizedDocumentCache
-from psithuros.data.sharded import ShardedIndexedDataset
+from levanter.axis_names import ResourceAxis
+from levanter.mesh import MeshInfo
+from levanter.data.text import TokenizedDocumentCache
+from levanter.data.sharded import ShardedIndexedDataset
 
 
 def _small_dataset(seq_len=128):
