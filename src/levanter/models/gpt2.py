@@ -233,16 +233,13 @@ class Gpt2Transformer(eqx.Module):
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
 
-        if inference or not self.config.gradient_checkpointing:
+        if not self.config.gradient_checkpointing:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
             hidden_states = recursive_checkpoint(
                 [lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
                 threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
-            # for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
-            #     print(i)
-            #     hidden_states = jax.remat(Gpt2Model.block_remat)(block, hidden_states, key=k_block)
 
         hidden_states = self.ln_f(hidden_states)
 
@@ -255,13 +252,13 @@ def recursive_checkpoint(funs, threshold = 2):
         return funs[0]
     elif len(funs) == 2:
         f1, f2 = funs
-        return lambda x: f1(f2(x))
+        return lambda x: f2(f1(x))
     elif len(funs) <= threshold:
-        return functools.reduce(lambda f, g: lambda x: f(g(x)), funs)
+        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
     else:
         f1 = recursive_checkpoint(funs[:len(funs)//2])
         f2 = recursive_checkpoint(funs[len(funs)//2:])
-        return lambda x: f1(jax.remat(f2)(x))
+        return lambda x: f2(jax.remat(f1)(x))
 
 
 class Gpt2Embeddings(eqx.Module):
