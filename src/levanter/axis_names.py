@@ -8,7 +8,7 @@ from equinox.custom_types import PyTree
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
-from hapax import NamedArray
+from haliax import NamedArray
 from levanter.python_utils import StringHolderEnum
 
 

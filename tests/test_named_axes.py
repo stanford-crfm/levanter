@@ -6,8 +6,8 @@ from equinox.custom_types import Array
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec, ShardedAxis, Replicated
 
-import hapax as hpx
-from hapax import NamedArray, Axis
+import haliax as hax
+from haliax import NamedArray, Axis
 from levanter.axis_names import *
 
 
@@ -28,7 +28,7 @@ resource_map = {
 
 
 def test_infer_named_axes():
-    mod = MyModule(named=hpx.ones((dim1, dim2, dim3)), unnamed1=jnp.ones(dim2.size), static_field=1)
+    mod = MyModule(named=hax.ones((dim1, dim2, dim3)), unnamed1=jnp.ones(dim2.size), static_field=1)
 
     axes: MyModule = infer_resource_partitions(mod, resource_map)
 
@@ -43,9 +43,9 @@ class MyModuleInit(eqx.Module):
     static_field: int = eqx.static_field()
 
     def __init__(self):
-        self.named = hpx.ones((dim2, dim3))
+        self.named = hax.ones((dim2, dim3))
         self.unnamed1 = jnp.ones(())
-        self.named2 = hpx.ones(dim3)
+        self.named2 = hax.ones(dim3)
         self.static_field = 1
 
 
@@ -87,11 +87,11 @@ def test_pjit_class_init_with_args():
 
         def __init__(self, in_array: NamedArray):
             self.array = in_array
-            self.array2 = hpx.zeros(dim3)
+            self.array2 = hax.zeros(dim3)
 
     devices = jax.devices()
     with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-        mod = named_pjit_init(ModWithArgs, axis_resources=resource_map)(hpx.ones((dim1, dim2)))
+        mod = named_pjit_init(ModWithArgs, axis_resources=resource_map)(hax.ones((dim1, dim2)))
     assert isinstance(mod, ModWithArgs)
     assert mod.array.array.shape == (dim1.size, dim2.size)
     assert mod.array2.array.shape == (dim3.size, )

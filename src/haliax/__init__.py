@@ -2,7 +2,7 @@ from .core import *
 # creation routines
 # we could codegen these or do it dynamically, but Codex will do it for us and it's a bit less weird this way
 from .core import _ensure_sequence
-import hapax.random as random
+import haliax.random as random
 from .wrap import wrap_elemwise_unary, wrap_reduction_call
 
 

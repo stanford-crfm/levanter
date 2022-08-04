@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 from jaxlib.xla_extension import DeviceArray
 
-import hapax
+import haliax
 
 
 @dataclass(frozen=True)
@@ -67,10 +67,10 @@ class NamedArray:
 
     # np.ndarray methods:
     def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
-        return hapax.all(self, axis=axis, out=out, keepdims=keepdims)
+        return haliax.all(self, axis=axis, out=out, keepdims=keepdims)
 
     def any(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
-        return hapax.any(self, axis=axis, out=out, keepdims=keepdims)
+        return haliax.any(self, axis=axis, out=out, keepdims=keepdims)
 
     # def select(self, axis: Axis, index: Union[int, 'NamedArray', jnp.ndarray]) -> Any:
     #     if isinstance(index, NamedArray):
@@ -109,10 +109,10 @@ class NamedArray:
         return NamedArray(self.array.copy(), self.axes)
 
     def cumprod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> Any:
-        return hapax.cumprod(self, axis=axis, dtype=dtype, out=out)
+        return haliax.cumprod(self, axis=axis, dtype=dtype, out=out)
 
     def cumsum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> Any:
-        return hapax.cumsum(self, axis=axis, dtype=dtype, out=out)
+        return haliax.cumsum(self, axis=axis, dtype=dtype, out=out)
 
     # def diagonal(self, offset=0, axis1: int = 0, axis2: int = 1) -> Any:
     #     ...
@@ -129,20 +129,20 @@ class NamedArray:
     #
 
     def max(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None, initial=None, where=None) -> Any:
-        return hapax.max(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
+        return haliax.max(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
     def mean(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=False, *, where=None, ) -> Any:
-        return hapax.mean(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
+        return haliax.mean(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
 
     def min(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None, initial=None, where=None) -> Any:
-        return hapax.min(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
+        return haliax.min(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
     # TODO
     # def nonzero(self, *, size=None, fill_value=None) -> Any:
     #     ...
 
     def prod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None, initial=None, where=None) -> Any:
-        return hapax.prod(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
+        return haliax.prod(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
 
     # def ptp(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, out=None,
     #         keepdims=False, ) -> Any:
@@ -163,7 +163,7 @@ class NamedArray:
     #     ...
 
     def round(self, decimals=0, out=None) -> Any:
-        return hapax.round(self, decimals=decimals, out=out)
+        return haliax.round(self, decimals=decimals, out=out)
 
     # def searchsorted(self, v, side='left', sorter=None) -> Any:
     #     ...
@@ -172,14 +172,14 @@ class NamedArray:
     #     ...
 
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
-    #     return hapax.squeeze(self, axis=axis)
+    #     return haliax.squeeze(self, axis=axis)
 
     def std(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
-        return hapax.std(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+        return haliax.std(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
 
     def sum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None,
             initial=None, where=None) -> Any:
-        return hapax.sum(self, axis=axis,)
+        return haliax.sum(self, axis=axis, )
 
     # def take(self, indices, axis: Optional[int] = None, out=None,
     #          mode=None) -> Any:
@@ -195,7 +195,7 @@ class NamedArray:
     #           out=None) -> Any:
 
     def var(self, axis: Optional[AxisSpec] = None,dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
-        return hapax.var(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+        return haliax.var(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
 
 
     # operators
