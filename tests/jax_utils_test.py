@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import equinox as eqx
 import levanter.jax_utils as jax_utils
-from hapax import Axis
+from haliax import Axis
 from levanter.models.gpt2 import Gpt2Mlp
 
 

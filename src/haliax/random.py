@@ -4,8 +4,8 @@ import jax.random as jrandom
 
 import functools
 
-from hapax import _ensure_sequence
-from hapax.core import *
+from haliax import _ensure_sequence
+from haliax.core import *
 
 
 

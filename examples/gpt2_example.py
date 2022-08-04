@@ -10,7 +10,7 @@ from jax import vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
-from hapax import Axis
+from haliax import Axis
 from levanter import callbacks
 from levanter.axis_names import ResourceAxis, infer_resource_partitions
 from levanter.data import CachedLMDatasetConfig

@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from hapax.core import NamedArray, _ensure_sequence, AxisSpec
+from haliax.core import NamedArray, _ensure_sequence, AxisSpec
 
 
 def wrap_elemwise_unary(f):

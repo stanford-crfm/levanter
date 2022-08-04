@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from einops import rearrange
 
-from hapax import Axis, NamedArray
-import hapax as hpx
+from haliax import Axis, NamedArray
+import haliax as hax
 from levanter import jax_utils
 from levanter.modeling_utils import ACT2FN
 
@@ -55,9 +55,9 @@ class NamedLinear(eqx.Module):
     out_axis: Axis = eqx.static_field()
 
     def __init__(self, in_axis: Axis, out_axis: Axis, *, key, include_bias=True):
-        self.weight = hpx.random.normal(key, (in_axis, out_axis)) * 0.02
+        self.weight = hax.random.normal(key, (in_axis, out_axis)) * 0.02
         if include_bias:
-            self.bias = hpx.zeros(out_axis)
+            self.bias = hax.zeros(out_axis)
         else:
             self.bias = None
 
@@ -110,7 +110,7 @@ class Gpt2Attention(eqx.Module):
 
         k_c, k_proj = jrandom.split(key, 2)
 
-        qkv = hpx.Axis(name="qkv", size=3 * self.total_head_dim)
+        qkv = hax.Axis(name="qkv", size=3 * self.total_head_dim)
         total_head_dim = Axis(name="total_head_dim", size=self.total_head_dim)
         self.c_attn = NamedLinear(out_axis=qkv, in_axis=in_dim, key=k_c)
         self.c_proj = NamedLinear(out_axis=in_dim, in_axis=total_head_dim, key=k_proj)
@@ -125,7 +125,7 @@ class Gpt2Attention(eqx.Module):
         rng_key = key
 
         qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
-        # TODO(hpx): split for named
+        # TODO(haliax): split for named
         query, key, value = jnp.split(qkv_out, 3, axis=-1)  # [seq_len, embed_dim]
 
         query = self._split_heads(query)  # [num_heads, seq_len, head_dim]
@@ -136,7 +136,7 @@ class Gpt2Attention(eqx.Module):
         query_length, key_length = query.shape[-2], key.shape[-2]
 
         if self.causal:
-            seq_len = hidden_states.shape[-2]  # TODO(hpx): fix for named arrays
+            seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
             causal_mask = jnp.where(causal_mask, 0.0, -1E9)
             causal_mask = causal_mask.astype(jnp.bfloat16)
@@ -289,16 +289,16 @@ class Gpt2Embeddings(eqx.Module):
         self.seqlen = seqlen
         self.hidden = embed
 
-        self.token_embeddings = hpx.random.normal(key=k_wte,
+        self.token_embeddings = hax.random.normal(key=k_wte,
                                                   shape=(vocab, embed)) * initializer_range
-        self.position_embeddings = hpx.random.normal(key=k_wpe,
+        self.position_embeddings = hax.random.normal(key=k_wpe,
                                                      shape=(seqlen, embed)) * (initializer_range / 2)
         self.dropout = pnn.Dropout(p=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
         else:
-            self.token_out_embeddings = hpx.random.normal(key=k_out,
+            self.token_out_embeddings = hax.random.normal(key=k_out,
                                                           shape=(vocab, embed)) * initializer_range
 
     def embed(self, input_ids, inference, *, key):
@@ -314,7 +314,7 @@ class Gpt2Embeddings(eqx.Module):
 
     def unembed(self, hidden_states: Array):
         embeddings = self.token_out_embeddings or self.token_embeddings
-        # return hpx.dot(self.hidden, hidden_states, embeddings)
+        # return hax.dot(self.hidden, hidden_states, embeddings)
         return jnp.einsum('... l h, ... v h -> ... l v', hidden_states, embeddings.array)
 
 
