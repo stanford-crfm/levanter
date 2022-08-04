@@ -71,8 +71,9 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
             out = []
             data_for_group = {}
             for index_group in indices:
-                my_indices = tuple(s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
-                assert (s[2] == 1 for s in my_indices)
+                # begin, end, step
+                my_indices: Tuple[Tuple[int, int, int], ...] = tuple(s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
+                assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
                 slice_sizes = [s[1] - s[0] for s in my_indices]
                 num_examples = prod(slice_sizes[0:-1])
                 if my_indices not in data_for_group:
