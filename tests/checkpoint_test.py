@@ -9,7 +9,7 @@ import tempfile
 import numpy as np
 from equinox import static_field
 
-from psithuros.checkpoint import load_checkpoint, save_checkpoint
+from levanter.checkpoint import load_checkpoint, save_checkpoint
 import optax
 
 # TODO: chex doesn't seem to respect custom nodes...

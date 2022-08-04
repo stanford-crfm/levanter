@@ -25,9 +25,9 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 from transformers import BatchEncoding, AutoTokenizer, PreTrainedTokenizerFast
 
-from psithuros.data.utils import batched
+from levanter.data.utils import batched
 
-overwatch = logging.getLogger("psithuros.data.text")
+overwatch = logging.getLogger("levanter.data.text")
 
 # TASKS:
 # TODO: figure out directory structure for caching multiple sources

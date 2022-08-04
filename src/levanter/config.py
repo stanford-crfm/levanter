@@ -12,8 +12,8 @@ import pyrallis
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
-from psithuros.axis_names import ResourceAxis
-from psithuros.mesh import MeshInfo
+from levanter.axis_names import ResourceAxis
+from levanter.mesh import MeshInfo
 
 
 @dataclass

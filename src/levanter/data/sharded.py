@@ -6,8 +6,8 @@ import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 
-from psithuros.data.text import IndexedDataset, TokenizedDocumentCache
-from psithuros.mesh import MeshInfo
+from levanter.data.text import IndexedDataset, TokenizedDocumentCache
+from levanter.mesh import MeshInfo
 
 In = TypeVar("In")
 Ex = TypeVar("Ex")

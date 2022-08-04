@@ -5,7 +5,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from psithuros.jax_utils import fold_left
+from levanter.jax_utils import fold_left
 
 
 def quick_gelu(x):

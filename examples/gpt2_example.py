@@ -11,13 +11,13 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from hapax import Axis
-from psithuros import callbacks
-from psithuros.axis_names import ResourceAxis, infer_resource_partitions
-from psithuros.data import CachedLMDatasetConfig
-from psithuros.data.sharded import ShardedIndexedDataset
-from psithuros.logging import log_performance_stats
-from psithuros.logging import pbar_logger, log_to_wandb
-from psithuros.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter import callbacks
+from levanter.axis_names import ResourceAxis, infer_resource_partitions
+from levanter.data import CachedLMDatasetConfig
+from levanter.data.sharded import ShardedIndexedDataset
+from levanter.logging import log_performance_stats
+from levanter.logging import pbar_logger, log_to_wandb
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 print(Counter([type(dev) for dev in jax.devices()]))
 import jax.numpy as jnp
@@ -28,11 +28,11 @@ import pyrallis
 import wandb
 from transformers import GPT2Tokenizer
 
-from psithuros.checkpoint import load_checkpoint
-from psithuros.config import TrainerConfig, WandbConfig
-from psithuros.jax_utils import shaped_rng_split, parameter_count
-from psithuros.modeling_utils import accumulate_gradients
-from psithuros.trainer_hooks import TrainerHooks, StepInfo
+from levanter.checkpoint import load_checkpoint
+from levanter.config import TrainerConfig, WandbConfig
+from levanter.jax_utils import shaped_rng_split, parameter_count
+from levanter.modeling_utils import accumulate_gradients
+from levanter.trainer_hooks import TrainerHooks, StepInfo
 
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py

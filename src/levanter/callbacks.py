@@ -5,9 +5,9 @@ import jax.numpy as jnp
 import wandb
 from tqdm import tqdm
 
-from psithuros.modeling_utils import RunningMean
-from psithuros.trainer_hooks import StepInfo
-from psithuros.checkpoint import save_checkpoint
+from levanter.modeling_utils import RunningMean
+from levanter.trainer_hooks import StepInfo
+from levanter.checkpoint import save_checkpoint
 
 
 def save_model(run_dir, prepare_fn=None):

@@ -9,7 +9,7 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from hapax import NamedArray
-from psithuros.python_utils import StringHolderEnum
+from levanter.python_utils import StringHolderEnum
 
 
 # Predefined axis names

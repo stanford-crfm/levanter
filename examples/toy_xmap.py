@@ -1,6 +1,6 @@
 import os
 
-from psithuros import jax_utils
+from levanter import jax_utils
 
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
 

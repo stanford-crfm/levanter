@@ -6,8 +6,8 @@ import jax.numpy as jnp
 from optax import MultiStepsState
 from tqdm import tqdm
 
-from psithuros.jax_utils import jnp_to_python
-from psithuros.trainer_hooks import StepInfo
+from levanter.jax_utils import jnp_to_python
+from levanter.trainer_hooks import StepInfo
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):

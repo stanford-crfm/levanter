@@ -8,7 +8,7 @@ from jax.interpreters.pxla import PartitionSpec, ShardedAxis, Replicated
 
 import hapax as hpx
 from hapax import NamedArray, Axis
-from psithuros.axis_names import *
+from levanter.axis_names import *
 
 
 class MyModule(eqx.Module):
