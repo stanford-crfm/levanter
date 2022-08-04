@@ -10,6 +10,7 @@ from jax import vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
+import levanter.jax_utils
 from haliax import Axis
 from levanter import callbacks
 from levanter.axis_names import ResourceAxis, infer_resource_partitions
@@ -126,9 +127,14 @@ def main(config: TrainGpt2Config):
         wandb.config['parameter_count'] = parameter_count(model)
         wandb.summary['parameter_count'] = parameter_count(model)
 
+        flops_estimate = levanter.jax_utils.flops_estimate(mean_loss, model, jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32), None)
+        wandb.summary['flops_per_example'] = flops_estimate
+
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
-        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size))
+        engine.add_hook(log_performance_stats(config.model.seq_len,
+                                              config.trainer.train_batch_size,
+                                              flops_per_example=flops_estimate), every=1)
 
         def eval_dataloader():
             # TODO: only do one pass
