@@ -15,7 +15,7 @@ def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
     if key is None:
         return [None] * num
     elif num == 1:
-        return jnp.stack(key)
+        return jnp.reshape(key, (1, ) + key.shape)
     else:
         return jrandom.split(key, num)
 

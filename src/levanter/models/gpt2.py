@@ -20,7 +20,7 @@ from levanter import jax_utils
 from levanter.modeling_utils import ACT2FN
 
 
-@dataclass
+@dataclass(frozen=True)
 class Gpt2Config:
     seq_len: int = 512
     hidden_dim: int = 768
@@ -197,6 +197,7 @@ class Gpt2Block(eqx.Module):
 
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key):
+        print(type(hidden_states), key)
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
@@ -232,13 +233,15 @@ class Gpt2Transformer(eqx.Module):
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
+        print("...")
+        print(type(hidden_states), keys)
 
         if not self.config.gradient_checkpointing:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
             hidden_states = recursive_checkpoint(
-                [lambda x: block(x, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
+                [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
                 threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
