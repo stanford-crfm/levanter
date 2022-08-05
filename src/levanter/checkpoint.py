@@ -6,10 +6,10 @@ from typing import Any, Callable, Optional, Union
 
 import fsspec
 import jax
-from equinox.custom_types import PyTree
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from furl import furl
+from jaxtyping import PyTree
 
 
 logger = logging.getLogger(__name__)
