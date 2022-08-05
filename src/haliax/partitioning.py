@@ -6,9 +6,9 @@ from typing import List, Mapping, Optional, Sequence, TypeVar, Union
 
 import jax
 from equinox import is_array
-from equinox.custom_types import PyTree
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
+from jaxtyping import PyTree
 
 from .core import NamedArray
 from .util import StringHolderEnum, ensure_tuple, is_named_array
