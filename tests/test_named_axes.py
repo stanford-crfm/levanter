@@ -17,9 +17,9 @@ class MyModule(eqx.Module):
     static_field: int = eqx.static_field()
 
 
-dim1 = Axis("dim1", 1)
-dim2 = Axis("dim2", 2)
-dim3 = Axis("dim3", 4)
+dim1 = Axis("dim1", 8)
+dim2 = Axis("dim2", 16)
+dim3 = Axis("dim3", 32)
 
 resource_map = {
     "dim2": ResourceAxis.DATA,
@@ -58,9 +58,9 @@ def test_pjit_class_init():
     assert mod.named.array.sharding_spec.mesh_mapping == (ShardedAxis(0), ShardedAxis(1))
 
     assert mod.unnamed1.shape == ()
-    assert mod.unnamed1.sharding_spec.mesh_mapping == (Replicated(1), Replicated(1))
+    assert mod.unnamed1.sharding_spec.mesh_mapping == (Replicated(len(devices)), Replicated(1))
     assert mod.named2.array.shape == (dim3.size, )
-    assert mod.named2.array.sharding_spec.mesh_mapping == (Replicated(1), ShardedAxis(0))
+    assert mod.named2.array.sharding_spec.mesh_mapping == (Replicated(len(devices)), ShardedAxis(0))
 
 
 def test_xmap_class_nested_init():
