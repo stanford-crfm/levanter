@@ -145,12 +145,3 @@ def test_cumsum_etc():
 
     assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Depth).array, jnp.cumprod(named1.array, axis=2)))
     assert hax.cumprod(named1, axis=Depth).axes == (Height, Width, Depth)
-
-    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Height).array, jnp.cumsum(named1.array, axis=0)))
-    assert hax.cumsum(named1, axis=Height).axes == (Height, Width, Depth)
-
-    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Width).array, jnp.cumsum(named1.array, axis=1)))
-    assert hax.cumsum(named1, axis=Width).axes == (Height, Width, Depth)
-
-    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Depth).array, jnp.cumsum(named1.array, axis=2)))
-    assert hax.cumsum(named1, axis=Depth).axes == (Height, Width, Depth)
