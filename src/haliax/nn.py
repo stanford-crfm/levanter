@@ -21,8 +21,8 @@ gelu = wrap_elemwise_unary(jnn.gelu)
 
 logsumexp = wrap_reduction_call(jnn.logsumexp)
 
-softmax = wrap_normalization_call(jnn.softmax)
-log_softmax = wrap_normalization_call(jnn.log_softmax)
+softmax = wrap_normalization_call(jnn.softmax, False)
+log_softmax = wrap_normalization_call(jnn.log_softmax, False)
 
 
 __all__ = ["relu", "relu6", "sigmoid", "softplus", "softsign", "silu", "swish", "log_sigmoid", "leaky_relu", "hard_sigmoid", "hard_silu", "hard_swish", "hard_tanh", "elu", "celu", "selu", "gelu", "logsumexp", "softmax", "log_softmax"]

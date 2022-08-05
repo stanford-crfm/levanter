@@ -56,17 +56,23 @@ def wrap_reduction_call(fn):
     return wrapper
 
 
-def wrap_normalization_call(fn):
+def wrap_normalization_call(fn, single_axis_only: bool):
     @functools.wraps(fn)
     def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
         if isinstance(a, NamedArray):
             if axis is None:
                 return NamedArray(fn(a.array, axis=None, **kwargs), ())
             else:
-                indices = _ensure_sequence(a.lookup_indices(axis))
+                indices = _ensure_tuple(a.lookup_indices(axis))
                 if any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
-                return NamedArray(fn(a.array, axis=indices, **kwargs), a.axes)
+                if len(indices) == 1:
+                    return NamedArray(fn(a.array, axis=indices[0], **kwargs), a.axes)
+                elif single_axis_only:
+                    raise ValueError(f"{fn.__name__} only supports a single axis")
+                else:
+                    return NamedArray(fn(a.array, axis=indices, **kwargs), a.axes)
+
         else:
             return fn(a, axis=axis, **kwargs)
 
