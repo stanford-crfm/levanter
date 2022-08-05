@@ -3,6 +3,7 @@ from typing import List
 
 import numpy as np
 import jax
+import pytest
 from jax.experimental.global_device_array import GlobalDeviceArray, Shard
 from jax.experimental.maps import Mesh
 from jax.experimental.pjit import pjit
@@ -13,6 +14,9 @@ from levanter.axis_names import ResourceAxis
 from levanter.mesh import MeshInfo
 from levanter.data.text import TokenizedDocumentCache
 from levanter.data.sharded import ShardedIndexedDataset
+
+def skip_if_not_enough_devices(count: int):
+    return pytest.mark.skipif(len(jax.devices()) < count, reason=f"Not enough devices ({len(jax.devices())})")
 
 
 def _small_dataset(seq_len=128):
@@ -25,7 +29,7 @@ def _small_dataset(seq_len=128):
     return TokenizedDocumentCache.build_or_load(token_iter(), cache_dir=f"test_cache/{seq_len}", num_shards=128, flatten_docs=True)
 
 
-
+@skip_if_not_enough_devices(2)
 def test_sharded_data_loading_model_axis_2():
     devices = jax.devices()
     model_axis_size = 2
@@ -57,6 +61,7 @@ def test_sharded_data_loading_model_axis_2():
             # print(localized.device_buffers)
 
 
+@skip_if_not_enough_devices(2)
 def test_sharded_data_loading_model_axis_2_not_microbatched():
     devices = jax.devices()
     model_axis_size = 2
