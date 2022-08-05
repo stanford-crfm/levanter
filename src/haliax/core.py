@@ -173,7 +173,7 @@ class NamedArray:
     #     ...
 
     def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence['NamedArray']:
-        return hapax.split(self, axis=axis, new_axes=new_axes)
+        return haliax.split(self, axis=axis, new_axes=new_axes)
 
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
     #     return haliax.squeeze(self, axis=axis)
@@ -186,7 +186,7 @@ class NamedArray:
         return haliax.sum(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
 
     def take(self, axis: Axis, index: Union[int, 'NamedArray']) -> Any:
-        return hapax.take(self, axis=axis, index=index)
+        return haliax.take(self, axis=axis, index=index)
 
     def tobytes(self, order='C') -> Any:
         return self.array.tobytes(order=order)
@@ -301,4 +301,3 @@ def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
 
         return NamedArray(a, shape)
-

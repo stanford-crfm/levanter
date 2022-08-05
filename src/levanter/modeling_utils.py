@@ -26,7 +26,7 @@ ACT2FN = {
 class RunningMean(object):
     """Numerically stable running mean for an arbitrary array"""
 
-    def __init__(self, shape = (), dtype=jnp.float32):
+    def __init__(self, shape=(), dtype=jnp.float32):
         self.mean = jnp.zeros(shape, dtype)
         self.count = 0
 
@@ -42,9 +42,11 @@ X = TypeVar('X')
 # TODO: running mean?
 def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs: X) -> Tuple[float, M]:
     zero = (jnp.zeros(()), jax.tree_map(jnp.zeros_like, model), 0)
+
     def compute_and_accumulate(acc, *input):
         loss, grad = f(model, *input)
         acc_loss, acc_grad, n = acc
+
         # TODO: verify if we still need this now that we have scan working again
         # in place to preserve ram
         def add(x, y):
@@ -52,8 +54,7 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
             return x
 
         return loss + acc_loss, jax.tree_map(add, acc_grad, grad), n + 1
+
     total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, *inputs)
 
-    return total_loss/total_n, jax.tree_map(lambda x: x/total_n, total_grad)
-
-
+    return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)

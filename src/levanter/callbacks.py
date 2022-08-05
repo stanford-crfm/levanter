@@ -12,7 +12,7 @@ from levanter.checkpoint import save_checkpoint
 
 def save_model(run_dir, prepare_fn=None):
     if not prepare_fn:
-        prepare_fn = lambda x: x
+        prepare_fn = lambda x: x  # noqa F731
 
     def save(info: StepInfo):
         # TODO: when we do model sharding we have to do something cleverer

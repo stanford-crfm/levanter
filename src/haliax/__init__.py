@@ -1,8 +1,10 @@
-from .core import *
-from .core import _ensure_tuple
+from typing import Sequence
+
+from .core import AxisSpec, NamedArray, Axis, named, dot, take
 import haliax.random as random
 from .wrap import wrap_elemwise_unary, wrap_reduction_call, wrap_normalization_call
 import numpy as np
+import jax.numpy as jnp
 
 _sum = sum
 
@@ -12,14 +14,16 @@ def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 0"""
     return full(shape, 0, dtype)
 
+
 def ones(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 1"""
     return full(shape, 1, dtype)
 
+
 def full(shape: AxisSpec, fill_value, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to `fill_value`"""
     if isinstance(shape, Axis):
-        return NamedArray(jnp.full(shape=shape.size, fill_value=fill_value, dtype=dtype), (shape, ))
+        return NamedArray(jnp.full(shape=shape.size, fill_value=fill_value, dtype=dtype), (shape,))
     else:
         x_shape = tuple(x.size for x in shape)
         return NamedArray(jnp.full(shape=x_shape, fill_value=fill_value, dtype=dtype), shape)
@@ -41,7 +45,7 @@ def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
 
 
 # splitting and stacking etc
-def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis])-> Sequence[NamedArray]:
+def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
     # check the lengths of the new axes
     if axis not in a.axes:
         raise ValueError(f"Axis {axis} not found in {a.axes}")
@@ -123,7 +127,6 @@ tan = wrap_elemwise_unary(jnp.tan)
 tanh = wrap_elemwise_unary(jnp.tanh)
 trunc = wrap_elemwise_unary(jnp.trunc)
 
-
 # Reduction functions
 all = wrap_reduction_call(jnp.all)
 amax = wrap_reduction_call(jnp.amax)
@@ -140,15 +143,13 @@ std = wrap_reduction_call(jnp.std)
 sum = wrap_reduction_call(jnp.sum)
 var = wrap_reduction_call(jnp.var)
 
-
 # "Normalization" functions that use an axis but don't change the shape
 cumsum = wrap_normalization_call(jnp.cumsum, True)
 cumprod = wrap_normalization_call(jnp.cumprod, True)
 cumproduct = wrap_normalization_call(jnp.cumproduct, True)
 
-
 __all__ = ["Axis", "NamedArray", "AxisSpec",
-           "named", "dot",
+           "named", "dot", "take",
            "zeros", "ones", "full", "zeros_like", "ones_like", "full_like",
            "random",
            "abs", "absolute", "angle", "arccos", "arccosh", "arcsin", "arcsinh",
@@ -162,8 +163,3 @@ __all__ = ["Axis", "NamedArray", "AxisSpec",
            "sqrt", "tan", "tanh", "trunc", "all", "amax", "any", "max", "mean",
            "min", "prod", "product", "sometrue", "std", "sum", "var", "cumsum",
            "cumprod", "cumproduct"]
-
-
-
-
-

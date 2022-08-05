@@ -101,7 +101,8 @@ class TrainerConfig:
 
     @cached_property
     def eval_mesh_info(self):
-        return MeshInfo(self.device_mesh, self.per_device_eval_batch_size * self.data_axis_size, self.per_device_eval_batch_size)
+        return MeshInfo(self.device_mesh, self.per_device_eval_batch_size * self.data_axis_size,
+                        self.per_device_eval_batch_size)
 
     @property
     def data_axis_size(self):

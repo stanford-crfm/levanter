@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional, Tuple
+from typing import Tuple
 
 import jax
 import numpy as np
@@ -60,7 +60,8 @@ class MeshInfo:
 
     @cached_property
     def local_device_grid_positions(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Returns a tuple of nd arrays, one for each axis, indicating the position of each device on the grid. Analogous to what np.where would return."""
+        """Returns a tuple of nd arrays, one for each axis, indicating the position of each device on the grid.
+        Analogous to what np.where would return."""
         pi = self.process_index
         # our device indices are [process_index * num_devices_per_node, (process_index + 1) * num_devices_per_node)
         # we could be clever here and do math to figure out where we are in the grid, but it's simpler and less

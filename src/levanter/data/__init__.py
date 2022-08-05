@@ -2,15 +2,16 @@ import json
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional, List, Iterable, Iterator, TypeVar
+from typing import Optional, List
 
 import braceexpand
 import datasets
 import fsspec
 from transformers import AutoTokenizer
 
-from levanter.data.text import tokenize_batch, build_cache, TokenizedDocumentCache
+from levanter.data.text import tokenize_batch, TokenizedDocumentCache
 from levanter.data.utils import batched
+
 
 @dataclass
 class LMDatasetConfig:

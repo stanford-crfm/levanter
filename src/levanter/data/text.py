@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from itertools import chain
-from typing import Iterator, Optional, TypeVar, Sequence
+from typing import Iterator, Optional, Sequence
 
 import fsspec
 import numpy as np
@@ -36,6 +36,7 @@ overwatch = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
+
 
 class IndexedDataset:
     def __init__(self, doc_cache, seq_len: int, stride: Optional[int]):
@@ -94,7 +95,8 @@ class TokenizedDocumentCache:
         return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
 
     @staticmethod
-    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool, file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
+    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool,
+                      file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
         build_cache(token_iter, cache_dir, num_shards, file_template)
         return TokenizedDocumentCache.load(cache_dir, flatten_docs)
 
@@ -108,8 +110,6 @@ class TokenizedDocumentCache:
             return self
 
         return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
-
-
 
 
 def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
@@ -139,6 +139,7 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
             return list(x)
         else:
             return pa.array(x)
+
     names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
     return pa.RecordBatch.from_arrays(list(columns), names)
 
@@ -146,7 +147,7 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
 def build_cache(token_iter: Iterator[BatchEncoding],
                 cache_dir: str,
                 num_shards: int,
-                file_template: str="docs-{}.parquet",
+                file_template: str = "docs-{}.parquet",
                 fsspec_args: Optional[dict] = None) -> None:
     os.makedirs(cache_dir, exist_ok=True)
     ledger_file = os.path.join(cache_dir, LEDGER_FILE)
@@ -162,7 +163,7 @@ def build_cache(token_iter: Iterator[BatchEncoding],
     writers: Optional[Sequence[pq.ParquetWriter]] = None
     tokens_written_to_shard = [0] * num_shards
 
-    tq: tqdm = tqdm(desc=f"tokens", unit="tk")
+    tq: tqdm = tqdm(desc="tokens", unit="tk")
 
     try:
         for tokens in token_iter:
@@ -173,9 +174,10 @@ def build_cache(token_iter: Iterator[BatchEncoding],
             tokens_written_to_shard[shard_to_write_to] += batch_len
 
             if writers is None:
-                files_to_open = [fsspec.open(os.path.join(cache_dir, f), "wb", **(fsspec_args or {})).open() for f in file_names]
+                files_to_open = [fsspec.open(os.path.join(cache_dir, f), "wb", **(fsspec_args or {})).open() for f in
+                                 file_names]
                 writers = [pq.ParquetWriter(file, batch.schema, version="2.6", compression="ZSTD") for file
-                         in files_to_open]
+                           in files_to_open]
 
             writers[shard_to_write_to].write_batch(batch)
 
@@ -223,8 +225,6 @@ def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enfor
     return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
-
-
 def concatenate_and_group_texts(encoding: BatchEncoding, seq_len: int,
                                 stride: Optional[int] = None,
                                 drop_remainder: bool = True,
@@ -249,13 +249,13 @@ def concatenate_and_group_texts(encoding: BatchEncoding, seq_len: int,
     stride = stride or seq_len
 
     # Drop the "very last" bit of the dataset that doesn't fit into block size...
-    if drop_remainder and total_length % stride != 0 :
+    if drop_remainder and total_length % stride != 0:
         total_length = ((total_length - seq_len + stride) // stride) * stride
 
     # Split by Chunks of Maximum Length
     # we want to take chunks up until we've covered all "total_length" tokens with a sliding window of size "stride"
     for begin in range(0, total_length - seq_len + stride, stride):
-        data = {k: v[begin:begin+seq_len] for k, v in concatenated.items()}
+        data = {k: v[begin:begin + seq_len] for k, v in concatenated.items()}
 
         if mask_stride_overlap and stride != seq_len:
             labels = data.get("labels", data["input_ids"])
@@ -282,11 +282,12 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
 
 if __name__ == '__main__':
     import datasets
+
     tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained('gpt2')
     dataset = datasets.load_dataset("dlwh/wikitext_103_detokenized", split="train")
 
-    indexed = preprocess_dataset(dataset, tokenizer, seq_len=512, cache_dir="cache/wikitext-103-indexed", num_shards=8, enforce_eos=True)
+    indexed = preprocess_dataset(dataset, tokenizer, seq_len=512, cache_dir="cache/wikitext-103-indexed", num_shards=8,
+                                 enforce_eos=True)
 
     for i, batch in enumerate(indexed):
         print(i, batch)
-
