@@ -1,5 +1,4 @@
 import json
-import os
 import pathlib
 from datetime import datetime
 from typing import Optional, Union, Callable, Any
@@ -7,7 +6,7 @@ from typing import Optional, Union, Callable, Any
 import fsspec
 import jax
 from equinox.custom_types import PyTree
-from equinox.serialisation import _default_serialise_filter_spec, _is_index, _default_deserialise_filter_spec, \
+from equinox.serialisation import default_serialise_filter_spec, _is_index, default_deserialise_filter_spec, \
     _assert_same
 from fsspec import AbstractFileSystem
 
@@ -80,7 +79,7 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
 def tree_serialise_leaves(
     path: Union[str, pathlib.Path],
     pytree: PyTree,
-    filter_spec=_default_serialise_filter_spec,
+    filter_spec=default_serialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
 ) -> None:
     """Analog to `equinox.tree_deserialise_leaves`, but saves the leaves of a PyTree using fsspec.
@@ -99,7 +98,7 @@ def tree_serialise_leaves(
 def tree_deserialise_leaves(
     path: Union[str, pathlib.Path],
     like: PyTree,
-    filter_spec=_default_deserialise_filter_spec,
+    filter_spec=default_deserialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
 ) -> PyTree:
     """
