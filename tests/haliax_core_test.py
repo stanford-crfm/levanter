@@ -12,8 +12,8 @@ def test_dot():
     Width = Axis("Width", 3)
     Depth = Axis("Depth", 4)
 
-    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), [Height, Width, Depth])
-    m2 = NamedArray(jnp.ones((Depth.size, Width.size, Height.size)), [Depth, Width, Height])
+    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), (Height, Width, Depth))
+    m2 = NamedArray(jnp.ones((Depth.size, Width.size, Height.size)), (Depth, Width, Height))
 
     assert jnp.all(jnp.equal(hax.dot(Height, m1, m2).array, jnp.einsum("ijk,kji->jk", m1.array, m2.array)))
     assert jnp.all(jnp.equal(hax.dot((Height, Width), m1, m2).array, jnp.einsum("ijk,kji->k", m1.array, m2.array)))
@@ -25,7 +25,7 @@ def test_unary_np_functions():
     Width = Axis("Width", 3)
     Depth = Axis("Depth", 4)
 
-    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), [Height, Width, Depth])
+    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), (Height, Width, Depth))
 
     assert jnp.all(jnp.equal(hax.abs(m1).array, jnp.abs(m1.array)))
     assert jnp.all(jnp.equal(hax.absolute(m1).array, jnp.absolute(m1.array)))
@@ -47,7 +47,7 @@ def test_reduction_functions():
 
     rand_m = jax.random.uniform(PRNGKey(0), (Height.size, Width.size, Depth.size))
 
-    m1 = NamedArray(rand_m, [Height, Width, Depth])
+    m1 = NamedArray(rand_m, (Height, Width, Depth))
 
     # sum out everything
     assert jnp.all(jnp.equal(hax.sum(m1).array, jnp.sum(m1.array)))
@@ -73,10 +73,10 @@ def test_split():
 
     D10 = Axis("Depth", Depth.size * 10)
 
-    rand_m = hpx.random.uniform(PRNGKey(0), (Height, Width, D10))
+    rand_m = hax.random.uniform(PRNGKey(0), (Height, Width, D10))
     m = rand_m.array
 
-    splits = hpx.split(rand_m, axis=D10, new_axes=[Depth] * 10)
+    splits = hax.split(rand_m, axis=D10, new_axes=[Depth] * 10)
 
     assert splits[0].axes == (Height, Width, Depth)
     assert len(splits) == 10
@@ -91,35 +91,66 @@ def test_take():
     Height = Axis("Height", 2)
     Width = Axis("Width", 3)
     Depth = Axis("Depth", 4)
-    named1 = hpx.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
 
-    assert jnp.all(jnp.equal(hpx.take(named1, Height, 0).array, named1.array[0]))
+    assert jnp.all(jnp.equal(hax.take(named1, Height, 0).array, named1.array[0]))
 
     Index = Axis("Index", 5)
-    indices = hpx.ones(Index, dtype=jnp.int32)
+    indices = hax.ones(Index, dtype=jnp.int32)
 
-    named2 = hpx.take(named1, Height, indices)
+    named2 = hax.take(named1, Height, indices)
     assert named2.axes == (Index, Width, Depth)
 
-    named2 = hpx.take(named1, Width, indices)
+    named2 = hax.take(named1, Width, indices)
     assert named2.axes == (Height, Index, Depth)
 
-    named2 = hpx.take(named1, Depth, indices)
+    named2 = hax.take(named1, Depth, indices)
     assert named2.axes == (Height, Width, Index)
 
     Index2 = Axis("Index2", 3)
 
-    indices2 = hpx.ones((Index, Index2), dtype=jnp.int32)
+    indices2 = hax.ones((Index, Index2), dtype=jnp.int32)
 
-    named2 = hpx.take(named1, Height, indices2)
+    named2 = hax.take(named1, Height, indices2)
     assert named2.axes == (Index, Index2, Width, Depth)
 
-    named2 = hpx.take(named1, Width, indices2)
+    named2 = hax.take(named1, Width, indices2)
     assert named2.axes == (Height, Index, Index2, Depth)
 
-    named2 = hpx.take(named1, Depth, indices2)
+    named2 = hax.take(named1, Depth, indices2)
     assert named2.axes == (Height, Width, Index, Index2)
 
 
+def test_cumsum_etc():
+    Height = Axis("Height", 2)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
 
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
 
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Height).array, jnp.cumsum(named1.array, axis=0)))
+    assert hax.cumsum(named1, axis=Height).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Width).array, jnp.cumsum(named1.array, axis=1)))
+    assert hax.cumsum(named1, axis=Width).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Depth).array, jnp.cumsum(named1.array, axis=2)))
+    assert hax.cumsum(named1, axis=Depth).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Height).array, jnp.cumprod(named1.array, axis=0)))
+    assert hax.cumprod(named1, axis=Height).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Width).array, jnp.cumprod(named1.array, axis=1)))
+    assert hax.cumprod(named1, axis=Width).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Depth).array, jnp.cumprod(named1.array, axis=2)))
+    assert hax.cumprod(named1, axis=Depth).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Height).array, jnp.cumsum(named1.array, axis=0)))
+    assert hax.cumsum(named1, axis=Height).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Width).array, jnp.cumsum(named1.array, axis=1)))
+    assert hax.cumsum(named1, axis=Width).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.cumsum(named1, axis=Depth).array, jnp.cumsum(named1.array, axis=2)))
+    assert hax.cumsum(named1, axis=Depth).axes == (Height, Width, Depth)

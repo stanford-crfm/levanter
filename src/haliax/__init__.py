@@ -142,9 +142,9 @@ var = wrap_reduction_call(jnp.var)
 
 
 # "Normalization" functions that use an axis but don't change the shape
-cumsum = wrap_normalization_call(jnp.cumsum)
-cumprod = wrap_normalization_call(jnp.cumprod)
-cumproduct = wrap_normalization_call(jnp.cumproduct)
+cumsum = wrap_normalization_call(jnp.cumsum, True)
+cumprod = wrap_normalization_call(jnp.cumprod, True)
+cumproduct = wrap_normalization_call(jnp.cumproduct, True)
 
 
 __all__ = ["Axis", "NamedArray", "AxisSpec",

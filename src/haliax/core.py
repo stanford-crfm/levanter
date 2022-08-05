@@ -282,7 +282,7 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
 T = TypeVar('T')
 
 
-def _ensure_tuple(x: Union[Sequence[T, ...], T]) -> Tuple[T, ...]:
+def _ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
     if isinstance(x, Sequence):
         return tuple(x)
     return (x,)
