@@ -128,42 +128,43 @@ class Gpt2Attention(eqx.Module):
         # TODO(haliax): split for named
         query, key, value = jnp.split(qkv_out, 3, axis=-1)  # [seq_len, embed_dim]
 
-        query = self._split_heads(query)  # [num_heads, seq_len, head_dim]
+        query = self._split_heads(query)  # [seq_len, num_heads, head_dim]
         key = self._split_heads(key)
         value = self._split_heads(value)
 
         # must use negative indexing to please the pmap gods
-        query_length, key_length = query.shape[-2], key.shape[-2]
+        query_length, key_length = query.shape[-3], key.shape[-3]
 
-        attn_weights = jnp.einsum('... n d, ... m d -> ... n m', query, key)  # [heads, seq_len, seq_len]
+        attn_weights = jnp.einsum('... n h d, ... m h d -> ... h n m', query, key)  # [heads, seq_len, seq_len]
         attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
 
         if self.causal is not None:
             seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-            causal_mask = jnp.where(causal_mask, 0.0, -1E9)
-            causal_mask = causal_mask.astype(jnp.bfloat16)
-            attention_mask = causal_mask[:query_length, :key_length]
+            causal_mask = causal_mask[:query_length, :key_length]
+
+            attn_weights = jnp.where(causal_mask, attn_weights, -1E9)
+            # causal_mask = causal_mask.astype(jnp.bfloat16)
             # mask = jnp.broadcast_to(attention_mask, w.shape)
             # w = jnp.where(mask > 0, w, -1E9)
-            attn_weights = attn_weights + attention_mask
+            # attn_weights = attn_weights + attention_mask
 
-        attn_weights = jnn.softmax(attn_weights) # heads * 1024 * 1024
-        # attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
+        attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
+        attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
-        attn_output = jnp.einsum('... n m, ... m d -> ... n d', attn_weights, value)  # [heads, seq_len, head_dim]
+        attn_output = jnp.einsum('... h n m, ... m h d -> ... n h d', attn_weights, value)  # [seq_len, head, head_dim]
 
         attn_output = self._merge_heads(attn_output)  # [seq_len, total_head_dim]
         attn_output = self.c_proj(attn_output)
 
         return attn_output
 
-    def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["num_heads", "seq_len", "head_dim"]:
-        return rearrange(hidden_states, '... n (h d) -> ... h n d', h=self.num_heads)
+    def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["seq_len", "num_heads", "head_dim"]:
+        return rearrange(hidden_states, '... n (h d) -> ... n h d', h=self.num_heads)
 
     @staticmethod
-    def _merge_heads(hidden_states: Array["num_heads", "seq_len", "head_dim"]) -> Array["seq_len", "embed_dim"]:
-        return rearrange(hidden_states, '... h n d -> ... n (h d)')
+    def _merge_heads(hidden_states: Array["seq_len", "num_heads", "head_dim"]) -> Array["seq_len", "num_heads", "embed_dim"]:
+        return rearrange(hidden_states, '... n h d -> ... n (h d)')
 
 
 class Gpt2Block(eqx.Module):
@@ -197,15 +198,14 @@ class Gpt2Block(eqx.Module):
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        # attn_output = self.attn(hidden_states, inference=inference, key=k1)
-        attn_output = self.attn(hidden_states, inference=True, key=None)
-        # attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        attn_output = self.attn(hidden_states, inference=inference, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         ff_output = self.mlp(hidden_states)
-        # ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
+        ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
         hidden_states = ff_output + residual
 
@@ -304,7 +304,7 @@ class Gpt2Embeddings(eqx.Module):
         input_embeds = self.token_embeddings.array[input_ids]
         position_embeds = self.position_embeddings.array[jnp.arange(input_ids.shape[-1], dtype="i4")]
         hidden_states = input_embeds + position_embeds
-        # hidden_states = self.dropout(hidden_states, inference=inference, key=key)
+        hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
         return hidden_states
 
