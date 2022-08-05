@@ -235,7 +235,7 @@ class Gpt2Transformer(eqx.Module):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
-                hidden_states = jax.remat(block)(hidden_states, inference=inference, key=k_block)
+                hidden_states = jax.remat(functools.partial(block, inference=inference))(hidden_states, key=k_block)
             # hidden_states = recursive_checkpoint(
             #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
             #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
