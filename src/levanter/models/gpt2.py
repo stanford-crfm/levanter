@@ -35,7 +35,7 @@ class Gpt2Config:
     activation_function: str = "gelu_new"
 
     gradient_checkpointing: bool = False
-    gradient_checkpointing_block_size: int = 10
+    gradient_checkpointing_block_size: int = 5
 
     # Axes
     @property
@@ -135,19 +135,15 @@ class Gpt2Attention(eqx.Module):
         # must use negative indexing to please the pmap gods
         query_length, key_length = query.shape[-2], key.shape[-2]
 
-        if self.causal:
+        attn_weights = jnp.einsum('... n d, ... m d -> ... n m', query, key)  # [heads, seq_len, seq_len]
+        attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
+
+        if self.causal is not None:
             seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
             causal_mask = jnp.where(causal_mask, 0.0, -1E9)
             causal_mask = causal_mask.astype(jnp.bfloat16)
             attention_mask = causal_mask[:query_length, :key_length]
-        else:
-            attention_mask = None
-
-        attn_weights = jnp.einsum('... n d, ... m d -> ... n m', query, key)  # [heads, seq_len, seq_len]
-        attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
-
-        if attention_mask is not None:
             # mask = jnp.broadcast_to(attention_mask, w.shape)
             # w = jnp.where(mask > 0, w, -1E9)
             attn_weights = attn_weights + attention_mask
@@ -201,7 +197,8 @@ class Gpt2Block(eqx.Module):
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        attn_output = self.attn(hidden_states, inference=inference, key=k1)
+        # attn_output = self.attn(hidden_states, inference=inference, key=k1)
+        attn_output = self.attn(hidden_states, inference=True, key=None)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
@@ -237,9 +234,11 @@ class Gpt2Transformer(eqx.Module):
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
-            hidden_states = recursive_checkpoint(
-                [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
-                threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
+            for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
+                hidden_states = jax.remat(block)(hidden_states, inference=inference, key=k_block)
+            # hidden_states = recursive_checkpoint(
+            #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
+            #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
 
