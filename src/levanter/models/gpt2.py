@@ -304,7 +304,7 @@ class Gpt2Embeddings(eqx.Module):
         input_embeds = self.token_embeddings.array[input_ids]
         position_embeds = self.position_embeddings.array[jnp.arange(input_ids.shape[-1], dtype="i4")]
         hidden_states = input_embeds + position_embeds
-        hidden_states = self.dropout(hidden_states, inference=inference, key=key)
+        # hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
         return hidden_states
 
