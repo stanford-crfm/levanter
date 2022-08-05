@@ -197,7 +197,6 @@ class Gpt2Block(eqx.Module):
 
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key):
-        print(type(hidden_states), key)
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
@@ -233,8 +232,6 @@ class Gpt2Transformer(eqx.Module):
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
         keys = jax_utils.maybe_rng_split(key, len(self.blocks))
-        print("...")
-        print(type(hidden_states), keys)
 
         if not self.config.gradient_checkpointing:
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
