@@ -199,13 +199,13 @@ class Gpt2Block(eqx.Module):
         hidden_states = self.ln_1(hidden_states)
         # attn_output = self.attn(hidden_states, inference=inference, key=k1)
         attn_output = self.attn(hidden_states, inference=True, key=None)
-        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        # attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         ff_output = self.mlp(hidden_states)
-        ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
+        # ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
         hidden_states = ff_output + residual
 
