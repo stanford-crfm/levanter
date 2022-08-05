@@ -1,15 +1,14 @@
 from dataclasses import dataclass
-from typing import Callable, TypeVar, Generic, Tuple, Iterable, List, Any, Optional
+from typing import Callable, TypeVar, List, Any, Optional
 
-import jax.random as jrandom
 import equinox as eqx
-import optax
 from chex import PRNGKey
 
 S = TypeVar('S')  # State
 B = TypeVar('B', covariant=True)  # Batch
 Aux = TypeVar('Aux', covariant=True)  # Auxiliary per-iteration results
 T = TypeVar('T')
+
 
 @dataclass
 class StepInfo:
@@ -35,6 +34,7 @@ class TrainerHooks:
             else:
                 self.hooks.append(lambda info: fn(info) if info.step % every == 0 else None)
             return fn
+
         if fn is None:
             return decorator
         else:

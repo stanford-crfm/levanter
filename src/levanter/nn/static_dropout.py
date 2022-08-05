@@ -2,7 +2,6 @@
 from typing import Optional
 
 import equinox as eqx
-import jax
 from equinox.custom_types import Array
 
 import jax

@@ -77,7 +77,6 @@ class Gpt2Mlp(eqx.Module):
     c_proj: NamedLinear
 
     def __init__(self, hidden: Axis, intermediate: Axis, activation_fn, *, key):
-
         k_fc, k_proj = jrandom.split(key, 2)
         self.c_fc = NamedLinear(out_axis=intermediate, in_axis=hidden, key=k_fc)
         self.c_proj = NamedLinear(out_axis=hidden, in_axis=intermediate, key=k_proj)
@@ -159,11 +158,11 @@ class Gpt2Attention(eqx.Module):
 
         return attn_output
 
-    def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["seq_len", "num_heads", "head_dim"]:
+    def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["seq_len", "num_heads", "head_dim"]:  # noqa F821 E501
         return rearrange(hidden_states, '... n (h d) -> ... n h d', h=self.num_heads)
 
     @staticmethod
-    def _merge_heads(hidden_states: Array["seq_len", "num_heads", "head_dim"]) -> Array["seq_len", "num_heads", "embed_dim"]:
+    def _merge_heads(hidden_states: Array["seq_len", "num_heads", "head_dim"]) -> Array["seq_len", "num_heads", "embed_dim"]:  # noqa F821 E501
         return rearrange(hidden_states, '... n h d -> ... n (h d)')
 
 
@@ -246,7 +245,7 @@ class Gpt2Transformer(eqx.Module):
 
 
 # from https://github.com/google/jax/issues/4285
-def recursive_checkpoint(funs, threshold = 2):
+def recursive_checkpoint(funs, threshold=2):
     if len(funs) == 1:
         return funs[0]
     elif len(funs) == 2:
@@ -255,8 +254,8 @@ def recursive_checkpoint(funs, threshold = 2):
     elif len(funs) <= threshold:
         return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
     else:
-        f1 = recursive_checkpoint(funs[:len(funs)//2])
-        f2 = recursive_checkpoint(funs[len(funs)//2:])
+        f1 = recursive_checkpoint(funs[:len(funs) // 2])
+        f2 = recursive_checkpoint(funs[len(funs) // 2:])
         return lambda x: f2(jax.remat(f1)(x))
 
 

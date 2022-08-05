@@ -9,6 +9,7 @@ from jax.numpy import einsum
 from equinox import Module, static_field
 from einops import rearrange, repeat
 
+
 # rmsnorm
 
 class RMSNorm(Module):
@@ -16,15 +17,16 @@ class RMSNorm(Module):
     scale: float = static_field()
     eps: float = static_field()
 
-    def __init__(self, dim, eps = 1e-5):
+    def __init__(self, dim, eps=1e-5):
         self.gamma = np.ones((dim,))
         self.eps = eps
         self.scale = dim ** 0.5
 
     def __call__(self, x):
-        sum_of_squares = np.sum(np.square(x), axis = -1, keepdims = True)
+        sum_of_squares = np.sum(np.square(x), axis=-1, keepdims=True)
         inv_norm = lax.rsqrt(sum_of_squares + self.eps)
         return inv_norm * x * self.gamma * self.scale
+
 
 # AliBi
 
@@ -32,19 +34,22 @@ def get_alibi_slopes(heads):
     def get_slopes_power_of_2(n):
         start = (2 ** (-2 ** -(log2(n) - 3)))
         ratio = start
-        return [start*ratio**i for i in range(n)]
+        return [start * ratio ** i for i in range(n)]
 
     if log2(heads).is_integer():
         return get_slopes_power_of_2(heads)
 
     closest_power_of_2 = 2 ** floor(log2(heads))
-    return get_slopes_power_of_2(closest_power_of_2) + get_slopes_power_of_2(2 * closest_power_of_2)[0::2][:heads-closest_power_of_2]
+    return get_slopes_power_of_2(closest_power_of_2) + get_slopes_power_of_2(2 * closest_power_of_2)[0::2][
+                                                       :heads - closest_power_of_2]
+
 
 def calc_alibi_bias(seq_len, heads):
     slopes = get_alibi_slopes(heads)
     slopes = rearrange(onp.array(slopes), 'h -> h 1 1')
     bias = rearrange(onp.arange(seq_len), 'j -> 1 1 j')
     return slopes * bias
+
 
 # attention - multi-query, one-headed key / values variant
 # feedforward - Shazeer's SwiGLU variant
@@ -61,13 +66,13 @@ class ParallelTransformerBlock(Module):
     mask_value: float = static_field()
 
     def __init__(
-        self,
-        dim,
-        dim_head,
-        heads,
-        key,
-        ff_mult = 4,
-        mask_value = -1e10
+            self,
+            dim,
+            dim_head,
+            heads,
+            key,
+            ff_mult=4,
+            mask_value=-1e10
     ):
         attn_inner_dim = dim_head * heads
         ff_inner_dim = dim * ff_mult
@@ -83,14 +88,14 @@ class ParallelTransformerBlock(Module):
         self.mask_value = mask_value
 
     def __call__(self, x, *, attn_bias):
-        n, split_indices = x.shape[-2], onp.cumsum(self.fused_dims[:-1])
+        _, split_indices = x.shape[-2], onp.cumsum(self.fused_dims[:-1])
 
         x = self.norm(x)
 
         # fused attention and feedforward projections
-        q, k, v, ff, ff_gate = np.split(x @ self.wi, split_indices, axis = -1)
+        q, k, v, ff, ff_gate = np.split(x @ self.wi, split_indices, axis=-1)
         # split out heads
-        q = rearrange(q, '... n (h d) -> ... h n d', h = self.heads)
+        q = rearrange(q, '... n (h d) -> ... h n d', h=self.heads)
 
         # scale
         q *= self.scale
@@ -102,7 +107,7 @@ class ParallelTransformerBlock(Module):
         sim = sim + attn_bias
 
         # attention
-        attn = nn.softmax(sim, axis = -1)
+        attn = nn.softmax(sim, axis=-1)
 
         # aggregate values
         out = einsum('... h i j, ... j d -> ... h i d', attn, v)
@@ -117,6 +122,7 @@ class ParallelTransformerBlock(Module):
         # combine heads out
         return attn_out + ff_out
 
+
 # main class
 
 class PaLM(Module):
@@ -126,25 +132,26 @@ class PaLM(Module):
     attn_bias: onp.ndarray
 
     def __init__(
-        self,
-        *,
-        num_tokens,
-        dim,
-        dim_head,
-        depth,
-        heads,
-        key,
-        ff_mult = 4,
-        max_seq_len = 2048,
-        mask_value = -1e10
+            self,
+            *,
+            num_tokens,
+            dim,
+            dim_head,
+            depth,
+            heads,
+            key,
+            ff_mult=4,
+            max_seq_len=2048,
+            mask_value=-1e10
     ):
         self.embedding = random.normal(key, (num_tokens, dim)) * 0.02
 
         causal_mask = onp.tril(onp.ones((max_seq_len, max_seq_len)))
-        alibi_bias = calc_alibi_bias(max_seq_len, heads = heads)
-        self.attn_bias = np.where(causal_mask, repeat(alibi_bias, 'h 1 j -> h i j', i = max_seq_len), mask_value)
+        alibi_bias = calc_alibi_bias(max_seq_len, heads=heads)
+        self.attn_bias = np.where(causal_mask, repeat(alibi_bias, 'h 1 j -> h i j', i=max_seq_len), mask_value)
 
-        self.layers = [ParallelTransformerBlock(dim = dim, dim_head = dim_head, heads = heads, key = key, ff_mult = ff_mult) for _ in range(depth)]
+        self.layers = [ParallelTransformerBlock(dim=dim, dim_head=dim_head, heads=heads, key=key, ff_mult=ff_mult) for _
+                       in range(depth)]
         self.norm = RMSNorm(dim)
 
     @jit
@@ -159,5 +166,3 @@ class PaLM(Module):
 
         x = self.norm(x)
         return x @ self.embedding.transpose()
-
-

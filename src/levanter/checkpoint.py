@@ -75,7 +75,6 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
         return None
 
 
-
 def tree_serialise_leaves(
     path: Union[str, pathlib.Path],
     pytree: PyTree,

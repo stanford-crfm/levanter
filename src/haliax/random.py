@@ -4,23 +4,25 @@ import jax.random as jrandom
 
 import functools
 
-from haliax import _ensure_tuple
-from haliax.core import *
-
-
+from haliax.core import Axis, AxisSpec, NamedArray
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
+from haliax.core import _ensure_tuple
+
+
 def _wrap_random_function(func):
     """Wrap a jax random function to return a NamedArray and takes axes as inputs"""
+
     @functools.wraps(func)
     def wrapper(key: jrandom.KeyArray, shape: AxisSpec, *args, **kwargs):
         if isinstance(shape, Axis):
-            return NamedArray(func(key, shape.size, *args, **kwargs), (shape, ))
+            return NamedArray(func(key, shape.size, *args, **kwargs), (shape,))
         else:
             shape = _ensure_tuple(shape)
             lens = [ax.size for ax in shape]
 
             return NamedArray(func(key, lens, *args, **kwargs), shape)
+
     return wrapper
 
 
@@ -36,7 +38,6 @@ laplace = _wrap_random_function(jrandom.laplace)
 cauchy = _wrap_random_function(jrandom.cauchy)
 logistic = _wrap_random_function(jrandom.logistic)
 truncated_normal = _wrap_random_function(jrandom.truncated_normal)
-
 
 __all__ = [
     'uniform',

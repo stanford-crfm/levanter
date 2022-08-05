@@ -2,7 +2,6 @@ import functools
 import typing
 from typing import Dict
 
-import equinox as eqx
 import jax
 from equinox.custom_types import PyTree
 from jax.experimental.pjit import pjit
@@ -67,5 +66,3 @@ def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
 
 
 __all__ = ["LogicalAxis", "ResourceAxis", "infer_resource_partitions", "named_pjit_init"]
-
-

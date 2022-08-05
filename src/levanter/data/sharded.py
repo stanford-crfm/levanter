@@ -12,6 +12,7 @@ from levanter.mesh import MeshInfo
 In = TypeVar("In")
 Ex = TypeVar("Ex")
 
+
 # TODO: maybe generify this to work on more than just single sequence inputs
 # TODO: write tests to verify this works when data spans multiple processes
 # ExampleShape = Union[Tuple[int, ...], Sequence[Tuple[int, ...]]]
@@ -26,6 +27,7 @@ Ex = TypeVar("Ex")
 # from_batched_callback will tell us how much data to load and for which device, so we just have to load it.
 # We do need to make sure that, in the event the data axis is larger than num_devices_per_process, each process that
 # is part of the same position in the device mesh
+
 
 class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
     def __init__(self,
@@ -64,20 +66,22 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         assert len(batch_shape) == len(pspec)
 
         def callback(indices: Sequence[Tuple[slice, ...]]):
-            # TODO: it seems like we may want to just directly index into the tokenized dataset somehow. This seems a bit
-            # more fragile
+            # TODO: it seems like we may want to just directly index into the tokenized dataset somehow. This seems a
+            #  bit more fragile
             # there is one entry in indices per device. They may be identical.
             # convert slices to tuples so we can use hashes
             out = []
             data_for_group = {}
             for index_group in indices:
                 # begin, end, step
-                my_indices: Tuple[Tuple[int, int, int], ...] = tuple(s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
+                my_indices: Tuple[Tuple[int, int, int], ...] = tuple(
+                    s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
                 assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
                 slice_sizes = [s[1] - s[0] for s in my_indices]
                 num_examples = prod(slice_sizes[0:-1])
                 if my_indices not in data_for_group:
-                    data_for_group[my_indices] = np.stack(list([ex['input_ids'] for ex in itertools.islice(it, num_examples)])).reshape(*slice_sizes)
+                    data_for_group[my_indices] = np.stack(
+                        list([ex['input_ids'] for ex in itertools.islice(it, num_examples)])).reshape(*slice_sizes)
                 out.append(data_for_group[my_indices])
 
             return out
@@ -95,4 +99,3 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
             return (self.mesh_info.microbatches_per_step, self.mesh_info.microbatch_size, self.indexed_dataset.seq_len)
         else:
             return (self.mesh_info.batch_size, self.indexed_dataset.seq_len)
-
