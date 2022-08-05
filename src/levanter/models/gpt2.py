@@ -148,8 +148,8 @@ class Gpt2Attention(eqx.Module):
             # w = jnp.where(mask > 0, w, -1E9)
             attn_weights = attn_weights + attention_mask
 
-        attn_weights = jnn.softmax(attn_weights)
-        attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
+        attn_weights = jnn.softmax(attn_weights) # heads * 1024 * 1024
+        # attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
         attn_output = jnp.einsum('... n m, ... m d -> ... n d', attn_weights, value)  # [heads, seq_len, head_dim]
 
