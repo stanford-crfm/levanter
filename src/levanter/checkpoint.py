@@ -30,7 +30,8 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_
         "step": step,
         "timestamp": datetime.now().isoformat(),
     }
-    json.dump(metadata, open(f"{checkpoint_path}/metadata.json", "w"))
+    with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
+        json.dump(metadata, json_out)
 
     return checkpoint_path
 
