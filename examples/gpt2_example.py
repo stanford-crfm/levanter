@@ -203,7 +203,8 @@ def main(config: TrainGpt2Config):
             # take just the examples for this rank
             micro_keys = shaped_rng_split(my_key, (
                 train_mesh_info.microbatches_per_step,
-                train_mesh_info.per_device_parallelism
+                # TODO: need to rethink per_device_parallelism here: should just scale data_axis_size
+                train_mesh_info.data_axis_size
             ))
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
