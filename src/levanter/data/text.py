@@ -149,10 +149,11 @@ def build_cache(token_iter: Iterator[BatchEncoding],
                 num_shards: int,
                 file_template: str = "docs-{}.parquet",
                 fsspec_args: Optional[dict] = None) -> None:
-    os.makedirs(cache_dir, exist_ok=True)
     ledger_file = os.path.join(cache_dir, LEDGER_FILE)
 
     fs, _, _ = fsspec.get_fs_token_paths(ledger_file)
+
+    fs.makedirs(cache_dir, exist_ok=True)
 
     if fs.exists(ledger_file):
         overwatch.info("Found existing indexed dataset at %s", cache_dir)
