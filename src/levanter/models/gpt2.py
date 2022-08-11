@@ -186,6 +186,7 @@ class Gpt2Attention(eqx.Module):
     def torch_key_leaves(self, prefix: Optional[str] = None):
         return _apply_prefix(prefix, self.c_attn.torch_key_leaves("c_attn") + self.c_proj.torch_key_leaves("c_proj"))
 
+
 def layer_norm_leaves(prefix: Optional[str] = None):
     return _apply_prefix(prefix, ["weight", "bias"])
 
@@ -247,7 +248,13 @@ class Gpt2Block(eqx.Module):
         return hidden_states
 
     def torch_key_leaves(self, prefix: Optional[str] = None):
-        return _apply_prefix(prefix, layer_norm_leaves("ln_1") + self.attn.torch_key_leaves("attn") + layer_norm_leaves("ln_2") + self.mlp.torch_key_leaves("mlp"))
+        return _apply_prefix(
+            prefix,
+            layer_norm_leaves("ln_1")
+            + self.attn.torch_key_leaves("attn")
+            + layer_norm_leaves("ln_2")
+            + self.mlp.torch_key_leaves("mlp"),
+        )
 
 
 class Gpt2Transformer(eqx.Module):
@@ -281,7 +288,11 @@ class Gpt2Transformer(eqx.Module):
         return hidden_states
 
     def torch_key_leaves(self, prefix: Optional[str] = None):
-        return _apply_prefix(prefix, [name for i, block in enumerate(self.blocks) for name in block.torch_key_leaves(f"h.{i}") ] + layer_norm_leaves("ln_f"))
+        return _apply_prefix(
+            prefix,
+            [name for i, block in enumerate(self.blocks) for name in block.torch_key_leaves(f"h.{i}")]
+            + layer_norm_leaves("ln_f"),
+        )
 
 
 # from https://github.com/google/jax/issues/4285
@@ -356,8 +367,7 @@ class Gpt2Embeddings(eqx.Module):
     def torch_key_leaves(self, prefix: Optional[str] = None):
         # no output word embeddings matrix, which we don't support just yet
         assert self.token_out_embeddings is None
-        return _apply_prefix(prefix, ['wte.weight', 'wpe.weight'])
-
+        return _apply_prefix(prefix, ["wte.weight", "wpe.weight"])
 
 
 class Gpt2LMHeadModel(eqx.Module):
@@ -385,9 +395,9 @@ class Gpt2LMHeadModel(eqx.Module):
             key=k_embeddings,
         )
 
-    def torch_key_leaves(self, prefix: Optional[str] = None)->List[Optional[str]]:
+    def torch_key_leaves(self, prefix: Optional[str] = None) -> List[Optional[str]]:
         """Returns the keys of the torch model dict for this Gpt2"""
-        leaves = self.transformer.torch_key_leaves() +  self.embeddings.torch_key_leaves()
+        leaves = self.transformer.torch_key_leaves() + self.embeddings.torch_key_leaves()
         return _apply_prefix(prefix, leaves)
 
     def __call__(self, input_ids, key):
