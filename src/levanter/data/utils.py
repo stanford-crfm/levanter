@@ -1,6 +1,7 @@
-from typing import TypeVar, Iterable, Iterator, List
+from typing import Iterable, Iterator, List, TypeVar
 
-T = TypeVar('T')
+
+T = TypeVar("T")
 
 
 def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:

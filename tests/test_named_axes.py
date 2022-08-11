@@ -4,11 +4,11 @@ import jax.numpy as jnp
 import numpy as np
 from equinox.custom_types import Array
 from jax.interpreters import pxla
-from jax.interpreters.pxla import PartitionSpec, ShardedAxis, Replicated
+from jax.interpreters.pxla import PartitionSpec, Replicated, ShardedAxis
 
 import haliax as hax
-from haliax import NamedArray, Axis
-from levanter.axis_names import *
+from haliax import Axis, NamedArray
+from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit_init
 
 
 class MyModule(eqx.Module):
@@ -32,8 +32,8 @@ def test_infer_named_axes():
 
     axes: MyModule = infer_resource_partitions(mod, resource_map)
 
-    assert(axes.named == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL))
-    assert(axes.unnamed1 == None)
+    assert axes.named == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
+    assert axes.unnamed1 is None
 
 
 class MyModuleInit(eqx.Module):
@@ -55,12 +55,21 @@ def test_pjit_class_init():
         mod = named_pjit_init(MyModuleInit, axis_resources=resource_map)()
 
     assert mod.named.array.shape == (dim2.size, dim3.size)
-    assert mod.named.array.sharding_spec.mesh_mapping == (ShardedAxis(0), ShardedAxis(1))
+    assert mod.named.array.sharding_spec.mesh_mapping == (
+        ShardedAxis(0),
+        ShardedAxis(1),
+    )
 
     assert mod.unnamed1.shape == ()
-    assert mod.unnamed1.sharding_spec.mesh_mapping == (Replicated(len(devices)), Replicated(1))
-    assert mod.named2.array.shape == (dim3.size, )
-    assert mod.named2.array.sharding_spec.mesh_mapping == (Replicated(len(devices)), ShardedAxis(0))
+    assert mod.unnamed1.sharding_spec.mesh_mapping == (
+        Replicated(len(devices)),
+        Replicated(1),
+    )
+    assert mod.named2.array.shape == (dim3.size,)
+    assert mod.named2.array.sharding_spec.mesh_mapping == (
+        Replicated(len(devices)),
+        ShardedAxis(0),
+    )
 
 
 def test_xmap_class_nested_init():
@@ -75,9 +84,9 @@ def test_xmap_class_nested_init():
         mod2 = named_pjit_init(Mod2, axis_resources=resource_map)()
 
     mod = mod2.inner
-    assert(mod.named.array.shape == (dim2.size, dim3.size))
-    assert(mod.unnamed1.shape == ())
-    assert(mod.named2.array.shape == (dim3.size, ))
+    assert mod.named.array.shape == (dim2.size, dim3.size)
+    assert mod.unnamed1.shape == ()
+    assert mod.named2.array.shape == (dim3.size,)
 
 
 def test_pjit_class_init_with_args():
@@ -94,7 +103,4 @@ def test_pjit_class_init_with_args():
         mod = named_pjit_init(ModWithArgs, axis_resources=resource_map)(hax.ones((dim1, dim2)))
     assert isinstance(mod, ModWithArgs)
     assert mod.array.array.shape == (dim1.size, dim2.size)
-    assert mod.array2.array.shape == (dim3.size, )
-
-
-
+    assert mod.array2.array.shape == (dim3.size,)

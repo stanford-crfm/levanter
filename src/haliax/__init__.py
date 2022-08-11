@@ -1,10 +1,13 @@
 from typing import Sequence
 
-from .core import AxisSpec, NamedArray, Axis, named, dot, take
-import haliax.random as random
-from .wrap import wrap_elemwise_unary, wrap_reduction_call, wrap_normalization_call
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
+
+import haliax.random as random
+
+from .core import Axis, AxisSpec, NamedArray, dot, named, take
+from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+
 
 _sum = sum
 
@@ -26,7 +29,7 @@ def full(shape: AxisSpec, fill_value, dtype=None) -> NamedArray:
         return NamedArray(jnp.full(shape=shape.size, fill_value=fill_value, dtype=dtype), (shape,))
     else:
         x_shape = tuple(x.size for x in shape)
-        return NamedArray(jnp.full(shape=x_shape, fill_value=fill_value, dtype=dtype), shape)
+        return NamedArray(jnp.full(shape=x_shape, fill_value=fill_value, dtype=dtype), tuple(shape))
 
 
 def zeros_like(a: NamedArray, dtype=None) -> NamedArray:
@@ -60,9 +63,9 @@ def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[Named
     offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
 
     new_arrays = np.split(a.array, indices_or_sections=offsets, axis=index)
-    new_axes = [[ax2 if ax2 is not axis else new_axis for ax2 in a.axes] for new_axis in new_axes]
+    ret_axes = [tuple(ax2 if ax2 is not axis else new_axis for ax2 in a.axes) for new_axis in new_axes]
 
-    return [NamedArray(x, ax) for x, ax in zip(new_arrays, new_axes)]
+    return [NamedArray(x, ax) for x, ax in zip(new_arrays, ret_axes)]
 
 
 # elementwise unary operations
@@ -148,18 +151,93 @@ cumsum = wrap_normalization_call(jnp.cumsum, True)
 cumprod = wrap_normalization_call(jnp.cumprod, True)
 cumproduct = wrap_normalization_call(jnp.cumproduct, True)
 
-__all__ = ["Axis", "NamedArray", "AxisSpec",
-           "named", "dot", "take",
-           "zeros", "ones", "full", "zeros_like", "ones_like", "full_like",
-           "random",
-           "abs", "absolute", "angle", "arccos", "arccosh", "arcsin", "arcsinh",
-           "arctan", "arctanh", "around", "bitwise_not", "cbrt", "ceil", "conj",
-           "conjugate", "copy", "cos", "cosh", "deg2rad", "degrees", "exp",
-           "exp2", "expm1", "fabs", "fix", "floor", "frexp", "i0", "imag",
-           "iscomplex", "isfinite", "isinf", "isnan", "isneginf", "isposinf",
-           "isreal", "log", "log10", "log1p", "log2", "logical_not", "ndim",
-           "negative", "positive", "rad2deg", "radians", "real", "reciprocal",
-           "rint", "round", "sign", "signbit", "sin", "sinc", "sinh", "square",
-           "sqrt", "tan", "tanh", "trunc", "all", "amax", "any", "max", "mean",
-           "min", "prod", "product", "sometrue", "std", "sum", "var", "cumsum",
-           "cumprod", "cumproduct"]
+__all__ = [
+    "Axis",
+    "NamedArray",
+    "AxisSpec",
+    "named",
+    "dot",
+    "take",
+    "zeros",
+    "ones",
+    "full",
+    "zeros_like",
+    "ones_like",
+    "full_like",
+    "random",
+    "abs",
+    "absolute",
+    "angle",
+    "arccos",
+    "arccosh",
+    "arcsin",
+    "arcsinh",
+    "arctan",
+    "arctanh",
+    "around",
+    "bitwise_not",
+    "cbrt",
+    "ceil",
+    "conj",
+    "conjugate",
+    "copy",
+    "cos",
+    "cosh",
+    "deg2rad",
+    "degrees",
+    "exp",
+    "exp2",
+    "expm1",
+    "fabs",
+    "fix",
+    "floor",
+    "frexp",
+    "i0",
+    "imag",
+    "iscomplex",
+    "isfinite",
+    "isinf",
+    "isnan",
+    "isneginf",
+    "isposinf",
+    "isreal",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
+    "logical_not",
+    "ndim",
+    "negative",
+    "positive",
+    "rad2deg",
+    "radians",
+    "real",
+    "reciprocal",
+    "rint",
+    "round",
+    "sign",
+    "signbit",
+    "sin",
+    "sinc",
+    "sinh",
+    "square",
+    "sqrt",
+    "tan",
+    "tanh",
+    "trunc",
+    "all",
+    "amax",
+    "any",
+    "max",
+    "mean",
+    "min",
+    "prod",
+    "product",
+    "sometrue",
+    "std",
+    "sum",
+    "var",
+    "cumsum",
+    "cumprod",
+    "cumproduct",
+]

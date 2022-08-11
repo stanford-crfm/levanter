@@ -35,8 +35,8 @@ class RunningMean(object):
         self.mean += (x - self.mean) / self.count
 
 
-M = TypeVar('M')
-X = TypeVar('X')
+M = TypeVar("M")
+X = TypeVar("X")
 
 
 # TODO: running mean?

@@ -1,13 +1,11 @@
 """Wrappers around jax.random functions."""
 
-import jax.random as jrandom
-
 import functools
 
-from haliax.core import Axis, AxisSpec, NamedArray
+import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
-from haliax.core import _ensure_tuple
+from haliax.core import Axis, AxisSpec, NamedArray, _ensure_tuple
 
 
 def _wrap_random_function(func):
@@ -40,16 +38,16 @@ logistic = _wrap_random_function(jrandom.logistic)
 truncated_normal = _wrap_random_function(jrandom.truncated_normal)
 
 __all__ = [
-    'uniform',
-    'normal',
-    'randint',
-    'bernoulli',
-    'poisson',
-    'exponential',
-    'gamma',
-    'beta',
-    'laplace',
-    'cauchy',
-    'logistic',
-    'truncated_normal',
+    "uniform",
+    "normal",
+    "randint",
+    "bernoulli",
+    "poisson",
+    "exponential",
+    "gamma",
+    "beta",
+    "laplace",
+    "cauchy",
+    "logistic",
+    "truncated_normal",
 ]

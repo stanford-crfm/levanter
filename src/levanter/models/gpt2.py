@@ -1,21 +1,20 @@
 import functools
 from dataclasses import dataclass
-from typing import Optional, List, Callable
+from typing import Callable, List, Optional
 
 import equinox as eqx
 import equinox.nn as nn
-from equinox.custom_types import Array
-
-import levanter.nn as pnn
 import jax
 import jax.lax as lax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
 from einops import rearrange
+from equinox.custom_types import Array
 
-from haliax import Axis, NamedArray
 import haliax as hax
+import levanter.nn as pnn
+from haliax import Axis, NamedArray
 from levanter import jax_utils
 from levanter.modeling_utils import ACT2FN
 
@@ -80,7 +79,7 @@ class Gpt2Mlp(eqx.Module):
         k_fc, k_proj = jrandom.split(key, 2)
         self.c_fc = NamedLinear(out_axis=intermediate, in_axis=hidden, key=k_fc)
         self.c_proj = NamedLinear(out_axis=hidden, in_axis=intermediate, key=k_proj)
-        self.act = ACT2FN[activation_fn]
+        self.act = ACT2FN[activation_fn]  # type: ignore
 
     def __call__(self, hidden_states):
         hidden_states = self.c_fc(hidden_states)
@@ -102,7 +101,16 @@ class Gpt2Attention(eqx.Module):
     def total_head_dim(self):
         return self.head_dim.size * self.num_heads
 
-    def __init__(self, in_dim: Axis, num_heads: int, head_dim: Axis, dropout_prob: float, *, key, causal: bool = True):
+    def __init__(
+        self,
+        in_dim: Axis,
+        num_heads: int,
+        head_dim: Axis,
+        dropout_prob: float,
+        *,
+        key,
+        causal: bool = True,
+    ):
         self.causal = causal
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -134,7 +142,7 @@ class Gpt2Attention(eqx.Module):
         # must use negative indexing to please the pmap gods
         query_length, key_length = query.shape[-3], key.shape[-3]
 
-        attn_weights = jnp.einsum('... n h d, ... m h d -> ... h n m', query, key)  # [heads, seq_len, seq_len]
+        attn_weights = jnp.einsum("... n h d, ... m h d -> ... h n m", query, key)  # [heads, seq_len, seq_len]
         attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
 
         if self.causal is not None:
@@ -142,7 +150,7 @@ class Gpt2Attention(eqx.Module):
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
             causal_mask = causal_mask[:query_length, :key_length]
 
-            attn_weights = jnp.where(causal_mask, attn_weights, -1E9)
+            attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
             # causal_mask = causal_mask.astype(jnp.bfloat16)
             # mask = jnp.broadcast_to(attention_mask, w.shape)
             # w = jnp.where(mask > 0, w, -1E9)
@@ -151,19 +159,23 @@ class Gpt2Attention(eqx.Module):
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
-        attn_output = jnp.einsum('... h n m, ... m h d -> ... n h d', attn_weights, value)  # [seq_len, head, head_dim]
+        attn_output = jnp.einsum("... h n m, ... m h d -> ... n h d", attn_weights, value)  # [seq_len, head, head_dim]
 
         attn_output = self._merge_heads(attn_output)  # [seq_len, total_head_dim]
         attn_output = self.c_proj(attn_output)
 
         return attn_output
 
-    def _split_heads(self, hidden_states: Array["seq_len", "embed_dim"]) -> Array["seq_len", "num_heads", "head_dim"]:  # noqa F821 E501
-        return rearrange(hidden_states, '... n (h d) -> ... n h d', h=self.num_heads)
+    def _split_heads(
+        self, hidden_states: Array["seq_len", "embed_dim"]  # type: ignore
+    ) -> Array["seq_len", "num_heads", "head_dim"]:  # type: ignore # noqa F821 E501
+        return rearrange(hidden_states, "... n (h d) -> ... n h d", h=self.num_heads)
 
     @staticmethod
-    def _merge_heads(hidden_states: Array["seq_len", "num_heads", "head_dim"]) -> Array["seq_len", "num_heads", "embed_dim"]:  # noqa F821 E501
-        return rearrange(hidden_states, '... n h d -> ... n (h d)')
+    def _merge_heads(
+        hidden_states: Array["seq_len", "num_heads", "head_dim"]  # type: ignore
+    ) -> Array["seq_len", "num_heads", "embed_dim"]:  # type: ignore # noqa F821 E501
+        return rearrange(hidden_states, "... n h d -> ... n (h d)")
 
 
 class Gpt2Block(eqx.Module):
@@ -180,16 +192,28 @@ class Gpt2Block(eqx.Module):
         inner_dim = Axis("mlp", 4 * hidden.size)
         head_dim = Axis("head", hidden.size // config.num_heads)
 
-        assert hidden.size % config.num_heads == 0, \
-            f"embed_dim={hidden} must be divisible by num_heads={config.num_heads}"
+        assert (
+            hidden.size % config.num_heads == 0
+        ), f"embed_dim={hidden} must be divisible by num_heads={config.num_heads}"
 
         self.ln_1 = nn.LayerNorm(hidden.size, eps=config.layer_norm_epsilon)
-        self.attn = Gpt2Attention(hidden, num_heads=config.num_heads, head_dim=head_dim,
-                                  dropout_prob=config.attn_pdrop, key=k_attn, causal=True)
+        self.attn = Gpt2Attention(
+            hidden,
+            num_heads=config.num_heads,
+            head_dim=head_dim,
+            dropout_prob=config.attn_pdrop,
+            key=k_attn,
+            causal=True,
+        )
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = nn.LayerNorm(hidden.size, eps=config.layer_norm_epsilon)
 
-        self.mlp = Gpt2Mlp(hidden=hidden, intermediate=inner_dim, activation_fn=config.activation_function, key=k_mlp)
+        self.mlp = Gpt2Mlp(
+            hidden=hidden,
+            intermediate=inner_dim,
+            activation_fn=config.activation_function,
+            key=k_mlp,
+        )
 
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key):
@@ -220,9 +244,7 @@ class Gpt2Transformer(eqx.Module):
         super().__init__()
         self.config = config
 
-        self.blocks = [
-            Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))
-        ]
+        self.blocks = [Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))]
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
     # @eqx.filter_jit
@@ -254,8 +276,8 @@ def recursive_checkpoint(funs, threshold=2):
     elif len(funs) <= threshold:
         return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
     else:
-        f1 = recursive_checkpoint(funs[:len(funs) // 2])
-        f2 = recursive_checkpoint(funs[len(funs) // 2:])
+        f1 = recursive_checkpoint(funs[: len(funs) // 2])
+        f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
 
 
@@ -270,13 +292,17 @@ class Gpt2Embeddings(eqx.Module):
     seqlen: Axis = eqx.static_field()
     hidden: Axis = eqx.static_field()
 
-    def __init__(self,
-                 embed: Axis,
-                 vocab: Axis,
-                 seqlen: Axis,
-                 initializer_range: float,
-                 tie_word_embeddings: bool,
-                 dropout_prob: float, *, key):
+    def __init__(
+        self,
+        embed: Axis,
+        vocab: Axis,
+        seqlen: Axis,
+        initializer_range: float,
+        tie_word_embeddings: bool,
+        dropout_prob: float,
+        *,
+        key,
+    ):
         super().__init__()
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
@@ -284,17 +310,14 @@ class Gpt2Embeddings(eqx.Module):
         self.seqlen = seqlen
         self.hidden = embed
 
-        self.token_embeddings = hax.random.normal(key=k_wte,
-                                                  shape=(vocab, embed)) * initializer_range
-        self.position_embeddings = hax.random.normal(key=k_wpe,
-                                                     shape=(seqlen, embed)) * (initializer_range / 2)
+        self.token_embeddings = hax.random.normal(key=k_wte, shape=(vocab, embed)) * initializer_range
+        self.position_embeddings = hax.random.normal(key=k_wpe, shape=(seqlen, embed)) * (initializer_range / 2)
         self.dropout = pnn.Dropout(p=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
         else:
-            self.token_out_embeddings = hax.random.normal(key=k_out,
-                                                          shape=(vocab, embed)) * initializer_range
+            self.token_out_embeddings = hax.random.normal(key=k_out, shape=(vocab, embed)) * initializer_range
 
     def embed(self, input_ids, inference, *, key):
         # TODO: select
@@ -310,7 +333,7 @@ class Gpt2Embeddings(eqx.Module):
     def unembed(self, hidden_states: Array):
         embeddings = self.token_out_embeddings or self.token_embeddings
         # return hax.dot(self.hidden, hidden_states, embeddings)
-        return jnp.einsum('... l h, ... v h -> ... l v', hidden_states, embeddings.array)
+        return jnp.einsum("... l h, ... v h -> ... l v", hidden_states, embeddings.array)
 
 
 class Gpt2LMHeadModel(eqx.Module):
@@ -324,13 +347,15 @@ class Gpt2LMHeadModel(eqx.Module):
     def __init__(self, vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings(vocab=vocab,
-                                         embed=config.hidden,
-                                         seqlen=config.seqlen,
-                                         initializer_range=config.initializer_range,
-                                         tie_word_embeddings=True,
-                                         dropout_prob=config.embed_pdrop,
-                                         key=k_embeddings)
+        self.embeddings = Gpt2Embeddings(
+            vocab=vocab,
+            embed=config.hidden,
+            seqlen=config.seqlen,
+            initializer_range=config.initializer_range,
+            tie_word_embeddings=True,
+            dropout_prob=config.embed_pdrop,
+            key=k_embeddings,
+        )
 
     def __call__(self, input_ids, key):
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)

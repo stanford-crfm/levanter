@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence, Union, Any, Dict, TypeVar, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +25,7 @@ class NamedArray:
 
     def __post_init__(self):
         if not isinstance(self.axes, tuple):
-            object.__setattr__(self, 'axes', tuple(self.axes))
+            object.__setattr__(self, "axes", tuple(self.axes))
         # ensure unique axes for now
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
@@ -49,7 +49,8 @@ class NamedArray:
 
     @classmethod
     def tree_unflatten(cls, aux, tree: Any) -> Any:
-        return cls(*tree, axes=aux)
+        assert len(tree) == 1
+        return cls(tree[0], axes=aux)
 
     def lookup_indices(self, axis: AxisSpec):
         """
@@ -129,21 +130,59 @@ class NamedArray:
     # def item(self, *args) -> Any:
     #
 
-    def max(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None, initial=None, where=None) -> Any:
+    def max(
+        self,
+        axis: Optional[AxisSpec] = None,
+        out=None,
+        keepdims=None,
+        initial=None,
+        where=None,
+    ) -> Any:
         return haliax.max(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
-    def mean(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=False, *, where=None, ) -> Any:
+    def mean(
+        self,
+        axis: Optional[AxisSpec] = None,
+        dtype=None,
+        out=None,
+        keepdims=False,
+        *,
+        where=None,
+    ) -> Any:
         return haliax.mean(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
 
-    def min(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None, initial=None, where=None) -> Any:
+    def min(
+        self,
+        axis: Optional[AxisSpec] = None,
+        out=None,
+        keepdims=None,
+        initial=None,
+        where=None,
+    ) -> Any:
         return haliax.min(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
     # TODO
     # def nonzero(self, *, size=None, fill_value=None) -> Any:
     #     ...
 
-    def prod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None, initial=None, where=None):
-        return haliax.prod(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
+    def prod(
+        self,
+        axis: Optional[AxisSpec] = None,
+        dtype=None,
+        out=None,
+        keepdims=None,
+        initial=None,
+        where=None,
+    ):
+        return haliax.prod(
+            self,
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+        )
 
     # def ptp(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, out=None,
     #         keepdims=False, ) -> Any:
@@ -172,23 +211,55 @@ class NamedArray:
     # def sort(self, axis: Optional[int] = -1, kind='quicksort', order=None) -> Any:
     #     ...
 
-    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence['NamedArray']:
+    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
     #     return haliax.squeeze(self, axis=axis)
 
-    def std(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
-        return haliax.std(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+    def std(
+        self,
+        axis: Optional[AxisSpec] = None,
+        dtype=None,
+        out=None,
+        ddof=0,
+        keepdims=False,
+        *,
+        where=None,
+    ) -> Any:
+        return haliax.std(
+            self,
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            ddof=ddof,
+            keepdims=keepdims,
+            where=where,
+        )
 
-    def sum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, keepdims=None,
-            initial=None, where=None) -> Any:
-        return haliax.sum(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
+    def sum(
+        self,
+        axis: Optional[AxisSpec] = None,
+        dtype=None,
+        out=None,
+        keepdims=None,
+        initial=None,
+        where=None,
+    ) -> Any:
+        return haliax.sum(
+            self,
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+        )
 
-    def take(self, axis: Axis, index: Union[int, 'NamedArray']) -> Any:
+    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> Any:
         return haliax.take(self, axis=axis, index=index)
 
-    def tobytes(self, order='C') -> Any:
+    def tobytes(self, order="C") -> Any:
         return self.array.tobytes(order=order)
 
     def tolist(self) -> Any:
@@ -197,8 +268,25 @@ class NamedArray:
     # def trace(self, offset=0, axis1: int = 0, axis2: int = 1, dtype=None,
     #           out=None) -> Any:
 
-    def var(self, axis: Optional[AxisSpec] = None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None) -> Any:
-        return haliax.var(self, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+    def var(
+        self,
+        axis: Optional[AxisSpec] = None,
+        dtype=None,
+        out=None,
+        ddof=0,
+        keepdims=False,
+        *,
+        where=None,
+    ) -> Any:
+        return haliax.var(
+            self,
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            ddof=ddof,
+            keepdims=keepdims,
+            where=where,
+        )
 
     # operators
     def __add__(self, other) -> Any:
@@ -237,10 +325,10 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
     if isinstance(index, int):
         # just drop the axis
         new_array = jnp.take(array.array, index, axis=axis_index)
-        new_axes = array.axes[:axis_index] + array.axes[axis_index+1:]
+        new_axes = array.axes[:axis_index] + array.axes[axis_index + 1 :]
     else:
         new_array = jnp.take(array.array, index.array, axis=axis_index)
-        new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index+1:]
+        new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index + 1 :]
     # new axes come from splicing the old axis with
     return NamedArray(new_array, new_axes)
 
@@ -259,27 +347,31 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
     axis_mappings: Dict[Axis, int] = {}
 
     for a in arrays:
-        spec = ''
+        spec = ""
         for ax in a.axes:
             if ax in axis_mappings:
-                spec += f'{axis_mappings[ax]} '
+                spec += f"{axis_mappings[ax]} "
             else:
                 axis_mappings[ax] = next_index
-                spec += f'{next_index} '
+                spec += f"{next_index} "
                 next_index += 1
 
         array_specs.append(spec)
 
     # now compute the output axes:
     output_axes = tuple(ax for ax in axis_mappings.keys() if ax not in axis)
-    output_spec = ' '.join(str(axis_mappings[ax]) for ax in output_axes)
+    output_spec = " ".join(str(axis_mappings[ax]) for ax in output_axes)
 
-    output = jnp.einsum(', '.join(array_specs) + "-> " + output_spec, *[a.array for a in arrays], precision=precision)
+    output = jnp.einsum(
+        ", ".join(array_specs) + "-> " + output_spec,
+        *[a.array for a in arrays],
+        precision=precision,
+    )
 
     return NamedArray(output, output_axes)
 
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def _ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
@@ -292,8 +384,8 @@ def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
     if isinstance(axis, Axis):
         if jnp.shape(a) != axis.size:
-            raise ValueError(f'Shape of array {jnp.shape(a)} does not match size of axis {axis.size}')
-        return NamedArray(a, (axis, ))
+            raise ValueError(f"Shape of array {jnp.shape(a)} does not match size of axis {axis.size}")
+        return NamedArray(a, (axis,))
     else:
         shape: Tuple[Axis, ...] = _ensure_tuple(axis)
         # verify the shape is correct

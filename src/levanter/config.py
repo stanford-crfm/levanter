@@ -2,7 +2,7 @@
 import dataclasses
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional, List
+from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +21,7 @@ class WandbConfig:
     """
     Configuration for wandb.
     """
+
     entity: Optional[str] = None
     project: Optional[str] = None
     name: Optional[str] = None
@@ -31,6 +32,7 @@ class WandbConfig:
 
     def init(self, hparams=None, **extra_hparams):
         import wandb
+
         if hparams is None:
             hparams = {}
         elif dataclasses.is_dataclass(hparams):
@@ -83,7 +85,7 @@ class TrainerConfig:
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.999
-    epsilon: float = 1E-8
+    epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
@@ -101,8 +103,11 @@ class TrainerConfig:
 
     @cached_property
     def eval_mesh_info(self):
-        return MeshInfo(self.device_mesh, self.per_device_eval_batch_size * self.data_axis_size,
-                        self.per_device_eval_batch_size)
+        return MeshInfo(
+            self.device_mesh,
+            self.per_device_eval_batch_size * self.data_axis_size,
+            self.per_device_eval_batch_size,
+        )
 
     @property
     def data_axis_size(self):
@@ -173,10 +178,11 @@ class TrainerConfig:
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
             )
 
-        if jax.local_device_count() % self.model_axis_size != 0 and self.model_axis_size % jax.local_device_count() != 0:
-            raise ValueError(
-                "either model_axis_size or local_device_count must be divisible by the other"
-            )
+        if (
+            jax.local_device_count() % self.model_axis_size != 0
+            and self.model_axis_size % jax.local_device_count() != 0
+        ):
+            raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
         if self.per_device_train_batch_size == -1:
             self.per_device_train_batch_size = self.train_batch_size // jax.device_count()
@@ -184,8 +190,8 @@ class TrainerConfig:
         # validate size of per_device_train_batch_size
         if self.train_batch_size % (self.per_device_train_batch_size * self.data_axis_size) != 0:
             raise ValueError(
-                f"train_batch_size ({self.train_batch_size}) must be divisible by "
-                f"per_device_train_batch_size * data_axis_size ({self.per_device_train_batch_size}, {self.data_axis_size})"
+                f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_train_batch_size *"
+                f" data_axis_size ({self.per_device_train_batch_size}, {self.data_axis_size})"
             )
 
         if self.per_device_eval_batch_size == -1:

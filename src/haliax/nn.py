@@ -1,5 +1,7 @@
 import jax.nn as jnn
-from .wrap import wrap_elemwise_unary, wrap_reduction_call, wrap_normalization_call
+
+from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+
 
 relu = wrap_elemwise_unary(jnn.relu)
 relu6 = wrap_elemwise_unary(jnn.relu6)
@@ -25,6 +27,25 @@ softmax = wrap_normalization_call(jnn.softmax, False)
 log_softmax = wrap_normalization_call(jnn.log_softmax, False)
 
 
-__all__ = ["relu", "relu6", "sigmoid", "softplus", "soft_sign", "silu", "swish", "log_sigmoid", "leaky_relu",
-           "hard_sigmoid", "hard_silu", "hard_swish", "hard_tanh", "elu", "celu", "selu", "gelu", "logsumexp",
-           "softmax", "log_softmax"]
+__all__ = [
+    "relu",
+    "relu6",
+    "sigmoid",
+    "softplus",
+    "soft_sign",
+    "silu",
+    "swish",
+    "log_sigmoid",
+    "leaky_relu",
+    "hard_sigmoid",
+    "hard_silu",
+    "hard_swish",
+    "hard_tanh",
+    "elu",
+    "celu",
+    "selu",
+    "gelu",
+    "logsumexp",
+    "softmax",
+    "log_softmax",
+]

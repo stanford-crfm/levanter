@@ -1,6 +1,6 @@
 import itertools
 from math import prod
-from typing import TypeVar, Iterable, Sequence, Tuple, Iterator
+from typing import Iterable, Iterator, Sequence, Tuple, TypeVar
 
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
@@ -8,6 +8,7 @@ from jax.interpreters.pxla import PartitionSpec
 
 from levanter.data.text import IndexedDataset, TokenizedDocumentCache
 from levanter.mesh import MeshInfo
+
 
 In = TypeVar("In")
 Ex = TypeVar("Ex")
@@ -30,12 +31,13 @@ Ex = TypeVar("Ex")
 
 
 class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
-    def __init__(self,
-                 doc_cache: TokenizedDocumentCache,
-                 mesh_info: MeshInfo,
-                 seq_len: int,
-                 microbatched: bool = True
-                 ):
+    def __init__(
+        self,
+        doc_cache: TokenizedDocumentCache,
+        mesh_info: MeshInfo,
+        seq_len: int,
+        microbatched: bool = True,
+    ):
         self.mesh_info = mesh_info
         self.microbatched = microbatched
         process_data_pos = self.mesh_info.process_mesh_position[0]
@@ -75,13 +77,15 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
             for index_group in indices:
                 # begin, end, step
                 my_indices: Tuple[Tuple[int, int, int], ...] = tuple(
-                    s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group))
+                    s.indices(axis_size) for axis_size, s in zip(batch_shape, index_group)
+                )
                 assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
                 slice_sizes = [s[1] - s[0] for s in my_indices]
                 num_examples = prod(slice_sizes[0:-1])
                 if my_indices not in data_for_group:
                     data_for_group[my_indices] = np.stack(
-                        list([ex['input_ids'] for ex in itertools.islice(it, num_examples)])).reshape(*slice_sizes)
+                        list([ex["input_ids"] for ex in itertools.islice(it, num_examples)])
+                    ).reshape(*slice_sizes)
                 out.append(data_for_group[my_indices])
 
             return out
@@ -96,6 +100,10 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
 
     def batch_shape(self):
         if self.microbatched:
-            return (self.mesh_info.microbatches_per_step, self.mesh_info.microbatch_size, self.indexed_dataset.seq_len)
+            return (
+                self.mesh_info.microbatches_per_step,
+                self.mesh_info.microbatch_size,
+                self.indexed_dataset.seq_len,
+            )
         else:
             return (self.mesh_info.batch_size, self.indexed_dataset.seq_len)

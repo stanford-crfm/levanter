@@ -1,13 +1,14 @@
 from dataclasses import dataclass
-from typing import Callable, TypeVar, List, Any, Optional
+from typing import Any, Callable, List, Optional, TypeVar
 
 import equinox as eqx
 from chex import PRNGKey
 
-S = TypeVar('S')  # State
-B = TypeVar('B', covariant=True)  # Batch
-Aux = TypeVar('Aux', covariant=True)  # Auxiliary per-iteration results
-T = TypeVar('T')
+
+S = TypeVar("S")  # State
+B = TypeVar("B", covariant=True)  # Batch
+Aux = TypeVar("Aux", covariant=True)  # Auxiliary per-iteration results
+T = TypeVar("T")
 
 
 @dataclass
@@ -39,6 +40,7 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
+
 
 #
 # def engine_from_loss_fn(

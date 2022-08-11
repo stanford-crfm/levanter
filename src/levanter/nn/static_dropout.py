@@ -2,11 +2,10 @@
 from typing import Optional
 
 import equinox as eqx
-from equinox.custom_types import Array
-
 import jax
-import jax.random as jrandom
 import jax.numpy as jnp
+import jax.random as jrandom
+from equinox.custom_types import Array
 
 
 class Dropout(eqx.Module):
@@ -49,9 +48,7 @@ class Dropout(eqx.Module):
         if inference:
             return x
         elif key is None:
-            raise RuntimeError(
-                "Dropout requires a key when running in non-deterministic mode."
-            )
+            raise RuntimeError("Dropout requires a key when running in non-deterministic mode.")
         else:
             return Dropout.do_dropout(x, self.p, key)
 

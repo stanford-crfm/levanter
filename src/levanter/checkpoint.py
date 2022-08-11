@@ -1,13 +1,17 @@
 import json
 import pathlib
 from datetime import datetime
-from typing import Optional, Union, Callable, Any
+from typing import Any, Callable, Optional, Union
 
 import fsspec
 import jax
 from equinox.custom_types import PyTree
-from equinox.serialisation import default_serialise_filter_spec, _is_index, default_deserialise_filter_spec, \
-    _assert_same
+from equinox.serialisation import (
+    _assert_same,
+    _is_index,
+    default_deserialise_filter_spec,
+    default_serialise_filter_spec,
+)
 from fsspec import AbstractFileSystem
 
 
@@ -82,10 +86,10 @@ def tree_serialise_leaves(
     filter_spec=default_serialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
 ) -> None:
-    """Analog to `equinox.tree_deserialise_leaves`, but saves the leaves of a PyTree using fsspec.
-    """
+    """Analog to `equinox.tree_deserialise_leaves`, but saves the leaves of a PyTree using fsspec."""
 
     with fsspec.open(path, "wb") as f:
+
         def _serialise(spec, x):
             def __serialise(y):
                 spec(f, y)
@@ -106,6 +110,7 @@ def tree_deserialise_leaves(
     """
 
     with fsspec.open(path, "rb") as f:
+
         def _deserialise(spec, x):
             def __deserialise(y):
                 return spec(f, y)
