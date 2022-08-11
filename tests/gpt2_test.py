@@ -3,13 +3,21 @@ import dataclasses
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
-from levanter.models.gpt2 import *
+from haliax import Axis
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+
 
 def test_gradient_checkpointing():
     # ensure that gradient checkpointing doesn't change the output
     # (this is a regression test for a bug that caused the output to change)
     for num_blocks in [1, 2, 4, 8, 12]:
-        config = Gpt2Config(seq_len=16, hidden_dim=72, num_layers=num_blocks, num_heads=8, gradient_checkpointing=False)
+        config = Gpt2Config(
+            seq_len=16,
+            hidden_dim=72,
+            num_layers=num_blocks,
+            num_heads=8,
+            gradient_checkpointing=False,
+        )
         config_checkpoint = dataclasses.replace(config, gradient_checkpointing=True)
         key = PRNGKey(0)
 
@@ -24,5 +32,3 @@ def test_gradient_checkpointing():
         a2 = model_checkpoint(input_ids, key)
 
         assert jnp.all(jnp.isclose(a1, a2))
-
-

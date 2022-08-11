@@ -1,21 +1,23 @@
 from pathlib import Path
-from typing import Union, Optional, Callable, TypeVar, Sequence
+from typing import Callable, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
 from equinox.custom_types import PyTree
-from jax import random as jrandom, numpy as jnp, lax
+from jax import lax
+from jax import numpy as jnp
+from jax import random as jrandom
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
     """Splits a random key into multiple random keys. If the key is None, then it replicates the None. Also handles
-    num == 1 case """
+    num == 1 case"""
     if key is None:
         return [None] * num
     elif num == 1:
-        return jnp.reshape(key, (1, ) + key.shape)
+        return jnp.reshape(key, (1,) + key.shape)
     else:
         return jrandom.split(key, num)
 
@@ -23,7 +25,7 @@ def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
 def shaped_rng_split(key, split_shape: Union[int, Sequence[int]] = 2) -> jrandom.KeyArray:
     if isinstance(split_shape, int):
         num_splits = split_shape
-        split_shape = (num_splits, ) + key.shape
+        split_shape = (num_splits,) + key.shape
     else:
         num_splits = np.prod(split_shape)
         split_shape = tuple(split_shape) + key.shape
@@ -42,9 +44,9 @@ def jnp_to_python(a: jnp.ndarray):
         return a.tolist()
 
 
-Carry = TypeVar('Carry')
-X = TypeVar('X')
-Y = TypeVar('Y')
+Carry = TypeVar("Carry")
+X = TypeVar("X")
+Y = TypeVar("Y")
 
 
 def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
@@ -57,7 +59,7 @@ def flops_estimate(fn, *args):
     m = jax.xla_computation(fn)(*args).as_hlo_module()
     client = jax.lib.xla_bridge.get_backend()
     costs = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)
-    return costs['flops']
+    return costs["flops"]
 
 
 def backward_graph_size(fn, *args):
@@ -103,7 +105,9 @@ def dump_jaxpr(file, fn, *args, **kwargs):
 
 def parameter_count(model: PyTree):
     def _is_param_leaf(x):
-        return (isinstance(x, jax.ShapeDtypeStruct) and jnp.issubdtype(x.dtype, jnp.inexact)) or eqx.is_inexact_array(x)
+        return (isinstance(x, jax.ShapeDtypeStruct) and jnp.issubdtype(x.dtype, jnp.inexact)) or eqx.is_inexact_array(
+            x
+        )
 
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct

@@ -23,9 +23,10 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
-from transformers import BatchEncoding, AutoTokenizer, PreTrainedTokenizerFast
+from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerFast
 
 from levanter.data.utils import batched
+
 
 overwatch = logging.getLogger("levanter.data.text")
 
@@ -55,12 +56,14 @@ class IndexedDataset:
             yield from concatenate_and_group_texts(doc, self.seq_len, self.stride)
 
     @staticmethod
-    def build_or_load(token_iter: Iterator[BatchEncoding],
-                      seq_len: int,
-                      cache_dir: str,
-                      num_shards: int,
-                      stride: Optional[int] = None,
-                      file_template: str = 'docs-{}.parquet') -> 'IndexedDataset':
+    def build_or_load(
+        token_iter: Iterator[BatchEncoding],
+        seq_len: int,
+        cache_dir: str,
+        num_shards: int,
+        stride: Optional[int] = None,
+        file_template: str = "docs-{}.parquet",
+    ) -> "IndexedDataset":
         build_cache(token_iter, cache_dir, num_shards, file_template)
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
         return IndexedDataset(doc_cache, seq_len, stride)
@@ -95,8 +98,13 @@ class TokenizedDocumentCache:
         return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
 
     @staticmethod
-    def build_or_load(token_iter: Iterator[BatchEncoding], cache_dir: str, num_shards, flatten_docs: bool,
-                      file_template: str = 'docs-{}.parquet') -> 'TokenizedDocumentCache':
+    def build_or_load(
+        token_iter: Iterator[BatchEncoding],
+        cache_dir: str,
+        num_shards,
+        flatten_docs: bool,
+        file_template: str = "docs-{}.parquet",
+    ) -> "TokenizedDocumentCache":
         build_cache(token_iter, cache_dir, num_shards, file_template)
         return TokenizedDocumentCache.load(cache_dir, flatten_docs)
 
@@ -113,7 +121,7 @@ class TokenizedDocumentCache:
 
 
 def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
-    """ Reads the cache files produced by cache_and_group and yields tokenized sequences.
+    """Reads the cache files produced by cache_and_group and yields tokenized sequences.
     If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
     then the documents returned are actually concatenated documents, where the number is the number of documents
     presented as a batch to the caching process."""
@@ -122,12 +130,15 @@ def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
         if flatten:
             # insert a newaxis to the beginning so that it appears to be bs=1
             yield BatchEncoding(
-                {b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=True)[np.newaxis, :] for i in
-                 range(b.num_columns)}
+                {
+                    b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=True)[np.newaxis, :]
+                    for i in range(b.num_columns)
+                }
             )
         else:
             yield BatchEncoding(
-                {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)})
+                {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
+            )
 
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
@@ -144,11 +155,13 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     return pa.RecordBatch.from_arrays(list(columns), names)
 
 
-def build_cache(token_iter: Iterator[BatchEncoding],
-                cache_dir: str,
-                num_shards: int,
-                file_template: str = "docs-{}.parquet",
-                fsspec_args: Optional[dict] = None) -> None:
+def build_cache(
+    token_iter: Iterator[BatchEncoding],
+    cache_dir: str,
+    num_shards: int,
+    file_template: str = "docs-{}.parquet",
+    fsspec_args: Optional[dict] = None,
+) -> None:
     ledger_file = os.path.join(cache_dir, LEDGER_FILE)
 
     fs, _, _ = fsspec.get_fs_token_paths(ledger_file)
@@ -175,10 +188,12 @@ def build_cache(token_iter: Iterator[BatchEncoding],
             tokens_written_to_shard[shard_to_write_to] += batch_len
 
             if writers is None:
-                files_to_open = [fsspec.open(os.path.join(cache_dir, f), "wb", **(fsspec_args or {})).open() for f in
-                                 file_names]
-                writers = [pq.ParquetWriter(file, batch.schema, version="2.6", compression="ZSTD") for file
-                           in files_to_open]
+                files_to_open = [
+                    fsspec.open(os.path.join(cache_dir, f), "wb", **(fsspec_args or {})).open() for f in file_names
+                ]
+                writers = [
+                    pq.ParquetWriter(file, batch.schema, version="2.6", compression="ZSTD") for file in files_to_open
+                ]
 
             writers[shard_to_write_to].write_batch(batch)
 
@@ -194,8 +209,12 @@ def build_cache(token_iter: Iterator[BatchEncoding],
 
         # if we successfully wrote the whole iterator, we can write the ledger
         with fsspec.open(ledger_file, "w") as w:
-            ledger = {"files": [{"file_name": str(name), "num_tokens": count} for name, count in
-                                zip(file_names, tokens_written_to_shard)]}
+            ledger = {
+                "files": [
+                    {"file_name": str(name), "num_tokens": count}
+                    for name, count in zip(file_names, tokens_written_to_shard)
+                ]
+            }
             json.dump(ledger, w)
         return
 
@@ -213,7 +232,7 @@ def build_cache(token_iter: Iterator[BatchEncoding],
 def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
     if enforce_eos:
         tokens = tokenizer([t + tokenizer.eos_token for t in texts], return_attention_mask=False)
-        assert all(t[-1] == tokenizer.eos_token_id for t in tokens['input_ids'])
+        assert all(t[-1] == tokenizer.eos_token_id for t in tokens["input_ids"])
         return tokens
     else:
         return tokenizer(texts, return_attention_mask=False)
@@ -226,10 +245,13 @@ def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enfor
     return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
-def concatenate_and_group_texts(encoding: BatchEncoding, seq_len: int,
-                                stride: Optional[int] = None,
-                                drop_remainder: bool = True,
-                                mask_stride_overlap=True) -> Iterator[BatchEncoding]:
+def concatenate_and_group_texts(
+    encoding: BatchEncoding,
+    seq_len: int,
+    stride: Optional[int] = None,
+    drop_remainder: bool = True,
+    mask_stride_overlap=True,
+) -> Iterator[BatchEncoding]:
     """Groups texts in a batch together. Typically, you'll want to use this with a fairly large
     set of texts, e.g. 1000 docs.
 
@@ -256,7 +278,7 @@ def concatenate_and_group_texts(encoding: BatchEncoding, seq_len: int,
     # Split by Chunks of Maximum Length
     # we want to take chunks up until we've covered all "total_length" tokens with a sliding window of size "stride"
     for begin in range(0, total_length - seq_len + stride, stride):
-        data = {k: v[begin:begin + seq_len] for k, v in concatenated.items()}
+        data = {k: v[begin : begin + seq_len] for k, v in concatenated.items()}
 
         if mask_stride_overlap and stride != seq_len:
             labels = data.get("labels", data["input_ids"])
@@ -276,19 +298,25 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
             if i < len(labels):
                 labels[i] = sentinel
     else:
-        labels[0:target_len - stride] = sentinel
+        labels[0 : target_len - stride] = sentinel
 
     return labels
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import datasets
 
-    tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained('gpt2')
+    tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained("gpt2")
     dataset = datasets.load_dataset("dlwh/wikitext_103_detokenized", split="train")
 
-    indexed = preprocess_dataset(dataset, tokenizer, seq_len=512, cache_dir="cache/wikitext-103-indexed", num_shards=8,
-                                 enforce_eos=True)
+    indexed = preprocess_dataset(
+        dataset,
+        tokenizer,
+        seq_len=512,
+        cache_dir="cache/wikitext-103-indexed",
+        num_shards=8,
+        enforce_eos=True,
+    )
 
     for i, batch in enumerate(indexed):
         print(i, batch)

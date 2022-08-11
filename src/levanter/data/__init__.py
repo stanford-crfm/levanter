@@ -2,14 +2,14 @@ import json
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional, List
+from typing import List, Optional
 
 import braceexpand
 import datasets
 import fsspec
 from transformers import AutoTokenizer
 
-from levanter.data.text import tokenize_batch, TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, tokenize_batch
 from levanter.data.utils import batched
 
 
@@ -21,8 +21,8 @@ class LMDatasetConfig:
     name: Optional[str] = None  # name for hf dataset
     stream: bool = True  # whether to use streaming when doing hf
 
-    train_urls: List[str] = ()
-    validation_urls: List[str] = ()
+    train_urls: List[str] = ()  # type: ignore
+    validation_urls: List[str] = ()  # type:ignore
 
     tokenizer: str = "gpt2"
     enforce_eos: bool = True

@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from haliax.core import NamedArray, _ensure_tuple, AxisSpec
+from haliax.core import AxisSpec, NamedArray, _ensure_tuple
 
 
 def wrap_elemwise_unary(f):
@@ -22,9 +22,9 @@ def wrap_elemwise_unary(f):
 def wrap_reduction_call(fn):
     @functools.wraps(fn)
     def wrapper(a, axis: Optional[AxisSpec] = None, keepdims=False, **kwargs):
-        if kwargs.get('where', None) is not None:
+        if kwargs.get("where", None) is not None:
             raise ValueError("where is not supported yet for NamedArray")
-        if kwargs.get('out', None) is not None:
+        if kwargs.get("out", None) is not None:
             raise ValueError("where is not supported yet for NamedArray")
 
         if isinstance(a, NamedArray):
@@ -43,16 +43,19 @@ def wrap_reduction_call(fn):
                 result = fn(a.array, axis=indices, keepdims=keepdims, **kwargs)
                 if jnp.isscalar(result):
                     return result
-                return NamedArray(fn(a.array, axis=indices, keepdims=keepdims, **kwargs), new_axes)
+                return NamedArray(fn(a.array, axis=indices, keepdims=keepdims, **kwargs), tuple(new_axes))
         else:
             return fn(a, axis=axis, keepdims=keepdims, **kwargs)
 
-    wrapper.__doc__ = """
+    wrapper.__doc__ = (
+        """
     This function augments the behavior of `{fn}` to support NamedArrays, so that axis is a NamedArray.
     At the moment, neither `where` nor `out` are supported.
     =====
 
-    """ + fn.__doc__
+    """
+        + fn.__doc__
+    )
     return wrapper
 
 
@@ -76,12 +79,15 @@ def wrap_normalization_call(fn, single_axis_only: bool):
         else:
             return fn(a, axis=axis, **kwargs)
 
-    wrapper.__doc__ = """
+    wrapper.__doc__ = (
+        """
     This function augments the behavior of `{fn}` to support NamedArrays, so that axis is a NamedArray.
     At the moment, neither `where` nor `out` are supported.
     =====
 
-    """ + fn.__doc__
+    """
+        + fn.__doc__
+    )
     return wrapper
 
 

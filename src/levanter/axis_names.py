@@ -23,7 +23,7 @@ class LogicalAxis(StringHolderEnum):
     PARAMS = "params"
 
 
-T = typing.TypeVar('T')
+T = typing.TypeVar("T")
 
 
 def infer_resource_partitions(tree: PyTree, axis_resources: Dict[str, str]) -> PyTree:
@@ -46,7 +46,8 @@ def infer_resource_partitions(tree: PyTree, axis_resources: Dict[str, str]) -> P
 
 
 def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
-    """Uses NamedArrays to infer the resource partitions for a module when creating it """
+    """Uses NamedArrays to infer the resource partitions for a module when creating it"""
+
     @functools.wraps(cls.__new__)
     def init(*args, **kwargs):
         inst = cls(*args, **kwargs)
@@ -65,4 +66,9 @@ def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
     return make
 
 
-__all__ = ["LogicalAxis", "ResourceAxis", "infer_resource_partitions", "named_pjit_init"]
+__all__ = [
+    "LogicalAxis",
+    "ResourceAxis",
+    "infer_resource_partitions",
+    "named_pjit_init",
+]

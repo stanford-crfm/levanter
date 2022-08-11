@@ -50,7 +50,7 @@ class MeshInfo:
     @property
     def local_model_axis_size(self):
         """size of the model axis for devices on this node. This is local_device_count if the model axis size exceeds
-        the number of devices on this node. """
+        the number of devices on this node."""
         local_device_count = jax.local_device_count()
         if local_device_count <= self.model_axis_size:
             return local_device_count
@@ -90,7 +90,10 @@ class MeshInfo:
         local_mesh_size = self.mesh.local_mesh.devices.shape
         assert self.data_axis_size % local_mesh_size[0] == 0
         assert self.model_axis_size % local_mesh_size[1] == 0
-        return self.data_axis_size // local_mesh_size[0], self.model_axis_size // local_mesh_size[1]
+        return (
+            self.data_axis_size // local_mesh_size[0],
+            self.model_axis_size // local_mesh_size[1],
+        )
 
     @property
     def microbatch_size(self):

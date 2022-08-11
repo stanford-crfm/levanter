@@ -1,4 +1,3 @@
-
 import pyrallis
 
 from levanter.data import CachedLMDatasetConfig
@@ -14,5 +13,5 @@ def main(args: CachedLMDatasetConfig):
         args.build_or_load_document_cache(split)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

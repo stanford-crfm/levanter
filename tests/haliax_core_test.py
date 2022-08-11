@@ -1,10 +1,9 @@
 import jax
 import jax.numpy as jnp
-import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax import NamedArray, Axis
+from haliax import Axis, NamedArray
 
 
 def test_dot():
@@ -16,8 +15,18 @@ def test_dot():
     m2 = NamedArray(jnp.ones((Depth.size, Width.size, Height.size)), (Depth, Width, Height))
 
     assert jnp.all(jnp.equal(hax.dot(Height, m1, m2).array, jnp.einsum("ijk,kji->jk", m1.array, m2.array)))
-    assert jnp.all(jnp.equal(hax.dot((Height, Width), m1, m2).array, jnp.einsum("ijk,kji->k", m1.array, m2.array)))
-    assert jnp.all(jnp.equal(hax.dot((Height, Width, Depth), m1, m2).array, jnp.einsum("ijk,kji->", m1.array, m2.array)))
+    assert jnp.all(
+        jnp.equal(
+            hax.dot((Height, Width), m1, m2).array,
+            jnp.einsum("ijk,kji->k", m1.array, m2.array),
+        )
+    )
+    assert jnp.all(
+        jnp.equal(
+            hax.dot((Height, Width, Depth), m1, m2).array,
+            jnp.einsum("ijk,kji->", m1.array, m2.array),
+        )
+    )
 
 
 def test_unary_np_functions():
@@ -62,8 +71,18 @@ def test_reduction_functions():
     assert jnp.all(jnp.equal(hax.sum(m1, axis=(Height, Depth)).array, jnp.sum(m1.array, axis=(0, 2))))
 
     # sum out three axes
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=(Height, Width, Depth)).array, jnp.sum(m1.array, axis=(0, 1, 2))))
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=(Width, Height, Depth)).array, jnp.sum(m1.array, axis=(1, 0, 2))))
+    assert jnp.all(
+        jnp.equal(
+            hax.sum(m1, axis=(Height, Width, Depth)).array,
+            jnp.sum(m1.array, axis=(0, 1, 2)),
+        )
+    )
+    assert jnp.all(
+        jnp.equal(
+            hax.sum(m1, axis=(Width, Height, Depth)).array,
+            jnp.sum(m1.array, axis=(1, 0, 2)),
+        )
+    )
 
 
 def test_split():

@@ -40,6 +40,7 @@ def get_data(dataset_size, *, key):
 
     return x, y
 
+
 class RNN(eqx.Module):
     hidden_size: int
     cell: eqx.Module
@@ -101,7 +102,6 @@ def main(
     num_correct = jnp.sum((pred_ys > 0.5) == ys)
     final_accuracy = (num_correct / dataset_size).item()
     print(f"final_accuracy={final_accuracy}")
-
 
 
 if __name__ == "__main__":
