@@ -4,17 +4,17 @@ import json
 import os
 from typing import Optional
 
-import numpy as np
-import torch
-
 import equinox as eqx
-from huggingface_hub import hf_hub_url, cached_download
 import jax
-from jax.random import PRNGKey
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import numpy as onp
-from transformers import GPT2Config as HfGpt2Config, AutoModelForCausalLM
+import torch
+from huggingface_hub import cached_download, hf_hub_url
+from jax.random import PRNGKey
+from transformers import AutoModelForCausalLM
+from transformers import GPT2Config as HfGpt2Config
 
 from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
@@ -59,7 +59,7 @@ def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
     return levanter_config
 
 
-def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config)->HfGpt2Config:
+def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     # various things we don't support in our gpt2
 
     hf_config = HfGpt2Config(
@@ -102,14 +102,14 @@ def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
         json.dump(config.to_dict(), f)
 
 
-def use_torch_weights(model: eqx.Module, checkpoint: dict)-> eqx.Module:
+def use_torch_weights(model: eqx.Module, checkpoint: dict) -> eqx.Module:
     """Given an equinox Module that implements torch_key_leaves (as per our gpt2 implementation),
     return a modified version of the module with the weights initialized to those values"""
 
     # TODO: make a class for torch_key_leaves that we can use here
     torch_keys = model.torch_key_leaves()
 
-    def to_jax(t: Optional[torch.Tensor])->Optional[jnp.ndarray]:
+    def to_jax(t: Optional[torch.Tensor]) -> Optional[jnp.ndarray]:
         if t is None:
             return None
         return jnp.array(t.cpu().numpy())
@@ -118,20 +118,25 @@ def use_torch_weights(model: eqx.Module, checkpoint: dict)-> eqx.Module:
     leaves, structure = jax.tree_flatten(model)
     # verify shapes match
     for old, new in zip(leaves, tensors):
-        assert old.shape == new.shape, f"{old.shape} != {new.shape}"
+        if old is None:
+            assert new is None
+        else:
+            assert old is not None  # make flow typing happy
+            assert new is not None  # make flow typing happy
+            assert old.shape == new.shape, f"{old.shape} != {new.shape}"
 
     model = jax.tree_unflatten(structure, tensors)
 
     return model
 
 
-def make_torch_model_dict(model: eqx.Module)->dict:
+def make_torch_model_dict(model: eqx.Module) -> dict:
     """Given an equinox Module that implements torch_key_leaves (as per our gpt2 implementation),
     return a dictionary of the weights compatible with a torch state dict"""
 
     torch_keys = model.torch_key_leaves()
 
-    def to_torch(t: Optional[jnp.ndarray])->Optional[torch.Tensor]:
+    def to_torch(t: Optional[jnp.ndarray]) -> Optional[torch.Tensor]:
         if t is None:
             return None
         return torch.from_numpy(onp.array(t))
@@ -143,7 +148,7 @@ def make_torch_model_dict(model: eqx.Module)->dict:
     return {k: to_torch(v) for k, v in zip(torch_keys, leaves) if k is not None}
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     config, data = load_hf_model_checkpoint("gpt2")
     config = HfGpt2Config.from_dict(config)
 
@@ -155,8 +160,16 @@ if __name__ == '__main__':
     torch_model = AutoModelForCausalLM.from_pretrained("gpt2")
     torch_model.eval()
 
-    def rand_input(key: PRNGKey, num: int,  seq_len: int) -> jnp.ndarray:
-        return jrandom.randint(key, (num, seq_len,), 0, config.vocab_size)
+    def rand_input(key: PRNGKey, num: int, seq_len: int) -> jnp.ndarray:
+        return jrandom.randint(
+            key,
+            (
+                num,
+                seq_len,
+            ),
+            0,
+            config.vocab_size,
+        )
 
     input = rand_input(PRNGKey(0), 1, config.n_positions)
 
