@@ -5,13 +5,10 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
-import numpy as np
 import numpy as onp
 import torch
 from huggingface_hub import cached_download, hf_hub_url
 from jax.random import PRNGKey
-from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 
 from haliax import Axis
@@ -144,43 +141,3 @@ def make_torch_model_dict(model: eqx.Module) -> dict:
     assert len(leaves) == len(torch_keys)
 
     return {k: to_torch(v) for k, v in zip(torch_keys, leaves) if k is not None}
-
-
-if __name__ == "__main__":
-    config, data = load_hf_model_checkpoint("gpt2")
-    config = HfGpt2Config.from_dict(config)
-
-    model = load_hf_gpt2_checkpoint("gpt2")
-
-    del data
-
-    # Sanity check that the model behaves similarly
-    torch_model = AutoModelForCausalLM.from_pretrained("gpt2")
-    torch_model.eval()
-
-    def rand_input(key: PRNGKey, num: int, seq_len: int) -> jnp.ndarray:
-        return jrandom.randint(
-            key,
-            (
-                num,
-                seq_len,
-            ),
-            0,
-            config.vocab_size,
-        )
-
-    input = rand_input(PRNGKey(0), 1, config.n_positions)
-
-    torch_out = torch_model(torch.from_numpy(onp.array(input)).to(torch.int32))
-    torch_out = torch_out.logits[0].detach().cpu().numpy()
-
-    jax_out = model(input[0], key=None)
-
-    assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-    assert np.isclose(torch_out, onp.array(jax_out)).all(), f"{torch_out} != {jax_out}"
-
-    save_hf_gpt2_checkpoint("test-gpt2", model)
-
-    gpt2_round_trip = load_hf_gpt2_checkpoint("test-gpt2")
-
-    print(config)
