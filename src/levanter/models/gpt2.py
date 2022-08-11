@@ -69,6 +69,9 @@ class NamedLinear(eqx.Module):
         kernel = self.weight.array
         return inputs @ kernel + self.bias.array
 
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        return _apply_prefix(prefix, ["weight", "bias"] if self.bias is not None else ["weight"])
+
 
 class Gpt2Mlp(eqx.Module):
     act: Callable = eqx.static_field()
@@ -86,6 +89,9 @@ class Gpt2Mlp(eqx.Module):
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
+
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        return _apply_prefix(prefix, self.c_fc.torch_key_leaves("c_fc") + self.c_proj.torch_key_leaves("c_proj"))
 
 
 class Gpt2Attention(eqx.Module):
@@ -177,6 +183,12 @@ class Gpt2Attention(eqx.Module):
     ) -> Array["seq_len", "num_heads", "embed_dim"]:  # type: ignore # noqa F821 E501
         return rearrange(hidden_states, "... n h d -> ... n (h d)")
 
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        return _apply_prefix(prefix, self.c_attn.torch_key_leaves("c_attn") + self.c_proj.torch_key_leaves("c_proj"))
+
+def layer_norm_leaves(prefix: Optional[str] = None):
+    return _apply_prefix(prefix, ["weight", "bias"])
+
 
 class Gpt2Block(eqx.Module):
     ln_1: nn.LayerNorm
@@ -220,19 +232,22 @@ class Gpt2Block(eqx.Module):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
-        hidden_states = self.ln_1(hidden_states)
+        hidden_states = jax.vmap(self.ln_1)(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
         residual = hidden_states
-        hidden_states = self.ln_2(hidden_states)
+        hidden_states = jax.vmap(self.ln_2)(hidden_states)
         ff_output = self.mlp(hidden_states)
         ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
 
         hidden_states = ff_output + residual
 
         return hidden_states
+
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        return _apply_prefix(prefix, layer_norm_leaves("ln_1") + self.attn.torch_key_leaves("attn") + layer_norm_leaves("ln_2") + self.mlp.torch_key_leaves("mlp"))
 
 
 class Gpt2Transformer(eqx.Module):
@@ -261,9 +276,12 @@ class Gpt2Transformer(eqx.Module):
             #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
             #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
 
-        hidden_states = self.ln_f(hidden_states)
+        hidden_states = jax.vmap(self.ln_f)(hidden_states)
 
         return hidden_states
+
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        return _apply_prefix(prefix, [name for i, block in enumerate(self.blocks) for name in block.torch_key_leaves(f"h.{i}") ] + layer_norm_leaves("ln_f"))
 
 
 # from https://github.com/google/jax/issues/4285
@@ -335,6 +353,12 @@ class Gpt2Embeddings(eqx.Module):
         # return hax.dot(self.hidden, hidden_states, embeddings)
         return jnp.einsum("... l h, ... v h -> ... l v", hidden_states, embeddings.array)
 
+    def torch_key_leaves(self, prefix: Optional[str] = None):
+        # no output word embeddings matrix, which we don't support just yet
+        assert self.token_out_embeddings is None
+        return _apply_prefix(prefix, ['wte.weight', 'wpe.weight'])
+
+
 
 class Gpt2LMHeadModel(eqx.Module):
     transformer: Gpt2Transformer
@@ -357,6 +381,11 @@ class Gpt2LMHeadModel(eqx.Module):
             key=k_embeddings,
         )
 
+    def torch_key_leaves(self, prefix: Optional[str] = None)->List[Optional[str]]:
+        """Returns the keys of the torch model dict for this Gpt2"""
+        leaves = self.transformer.torch_key_leaves() +  self.embeddings.torch_key_leaves()
+        return _apply_prefix(prefix, leaves)
+
     def __call__(self, input_ids, key):
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
         hidden_states = self.embeddings.embed(input_ids, inference=key is None, key=k_embed)
@@ -364,3 +393,10 @@ class Gpt2LMHeadModel(eqx.Module):
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
+
+
+def _apply_prefix(prefix: Optional[str], leaves: List[Optional[str]]) -> List[Optional[str]]:
+    if prefix is None:
+        return leaves
+    else:
+        return [prefix + "." + leaf if leaf else prefix for leaf in leaves]
