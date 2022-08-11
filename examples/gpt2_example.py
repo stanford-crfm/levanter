@@ -112,7 +112,7 @@ def main(config: TrainGpt2Config):
 
             return token_loss
 
-        compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0])
+        compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0], spmd_axis_name=ResourceAxis.DATA)
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
             return jnp.mean(compute_loss_vmap(model, input_ids, key))
