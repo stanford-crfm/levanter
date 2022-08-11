@@ -1,0 +1,12 @@
+data:
+  id: dlwh/wikitext_103_detokenized
+dtype: bfloat16
+model:
+  hidden_dim: 24
+  num_heads: 3
+  num_layers: 1
+trainer:
+  num_train_steps: 100
+  per_device_eval_batch_size: 1
+  per_device_train_batch_size: 1
+  train_batch_size: 32
