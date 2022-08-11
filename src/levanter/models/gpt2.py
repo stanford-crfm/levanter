@@ -368,6 +368,10 @@ class Gpt2LMHeadModel(eqx.Module):
     def config(self):
         return self.transformer.config
 
+    @property
+    def vocab_size(self) -> int:
+        return self.embeddings.vocab.size
+
     def __init__(self, vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = Gpt2Transformer(config, key=k_t)
