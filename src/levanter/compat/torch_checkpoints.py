@@ -1,5 +1,3 @@
-# At some point we should maybe figure out a way to reflect over equinox trees for handling checkpoints. However,
-# that is a bit tricky to pull off.
 import json
 import os
 from typing import Optional
