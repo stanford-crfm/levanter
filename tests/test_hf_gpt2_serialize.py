@@ -10,12 +10,6 @@ from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
-from levanter.compat.torch_checkpoints import (
-    load_hf_gpt2_checkpoint,
-    load_hf_model_checkpoint,
-    save_hf_gpt2_checkpoint,
-)
-
 
 def has_torch():
     try:
@@ -29,6 +23,12 @@ def has_torch():
 @pytest.mark.skipif(not has_torch(), reason="torch not installed")
 def test_hf_gpt2_roundtrip():
     import torch
+
+    from levanter.compat.torch_checkpoints import (
+        load_hf_gpt2_checkpoint,
+        load_hf_model_checkpoint,
+        save_hf_gpt2_checkpoint,
+    )
 
     config, data = load_hf_model_checkpoint("gpt2")
     config = HfGpt2Config.from_dict(config)
