@@ -5,6 +5,7 @@ import numpy as np
 from equinox.custom_types import Array
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec, Replicated, ShardedAxis
+from utils import skip_if_not_enough_devices
 
 import haliax as hax
 from haliax import Axis, NamedArray
@@ -49,9 +50,10 @@ class MyModuleInit(eqx.Module):
         self.static_field = 1
 
 
+@skip_if_not_enough_devices(4)
 def test_pjit_class_init():
     devices = jax.devices()
-    with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+    with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
         mod = named_pjit_init(MyModuleInit, axis_resources=resource_map)()
 
     assert mod.named.array.shape == (dim2.size, dim3.size)
@@ -72,6 +74,7 @@ def test_pjit_class_init():
     )
 
 
+@skip_if_not_enough_devices(4)
 def test_xmap_class_nested_init():
     class Mod2(eqx.Module):
         inner: MyModuleInit
@@ -80,7 +83,7 @@ def test_xmap_class_nested_init():
             self.inner = MyModuleInit()
 
     devices = jax.devices()
-    with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+    with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
         mod2 = named_pjit_init(Mod2, axis_resources=resource_map)()
 
     mod = mod2.inner
