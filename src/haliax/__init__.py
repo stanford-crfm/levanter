@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import haliax.random as random
+from haliax import nn as nn
 
 from .core import Axis, AxisSpec, NamedArray, dot, named, take
 from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call

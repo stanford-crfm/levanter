@@ -3,7 +3,7 @@ import functools
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from .. import Axis, NamedArray
+from ..core import Axis, NamedArray
 from ..wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
