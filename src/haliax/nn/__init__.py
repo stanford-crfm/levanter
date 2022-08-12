@@ -1,6 +1,6 @@
 import jax.nn as jnn
 
-from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+from ..wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
 relu = wrap_elemwise_unary(jnn.relu)
