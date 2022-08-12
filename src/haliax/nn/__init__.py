@@ -60,4 +60,5 @@ __all__ = [
     "logsumexp",
     "softmax",
     "log_softmax",
+    "one_hot",
 ]
