@@ -35,7 +35,7 @@ log_softmax = wrap_normalization_call(jnn.log_softmax, False)
 
 @functools.wraps(jnn.one_hot)
 def one_hot(x: NamedArray, class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
-    array = jnn.one_hot(x, num_classes=class_axis.size, dtype=dtype)
+    array = jnn.one_hot(x.array, num_classes=class_axis.size, dtype=dtype)
     return NamedArray(array, x.axes + (class_axis,))
 
 
