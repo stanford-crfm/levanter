@@ -24,6 +24,7 @@ elu = wrap_elemwise_unary(jnn.elu)
 celu = wrap_elemwise_unary(jnn.celu)
 selu = wrap_elemwise_unary(jnn.selu)
 gelu = wrap_elemwise_unary(jnn.gelu)
+# TODO: glu = wrap_elemwise_unary(jnn.gelu)
 
 logsumexp = wrap_reduction_call(jnn.logsumexp)
 
