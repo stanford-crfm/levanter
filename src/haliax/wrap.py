@@ -81,7 +81,7 @@ def wrap_normalization_call(fn, single_axis_only: bool):
 
     wrapper.__doc__ = (
         """
-    This function augments the behavior of `{fn}` to support NamedArrays, so that axis is a NamedArray.
+    This function augments the behavior of `{fn}` to support NamedArrays, so that axis is an Axis of sequence of axes.
     At the moment, neither `where` nor `out` are supported.
     =====
 
