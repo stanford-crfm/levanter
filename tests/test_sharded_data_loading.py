@@ -3,19 +3,15 @@ from typing import List
 
 import jax
 import numpy as np
-import pytest
 from jax.experimental.global_device_array import GlobalDeviceArray, Shard
 from jax.experimental.maps import Mesh
 from transformers import BatchEncoding
+from utils import skip_if_not_enough_devices
 
 from levanter.axis_names import ResourceAxis
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.mesh import MeshInfo
-
-
-def skip_if_not_enough_devices(count: int):
-    return pytest.mark.skipif(len(jax.devices()) < count, reason=f"Not enough devices ({len(jax.devices())})")
 
 
 def _small_dataset(seq_len=128):
