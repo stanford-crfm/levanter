@@ -1,5 +1,9 @@
-import jax.nn as jnn
+import functools
 
+import jax.nn as jnn
+import jax.numpy as jnp
+
+from .. import Axis, NamedArray
 from ..wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
@@ -24,7 +28,15 @@ gelu = wrap_elemwise_unary(jnn.gelu)
 logsumexp = wrap_reduction_call(jnn.logsumexp)
 
 softmax = wrap_normalization_call(jnn.softmax, False)
+# TODO: standardize has optional "mean" and "variance" arguments we need to support
+# standardize = wrap_normalization_call(jnn.standardize, False)
 log_softmax = wrap_normalization_call(jnn.log_softmax, False)
+
+
+@functools.wraps(jnn.one_hot)
+def one_hot(x: NamedArray, class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
+    array = jnn.one_hot(x, num_classes=class_axis.size, dtype=dtype)
+    return NamedArray(array, x.axes + (class_axis,))
 
 
 __all__ = [
