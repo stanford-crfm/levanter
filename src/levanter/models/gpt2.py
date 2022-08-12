@@ -138,7 +138,6 @@ class Gpt2Attention(eqx.Module):
         rng_key = key
 
         qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
-        # TODO(haliax): split for named
         query, key, value = jnp.split(qkv_out, 3, axis=-1)  # [seq_len, embed_dim]
 
         query = self._split_heads(query)  # [seq_len, num_heads, head_dim]
@@ -151,16 +150,12 @@ class Gpt2Attention(eqx.Module):
         attn_weights = jnp.einsum("... n h d, ... m h d -> ... h n m", query, key)  # [heads, seq_len, seq_len]
         attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
 
-        if self.causal is not None:
+        if self.causal:
             seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
             causal_mask = causal_mask[:query_length, :key_length]
 
             attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
-            # causal_mask = causal_mask.astype(jnp.bfloat16)
-            # mask = jnp.broadcast_to(attention_mask, w.shape)
-            # w = jnp.where(mask > 0, w, -1E9)
-            # attn_weights = attn_weights + attention_mask
 
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
