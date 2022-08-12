@@ -64,12 +64,12 @@ def test_pjit_class_init():
 
     assert mod.unnamed1.shape == ()
     assert mod.unnamed1.sharding_spec.mesh_mapping == (
-        Replicated(len(devices)),
-        Replicated(1),
+        Replicated(len(devices) // 2),
+        Replicated(2),
     )
     assert mod.named2.array.shape == (dim3.size,)
     assert mod.named2.array.sharding_spec.mesh_mapping == (
-        Replicated(len(devices)),
+        Replicated(len(devices) // 2),
         ShardedAxis(0),
     )
 
