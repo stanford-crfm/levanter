@@ -47,6 +47,8 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
     Returns the loaded model state, training state, and step. If discover_latest is True,
     the latest checkpoint in the given path will be loaded. Otherwise, the checkpoint at
     the given path will be loaded. If no checkpoint is found, returns None
+
+    If training_state is None, the loaded training state will be returned as None.
     """
     if discover_latest:
         checkpoint_path = discover_latest_checkpoint(checkpoint_path)
@@ -56,7 +58,11 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
 
     model_state = tree_deserialise_leaves(f"{checkpoint_path}/model.eqx", model_state)
     metadata = json.load(open(f"{checkpoint_path}/metadata.json"))
-    training_state = tree_deserialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state)
+    if training_state is None:
+        training_state = None
+    else:
+        training_state = tree_deserialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state)
+
     return model_state, training_state, metadata["step"]
 
 
