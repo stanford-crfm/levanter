@@ -51,4 +51,6 @@ def compute_validation_loss(
         total_loss = total_loss.mean.item()
         wandb.log({"eval/loss": total_loss}, step=info.step)
 
+        return total_loss
+
     return compute_loss
