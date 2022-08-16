@@ -74,7 +74,7 @@ class TrainerConfig:
 
     # Config related to duration
     num_train_steps: int = 400_000
-    steps_per_eval: int = 10_000
+    steps_per_eval: int = 1_000
 
     steps_per_save: int = 20_000
     load_last_checkpoint: bool = True
@@ -127,7 +127,7 @@ class TrainerConfig:
     def optimizer(self):
         """Creates the optimizer"""
 
-        # indirection makes it work with optax.inject_hyperparams so we can can log the learning rate
+        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
 
