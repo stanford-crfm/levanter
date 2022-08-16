@@ -70,12 +70,16 @@ class CachedLMDatasetConfig(LMDatasetConfig):
     num_train_shards: int = 128
     num_val_shards: int = 32
 
+    train_group_size: int = 1000
+    val_group_size: int = 100
+
     def build_or_load_document_cache(self, split: str):
         cache_dir = os.path.join(self.cache_dir, f"{split}")
         # TODO: think about doing this on apache beam or something fancy. Maybe nothing fancy we can do for HF datasets,
         # but for pure-url based ones, shouldn't be hard.
         doc_iter = self.doc_iterator(split)
-        token_iter = (tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, 1000))
+        group_size = self.train_group_size if split == "train" else self.val_group_size
+        token_iter = (tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, group_size))
 
         num_shards = self.num_train_shards if split == "train" else self.num_val_shards
 
