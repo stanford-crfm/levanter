@@ -57,7 +57,12 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
         return None
 
     model_state = tree_deserialise_leaves(f"{checkpoint_path}/model.eqx", model_state)
-    metadata = json.load(open(f"{checkpoint_path}/metadata.json"))
+    fs: AbstractFileSystem
+    fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
+
+    with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
+        metadata = json.load(metadata_in)
+
     if training_state is None:
         training_state = None
     else:
@@ -74,10 +79,11 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
     fs: AbstractFileSystem
     fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
     ckpt_dirs = [d for d in fs.glob(f"{checkpoint_path}/*") if fs.isdir(d)] + [checkpoint_path]
+    ckpt_dirs = [d[:-1] if d.endswith("/") else d for d in ckpt_dirs]
     ckpt_dirs = [d for d in ckpt_dirs if fs.exists(f"{d}/metadata.json")]
 
     def checkpoint_timestamp(ckpt_dir):
-        metadata = json.load(open(f"{ckpt_dir}/metadata.json"))
+        metadata = json.load(fs.open(f"{ckpt_dir}/metadata.json"))
         return datetime.fromisoformat(metadata["timestamp"])
 
     if len(ckpt_dirs) > 0:
