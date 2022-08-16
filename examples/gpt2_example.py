@@ -195,8 +195,7 @@ def main(config: TrainGpt2Config):
         else:
             resume_step = 0
 
-        # input_ids is [microsteps, batch_axis, per_device_batch, ...]
-        # keys are [microsteps, batch_axis, model_axis, per_device_batch, ...]
+        # input_ids and keys are [microsteps, batch_axis, microbatch_size, ...]
         def train_step(model, opt_state, input_ids, keys):
             loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
             updates, opt_state = optim.update(grads, opt_state)
@@ -231,7 +230,7 @@ def main(config: TrainGpt2Config):
                 (
                     train_mesh_info.microbatches_per_step,
                     # TODO: need to rethink per_device_parallelism here: should just scale data_axis_size
-                    train_mesh_info.data_axis_size,
+                    train_mesh_info.microbatch_size,
                 ),
             )
 
