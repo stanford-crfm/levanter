@@ -58,6 +58,7 @@ def main(config: EvalGpt2Config):
         # initialize the model
         model = Gpt2LMHeadModel(vocab, config.model, key=key)
         model_resources = infer_resource_partitions(model, resource_partitions)
+        model = jax.tree_map(lambda array: array.astype(config.dtype), model)
 
         model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
 
@@ -97,6 +98,7 @@ def main(config: EvalGpt2Config):
 
         # load the huggingface model
         hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint)
+        hf_model = jax.tree_map(lambda array: array.astype(config.dtype), hf_model)
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
 
