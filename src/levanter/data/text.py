@@ -238,10 +238,10 @@ def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
         return tokenizer(texts, return_attention_mask=False)
 
 
-def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos):
+def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos, doc_group_size=1000):
     data = (x["text"] for x in dataset)
 
-    token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, 1000))
+    token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, doc_group_size))
     return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
