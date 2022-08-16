@@ -95,7 +95,6 @@ def main(config: TrainGpt2Config):
 
         # convert to appropriate dtype
         model = jax.tree_map(lambda array: array.astype(config.dtype), model)
-        model = pjit(lambda m: m, in_axis_resources=None, out_axis_resources=model_resources)(model)
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
@@ -198,7 +197,7 @@ def main(config: TrainGpt2Config):
         # input_ids and keys are [microsteps, batch_axis, microbatch_size, ...]
         def train_step(model, opt_state, input_ids, keys):
             loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
-            updates, opt_state = optim.update(grads, opt_state)
+            updates, opt_state = optim.update(grads, opt_state, params=model)
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
