@@ -1,6 +1,7 @@
 import itertools
 from dataclasses import dataclass
 from functools import partial
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +26,8 @@ from levanter.trainer_hooks import StepInfo
 @dataclass
 class EvalGpt2Config:
     checkpoint_path: str
-    hf_checkpoint: str = "gpt2-xl"
+    hf_checkpoint: str = "gpt2-medium"
+    hf_revision: Optional[str] = None
     trainer: TrainerConfig = TrainerConfig()
     data: CachedLMDatasetConfig = CachedLMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
@@ -97,7 +99,7 @@ def main(config: EvalGpt2Config):
         print("Loss from Levanter model: ", loss)
 
         # load the huggingface model
-        hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint)
+        hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
         hf_model = jax.tree_map(lambda array: array.astype(config.dtype), hf_model)
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)

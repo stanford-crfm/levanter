@@ -15,19 +15,22 @@ from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
-def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map_location=None):
+def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map_location=None, revision=None):
     """
     Loads a PyTorch model checkpoint.
     """
+    if map_location is None:
+        map_location = torch.device('cpu')
+
     if os.path.exists(f"{location_or_id}/{model_file}"):
         config = json.load(open(f"{location_or_id}/config.json"))
         checkpoint = torch.load(f"{location_or_id}/{model_file}", map_location=map_location)
     else:
-        url = hf_hub_url(location_or_id, model_file)
+        url = hf_hub_url(location_or_id, model_file, revision=revision)
         model_path = cached_download(url)
         checkpoint = torch.load(model_path, map_location=map_location)
 
-        config_url = hf_hub_url(location_or_id, "config.json")
+        config_url = hf_hub_url(location_or_id, "config.json", revision=revision)
         config_path = cached_download(config_url)
         config = json.load(open(config_path))
 
@@ -73,8 +76,8 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None):
-    config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location)
+def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
+    config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
 
