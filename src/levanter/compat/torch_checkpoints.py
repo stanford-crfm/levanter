@@ -20,7 +20,7 @@ def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map
     Loads a PyTorch model checkpoint.
     """
     if map_location is None:
-        map_location = torch.device('cpu')
+        map_location = torch.device("cpu")
 
     if os.path.exists(f"{location_or_id}/{model_file}"):
         config = json.load(open(f"{location_or_id}/config.json"))
@@ -38,9 +38,6 @@ def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map
 
 
 def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
-    # various things we don't support in our gpt2
-    assert not config.scale_attn_by_inverse_layer_idx
-
     levanter_config = Gpt2Config(
         seq_len=config.n_positions,
         # vocab_size=config.vocab_size,
@@ -52,14 +49,13 @@ def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
         embed_pdrop=config.embd_pdrop,
         layer_norm_epsilon=config.layer_norm_epsilon,
         activation_function=config.activation_function,
+        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
     )
 
     return levanter_config
 
 
 def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
-    # various things we don't support in our gpt2
-
     hf_config = HfGpt2Config(
         vocab_size=vocab_size,
         n_positions=config.seq_len,
@@ -71,6 +67,7 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
         embd_pdrop=config.embed_pdrop,
         layer_norm_epsilon=config.layer_norm_epsilon,
         activation_function=config.activation_function,
+        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
     )
 
     return hf_config
@@ -86,7 +83,10 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
     key = PRNGKey(0)
     model = Gpt2LMHeadModel(vocab, lev_config, key=key)
 
-    model = use_torch_weights(model, checkpoint)
+    try:
+        model = use_torch_weights(model, checkpoint)
+    except KeyError:
+        model = use_torch_weights(model, checkpoint, prefix="transformer")
 
     return model
 
@@ -100,12 +100,12 @@ def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
         json.dump(config.to_dict(), f)
 
 
-def use_torch_weights(model: eqx.Module, checkpoint: dict) -> eqx.Module:
+def use_torch_weights(model: eqx.Module, checkpoint: dict, prefix: Optional[str] = None) -> eqx.Module:
     """Given an equinox Module that implements torch_key_leaves (as per our gpt2 implementation),
     return a modified version of the module with the weights initialized to those values"""
 
     # TODO: make a class for torch_key_leaves that we can use here
-    torch_keys = model.torch_key_leaves()
+    torch_keys = model.torch_key_leaves(prefix)
 
     def to_jax(t: Optional[torch.Tensor]) -> Optional[jnp.ndarray]:
         if t is None:
