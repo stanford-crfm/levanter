@@ -33,6 +33,9 @@ class Gpt2Config:
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
+    # mistral tweak:
+    scale_attn_by_inverse_layer_idx: bool = False
+
     gradient_checkpointing: bool = False
     gradient_checkpointing_block_size: int = 5
 
@@ -98,6 +101,8 @@ class Gpt2Attention(eqx.Module):
     causal: bool = eqx.static_field()
     head_dim: Axis = eqx.static_field()
     num_heads: int = eqx.static_field()
+    idx: int = eqx.static_field()
+    scale_by_inverse_layer_idx: bool = eqx.static_field()
 
     c_attn: NamedLinear
     c_proj: NamedLinear
@@ -113,6 +118,8 @@ class Gpt2Attention(eqx.Module):
         num_heads: int,
         head_dim: Axis,
         dropout_prob: float,
+        idx: int,
+        scale_by_inverse_layer_idx: bool,
         *,
         key,
         causal: bool = True,
@@ -120,6 +127,8 @@ class Gpt2Attention(eqx.Module):
         self.causal = causal
         self.num_heads = num_heads
         self.head_dim = head_dim
+        self.idx = idx
+        self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
 
         k_c, k_proj = jrandom.split(key, 2)
 
@@ -148,10 +157,17 @@ class Gpt2Attention(eqx.Module):
         # must use negative indexing to please the pmap gods
         query_length, key_length = query.shape[-3], key.shape[-3]
 
-        attn_weights = jnp.einsum("... n h d, ... m h d -> ... h n m", query, key)  # [heads, seq_len, seq_len]
-        attn_weights = attn_weights * lax.rsqrt(float(value.shape[-1]))
+        # mistral tweak
+        scale = lax.rsqrt(float(value.shape[-1]))
+        if self.scale_by_inverse_layer_idx:
+            scale /= self.idx + 1.0
 
-        if self.causal is not None:
+        #  I strongly suspect jax can fuse the next two ops so we don't need to do that mistral tweak
+        # TODO: verify
+        attn_weights = jnp.einsum("... n h d, ... m h d -> ... h n m", query, key)  # [heads, seq_len, seq_len]
+        attn_weights = attn_weights * scale
+
+        if self.causal:
             seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
             causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
             causal_mask = causal_mask[:query_length, :key_length]
@@ -198,7 +214,7 @@ class Gpt2Block(eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: pnn.Dropout
 
-    def __init__(self, config: Gpt2Config, *, key):
+    def __init__(self, config: Gpt2Config, layer_idx, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         hidden = config.hidden
@@ -217,6 +233,8 @@ class Gpt2Block(eqx.Module):
             dropout_prob=config.attn_pdrop,
             key=k_attn,
             causal=True,
+            scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+            idx=layer_idx,
         )
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = nn.LayerNorm(hidden.size, eps=config.layer_norm_epsilon)
@@ -266,7 +284,9 @@ class Gpt2Transformer(eqx.Module):
         super().__init__()
         self.config = config
 
-        self.blocks = [Gpt2Block(config, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))]
+        self.blocks = [
+            Gpt2Block(config, layer_idx=i, key=k) for i, k in enumerate(jrandom.split(key, config.num_layers))
+        ]
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
     # @eqx.filter_jit
