@@ -4,13 +4,13 @@ data:
   validation_urls:
       - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/"
-dtype: bfloat16
 model:
   hidden_dim: 768
   num_heads: 12
   num_layers: 12
   seq_len: 1024
 trainer:
+  mp: p=f32,c=bfloat16
   learning_rate: 3E-4
   model_axis_size: 1
   per_device_train_batch_size: 1

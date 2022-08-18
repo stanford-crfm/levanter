@@ -1,3 +1,4 @@
+import functools
 from functools import partial
 from typing import Callable, Tuple, TypeVar
 
@@ -58,3 +59,18 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, *inputs)
 
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
+
+
+# from https://github.com/google/jax/issues/4285
+def recursive_checkpoint(funs, threshold=2):
+    if len(funs) == 1:
+        return funs[0]
+    elif len(funs) == 2:
+        f1, f2 = funs
+        return lambda x: f2(f1(x))
+    elif len(funs) <= threshold:
+        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
+    else:
+        f1 = recursive_checkpoint(funs[: len(funs) // 2])
+        f2 = recursive_checkpoint(funs[len(funs) // 2 :])
+        return lambda x: f2(jax.remat(f1)(x))

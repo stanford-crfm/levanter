@@ -57,4 +57,9 @@ class Dropout(eqx.Module):
     def do_dropout(x: Array, p, key: "jax.random.PRNGKey" = None) -> Array:
         q = 1 - p
         mask = jrandom.bernoulli(key, q, x.shape)
-        return jnp.where(mask, x / q, 0)
+        q = x.dtype.type(q)
+
+        out = jnp.where(mask, x / q, jnp.zeros_like(x))
+
+        assert out.dtype == x.dtype
+        return out
