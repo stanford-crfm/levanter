@@ -10,7 +10,6 @@ model:
   num_heads: 25
   num_layers: 48
   seq_len: 1024
-
   gradient_checkpointing: true
 trainer:
   learning_rate: 1E-4
