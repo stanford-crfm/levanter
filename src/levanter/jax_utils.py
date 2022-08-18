@@ -1,3 +1,4 @@
+import functools
 from pathlib import Path
 from typing import Callable, Optional, Sequence, TypeVar, Union
 
@@ -8,6 +9,7 @@ from chex import PRNGKey
 from equinox.custom_types import PyTree
 from jax import lax
 from jax import numpy as jnp
+from jax import prng
 from jax import random as jrandom
 
 
@@ -132,5 +134,23 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
         f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 
-def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
-    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
+_orig_PRNGkey = jax.random.PRNGKey
+
+
+# based on https://github.com/google-research/t5x/blob/a4b8c1265d5639246ef230806c53f054f6b0bc0d/t5x/utils.py#L581-L591
+# apache license 2.0
+def set_hardware_rng_ops(enabled: bool = True):
+    """Enable JAX Custom PRNG extension."""
+    jax.config.update("jax_enable_custom_prng", enabled)
+    if enabled:
+        # Use only fast TPU hardware PRNG with iterated-hash "split" substitute.
+        # Expected to be deterministic for a fixed partitioning.
+        # Monkey-patch JAX PRNGKey to use unsafe_rbg_prng_impl
+        # TODO(levskaya): replace with jax global config option once we debug it.
+        rbg_prng_key = functools.partial(prng.seed_with_impl, prng.unsafe_rbg_prng_impl)
+        jax.random.PRNGKey = rbg_prng_key
+        jax._src.random.PRNGKey = rbg_prng_key  # pylint: disable=protected-access
+    else:
+        if jax.random.PRNGKey is not _orig_PRNGkey:
+            jax.random.PRNGKey = _orig_PRNGkey
+            jax._src.random.PRNGKey = _orig_PRNGkey  # pylint: disable=protected-access
