@@ -1,6 +1,7 @@
 import dataclasses
 
 import jax.numpy as jnp
+import jmp
 from jax.random import PRNGKey
 
 from haliax import Axis
@@ -8,6 +9,8 @@ from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
 def test_gradient_checkpointing():
+    policy = jmp.get_policy("f32")
+
     # ensure that gradient checkpointing doesn't change the output
     # (this is a regression test for a bug that caused the output to change)
     for num_blocks in [1, 2, 4, 8, 12]:
@@ -23,8 +26,8 @@ def test_gradient_checkpointing():
 
         vocab = Axis("vocab", 128)
 
-        model = Gpt2LMHeadModel(vocab, config, key=key)
-        model_checkpoint = Gpt2LMHeadModel(vocab, config_checkpoint, key=key)
+        model = Gpt2LMHeadModel(vocab, config, key=key, mp=policy)
+        model_checkpoint = Gpt2LMHeadModel(vocab, config_checkpoint, key=key, mp=policy)
 
         input_ids = jnp.arange(16, dtype=jnp.int32)
 
