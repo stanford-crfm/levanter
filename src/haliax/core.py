@@ -30,10 +30,10 @@ class NamedArray:
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
 
-        #if isinstance(self.array, jax.core.Tracer) or isinstance(self.array, DeviceArray):
-        #    s = jnp.shape(self.array)
-        #    if s != tuple(a.size for a in self.axes):
-         #       raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
+        if isinstance(self.array, jax.core.Tracer) or isinstance(self.array, DeviceArray):
+            s = jnp.shape(self.array)
+            if s != tuple(a.size for a in self.axes):
+                raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
 
     def __array__(self):
         return self.array.__array__()
