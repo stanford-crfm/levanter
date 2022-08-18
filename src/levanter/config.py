@@ -13,6 +13,7 @@ import pyrallis
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
+from levanter import jax_utils
 from levanter.axis_names import ResourceAxis
 from levanter.mesh import MeshInfo
 
@@ -93,6 +94,8 @@ class TrainerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
+    use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
+
     @cached_property
     def device_mesh(self):
         devices = jax.devices()
@@ -125,6 +128,10 @@ class TrainerConfig:
     @property
     def train_total_microbatches(self):
         return self.num_train_steps * self.train_mesh_info.microbatches_per_step
+
+    def initialize_jax_config(self):
+        """Initialize global jax config with settings we like, based on config"""
+        jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
 
     def optimizer(self):
         """Creates the optimizer"""
