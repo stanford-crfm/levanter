@@ -1,4 +1,3 @@
-import functools
 from pathlib import Path
 from typing import Callable, Optional, Sequence, TypeVar, Union
 
@@ -113,7 +112,7 @@ def parameter_count(model: PyTree):
 
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
-    leaves = {id(x): x for x in jax.tree_leaves(model) if _is_param_leaf(x)}
+    leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if _is_param_leaf(x)}
     return sum(x.size for x in leaves.values())
 
 
@@ -139,17 +138,18 @@ _orig_PRNGkey = jax.random.PRNGKey
 
 # based on https://github.com/google-research/t5x/blob/a4b8c1265d5639246ef230806c53f054f6b0bc0d/t5x/utils.py#L581-L591
 # apache license 2.0
+# also https://github.com/google/jax/issues/9274
 def set_hardware_rng_ops(enabled: bool = True):
     """Enable JAX Custom PRNG extension."""
     jax.config.update("jax_enable_custom_prng", enabled)
     if enabled:
-        # Use only fast TPU hardware PRNG with iterated-hash "split" substitute.
-        # Expected to be deterministic for a fixed partitioning.
         # Monkey-patch JAX PRNGKey to use unsafe_rbg_prng_impl
         # TODO(levskaya): replace with jax global config option once we debug it.
-        rbg_prng_key = functools.partial(prng.seed_with_impl, prng.unsafe_rbg_prng_impl)
-        jax.random.PRNGKey = rbg_prng_key
-        jax._src.random.PRNGKey = rbg_prng_key  # pylint: disable=protected-access
+        def rbg_key(seed: int):
+            return prng.seed_with_impl(prng.rbg_prng_impl, seed)
+
+        jax.random.PRNGKey = rbg_key
+        jax._src.random.PRNGKey = rbg_key  # pylint: disable=protected-access
     else:
         if jax.random.PRNGKey is not _orig_PRNGkey:
             jax.random.PRNGKey = _orig_PRNGkey
