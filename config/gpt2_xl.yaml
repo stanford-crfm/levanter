@@ -4,7 +4,6 @@ data:
   validation_urls:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
-dtype: bfloat16
 model:
   hidden_dim: 1600
   num_heads: 25
@@ -12,6 +11,7 @@ model:
   seq_len: 1024
   gradient_checkpointing: true
 trainer:
+  mp: p=f32,c=bfloat16
   learning_rate: 1E-4
   model_axis_size: 2
   per_device_train_batch_size: 1

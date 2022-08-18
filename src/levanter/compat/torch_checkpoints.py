@@ -5,6 +5,7 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jmp
 import numpy as onp
 import torch
 from huggingface_hub import cached_download, hf_hub_url
@@ -73,7 +74,7 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
+def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, mp: jmp.Policy = jmp.get_policy("f32")):
     config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
@@ -81,7 +82,7 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
     vocab = Axis("vocab", config.vocab_size)
     lev_config = hf_gpt2_config_to_levanter(config)
     key = PRNGKey(0)
-    model = Gpt2LMHeadModel(vocab, lev_config, key=key)
+    model = Gpt2LMHeadModel(vocab, lev_config, key=key, mp=mp)
 
     try:
         model = use_torch_weights(model, checkpoint)

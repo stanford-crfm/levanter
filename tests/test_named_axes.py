@@ -33,7 +33,7 @@ def test_infer_named_axes():
 
     axes: MyModule = infer_resource_partitions(mod, resource_map)
 
-    assert axes.named == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
+    assert axes.named.array == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
     assert axes.unnamed1 is None
 
 
