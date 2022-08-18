@@ -49,8 +49,6 @@ class TrainGpt2Config:
     run_base_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
 
-    dtype: jnp.dtype = jnp.float32
-
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
@@ -79,6 +77,7 @@ def main(config: TrainGpt2Config):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
+        mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         resource_partitions = {
@@ -89,12 +88,12 @@ def main(config: TrainGpt2Config):
 
         # initialize the model
         vocab = Axis("vocab", len(tokenizer))
-        model = Gpt2LMHeadModel(vocab, config.model, key=model_key)
+        model = Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)
 
         model_resources = infer_resource_partitions(model, resource_partitions)
 
         # convert to appropriate dtype
-        model = jax.tree_map(lambda array: array.astype(config.dtype), model)
+        model = config.trainer.mp.cast_to_param(model)
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
@@ -102,6 +101,8 @@ def main(config: TrainGpt2Config):
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
             pred_y = model(input_ids, key)
+            pred_y = mp.cast_to_output(pred_y)
+
             token_loss = jnp.mean(
                 optax.softmax_cross_entropy(
                     pred_y[:-1],
