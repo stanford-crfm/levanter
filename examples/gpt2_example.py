@@ -196,6 +196,7 @@ def main(config: TrainGpt2Config):
             resume_step = 0
 
         # input_ids and keys are [microsteps, batch_axis, microbatch_size, ...]
+
         def train_step(model, opt_state, input_ids, keys):
             loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
             updates, opt_state = optim.update(grads, opt_state, params=model)
