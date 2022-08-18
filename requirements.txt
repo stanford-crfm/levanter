@@ -10,3 +10,4 @@ datasets
 fsspec
 gcsfs
 braceexpand
+git+https://github.com/deepmind/jmp#260e5ba01f46b10c579a61393e6c7e546aeae93e

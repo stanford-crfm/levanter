@@ -1,11 +1,11 @@
 data:
   id: dlwh/wikitext_103_detokenized
-dtype: bfloat16
 model:
   hidden_dim: 128
   num_heads: 8
   num_layers: 4
 trainer:
+  mp: p=f32,c=bfloat16
   num_train_steps: 100
   per_device_eval_batch_size: 1
   per_device_train_batch_size: 1

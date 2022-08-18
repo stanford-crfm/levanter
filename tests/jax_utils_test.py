@@ -2,6 +2,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import jmp
 
 import levanter.jax_utils as jax_utils
 from haliax import Axis
@@ -98,7 +99,8 @@ def test_backward_shape_sigmoid():
 
 
 def test_backward_shape_mlp_relu():
-    mlp = Gpt2Mlp(Axis("q", 5), Axis("z", 3), activation_fn="relu", key=jrandom.PRNGKey(0))
+    policy = jmp.get_policy("f32")
+    mlp = Gpt2Mlp(Axis("q", 5), Axis("z", 3), activation_fn="relu", key=jrandom.PRNGKey(0), mp=policy)
 
     # graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((5,)))
     graph_size_mlp = jax_utils.backward_graph_size(mlp, jnp.ones((5,)))

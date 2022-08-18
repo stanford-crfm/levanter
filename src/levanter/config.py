@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
+import jmp
 import numpy as np
 import optax
 import pyrallis
@@ -63,6 +64,7 @@ class WandbConfig:
 @dataclass
 class TrainerConfig:
     seed: int = 0
+    mp: jmp.Policy = jmp.get_policy("f32")
 
     # Config related to batch sizes
     model_axis_size: int = 1  # how many devices to shard each model over
@@ -202,6 +204,14 @@ def register_codecs():
     pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
     pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
+
+    def policy_encode(policy: jmp.Policy):
+        out = f"compute={policy.compute_dtype.name},param={policy.param_dtype.name},output={policy.output_dtype.name}"
+        assert jmp.get_policy(out) == policy
+        return out
+
+    pyrallis.decode.register(jmp.Policy, lambda policy_str: jmp.get_policy(policy_str))
+    pyrallis.encode.register(jmp.Policy, policy_encode)
 
 
 register_codecs()
