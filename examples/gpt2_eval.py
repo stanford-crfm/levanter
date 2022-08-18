@@ -56,7 +56,7 @@ def main(config: EvalGpt2Config):
         }
 
         # initialize the model
-        model = Gpt2LMHeadModel(vocab, config.model, key=key)
+        model = Gpt2LMHeadModel(vocab, config.model, key=key, mp=config.trainer.mp)
         model_resources = infer_resource_partitions(model, resource_partitions)
         model = config.trainer.mp.cast_to_param(model)
 
@@ -99,6 +99,13 @@ def main(config: EvalGpt2Config):
         # load the huggingface model
         hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
         hf_model = config.trainer.mp.cast_to_param(hf_model)
+        model_resources = infer_resource_partitions(hf_model, resource_partitions)
+
+        compute_loss_pjit = pjit(
+            partial(mean_loss, key=None),
+            in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
+            out_axis_resources=None,
+        )
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
 
