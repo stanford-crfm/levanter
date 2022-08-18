@@ -38,7 +38,7 @@ def infer_resource_partitions(tree: PyTree, axis_resources: Dict[str, str]) -> P
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            return PartitionSpec(*tuple(axis_resources.get(axis.name, None) for axis in node.axes))
+            return NamedArray(PartitionSpec(*tuple(axis_resources.get(axis.name, None) for axis in node.axes)), node.axes)
         else:
             return None
 
