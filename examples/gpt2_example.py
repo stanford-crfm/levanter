@@ -13,7 +13,7 @@ from jax.interpreters.pxla import PartitionSpec
 import levanter.jax_utils
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, infer_resource_partitions
+from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -95,6 +95,7 @@ def main(config: TrainGpt2Config):
 
         # convert to appropriate dtype
         model = config.trainer.mp.cast_to_param(model)
+        model = pjit(lambda model: model, in_axis_resources=model_resources, out_axis_resources=model_resources)(model)
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
@@ -168,7 +169,8 @@ def main(config: TrainGpt2Config):
 
         # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
         # model and optimizer state
-        opt_state = optim.init(model)
+        opt_state_axes = eval_resource_partitions(optim.init, resource_partitions)(model)
+        opt_state = pjit(optim.init, in_axis_resources=(model_resources,), out_axis_resources=opt_state_axes)(model)
 
         # load the last checkpoint and resume if we want
         # TODO: need to seek in dataloader
@@ -205,7 +207,7 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        opt_state_axes = infer_resource_partitions(opt_state, resource_partitions)
+        # opt_state_axes = infer_resource_partitions(opt_state, resource_partitions)
 
         train_step = pjit(
             train_step,
