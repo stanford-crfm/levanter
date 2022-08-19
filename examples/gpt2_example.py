@@ -81,7 +81,8 @@ def main(config: TrainGpt2Config):
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         resource_partitions = {
-            "hidden": ResourceAxis.MODEL,
+            # ZERO-3
+            "hidden": ResourceAxis.DATA,
             # "mlp": ResourceAxis.MODEL,
             "batch": ResourceAxis.DATA,
         }
