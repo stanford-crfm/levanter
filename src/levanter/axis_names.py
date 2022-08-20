@@ -70,17 +70,23 @@ def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
         inst = cls(*args, **kwargs)
         return inst
 
-    # two passes, one using eval_shape and another that actually makes the class
-    @functools.wraps(cls.__new__)
-    def make(*args, **kwargs):
-        shapes = jax.eval_shape(init, *args, **kwargs)
-        out_resources = infer_resource_partitions(shapes, axis_resources)
+    return named_pjit(init, axis_resources, **pjit_args)
+
+
+def named_pjit(fn, axis_resources, **pjit_args):
+    """
+    Uses NamedArrays to infer the resource partitions for calling a function
+    """
+
+    @functools.wraps(fn)
+    def f(*args, **kwargs):
         in_resources = infer_resource_partitions((args, kwargs), axis_resources)
+        shapes = jax.eval_shape(fn, *args, **kwargs)
+        out_resources = infer_resource_partitions(shapes, axis_resources)
 
-        fn = pjit(lambda args, kwargs: init(*args, **kwargs), in_resources, out_resources, **pjit_args)
-        return fn(args, kwargs)
+        return pjit(lambda args, kwargs: fn(*args, **kwargs), in_resources, out_resources, **pjit_args)(args, kwargs)
 
-    return make
+    return f
 
 
 __all__ = [
