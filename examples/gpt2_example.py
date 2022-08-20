@@ -219,6 +219,7 @@ def main(config: TrainGpt2Config):
                 None,
             ),
             out_axis_resources=(None, model_resources, opt_state_axes),
+            donate_argnums=(0, 1),
         )
 
         train_mesh_info = config.trainer.train_mesh_info
