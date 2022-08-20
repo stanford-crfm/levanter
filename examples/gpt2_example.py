@@ -81,10 +81,13 @@ def main(config: TrainGpt2Config):
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         resource_partitions = {
-            # ZERO-3
-            "hidden": ResourceAxis.DATA,
-            # "mlp": ResourceAxis.MODEL,
             "batch": ResourceAxis.DATA,
+            # ZERO-3
+            # "hidden": ResourceAxis.DATA,
+            # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
+            "mlp": ResourceAxis.MODEL,
+            "qkv": ResourceAxis.MODEL,
+            "total_head_dim": ResourceAxis.MODEL,
         }
 
         # initialize the model
@@ -95,7 +98,9 @@ def main(config: TrainGpt2Config):
 
         # convert to appropriate dtype
         model = config.trainer.mp.cast_to_param(model)
-        model = pjit(lambda model: model, in_axis_resources=model_resources, out_axis_resources=model_resources)(model)
+        model = pjit(lambda model: model, in_axis_resources=(model_resources,), out_axis_resources=model_resources)(
+            model
+        )
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
