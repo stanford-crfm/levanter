@@ -13,7 +13,7 @@ from jax.interpreters.pxla import PartitionSpec
 import levanter.jax_utils
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions
+from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -90,17 +90,13 @@ def main(config: TrainGpt2Config):
             "total_head_dim": ResourceAxis.MODEL,
         }
 
-        # initialize the model
+        # initialize the model, and convert to appropriate dtype
         vocab = Axis("vocab", len(tokenizer))
-        model = Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)
+        model = named_pjit(
+            lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
+        )()
 
         model_resources = infer_resource_partitions(model, resource_partitions)
-
-        # convert to appropriate dtype
-        model = config.trainer.mp.cast_to_param(model)
-        model = pjit(lambda model: model, in_axis_resources=(model_resources,), out_axis_resources=model_resources)(
-            model
-        )
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
