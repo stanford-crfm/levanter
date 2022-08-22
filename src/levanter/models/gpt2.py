@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 import equinox as eqx
 import equinox.nn as nn
@@ -250,37 +250,50 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
 class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
     mp: jmp.Policy = eqx.static_field()
-    blocks: List[Gpt2Block]
+    blocks: Gpt2Block
     ln_f: nn.LayerNorm
+
+    layers: Axis = eqx.static_field()
 
     def __init__(self, config: Gpt2Config, *, key, mp: jmp.Policy):
         super().__init__()
         self.config = config
         self.mp = mp
 
-        self.blocks = [
-            Gpt2Block(config, layer_idx=i, key=k, mp=mp) for i, k in enumerate(jrandom.split(key, config.num_layers))
-        ]
+        self.layers = Axis("block", config.num_layers)
+
+        self.blocks = hax.vmap(lambda key, layer_idx: Gpt2Block(config, layer_idx, key=key, mp=mp), self.layers)(
+            jax_utils.shaped_rng_split(key, config.num_layers),
+            # hax.arange(self.layers)
+            jnp.arange(0, config.num_layers, dtype=mp.compute_dtype),
+        )
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
     # @eqx.filter_jit
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
-        keys = jax_utils.maybe_rng_split(key, len(self.blocks))
+        keys = jax_utils.maybe_rng_split(key, self.layers.size)
 
-        if not self.config.gradient_checkpointing:
-            for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
-                hidden_states = block(hidden_states, inference=inference, key=k_block)
-        else:
+        def do_block(states, block_key):
+            block, key = block_key
+            return block(states, inference=inference, key=key)
 
-            @jax.checkpoint
-            def do_block(block, states, *, key):
-                return block(states, inference=inference, key=key)
+        if self.config.gradient_checkpointing:
+            do_block = jax.checkpoint(do_block)
 
-            for block, k_block in zip(self.blocks, keys):
-                hidden_states = do_block(block, hidden_states, key=k_block)
-            # hidden_states = recursive_checkpoint(
-            #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
-            #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
+        hidden_states = hax.fold_left(do_block, self.layers, hidden_states, (self.blocks, keys))
+
+        # if not self.config.gradient_checkpointing:
+        #     for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
+        #         hidden_states = block(hidden_states, inference=inference, key=k_block)
+        # else:
+        #
+        #
+        #
+        #     for block, k_block in zip(self.blocks, keys):
+        #         hidden_states = do_block(block, hidden_states, key=k_block)
+        #     # hidden_states = recursive_checkpoint(
+        #     #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
+        #     #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
 
         hidden_states = jax.vmap(self.ln_f)(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
