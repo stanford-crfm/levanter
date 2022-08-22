@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple, TypeVar, Union
+from types import EllipsisType
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -66,6 +67,9 @@ class NamedArray:
                 return None
         else:
             return tuple(self.lookup_indices(a) for a in axis)
+
+    def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]):
+        return rearrange(self, axis)
 
     # np.ndarray methods:
     def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
@@ -369,6 +373,52 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
     )
 
     return NamedArray(output, output_axes)
+
+
+def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
+    """
+    Rearrange an array so that its underlying storage conforms to axes.
+    axes may include up to 1 ellipsis, indicating that the remaining axes should be
+    permuted in the same order as the array's axes.
+    """
+    if len(axes) == 0 and len(array.axes) != 0:
+        raise ValueError("No axes specified")
+
+    if len(axes) == 1 and axes[0] is Ellipsis:
+        return array
+
+    if axes.count(Ellipsis) > 1:
+        raise ValueError("Only one ellipsis allowed")
+
+    used_indices = [False] * len(array.axes)
+    permute_spec: List[Union[int, EllipsisType]] = []
+    for ax in axes:
+        if ax is Ellipsis:
+            permute_spec.append(Ellipsis)  # will revisit
+        else:
+            assert isinstance(ax, Axis)  # please mypy
+            index = array.lookup_indices(ax)
+            if index is None:
+                raise ValueError(f"Axis {ax} not found in {array}")
+            if used_indices[index]:
+                raise ValueError(f"Axis {ax} specified more than once")
+            used_indices[index] = True
+            permute_spec.append(index)
+
+    if not all(used_indices):
+        # find the ellipsis position, replace it with all the unused indices
+        try:
+            ellipsis_index = permute_spec.index(Ellipsis)
+        except ValueError:
+            missing_axes = [ax for i, ax in enumerate(array.axes) if not used_indices[i]]
+            raise ValueError(f"Axes {missing_axes} not found and no ... specified. Array axes: {array.axes}") from None
+
+        permute_spec[ellipsis_index : ellipsis_index + 1] = tuple(
+            i for i in range(len(array.axes)) if not used_indices[i]
+        )
+
+    out_axes = tuple(array.axes[i] for i in cast(List[int], permute_spec))
+    return NamedArray(jnp.transpose(array.array, permute_spec), out_axes)
 
 
 T = TypeVar("T")

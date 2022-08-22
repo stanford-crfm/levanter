@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
@@ -164,3 +165,35 @@ def test_cumsum_etc():
 
     assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Depth).array, jnp.cumprod(named1.array, axis=2)))
     assert hax.cumprod(named1, axis=Depth).axes == (Height, Width, Depth)
+
+
+def test_rearrange():
+    H = Axis("Height", 2)
+    W = Axis("Width", 3)
+    D = Axis("Depth", 4)
+    C = Axis("Channel", 5)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D, C))
+
+    assert jnp.all(jnp.equal(hax.rearrange(named1, (C, W, D, H)).array, jnp.transpose(named1.array, (3, 1, 2, 0))))
+    assert hax.rearrange(named1, (C, W, D, H)).axes == (C, W, D, H)
+
+    # test ellipsis
+    assert jnp.all(jnp.equal(hax.rearrange(named1, (C, ..., D)).array, jnp.transpose(named1.array, (3, 0, 1, 2))))
+
+    # test errors for double ellipsis
+    with pytest.raises(ValueError):
+        hax.rearrange(named1, (C, ..., ...))
+
+    # test errors for multiply specified axes
+    with pytest.raises(ValueError):
+        hax.rearrange(named1, (C, W, W, H))
+
+    # test errors for unknown axes
+    with pytest.raises(ValueError):
+        X = Axis("X", 6)
+        hax.rearrange(named1, (C, X, D, H))
+
+    # test for missing axes
+    with pytest.raises(ValueError):
+        hax.rearrange(named1, (C, W, D))
