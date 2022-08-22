@@ -49,7 +49,7 @@ def test_sharded_data_loading_model_axis_2():
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
-            assert batch.shape == dataset.batch_shape()
+            assert batch.shape == dataset.batch_shape
             # localized = pjit(
             #     lambda x: x,
             #     in_axis_resources=batch.mesh_axes,
@@ -87,7 +87,7 @@ def test_sharded_data_loading_model_axis_2_not_microbatched():
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
-            assert batch.shape == dataset.batch_shape()
+            assert batch.shape == dataset.batch_shape
             # localized = pjit(
             #     lambda x: x,
             #     in_axis_resources=batch.mesh_axes,
