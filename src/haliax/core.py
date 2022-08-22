@@ -387,6 +387,14 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
     if len(axes) == 1 and axes[0] is Ellipsis:
         return array
 
+    if len(axes) > len(array.axes):
+        raise ValueError("Too many axes specified")
+
+    if axes == array.axes:
+        return array
+
+    # TODO: add more fast paths?
+
     if axes.count(Ellipsis) > 1:
         raise ValueError("Only one ellipsis allowed")
 

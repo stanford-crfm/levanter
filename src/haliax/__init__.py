@@ -6,7 +6,7 @@ import numpy as np
 import haliax.random as random
 
 from .core import Axis, AxisSpec, NamedArray, dot, named, rearrange, take
-from .hof import scan
+from .hof import fold_left, scan
 from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
@@ -243,4 +243,5 @@ __all__ = [
     "cumprod",
     "cumproduct",
     "scan",
+    "fold_left",
 ]
