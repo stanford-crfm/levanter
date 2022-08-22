@@ -12,3 +12,9 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 line_length = 119
+
+[tool.mypy]
+python_version = "3.10"
+
+[tool.mypy-haliax.core]
+ignore_missing_imports = true
