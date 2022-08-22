@@ -1,4 +1,3 @@
-import functools
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -290,8 +289,13 @@ class Gpt2Transformer(eqx.Module):
             for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
                 hidden_states = block(hidden_states, inference=inference, key=k_block)
         else:
-            for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
-                hidden_states = jax.remat(functools.partial(block, inference=inference))(hidden_states, key=k_block)
+
+            @jax.checkpoint
+            def do_block(block, states, *, key):
+                return block(states, inference=inference, key=key)
+
+            for block, k_block in zip(self.blocks, key):
+                hidden_states = do_block(block, hidden_states, key=k_block)
             # hidden_states = recursive_checkpoint(
             #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
             #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
