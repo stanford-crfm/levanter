@@ -276,7 +276,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             def do_block(block, states, *, key):
                 return block(states, inference=inference, key=key)
 
-            for block, k_block in zip(self.blocks, key):
+            for block, k_block in zip(self.blocks, keys):
                 hidden_states = do_block(block, hidden_states, key=k_block)
             # hidden_states = recursive_checkpoint(
             #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
