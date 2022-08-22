@@ -6,7 +6,7 @@ import numpy as np
 import haliax.random as random
 
 from .core import Axis, AxisSpec, NamedArray, dot, named, rearrange, take
-from .hof import fold_left, scan
+from .hof import fold_left, scan, vmap
 from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
@@ -46,6 +46,10 @@ def ones_like(a: NamedArray, dtype=None) -> NamedArray:
 def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to `fill_value`"""
     return NamedArray(jnp.full_like(a.array, fill_value, dtype=dtype), a.axes)
+
+
+def arange(axis: Axis, dtype=None) -> NamedArray:
+    return NamedArray(jnp.arange(axis.size, dtype=dtype), (axis,))
 
 
 # splitting and stacking etc
@@ -166,6 +170,7 @@ __all__ = [
     "zeros_like",
     "ones_like",
     "full_like",
+    "arange",
     "random",
     "abs",
     "absolute",
@@ -244,4 +249,5 @@ __all__ = [
     "cumproduct",
     "scan",
     "fold_left",
+    "vmap",
 ]
