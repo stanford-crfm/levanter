@@ -1,5 +1,6 @@
+from functools import reduce
 from pathlib import Path
-from typing import Callable, Optional, Sequence, TypeVar, Union
+from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -9,6 +10,8 @@ from equinox.custom_types import PyTree
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
+from jax.experimental.global_device_array import GlobalDeviceArray
+from jax.interpreters.pxla import PartitionSpec
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
@@ -134,3 +137,37 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
 
 def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
     return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
+
+
+def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
+    """
+    Create a global array with the given key. This ensures that:
+    * individual keys at positions are unique
+    * the same key is made for the same position in all devices that have that position
+    """
+
+    # add key shape to global_shape and pad out axes
+    orig_global_shape = global_shape
+    global_shape = global_shape + key.shape
+    mesh_axes = list(mesh_axes) + [None] * (len(global_shape) - len(mesh_axes))
+    mesh_axes = PartitionSpec(*mesh_axes)
+
+    assert len(global_shape) == len(mesh_axes)
+
+    def data_callback(index: Tuple[slice, ...]):
+        # we take advantage of the fact that the start indices are non-overlapping across machines (except
+        # when they're identical) so we can use the index to make the keys unique
+        indices = [s.indices(x) for s, x in zip(index, global_shape)]
+        starts = [i[0] for i in indices]
+        base_key = reduce(jrandom.fold_in, (s for s in starts), key)
+
+        assert all(i[2] == 1 for i in indices)
+        lens = [i[1] - i[0] for i in indices]
+        return shaped_rng_split(base_key, lens[0 : len(orig_global_shape)])
+
+    return GlobalDeviceArray.from_callback(
+        global_shape=global_shape,
+        global_mesh=global_mesh,
+        mesh_axes=mesh_axes,
+        data_callback=data_callback,
+    )
