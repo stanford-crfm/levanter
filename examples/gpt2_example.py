@@ -100,7 +100,7 @@ def main(config: TrainGpt2Config):
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
-            pred_y = model(input_ids, key)
+            pred_y = model(input_ids, inference=key is None, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
             token_loss = jnp.mean(
