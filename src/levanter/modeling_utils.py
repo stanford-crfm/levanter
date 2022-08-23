@@ -81,7 +81,7 @@ def _UNSPECIFIED():
 
 
 def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
-    if f is _UNSPECIFIED():
+    if f is _UNSPECIFIED:
         return lambda f: named_call(f, name)  # type: ignore
     else:
         if name is None:
