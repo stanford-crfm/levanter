@@ -25,7 +25,7 @@ from levanter.compat.torch_serialization import (
     torch_to_jax,
     update_torch_dict_with_jax_tree,
 )
-from levanter.modeling_utils import ACT2FN
+from levanter.modeling_utils import ACT2FN, named_call
 from levanter.nn.linear import NamedLinear
 
 
@@ -70,9 +70,10 @@ class Gpt2Mlp(eqx.Module):
         self.c_proj = NamedLinear(out_axis=hidden, in_axis=intermediate, key=k_proj, mp=mp)
         self.act = ACT2FN[activation_fn]  # type: ignore
 
+    @named_call
     def __call__(self, hidden_states):
         hidden_states = self.c_fc(hidden_states)
-        hidden_states = self.act(hidden_states)
+        hidden_states = jax.named_call(self.act, "act")(hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
 
@@ -122,6 +123,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
     # @eqx.filter_jit
+    @named_call
     def __call__(self, hidden_states: Array, layer_idx, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
@@ -229,6 +231,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         )
 
     # @eqx.filter_jit
+    @named_call
     def __call__(self, hidden_states: Array, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
@@ -272,6 +275,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
     # @eqx.filter_jit
+    @named_call
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
         keys = jax_utils.maybe_rng_split(key, self.layers.size)
 
@@ -422,6 +426,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         else:
             self.token_out_embeddings = hax.random.normal(key=k_out, shape=(vocab, embed)) * initializer_range
 
+    @named_call
     def embed(self, input_ids, inference, *, key):
         # TODO: select
         # input_embeds = self.token_embeddings.select(self.vocab, input_ids)
