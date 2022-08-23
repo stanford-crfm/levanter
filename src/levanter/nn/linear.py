@@ -1,6 +1,7 @@
 from typing import List, Optional
 
 import equinox as eqx
+import jax
 import jmp
 
 import haliax as hax
@@ -33,7 +34,7 @@ class NamedLinear(eqx.Module):
         # out = inputs.dot(self.in_axis, self.weight)
 
         kernel = self.weight.array
-        q = inputs @ kernel
+        q = jax.lax.dot(inputs, kernel, preferred_element_type=self.mp.compute_dtype)
         q = self.mp.cast_to_compute(q)
 
         if self.bias is not None:
