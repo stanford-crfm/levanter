@@ -16,7 +16,15 @@ import haliax as hax
 import levanter.nn as pnn
 from haliax import Axis, NamedArray
 from levanter import jax_utils
-from levanter.compat.torch_serialization import TorchSerializationMixin
+from levanter.compat.torch_serialization import (
+    StateDict,
+    TorchSerializationMixin,
+    apply_prefix,
+    eqx_module_from_torch_dict,
+    jax_to_torch,
+    torch_to_jax,
+    update_torch_dict_with_jax_tree,
+)
 from levanter.modeling_utils import ACT2FN
 from levanter.nn.linear import NamedLinear
 
@@ -73,7 +81,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     causal: bool = eqx.static_field()
     head_dim: Axis = eqx.static_field()
     num_heads: int = eqx.static_field()
-    idx: int = eqx.static_field()
     scale_by_inverse_layer_idx: bool = eqx.static_field()
     mp: jmp.Policy = eqx.static_field()
 
@@ -91,7 +98,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         num_heads: int,
         head_dim: Axis,
         dropout_prob: float,
-        idx: int,
         scale_by_inverse_layer_idx: bool,
         *,
         key,
@@ -101,7 +107,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.causal = causal
         self.num_heads = num_heads
         self.head_dim = head_dim
-        self.idx = idx
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.mp = mp
 
@@ -117,7 +122,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     # TODO: reorder_and_upcast_attn
     # TODO: scale_attn_by_inverse_layer_idx
     # @eqx.filter_jit
-    def __call__(self, hidden_states: Array, inference: bool = True, *, key):
+    def __call__(self, hidden_states: Array, layer_idx, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
 
@@ -135,7 +140,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         # mistral tweak
         scale = lax.rsqrt(float(value.shape[-1]))
         if self.scale_by_inverse_layer_idx:
-            scale /= self.idx + 1.0
+            scale /= layer_idx + 1.0
 
         #  I strongly suspect jax can fuse the next two ops so we don't need to do that mistral tweak
         # TODO: verify
@@ -188,7 +193,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: pnn.Dropout
 
-    def __init__(self, config: Gpt2Config, layer_idx, *, key, mp: jmp.Policy):
+    def __init__(self, config: Gpt2Config, *, key, mp: jmp.Policy):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         hidden = config.hidden
@@ -210,7 +215,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             key=k_attn,
             causal=True,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-            idx=layer_idx,
             mp=mp,
         )
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
@@ -225,13 +229,13 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         )
 
     # @eqx.filter_jit
-    def __call__(self, hidden_states: Array, inference=True, *, key):
+    def __call__(self, hidden_states: Array, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
         hidden_states = jax.vmap(self.ln_1)(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
-        attn_output = self.attn(hidden_states, inference=inference, key=k1)
+        attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = attn_output + residual
 
@@ -262,10 +266,8 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
         self.layers = Axis("block", config.num_layers)
 
-        self.blocks = hax.vmap(lambda key, layer_idx: Gpt2Block(config, layer_idx, key=key, mp=mp), self.layers)(
+        self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key, mp=mp), self.layers)(
             jax_utils.shaped_rng_split(key, config.num_layers),
-            # hax.arange(self.layers)
-            jnp.arange(0, config.num_layers, dtype=mp.compute_dtype),
         )
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
@@ -273,27 +275,30 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
         keys = jax_utils.maybe_rng_split(key, self.layers.size)
 
-        def do_block(states, block_key):
-            block, key = block_key
-            return block(states, inference=inference, key=key)
+        if inference:
 
-        if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block)
+            def do_block(states, block_and_layer):
+                block, layer_idx = block_and_layer
+                return block(states, inference=inference, layer_idx=layer_idx, key=None)
 
-        hidden_states = hax.fold_left(do_block, self.layers, hidden_states, (self.blocks, keys))
+            # unlikely we'll call grad with inference=True, but just in case
+            if self.config.gradient_checkpointing:
+                do_block = jax.checkpoint(do_block)
 
-        # if not self.config.gradient_checkpointing:
-        #     for block, k_block, i in zip(self.blocks, keys, range(len(self.blocks))):
-        #         hidden_states = block(hidden_states, inference=inference, key=k_block)
-        # else:
-        #
-        #
-        #
-        #     for block, k_block in zip(self.blocks, keys):
-        #         hidden_states = do_block(block, hidden_states, key=k_block)
-        #     # hidden_states = recursive_checkpoint(
-        #     #     [ functools.partial(block, inference=inference, key=k_block) for block, k_block in zip(self.blocks, keys)],
-        #     #     threshold=self.config.gradient_checkpointing_block_size)(hidden_states)
+            hidden_states = hax.fold_left(do_block, self.layers, hidden_states, (self.blocks, jnp.arange(self.layers)))
+        else:
+
+            def do_block_train(states, block_layer_idx_key):
+                block: Gpt2Block
+                block, layer_idx, key = block_layer_idx_key
+                return block(states, inference=inference, layer_idx=layer_idx, key=key)
+
+            if self.config.gradient_checkpointing:
+                do_block_train = jax.checkpoint(do_block_train)
+
+            hidden_states = hax.fold_left(
+                do_block_train, self.layers, hidden_states, (self.blocks, hax.arange(self.layers), keys)
+            )
 
         hidden_states = jax.vmap(self.ln_f)(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
@@ -302,6 +307,74 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
+
+    def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None):
+        # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
+        # whereas in torch we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
+        def vectorized_load(tree, torch_dict, pattern: Optional[str]):
+            if isinstance(tree, eqx.Module):
+                # TODO: should vectorized_load know how to deal with custom from_torch_dict?
+                # could solve by doing gross surgery on the state dict
+                if hasattr(tree, "key_map"):
+                    key_map = tree.key_map
+                else:
+                    key_map = {}
+
+                old_values, mod_state = tree.tree_flatten()
+                dyn_keys = mod_state[0]
+
+                new_values = []
+                for k, old in zip(dyn_keys, old_values):
+                    k = key_map.get(k, k)
+                    new_values.append(vectorized_load(old, torch_dict, apply_prefix(pattern, k)))
+
+                return tree.tree_unflatten(mod_state, new_values)
+            elif isinstance(tree, NamedArray):
+                inner_array = vectorized_load(tree.array, torch_dict, pattern)
+                return NamedArray(inner_array, tree.axes)
+            else:
+                assert pattern is not None
+                my_tensors = [torch_to_jax(torch_dict[pattern.format(i)]) for i in range(self.config.num_layers)]
+                return jnp.stack(my_tensors, axis=0)
+
+        blocks = vectorized_load(self.blocks, torch_dict, apply_prefix(prefix, "h.{}"))
+        ln_f = eqx_module_from_torch_dict(self.ln_f, torch_dict, apply_prefix(prefix, "ln_f"))
+        mod = eqx.tree_at(lambda x: (x.blocks, x.ln_f), self, replace=(blocks, ln_f))
+
+        return mod
+
+    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        import torch
+
+        # this method is also a bit of a pain for the same reasons
+        def devectorized_save(tree, torch_dict, pattern: Optional[str]):
+            if isinstance(tree, eqx.Module):
+                # TODO: should vectorized_load know how to deal with custom from_torch_dict?
+                # could solve by doing gross surgery on the state dict
+                if hasattr(tree, "key_map"):
+                    key_map = tree.key_map
+                else:
+                    key_map = {}
+
+                values, mod_state = tree.tree_flatten()
+                dyn_keys = mod_state[0]
+
+                for k, value in zip(dyn_keys, values):
+                    k = key_map.get(k, k)
+                    devectorized_save(value, torch_dict, apply_prefix(pattern, k))
+            elif isinstance(tree, NamedArray):
+                devectorized_save(tree.array, torch_dict, pattern)
+            else:
+                assert pattern is not None
+                torch_tensors = torch.unbind(jax_to_torch(tree))
+                assert len(torch_tensors) == self.config.num_layers
+                for i in range(self.config.num_layers):
+                    torch_dict[pattern.format(i)] = torch_tensors[i]
+
+        devectorized_save(self.blocks, torch_dict, apply_prefix(prefix, "h.{}"))
+        update_torch_dict_with_jax_tree(self.ln_f, torch_dict, apply_prefix(prefix, "ln_f"))
+
+        return torch_dict
 
 
 class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):

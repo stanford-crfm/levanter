@@ -65,7 +65,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     def compute(input):
-        return jax.nn.softmax(model(input, key=None), axis=-1)
+        return jax.nn.softmax(model(input, inference=True, key=None), axis=-1)
 
     compute = jax.jit(compute)
     jax_out = compute(input[0])

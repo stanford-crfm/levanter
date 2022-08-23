@@ -384,9 +384,6 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
     if len(axes) == 0 and len(array.axes) != 0:
         raise ValueError("No axes specified")
 
-    if len(axes) > len(array.axes):
-        raise ValueError("Too many axes specified")
-
     # various fast paths
     if len(axes) == 1 and axes[0] is Ellipsis:
         return array
