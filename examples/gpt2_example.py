@@ -12,7 +12,7 @@ from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions, named_pjit
+from levanter.axis_names import ResourceAxis, eval_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -30,7 +30,7 @@ from transformers import GPT2Tokenizer
 import wandb
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig, WandbConfig
-from levanter.jax_utils import flops_estimate, global_key_array, parameter_count
+from levanter.jax_utils import global_key_array, parameter_count
 from levanter.modeling_utils import accumulate_gradients
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
@@ -82,7 +82,7 @@ def main(config: TrainGpt2Config):
         resource_partitions = {
             "batch": ResourceAxis.DATA,
             # ZERO-3
-            #"hidden": ResourceAxis.DATA,
+            # "hidden": ResourceAxis.DATA,
             # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
@@ -91,11 +91,12 @@ def main(config: TrainGpt2Config):
 
         # initialize the model, and convert to appropriate dtype
         vocab = Axis("vocab", len(tokenizer))
-        model_resources = eval_resource_partitions(lambda: Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp), resource_partitions)()
+        model_resources = eval_resource_partitions(
+            lambda: Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp), resource_partitions
+        )()
         model = named_pjit(
             lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
         )()
-
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
@@ -128,16 +129,15 @@ def main(config: TrainGpt2Config):
         # boilerplate hooks and such
         engine = TrainerHooks()
 
-        wandb.config["parameter_count"] = parameter_count(model)
         wandb.summary["parameter_count"] = parameter_count(model)
 
-        #flops = flops_estimate(
+        # flops = flops_estimate(
         #    compute_loss_and_grad,
         #    model,
         #    jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
         #    None,
-        #)
-        #wandb.summary["flops_per_example"] = flops
+        # )
+        # wandb.summary["flops_per_example"] = flops
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
@@ -145,7 +145,7 @@ def main(config: TrainGpt2Config):
             log_performance_stats(
                 config.model.seq_len,
                 config.trainer.train_batch_size,
-                #flops_per_example=flops,
+                # flops_per_example=flops,
             ),
             every=1,
         )
@@ -201,8 +201,10 @@ def main(config: TrainGpt2Config):
         # input_ids and keys are [microsteps, microbatch_size, ...]
         def train_step(model, opt_state, input_ids, keys):
             loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
-            updates, opt_state = optim.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
+
+            with jax.named_scope("optimizer"):
+                updates, opt_state = optim.update(grads, opt_state, params=model)
+                model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
 
