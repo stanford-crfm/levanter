@@ -476,6 +476,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
     def __call__(self, input_ids, *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
+
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
         hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
         hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
