@@ -82,7 +82,7 @@ def main(config: TrainGpt2Config):
         resource_partitions = {
             "batch": ResourceAxis.DATA,
             # ZERO-3
-            # "hidden": ResourceAxis.DATA,
+            #"hidden": ResourceAxis.DATA,
             # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
@@ -91,14 +91,11 @@ def main(config: TrainGpt2Config):
 
         # initialize the model, and convert to appropriate dtype
         vocab = Axis("vocab", len(tokenizer))
+        model_resources = eval_resource_partitions(lambda: Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp), resource_partitions)()
         model = named_pjit(
             lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
         )()
 
-        model_resources = infer_resource_partitions(model, resource_partitions)
-
-        # initialize the optimizer
-        optim = config.trainer.optimizer()
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
@@ -134,13 +131,13 @@ def main(config: TrainGpt2Config):
         wandb.config["parameter_count"] = parameter_count(model)
         wandb.summary["parameter_count"] = parameter_count(model)
 
-        flops = flops_estimate(
-            compute_loss_and_grad,
-            model,
-            jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
-            None,
-        )
-        wandb.summary["flops_per_example"] = flops
+        #flops = flops_estimate(
+        #    compute_loss_and_grad,
+        #    model,
+        #    jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
+        #    None,
+        #)
+        #wandb.summary["flops_per_example"] = flops
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
@@ -148,7 +145,7 @@ def main(config: TrainGpt2Config):
             log_performance_stats(
                 config.model.seq_len,
                 config.trainer.train_batch_size,
-                flops_per_example=flops,
+                #flops_per_example=flops,
             ),
             every=1,
         )
@@ -169,6 +166,7 @@ def main(config: TrainGpt2Config):
 
         # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
         # model and optimizer state
+        optim = config.trainer.optimizer()
         opt_state_resources = eval_resource_partitions(optim.init, resource_partitions)(model)
         opt_state = pjit(optim.init, in_axis_resources=(model_resources,), out_axis_resources=opt_state_resources)(
             model
