@@ -17,12 +17,13 @@ def save_model(run_dir, prepare_fn=None):
         # TODO: when we do model sharding we have to do something cleverer
         # it's actually pretty easy to save the model and the optimizer state
         # and enable resuming
-        save_checkpoint(
-            model=prepare_fn(info.model),
-            training_state=((prepare_fn(info.opt_state)), info.next_key),
-            step=info.step,
-            checkpoint_path=f"{run_dir}/step-{info.step}",
-        )
+        if info.step != 0:
+            save_checkpoint(
+                model=prepare_fn(info.model),
+                training_state=((prepare_fn(info.opt_state)), info.next_key),
+                step=info.step,
+                checkpoint_path=f"{run_dir}/step-{info.step}",
+            )
 
     return save
 
