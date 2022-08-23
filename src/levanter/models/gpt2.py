@@ -285,7 +285,9 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             if self.config.gradient_checkpointing:
                 do_block = jax.checkpoint(do_block)
 
-            hidden_states = hax.fold_left(do_block, self.layers, hidden_states, (self.blocks, jnp.arange(self.layers)))
+            hidden_states = hax.fold_left(
+                do_block, self.layers, hidden_states, (self.blocks, jnp.arange(self.layers.size))
+            )
         else:
 
             def do_block_train(states, block_layer_idx_key):
@@ -297,7 +299,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
                 do_block_train = jax.checkpoint(do_block_train)
 
             hidden_states = hax.fold_left(
-                do_block_train, self.layers, hidden_states, (self.blocks, hax.arange(self.layers), keys)
+                do_block_train, self.layers, hidden_states, (self.blocks, jnp.arange(self.layers.size), keys)
             )
 
         hidden_states = jax.vmap(self.ln_f)(hidden_states)
@@ -349,8 +351,8 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         # this method is also a bit of a pain for the same reasons
         def devectorized_save(tree, torch_dict, pattern: Optional[str]):
             if isinstance(tree, eqx.Module):
-                # TODO: should vectorized_load know how to deal with custom from_torch_dict?
-                # could solve by doing gross surgery on the state dict
+                # TODO: should devectorized_save know how to deal with custom to_torch_dict?
+                # could solve by doing gross surgery on the returned dicts?
                 if hasattr(tree, "key_map"):
                     key_map = tree.key_map
                 else:
