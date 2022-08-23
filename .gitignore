@@ -136,3 +136,10 @@ dmypy.json
 
 # Wandb stuff
 /wandb
+
+# dataset cache files
+*.parquet
+ledger.json
+
+/checkpoints
+*.jaxpr
