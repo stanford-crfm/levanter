@@ -25,7 +25,8 @@ from levanter.compat.torch_serialization import (
     torch_to_jax,
     update_torch_dict_with_jax_tree,
 )
-from levanter.modeling_utils import ACT2FN, named_call
+from levanter.jax_utils import named_call
+from levanter.modeling_utils import ACT2FN
 from levanter.nn.linear import NamedLinear
 
 
@@ -158,10 +159,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
             attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
             attn_weights = self.mp.cast_to_compute(attn_weights)
-            # causal_mask = causal_mask.astype(jnp.bfloat16)
-            # mask = jnp.broadcast_to(attention_mask, w.shape)
-            # w = jnp.where(mask > 0, w, -1E9)
-            # attn_weights = attn_weights + attention_mask
 
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)

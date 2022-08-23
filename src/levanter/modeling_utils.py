@@ -1,12 +1,12 @@
 import functools
 from functools import partial
-from typing import Callable, Optional, Tuple, TypeVar
+from typing import Callable, Tuple, TypeVar
 
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from levanter.jax_utils import fold_left
+from levanter.jax_utils import fold_left, named_call
 
 
 def quick_gelu(x):
@@ -41,20 +41,14 @@ X = TypeVar("X")
 
 
 # TODO: running mean?
+@named_call
 def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs: X) -> Tuple[float, M]:
-    zero = (jnp.zeros(()), jax.tree_map(lambda m: jnp.zeros_like(m, dtype=jnp.bfloat16), model), 0)
+    zero = (jnp.zeros(()), jax.tree_map(lambda m: jnp.zeros_like(m), model), 0)
 
     def compute_and_accumulate(acc, *input):
         loss, grad = f(model, *input)
         acc_loss, acc_grad, n = acc
-
-        # TODO: verify if we still need this now that we have scan working again
-        # in place to preserve ram
-        def add(x, y):
-            x += y.astype(x.dtype)
-            return x
-
-        return loss + acc_loss, jax.tree_map(add, acc_grad, grad), n + 1
+        return loss + acc_loss, jax.tree_map(jnp.add, acc_grad, grad), n + 1
 
     total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, *inputs)
 
@@ -74,24 +68,3 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
-
-
-def _UNSPECIFIED():
-    raise ValueError("unspecified")
-
-
-def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
-    if f is _UNSPECIFIED:
-        return lambda f: named_call(f, name)  # type: ignore
-    else:
-        if name is None:
-            name = f.__name__
-            if name == "__call__":
-                if hasattr(f, "__self__"):
-                    name = f.__self__.__class__.__name__  # type: ignore
-                else:
-                    name = f.__qualname__.rsplit(".", maxsplit=1)[0]  # type: ignore
-            else:
-                name = f.__qualname__
-
-        return jax.named_scope(name)(f)
