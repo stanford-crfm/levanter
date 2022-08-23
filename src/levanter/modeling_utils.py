@@ -86,8 +86,11 @@ def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
     else:
         if name is None:
             name = f.__name__
-            if name == "__call__" and hasattr(f, "__self__"):
-                name = f.__self__.__class__.__name__  # type: ignore
+            if name == "__call__":
+                if hasattr(f, "__self__"):
+                    name = f.__self__.__class__.__name__  # type: ignore
+                else:
+                    name = f.__qualname__.rsplit(".", maxsplit=1)[0]  # type: ignore
             else:
                 name = f.__qualname__
 
