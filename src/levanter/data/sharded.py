@@ -59,11 +59,8 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
 
         it = loop_gen()
 
-        batch_shape = self.batch_shape()
-        if self.microbatched:
-            pspec = PartitionSpec(None, self.mesh_info.data_axis_name, None)
-        else:
-            pspec = PartitionSpec(self.mesh_info.data_axis_name, None)
+        batch_shape = self.batch_shape
+        pspec = self.partition_spec
 
         assert len(batch_shape) == len(pspec)
 
@@ -98,6 +95,15 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
                 callback,
             )
 
+    @property
+    def partition_spec(self):
+        if self.microbatched:
+            pspec = PartitionSpec(None, self.mesh_info.data_axis_name, None)
+        else:
+            pspec = PartitionSpec(self.mesh_info.data_axis_name, None)
+        return pspec
+
+    @property
     def batch_shape(self):
         if self.microbatched:
             return (

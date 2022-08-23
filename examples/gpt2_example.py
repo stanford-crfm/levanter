@@ -10,10 +10,9 @@ from jax import vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
-import levanter.jax_utils
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, infer_resource_partitions
+from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -31,7 +30,7 @@ from transformers import GPT2Tokenizer
 import wandb
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig, WandbConfig
-from levanter.jax_utils import parameter_count, shaped_rng_split
+from levanter.jax_utils import flops_estimate, global_key_array, parameter_count
 from levanter.modeling_utils import accumulate_gradients
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
@@ -81,19 +80,22 @@ def main(config: TrainGpt2Config):
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         resource_partitions = {
-            "hidden": ResourceAxis.MODEL,
-            # "mlp": ResourceAxis.MODEL,
             "batch": ResourceAxis.DATA,
+            # ZERO-3
+            # "hidden": ResourceAxis.DATA,
+            # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
+            "mlp": ResourceAxis.MODEL,
+            "qkv": ResourceAxis.MODEL,
+            "total_head_dim": ResourceAxis.MODEL,
         }
 
-        # initialize the model
+        # initialize the model, and convert to appropriate dtype
         vocab = Axis("vocab", len(tokenizer))
-        model = Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)
+        model = named_pjit(
+            lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
+        )()
 
         model_resources = infer_resource_partitions(model, resource_partitions)
-
-        # convert to appropriate dtype
-        model = config.trainer.mp.cast_to_param(model)
 
         # initialize the optimizer
         optim = config.trainer.optimizer()
@@ -132,13 +134,13 @@ def main(config: TrainGpt2Config):
         wandb.config["parameter_count"] = parameter_count(model)
         wandb.summary["parameter_count"] = parameter_count(model)
 
-        flops_estimate = levanter.jax_utils.flops_estimate(
-            mean_loss,
+        flops = flops_estimate(
+            compute_loss_and_grad,
             model,
             jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
             None,
         )
-        wandb.summary["flops_per_example"] = flops_estimate
+        wandb.summary["flops_per_example"] = flops
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(log_to_wandb, every=1)
@@ -146,7 +148,7 @@ def main(config: TrainGpt2Config):
             log_performance_stats(
                 config.model.seq_len,
                 config.trainer.train_batch_size,
-                flops_per_example=flops_estimate,
+                flops_per_example=flops,
             ),
             every=1,
         )
@@ -167,7 +169,10 @@ def main(config: TrainGpt2Config):
 
         # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
         # model and optimizer state
-        opt_state = optim.init(model)
+        opt_state_resources = eval_resource_partitions(optim.init, resource_partitions)(model)
+        opt_state = pjit(optim.init, in_axis_resources=(model_resources,), out_axis_resources=opt_state_resources)(
+            model
+        )
 
         # load the last checkpoint and resume if we want
         # TODO: need to seek in dataloader
@@ -195,8 +200,7 @@ def main(config: TrainGpt2Config):
         else:
             resume_step = 0
 
-        # input_ids and keys are [microsteps, batch_axis, microbatch_size, ...]
-
+        # input_ids and keys are [microsteps, microbatch_size, ...]
         def train_step(model, opt_state, input_ids, keys):
             loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
             updates, opt_state = optim.update(grads, opt_state, params=model)
@@ -204,17 +208,20 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        opt_state_axes = infer_resource_partitions(opt_state, resource_partitions)
+        # keys are sharded in the same way as input_ids
+        # TODO: maybe put keys in the data iterator?
+        data_resources = dataset.partition_spec
 
         train_step = pjit(
             train_step,
             in_axis_resources=(
                 model_resources,
-                opt_state_axes,
-                PartitionSpec(None, ResourceAxis.DATA, None),
-                None,
+                opt_state_resources,
+                data_resources,
+                data_resources,
             ),
-            out_axis_resources=(None, model_resources, opt_state_axes),
+            out_axis_resources=(None, model_resources, opt_state_resources),
+            donate_argnums=(0, 1),
         )
 
         train_mesh_info = config.trainer.train_mesh_info
@@ -225,14 +232,9 @@ def main(config: TrainGpt2Config):
 
             input_ids = next(iter_data)
 
-            # take just the examples for this rank
-            micro_keys = shaped_rng_split(
-                my_key,
-                (
-                    train_mesh_info.microbatches_per_step,
-                    # TODO: need to rethink per_device_parallelism here: should just scale data_axis_size
-                    train_mesh_info.microbatch_size,
-                ),
+            # split keys into microsteps, and one for each example *on this node*
+            micro_keys = global_key_array(
+                my_key, dataset.batch_shape[:-1], train_mesh_info.mesh, dataset.partition_spec[:-1]
             )
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
