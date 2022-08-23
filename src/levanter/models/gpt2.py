@@ -73,7 +73,7 @@ class Gpt2Mlp(eqx.Module):
     @named_call
     def __call__(self, hidden_states):
         hidden_states = self.c_fc(hidden_states)
-        hidden_states = jax.named_call(self.act, "act")(hidden_states)
+        hidden_states = jax.named_call(self.act, name="act")(hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
 
