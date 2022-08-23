@@ -5,7 +5,7 @@ import jmp
 
 import haliax as hax
 from haliax import Axis, NamedArray
-from levanter.modeling_utils import named_call
+from levanter.jax_utils import named_call
 
 
 class NamedLinear(eqx.Module):

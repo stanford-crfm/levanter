@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from equinox.custom_types import Array
 
-from levanter.modeling_utils import named_call
+from levanter.jax_utils import named_call
 
 
 class Dropout(eqx.Module):
