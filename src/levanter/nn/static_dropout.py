@@ -7,6 +7,8 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from equinox.custom_types import Array
 
+from levanter.modeling_utils import named_call
+
 
 class Dropout(eqx.Module):
     """Applies dropout."""
@@ -53,6 +55,7 @@ class Dropout(eqx.Module):
             return Dropout.do_dropout(x, self.p, key)
 
     # @jax.checkpoint
+    @named_call(name="dropout")
     @staticmethod
     def do_dropout(x: Array, p, key: "jax.random.PRNGKey" = None) -> Array:
         q = 1 - p

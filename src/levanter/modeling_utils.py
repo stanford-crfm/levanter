@@ -1,6 +1,6 @@
 import functools
 from functools import partial
-from typing import Callable, Tuple, TypeVar
+from typing import Callable, Optional, Tuple, TypeVar
 
 import jax
 import jax.nn as jnn
@@ -74,3 +74,21 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def _UNSPECIFIED():
+    raise ValueError("unspecified")
+
+
+def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
+    if f is _UNSPECIFIED():
+        return lambda f: named_call(f, name)  # type: ignore
+    else:
+        if name is None:
+            name = f.__name__
+            if name == "__call__" and hasattr(f, "__self__"):
+                name = f.__self__.__class__.__name__  # type: ignore
+            else:
+                name = f.__qualname__
+
+        return jax.named_scope(name)(f)

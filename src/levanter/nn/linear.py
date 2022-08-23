@@ -5,6 +5,7 @@ import jmp
 
 import haliax as hax
 from haliax import Axis, NamedArray
+from levanter.modeling_utils import named_call
 
 
 class NamedLinear(eqx.Module):
@@ -26,6 +27,7 @@ class NamedLinear(eqx.Module):
         self.out_axis = out_axis
         self.mp = mp
 
+    @named_call(name="linear")
     def __call__(self, inputs):
         # TODO: actually take and output named arrays
         # out = inputs.dot(self.in_axis, self.weight)
