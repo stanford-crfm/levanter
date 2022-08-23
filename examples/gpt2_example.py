@@ -91,10 +91,16 @@ def main(config: TrainGpt2Config):
 
         # initialize the model, and convert to appropriate dtype
         vocab = Axis("vocab", len(tokenizer))
-        model_resources = eval_resource_partitions(lambda: Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp), resource_partitions)()
-        model = named_pjit(
-            lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
-        )()
+
+        optim = config.trainer.optimizer()
+
+        def init_state():
+            model = mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp))
+            opt_state = optim.init(model)
+            return model, opt_state
+        model, opt_state  = named_pjit(init_state, resource_partitions)()
+        opt_state_resources = eval_resource_partitions(lambda x: x, resource_partitions)(opt_state)
+        model_resources = eval_resource_partitions(lambda x: x, resource_partitions)(model)
 
 
         # loss function
@@ -164,13 +170,6 @@ def main(config: TrainGpt2Config):
         # data loader
         iter_data = iter(dataset)
 
-        # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
-        # model and optimizer state
-        optim = config.trainer.optimizer()
-        opt_state_resources = eval_resource_partitions(optim.init, resource_partitions)(model)
-        opt_state = pjit(optim.init, in_axis_resources=(model_resources,), out_axis_resources=opt_state_resources)(
-            model
-        )
 
         # load the last checkpoint and resume if we want
         # TODO: need to seek in dataloader
