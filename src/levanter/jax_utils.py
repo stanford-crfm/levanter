@@ -9,6 +9,7 @@ from chex import PRNGKey
 from equinox.custom_types import PyTree
 from jax import lax
 from jax import numpy as jnp
+from jax import prng
 from jax import random as jrandom
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
@@ -114,7 +115,7 @@ def parameter_count(model: PyTree):
 
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
-    leaves = {id(x): x for x in jax.tree_leaves(model) if _is_param_leaf(x)}
+    leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if _is_param_leaf(x)}
     return sum(x.size for x in leaves.values())
 
 
@@ -135,8 +136,27 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
         f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 
-def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
-    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
+_orig_PRNGkey = jax.random.PRNGKey
+
+
+# based on https://github.com/google-research/t5x/blob/a4b8c1265d5639246ef230806c53f054f6b0bc0d/t5x/utils.py#L581-L591
+# apache license 2.0
+# also https://github.com/google/jax/issues/9274
+def set_hardware_rng_ops(enabled: bool = True):
+    """Enable JAX Custom PRNG extension."""
+    jax.config.update("jax_enable_custom_prng", enabled)
+    if enabled:
+        # Monkey-patch JAX PRNGKey to use unsafe_rbg_prng_impl
+        # TODO(levskaya): replace with jax global config option once we debug it.
+        def rbg_key(seed: int):
+            return prng.seed_with_impl(prng.rbg_prng_impl, seed)
+
+        jax.random.PRNGKey = rbg_key
+        jax._src.random.PRNGKey = rbg_key  # pylint: disable=protected-access
+    else:
+        if jax.random.PRNGKey is not _orig_PRNGkey:
+            jax.random.PRNGKey = _orig_PRNGkey
+            jax._src.random.PRNGKey = _orig_PRNGkey  # pylint: disable=protected-access
 
 
 def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
