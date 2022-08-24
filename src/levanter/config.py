@@ -94,7 +94,7 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     @cached_property
-    def device_mesh(self):
+    def device_mesh(self) -> Mesh:
         devices = jax.devices()
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))

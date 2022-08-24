@@ -71,7 +71,7 @@ def main(config: TrainGpt2Config):
         microbatched=False,
     )
 
-    with config.trainer.device_mesh:
+    with config.trainer.device_mesh as mesh:
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -83,14 +83,22 @@ def main(config: TrainGpt2Config):
             "batch": ResourceAxis.DATA,
             # ZERO-3
             #"hidden": ResourceAxis.DATA,
-            # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
+            "vocab": ResourceAxis.MODEL,
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
             "total_head_dim": ResourceAxis.MODEL,
         }
 
         # initialize the model, and convert to appropriate dtype
-        vocab = Axis("vocab", len(tokenizer))
+
+        # TODO: factor this out
+        vocab_size = len(tokenizer)
+        # round up so that we can shard it if it's sharded
+        vocab_resource_axis = resource_partitions.get("vocab")
+        if vocab_resource_axis:
+            vocab_axis_size = mesh.shape[vocab_resource_axis]
+            vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
+        vocab = Axis("vocab", vocab_size)
 
         optim = config.trainer.optimizer()
 
@@ -111,7 +119,7 @@ def main(config: TrainGpt2Config):
             token_loss = jnp.mean(
                 optax.softmax_cross_entropy(
                     pred_y[:-1],
-                    jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size),
+                    jax.nn.one_hot(input_ids[1:], num_classes=vocab.size),
                 )
             )
 
