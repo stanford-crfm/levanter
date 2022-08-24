@@ -51,6 +51,8 @@ class TrainGpt2Config:
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
+    config.trainer.initialize_jax_config()
+
     config.wandb.init(config)
     run_name = wandb.run.name or wandb.run.id
     run_dir = f"{config.run_base_dir}/{run_name}"
