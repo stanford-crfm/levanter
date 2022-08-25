@@ -12,7 +12,7 @@ from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, eval_resource_partitions, infer_resource_partitions, named_pjit
+from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -84,10 +84,11 @@ def main(config: TrainGpt2Config):
         resource_partitions = {
             "batch": ResourceAxis.DATA,
             # ZERO-3
-            #"hidden": ResourceAxis.DATA,
+            # "hidden": ResourceAxis.DATA,
             "vocab": ResourceAxis.MODEL,
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
+            "heads": ResourceAxis.MODEL,
             "total_head_dim": ResourceAxis.MODEL,
         }
 
@@ -109,8 +110,8 @@ def main(config: TrainGpt2Config):
             opt_state = optim.init(model)
             return model, opt_state
         model, opt_state  = named_pjit(init_state, resource_partitions)()
-        opt_state_resources = eval_resource_partitions(lambda x: x, resource_partitions)(opt_state)
-        model_resources = eval_resource_partitions(lambda x: x, resource_partitions)(model)
+        opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
+        model_resources = infer_resource_partitions(model, resource_partitions)
 
 
         # loss function
