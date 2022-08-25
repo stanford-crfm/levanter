@@ -58,7 +58,8 @@ def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
 
 
 def flops_estimate(fn, *args):
-    """Estimates the flop count of a function using XLA/HLO fanciness. See https://github.com/google/flax/discussions/1854"""
+    """Estimates the flop count of a function using XLA/HLO fanciness. See
+    https://github.com/google/flax/discussions/1854"""
     m = jax.xla_computation(fn)(*args).as_hlo_module()
     client = jax.lib.xla_bridge.get_backend()
     costs = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)
@@ -114,7 +115,7 @@ def parameter_count(model: PyTree):
 
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
-    leaves = {id(x): x for x in jax.tree_leaves(model) if _is_param_leaf(x)}
+    leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if _is_param_leaf(x)}
     return sum(x.size for x in leaves.values())
 
 
@@ -135,8 +136,16 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
         f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
 
 
-def get_nth_rank(pytree, rank=0, leaf_filter=eqx.is_inexact_array):
-    return jax.tree_map(lambda leaf: leaf[rank] if leaf_filter(leaf) else leaf, pytree)
+_orig_PRNGkey = jax.random.PRNGKey
+
+
+# TODO: maybe change config option to a string value
+def set_hardware_rng_ops(enabled: bool = True):
+    """Enable JAX Custom PRNG extension."""
+    if enabled:
+        jax.config.update("jax_default_prng_impl", "unsafe_rbg")
+    else:
+        jax.config.update("jax_default_prng_impl", "threefry2x32")
 
 
 def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):

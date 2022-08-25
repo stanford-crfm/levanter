@@ -79,7 +79,9 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         # but for pure-url based ones, shouldn't be hard.
         doc_iter = self.doc_iterator(split)
         group_size = self.train_group_size if split == "train" else self.val_group_size
-        token_iter = (tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, group_size))
+        token_iter = (
+            tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, group_size)
+        )
 
         num_shards = self.num_train_shards if split == "train" else self.num_val_shards
 
