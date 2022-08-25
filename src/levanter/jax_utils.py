@@ -139,24 +139,13 @@ def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
 _orig_PRNGkey = jax.random.PRNGKey
 
 
-# based on https://github.com/google-research/t5x/blob/a4b8c1265d5639246ef230806c53f054f6b0bc0d/t5x/utils.py#L581-L591
-# apache license 2.0
-# also https://github.com/google/jax/issues/9274
+# TODO: maybe change config option to a string value
 def set_hardware_rng_ops(enabled: bool = True):
     """Enable JAX Custom PRNG extension."""
-    jax.config.update("jax_enable_custom_prng", enabled)
     if enabled:
-        # Monkey-patch JAX PRNGKey to use unsafe_rbg_prng_impl
-        # TODO(levskaya): replace with jax global config option once we debug it.
-        def rbg_key(seed: int):
-            return prng.seed_with_impl(prng.rbg_prng_impl, seed)
-
-        jax.random.PRNGKey = rbg_key
-        jax._src.random.PRNGKey = rbg_key  # pylint: disable=protected-access
+        jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
     else:
-        if jax.random.PRNGKey is not _orig_PRNGkey:
-            jax.random.PRNGKey = _orig_PRNGkey
-            jax._src.random.PRNGKey = _orig_PRNGkey  # pylint: disable=protected-access
+        jax.config.update('jax_default_prng_impl', 'threefry2x32')
 
 
 def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
