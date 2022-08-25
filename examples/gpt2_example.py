@@ -84,7 +84,7 @@ def main(config: TrainGpt2Config):
         resource_partitions = {
             "batch": ResourceAxis.DATA,
             # ZERO-3
-            # "hidden": ResourceAxis.DATA,
+            # "embed": ResourceAxis.DATA,
             "vocab": ResourceAxis.MODEL,
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
