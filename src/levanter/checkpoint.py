@@ -105,6 +105,7 @@ def tree_serialise_leaves(
         def _serialise(spec, x):
             def __serialise(y):
                 spec(f, y)
+                return y
 
             jax.tree_map(__serialise, x, is_leaf=is_leaf)
 
@@ -127,8 +128,8 @@ def tree_deserialise_leaves(
             def __deserialise(y):
                 return spec(f, y)
 
-            return jax.tree_map(__deserialise, x, is_leaf=is_leaf)
+            return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
 
-        out = jax.tree_map(_deserialise, filter_spec, like)
-    jax.tree_map(_assert_same, out, like, is_leaf=is_leaf)
+        out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
+    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
     return out

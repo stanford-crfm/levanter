@@ -14,7 +14,7 @@ def save_model(run_dir, prepare_fn=None):
         prepare_fn = lambda x: x  # noqa F731
 
     def save(info: StepInfo):
-        # TODO: when we do model sharding we have to do something cleverer
+        # TODO: when we do multi-machine model sharding we should do something cleverer.
         # it's actually pretty easy to save the model and the optimizer state
         # and enable resuming
         if info.step != 0:

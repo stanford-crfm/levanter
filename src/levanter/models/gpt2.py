@@ -57,7 +57,7 @@ class Gpt2Config:
 
     @property
     def hidden(self) -> Axis:
-        return Axis(name="hidden", size=self.hidden_dim)
+        return Axis(name="embed", size=self.hidden_dim)
 
 
 class Gpt2Mlp(eqx.Module):

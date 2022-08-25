@@ -14,6 +14,9 @@ class Axis:
     name: str
     size: int
 
+    def alias(self, new_name: str):
+        return Axis(new_name, self.size)
+
 
 AxisSpec = Union[Axis, Sequence[Axis]]
 

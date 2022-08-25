@@ -12,7 +12,7 @@ from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, eval_resource_partitions, named_pjit
+from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
@@ -51,6 +51,8 @@ class TrainGpt2Config:
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
+    config.trainer.initialize_jax_config()
+
     config.wandb.init(config)
     run_name = wandb.run.name or wandb.run.id
     run_dir = f"{config.run_base_dir}/{run_name}"
@@ -71,7 +73,7 @@ def main(config: TrainGpt2Config):
         microbatched=False,
     )
 
-    with config.trainer.device_mesh:
+    with config.trainer.device_mesh as mesh:
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -82,21 +84,35 @@ def main(config: TrainGpt2Config):
         resource_partitions = {
             "batch": ResourceAxis.DATA,
             # ZERO-3
-            # "hidden": ResourceAxis.DATA,
-            # "vocab": ResourceAxis.MODEL, # TODO: pad vocab to multiple of model axis size
+            # "embed": ResourceAxis.DATA,
+            "vocab": ResourceAxis.MODEL,
             "mlp": ResourceAxis.MODEL,
             "qkv": ResourceAxis.MODEL,
+            "heads": ResourceAxis.MODEL,
             "total_head_dim": ResourceAxis.MODEL,
         }
 
         # initialize the model, and convert to appropriate dtype
-        vocab = Axis("vocab", len(tokenizer))
-        model_resources = eval_resource_partitions(
-            lambda: Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp), resource_partitions
-        )()
-        model = named_pjit(
-            lambda: mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp)), resource_partitions
-        )()
+
+        # TODO: factor this out
+        vocab_size = len(tokenizer)
+        # round up so that we can shard it if it's sharded
+        vocab_resource_axis = resource_partitions.get("vocab")
+        if vocab_resource_axis:
+            vocab_axis_size = mesh.shape[vocab_resource_axis]
+            vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
+        vocab = Axis("vocab", vocab_size)
+
+        optim = config.trainer.optimizer()
+
+        def init_state():
+            model = mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp))
+            opt_state = optim.init(model)
+            return model, opt_state
+
+        model, opt_state = named_pjit(init_state, resource_partitions)()
+        opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
+        model_resources = infer_resource_partitions(model, resource_partitions)
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
@@ -106,7 +122,7 @@ def main(config: TrainGpt2Config):
             token_loss = jnp.mean(
                 optax.softmax_cross_entropy(
                     pred_y[:-1],
-                    jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size),
+                    jax.nn.one_hot(input_ids[1:], num_classes=vocab.size),
                 )
             )
 
@@ -163,14 +179,6 @@ def main(config: TrainGpt2Config):
 
         # data loader
         iter_data = iter(dataset)
-
-        # as with most things jax, the optimizer is a function that takes a model and an optimizer state returns a new
-        # model and optimizer state
-        optim = config.trainer.optimizer()
-        opt_state_resources = eval_resource_partitions(optim.init, resource_partitions)(model)
-        opt_state = pjit(optim.init, in_axis_resources=(model_resources,), out_axis_resources=opt_state_resources)(
-            model
-        )
 
         # load the last checkpoint and resume if we want
         # TODO: need to seek in dataloader
