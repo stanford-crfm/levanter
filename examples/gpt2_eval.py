@@ -50,7 +50,7 @@ def main(config: EvalGpt2Config):
         )
 
         resource_partitions = {
-            "hidden": ResourceAxis.MODEL,
+            "embed": ResourceAxis.MODEL,
             # "mlp": ResourceAxis.MODEL,
             "batch": ResourceAxis.DATA,
         }
