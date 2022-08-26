@@ -9,7 +9,6 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
-from einops import rearrange
 from equinox.custom_types import Array
 
 import haliax as hax
@@ -56,7 +55,7 @@ class Gpt2Config:
         return Axis(name="seqlen", size=self.seq_len)
 
     @property
-    def hidden(self) -> Axis:
+    def embed(self) -> Axis:
         return Axis(name="embed", size=self.hidden_dim)
 
 
@@ -72,32 +71,33 @@ class Gpt2Mlp(eqx.Module):
         self.act = ACT2FN[activation_fn]  # type: ignore
 
     @named_call
-    def __call__(self, hidden_states):
+    def __call__(self, hidden_states: NamedArray):
         hidden_states = self.c_fc(hidden_states)
-        hidden_states = jax.named_call(self.act, name="act")(hidden_states)
+        hidden_states = jax.tree_util.tree_map(self.act, hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
 
 
 class Gpt2Attention(TorchSerializationMixin, eqx.Module):
-    causal: bool = eqx.static_field()
-    head_dim: Axis = eqx.static_field()
-    num_heads: int = eqx.static_field()
-    scale_by_inverse_layer_idx: bool = eqx.static_field()
-    mp: jmp.Policy = eqx.static_field()
-
     c_attn: NamedLinear
     c_proj: NamedLinear
     dropout: pnn.Dropout
 
-    @property
-    def total_head_dim(self):
-        return self.head_dim.size * self.num_heads
+    causal: bool = eqx.static_field()
+    seqlen: Axis = eqx.static_field()
+    head_dim: Axis = eqx.static_field()
+    heads: Axis = eqx.static_field()
+    qkv: Axis = eqx.static_field()
+    total_head_dim: Axis = eqx.static_field()
+
+    scale_by_inverse_layer_idx: bool = eqx.static_field()
+    mp: jmp.Policy = eqx.static_field()
 
     def __init__(
         self,
+        seqlen: Axis,
         in_dim: Axis,
-        num_heads: int,
+        heads: Axis,
         head_dim: Axis,
         dropout_prob: float,
         scale_by_inverse_layer_idx: bool,
@@ -107,81 +107,76 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         causal: bool = True,
     ):
         self.causal = causal
-        self.num_heads = num_heads
+        self.heads = heads
         self.head_dim = head_dim
+        # TODO: we only need this for hf checkpoint compat
+        self.seqlen = seqlen
+
+        self.total_head_dim = Axis("total_head_dim", self.head_dim.size * self.heads.size)
+        self.qkv = Axis("qkv", 3 * self.total_head_dim.size)
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.mp = mp
 
         k_c, k_proj = jrandom.split(key, 2)
 
-        qkv = hax.Axis(name="qkv", size=3 * self.total_head_dim)
-        total_head_dim = Axis(name="total_head_dim", size=self.total_head_dim)
-        self.c_attn = NamedLinear(out_axis=qkv, in_axis=in_dim, key=k_c, mp=mp)
-        self.c_proj = NamedLinear(out_axis=in_dim, in_axis=total_head_dim, key=k_proj, mp=mp)
+        # we could have this if we didn't need hf checkpoint compat
+        # self.c_attn = NamedLinear(out_axis=(self.qkv, self.heads, self.head_dim), in_axis=in_dim, key=k_c, mp=mp)
+        # self.c_proj = NamedLinear(out_axis=in_dim, in_axis=(self.heads, self.head_dim), key=k_proj, mp=mp)
+        self.c_attn = NamedLinear(out_axis=self.qkv, in_axis=in_dim, key=k_c, mp=mp)
+        self.c_proj = NamedLinear(out_axis=in_dim, in_axis=self.total_head_dim, key=k_proj, mp=mp)
         self.dropout = pnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
     # TODO: reorder_and_upcast_attn
-    # TODO: scale_attn_by_inverse_layer_idx
     # @eqx.filter_jit
     @named_call
-    def __call__(self, hidden_states: Array, layer_idx, inference: bool = True, *, key):
+    def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
 
         qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
-        # TODO(haliax): split for named
-        query, key, value = jnp.split(qkv_out, 3, axis=-1)  # [seq_len, embed_dim]
+        three = Axis("3", 3)
+        qkv_out = qkv_out.unflatten_axis(self.qkv, (three, self.heads, self.head_dim))
+        query, key, value = qkv_out.unbind(three)
 
-        query = self._split_heads(query)  # [seq_len, num_heads, head_dim]
-        key = self._split_heads(key)
-        value = self._split_heads(value)
-
-        # must use negative indexing to please the pmap gods
-        query_length, key_length = query.shape[-3], key.shape[-3]
+        key_seqlen = self.seqlen.alias("key_seqlen")
+        key = key.rename({self.seqlen: key_seqlen})
+        value = value.rename({self.seqlen: key_seqlen})
 
         # mistral tweak
-        scale = lax.rsqrt(float(value.shape[-1]))
+        scale = lax.rsqrt(float(self.head_dim.size))
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
         #  I strongly suspect jax can fuse the next two ops so we don't need to do that mistral tweak
         # TODO: verify
-        attn_weights = jnp.einsum("... n h d, ... m h d -> ... h n m", query, key)  # [heads, seq_len, seq_len]
+        attn_weights = hax.dot(self.head_dim, query, key)
+        # TODO(haliax): add elemwise ops to hax
+        attn_weights = hax.rearrange(attn_weights, (..., self.heads, self.seqlen, key_seqlen))
+        attn_axes = attn_weights.axes
+        attn_weights = attn_weights.array
         attn_weights = attn_weights * scale
 
-        attn_weights = self.mp.cast_to_compute(attn_weights)
-
         if self.causal:
-            seq_len = hidden_states.shape[-2]  # TODO(haliax): fix for named arrays
-            causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-            causal_mask = causal_mask[:query_length, :key_length]
+            causal_mask = jnp.tril(jnp.ones((self.seqlen.size, key_seqlen.size), dtype=jnp.bool_))
 
+            # TODO(haliax): add where ops to hax
             attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
-            attn_weights = self.mp.cast_to_compute(attn_weights)
 
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
+        attn_weights = self.mp.cast_to_compute(attn_weights)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
-        attn_output = jnp.einsum("... h n m, ... m h d -> ... n h d", attn_weights, value)  # [seq_len, head, head_dim]
+        attn_weights = NamedArray(attn_weights, attn_axes)
 
-        attn_output = self._merge_heads(attn_output)  # [seq_len, total_head_dim]
+        attn_output = hax.dot(key_seqlen, attn_weights, value)  # [heads, seq_len, head_dim]
+
+        attn_output = hax.flatten_axes(attn_output, (self.heads, self.head_dim), self.total_head_dim)
         attn_output = self.c_proj(attn_output)
 
         assert attn_output.dtype == self.mp.compute_dtype
 
         return attn_output
-
-    def _split_heads(
-        self, hidden_states: Array["seq_len", "embed_dim"]  # type: ignore
-    ) -> Array["seq_len", "num_heads", "head_dim"]:  # type: ignore # noqa F821 E501
-        return rearrange(hidden_states, "... n (h d) -> ... n h d", h=self.num_heads)
-
-    @staticmethod
-    def _merge_heads(
-        hidden_states: Array["seq_len", "num_heads", "head_dim"]  # type: ignore
-    ) -> Array["seq_len", "num_heads", "embed_dim"]:  # type: ignore # noqa F821 E501
-        return rearrange(hidden_states, "... n h d -> ... n (h d)")
 
 
 class Gpt2Block(TorchSerializationMixin, eqx.Module):
@@ -192,23 +187,30 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: pnn.Dropout
 
+    seqlen: Axis = eqx.static_field()
+    embed: Axis = eqx.static_field()
+
     def __init__(self, config: Gpt2Config, *, key, mp: jmp.Policy):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        hidden = config.hidden
-        inner_dim = Axis("mlp", 4 * hidden.size)
-        head_dim = Axis("head", hidden.size // config.num_heads)
+        embed = config.embed
+        self.embed = embed
+        self.seqlen = config.seqlen
+        inner_dim = Axis("mlp", 4 * embed.size)
+        heads = Axis("heads", config.num_heads)
+        head_dim = Axis("head", embed.size // config.num_heads)
 
         assert (
-            hidden.size % config.num_heads == 0
-        ), f"embed_dim={hidden} must be divisible by num_heads={config.num_heads}"
+            embed.size % config.num_heads == 0
+        ), f"embed_dim={embed} must be divisible by num_heads={config.num_heads}"
 
         self.mp = mp
 
-        self.ln_1 = nn.LayerNorm(hidden.size, eps=config.layer_norm_epsilon)
+        self.ln_1 = nn.LayerNorm(embed.size, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
-            hidden,
-            num_heads=config.num_heads,
+            seqlen=config.seqlen,
+            in_dim=embed,
+            heads=heads,
             head_dim=head_dim,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
@@ -217,10 +219,10 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             mp=mp,
         )
         self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
-        self.ln_2 = nn.LayerNorm(hidden.size, eps=config.layer_norm_epsilon)
+        self.ln_2 = nn.LayerNorm(embed.size, eps=config.layer_norm_epsilon)
 
         self.mlp = Gpt2Mlp(
-            hidden=hidden,
+            hidden=embed,
             intermediate=inner_dim,
             activation_fn=config.activation_function,
             key=k_mlp,
@@ -235,17 +237,19 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         residual = hidden_states
         hidden_states = jax.vmap(self.ln_1)(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
-        attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
-        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
-        hidden_states = attn_output + residual
+        h = NamedArray(hidden_states, (self.seqlen, self.embed))
+        attn_output = self.attn(h, inference=inference, layer_idx=layer_idx, key=k1)
+        dout = self.resid_dropout(attn_output.array, key=k2, inference=inference)
+        hidden_states = residual + dout
 
         residual = hidden_states
         hidden_states = jax.vmap(self.ln_2)(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
-        ff_output = self.mlp(hidden_states)
-        ff_output = self.resid_dropout(ff_output, inference=inference, key=k3)
+        h = NamedArray(hidden_states, (self.seqlen, self.embed))
+        ff_output = self.mlp(h)
+        dout = self.resid_dropout(ff_output.array, key=k3, inference=inference)
+        hidden_states = residual + dout
 
-        hidden_states = ff_output + residual
         assert attn_output.dtype == self.mp.compute_dtype
 
         return hidden_states
@@ -466,7 +470,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
         self.transformer = Gpt2Transformer(config, key=k_t, mp=mp)
         self.embeddings = Gpt2Embeddings(
             vocab=vocab,
-            embed=config.hidden,
+            embed=config.embed,
             seqlen=config.seqlen,
             initializer_range=config.initializer_range,
             tie_word_embeddings=True,
