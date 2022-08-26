@@ -1,16 +1,24 @@
-from typing import Sequence
-
 import jax.numpy as jnp
-import numpy as np
 
 import haliax.random as random
 
-from .core import Axis, AxisSpec, NamedArray, dot, named, rearrange, take
+from .core import (
+    Axis,
+    AxisSpec,
+    NamedArray,
+    concat_axis_specs,
+    dot,
+    flatten_axes,
+    named,
+    rearrange,
+    rename,
+    split,
+    take,
+    unbind,
+    unflatten_axis,
+)
 from .hof import fold_left, scan, vmap
 from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
-
-
-_sum = sum
 
 
 # creation routines
@@ -50,27 +58,6 @@ def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
 
 def arange(axis: Axis, dtype=None) -> NamedArray:
     return NamedArray(jnp.arange(axis.size, dtype=dtype), (axis,))
-
-
-# splitting and stacking etc
-def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
-    # check the lengths of the new axes
-    if axis not in a.axes:
-        raise ValueError(f"Axis {axis} not found in {a.axes}")
-
-    total_len = _sum(x.size for x in new_axes)
-    if total_len != axis.size:
-        raise ValueError(f"The total length of the new axes {total_len} does not match the length of the axis {axis}")
-
-    index = a.lookup_indices(axis)
-
-    # now we can split the array
-    offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
-
-    new_arrays = np.split(a.array, indices_or_sections=offsets, axis=index)
-    ret_axes = [tuple(ax2 if ax2 is not axis else new_axis for ax2 in a.axes) for new_axis in new_axes]
-
-    return [NamedArray(x, ax) for x, ax in zip(new_arrays, ret_axes)]
 
 
 # elementwise unary operations
@@ -162,8 +149,13 @@ __all__ = [
     "AxisSpec",
     "named",
     "dot",
+    "split",
+    "flatten_axes",
     "take",
+    "unbind",
+    "rename",
     "rearrange",
+    "concat_axis_specs",
     "zeros",
     "ones",
     "full",
