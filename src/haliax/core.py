@@ -405,9 +405,11 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
 
     used_indices = [False] * len(array.axes)
     permute_spec: List[Union[int, EllipsisType]] = []
+    ellipsis_pos = None
     for ax in axes:
         if ax is Ellipsis:
             permute_spec.append(Ellipsis)  # will revisit
+            ellipsis_pos = len(permute_spec) - 1
         else:
             assert isinstance(ax, Axis)  # please mypy
             index = array.lookup_indices(ax)
@@ -420,15 +422,13 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
 
     if not all(used_indices):
         # find the ellipsis position, replace it with all the unused indices
-        try:
-            ellipsis_index = permute_spec.index(Ellipsis)
-        except ValueError:
+        if ellipsis_pos is None:
             missing_axes = [ax for i, ax in enumerate(array.axes) if not used_indices[i]]
             raise ValueError(f"Axes {missing_axes} not found and no ... specified. Array axes: {array.axes}") from None
 
-        permute_spec[ellipsis_index : ellipsis_index + 1] = tuple(
-            i for i in range(len(array.axes)) if not used_indices[i]
-        )
+        permute_spec[ellipsis_pos : ellipsis_pos + 1] = tuple(i for i in range(len(array.axes)) if not used_indices[i])
+    elif ellipsis_pos is not None:
+        permute_spec.remove(Ellipsis)
 
     out_axes = tuple(array.axes[i] for i in cast(List[int], permute_spec))
     return NamedArray(jnp.transpose(array.array, permute_spec), out_axes)
