@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from math import prod
 from types import EllipsisType
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxlib.xla_extension import DeviceArray
 
 import haliax
@@ -221,6 +223,18 @@ class NamedArray:
     def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
+    def flatten_axes(self, old_axes: Sequence[Axis], new_axis: Axis) -> "NamedArray":
+        return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
+
+    def unflatten_axis(self, axis: Axis, new_axes: Sequence[Axis]) -> "NamedArray":
+        return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
+
+    def unbind(self, axis: Axis) -> Sequence["NamedArray"]:
+        return haliax.unbind(self, axis=axis)
+
+    def rename(self, renames: Mapping[Axis, Axis]):
+        return haliax.rename(self, renames=renames)
+
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
     #     return haliax.squeeze(self, axis=axis)
 
@@ -378,6 +392,30 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
     return NamedArray(output, output_axes)
 
 
+def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
+    # check the lengths of the new axes
+    if axis not in a.axes:
+        raise ValueError(f"Axis {axis} not found in {a.axes}")
+
+    total_len = sum(x.size for x in new_axes)
+    if total_len != axis.size:
+        raise ValueError(f"The total length of the new axes {total_len} does not match the length of the axis {axis}")
+
+    index = a.lookup_indices(axis)
+
+    # now we can split the array
+    offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
+
+    new_arrays = np.split(a.array, indices_or_sections=offsets, axis=index)
+    ret_axes = [tuple(ax2 if ax2 is not axis else new_axis for ax2 in a.axes) for new_axis in new_axes]
+
+    return [NamedArray(x, ax) for x, ax in zip(new_arrays, ret_axes)]
+
+
+# TODO: can we add einops-style combined split/merge here?
+# e.g. we'd like something like rearrange(array, (..., new_axis), merge_axes={new_axis: (old_axis1, old_axis2)})
+# or rearrange(array, (new_axis1, ..., new_axis2), split_axes={old_axis: (new_axis1, new_axis2)})
+# or even rearrange(array, (x, ..., b, a), map_axes={old_axis: (a, b), x: (old1, old2)})
 def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
     """
     Rearrange an array so that its underlying storage conforms to axes.
@@ -434,6 +472,69 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
     return NamedArray(jnp.transpose(array.array, permute_spec), out_axes)
 
 
+def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
+    """
+    Unbind an array along an axis, returning a list of NamedArrays. Analogous to torch.unbind or np.rollaxis
+    """
+    axis_index = array.lookup_indices(axis)
+    if axis_index is None:
+        raise ValueError(f"axis {axis} not found in {array}")
+    arrays = jnp.rollaxis(array.array, axis=axis_index, start=0)
+    new_axes = array.axes[:axis_index] + array.axes[axis_index + 1 :]
+    return [NamedArray(a, new_axes) for a in arrays]
+
+
+def rename(array: NamedArray, renames: Mapping[Axis, Axis]) -> NamedArray:
+    for old, new in renames.items():
+        if old.size != new.size:
+            raise ValueError(f"Cannot rename axis {old} to {new}: size mismatch")
+    new_axes = tuple(renames.get(ax, ax) for ax in array.axes)
+    return NamedArray(array.array, new_axes)
+
+
+def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) -> NamedArray:
+    """
+    Merge a sequence of axes into a single axis. The new axis must have the same size as the product of the old axes.
+    For now the new axis will always be the last axis
+    """
+    if len(old_axes) == 0:
+        raise ValueError("Must specify at least one axis to merge")
+
+    if new_axis.size != prod(ax.size for ax in old_axes):
+        raise ValueError(f"Cannot merge {old_axes} into {new_axis}: size mismatch")
+
+    # TODO: might want to do something more clever here when the old_axes aren't at the end
+    array = rearrange(array, (...,) + tuple(old_axes))
+    new_axes = array.axes[: -len(old_axes)] + (new_axis,)
+    raw_array = array.array.reshape(array.array.shape[: -len(old_axes)] + (new_axis.size,))
+    return NamedArray(raw_array, new_axes)
+
+
+def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> NamedArray:
+    """
+    Split an axis into a sequence of axes. The old axis must have the same size as the product of the new axes.
+    """
+    old_index = array.lookup_indices(axis)
+    if old_index is None:
+        raise ValueError(f"Axis {axis} not found in {array}")
+
+    if len(new_axes) == 0:
+        if axis.size == 1:
+            # just remove the old axis, akin to squeeze
+            new_array = jnp.squeeze(array.array, axis=old_index)
+            new_axes = array.axes[:old_index] + array.axes[old_index + 1 :]
+            return NamedArray(new_array, new_axes)
+        else:
+            raise ValueError("Must specify at least one axis to split")
+
+    if axis.size != prod(ax.size for ax in new_axes):
+        raise ValueError(f"Cannot split {axis} into {new_axes}: size mismatch")
+
+    new_axes = array.axes[:old_index] + tuple(new_axes) + array.axes[old_index + 1 :]
+    new_array = jnp.reshape(array.array, [ax.size for ax in new_axes])
+    return NamedArray(new_array, new_axes)
+
+
 T = TypeVar("T")
 
 
@@ -456,3 +557,34 @@ def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
 
         return NamedArray(a, shape)
+
+
+def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
+    """Concatenates two AxisSpec. Raises ValueError if any axis is present in both specs"""
+    if isinstance(a1, Axis) and isinstance(a2, Axis):
+        if a1 == a2:
+            raise ValueError(f"Axis {a1} specified twice")
+        return (a1, a2)
+    else:
+        a1 = _ensure_tuple(a1)
+        a2 = _ensure_tuple(a2)
+        if any(x in a2 for x in a1) or any(x in a1 for x in a2):
+            overlap = set(a1).intersection(set(a2))
+            raise ValueError(f"AxisSpecs overlap! {' '.join(str(x) for x in overlap)}")
+        return a1 + a2
+
+
+__all__ = [
+    "Axis",
+    "AxisSpec",
+    "NamedArray",
+    "concat_axis_specs",
+    "dot",
+    "named",
+    "rearrange",
+    "take",
+    "split",
+    "flatten_axes",
+    "unflatten_axis",
+    "unbind",
+]
