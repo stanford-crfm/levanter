@@ -4,6 +4,7 @@ import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
+import haliax.core
 from haliax import Axis, NamedArray
 
 
@@ -197,3 +198,21 @@ def test_rearrange():
     # test for missing axes
     with pytest.raises(ValueError):
         hax.rearrange(named1, (C, W, D))
+
+
+def test_rearrange_unused_ellipsis():
+    # Make sure we just ignore the ellipsis if all axes are specified in addition
+    H = Axis("Height", 2)
+    W = Axis("Width", 3)
+    D = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(hax.rearrange(named1, (H, W, D, ...)).array, named1.array))
+    assert hax.rearrange(named1, (H, W, D, ...)).axes == (H, W, D)
+
+    assert jnp.all(jnp.equal(hax.rearrange(named1, (H, ..., W, D)).array, named1.array))
+    assert hax.rearrange(named1, (H, ..., W, D)).axes == (H, W, D)
+
+    assert jnp.all(jnp.equal(hax.rearrange(named1, (D, ..., W, H)).array, jnp.transpose(named1.array, (2, 1, 0))))
+    assert hax.rearrange(named1, (D, ..., W, H)).axes == (D, W, H)
