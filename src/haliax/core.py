@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from math import prod
 from types import EllipsisType
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -9,6 +9,7 @@ import numpy as np
 from jaxlib.xla_extension import DeviceArray
 
 import haliax
+from haliax.util import ensure_tuple
 
 
 @dataclass(frozen=True)
@@ -535,15 +536,6 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
     return NamedArray(new_array, new_axes)
 
 
-T = TypeVar("T")
-
-
-def _ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
-    if isinstance(x, Sequence):
-        return tuple(x)
-    return (x,)
-
-
 def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
     if isinstance(axis, Axis):
@@ -551,7 +543,7 @@ def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match size of axis {axis.size}")
         return NamedArray(a, (axis,))
     else:
-        shape: Tuple[Axis, ...] = _ensure_tuple(axis)
+        shape: Tuple[Axis, ...] = ensure_tuple(axis)
         # verify the shape is correct
         if jnp.shape(a) != tuple(x.size for x in shape):
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
@@ -566,8 +558,8 @@ def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
             raise ValueError(f"Axis {a1} specified twice")
         return (a1, a2)
     else:
-        a1 = _ensure_tuple(a1)
-        a2 = _ensure_tuple(a2)
+        a1 = ensure_tuple(a1)
+        a2 = ensure_tuple(a2)
         if any(x in a2 for x in a1) or any(x in a1 for x in a2):
             overlap = set(a1).intersection(set(a2))
             raise ValueError(f"AxisSpecs overlap! {' '.join(str(x) for x in overlap)}")

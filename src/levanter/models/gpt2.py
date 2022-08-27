@@ -14,6 +14,7 @@ from equinox.custom_types import Array
 import haliax as hax
 import levanter.nn as pnn
 from haliax import Axis, NamedArray
+from haliax.partitioning import logically_sharded
 from levanter import jax_utils
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -134,10 +135,10 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
 
-        qkv_out = self.c_attn(hidden_states)  # [seq_len, 3 * embed_dim]
+        qkv_out = logically_sharded(self.c_attn(hidden_states))  # [seq_len, 3 * embed_dim]
         three = Axis("3", 3)
         qkv_out = qkv_out.unflatten_axis(self.qkv, (three, self.heads, self.head_dim))
-        query, key, value = qkv_out.unbind(three)
+        query, key, value = logically_sharded(qkv_out.unbind(three))
 
         key_seqlen = self.seqlen.alias("key_seqlen")
         key = key.rename({self.seqlen: key_seqlen})
