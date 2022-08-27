@@ -480,8 +480,11 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     axis_index = array.lookup_indices(axis)
     if axis_index is None:
         raise ValueError(f"axis {axis} not found in {array}")
-    arrays = jnp.rollaxis(array.array, axis=axis_index, start=0)
     new_axes = array.axes[:axis_index] + array.axes[axis_index + 1 :]
+    # this implementation maybe triggers an all-gather in pjit so no good
+    # arrays = jnp.rollaxis(array.array, axis=axis_index, start=0)
+    # instead we just loop over the axes pulling one out at a time
+    arrays = [jnp.take(array.array, i, axis=axis_index) for i in range(axis.size)]
     return [NamedArray(a, new_axes) for a in arrays]
 
 
