@@ -89,7 +89,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     head_dim: Axis = eqx.static_field()
     heads: Axis = eqx.static_field()
     qkv: Axis = eqx.static_field()
-    total_head_dim: Axis = eqx.static_field()
+    # total_head_dim: Axis = eqx.static_field()
 
     scale_by_inverse_layer_idx: bool = eqx.static_field()
     mp: jmp.Policy = eqx.static_field()
@@ -113,18 +113,19 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         # TODO: we only need this for hf checkpoint compat
         self.seqlen = seqlen
 
-        self.total_head_dim = Axis("total_head_dim", self.head_dim.size * self.heads.size)
-        self.qkv = Axis("qkv", 3 * self.total_head_dim.size)
+        # self.total_head_dim = Axis("total_head_dim", self.head_dim.size * self.heads.size)
+        self.qkv = Axis("qkv", 3)
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.mp = mp
 
         k_c, k_proj = jrandom.split(key, 2)
 
         # we could have this if we didn't need hf checkpoint compat
-        # self.c_attn = NamedLinear(out_axis=(self.qkv, self.heads, self.head_dim), in_axis=in_dim, key=k_c, mp=mp)
-        # self.c_proj = NamedLinear(out_axis=in_dim, in_axis=(self.heads, self.head_dim), key=k_proj, mp=mp)
-        self.c_attn = NamedLinear(out_axis=self.qkv, in_axis=in_dim, key=k_c, mp=mp)
-        self.c_proj = NamedLinear(out_axis=in_dim, in_axis=self.total_head_dim, key=k_proj, mp=mp)
+        self.c_attn = NamedLinear(out_axis=(self.qkv, self.heads, self.head_dim), in_axis=in_dim, key=k_c, mp=mp)
+        self.c_proj = NamedLinear(out_axis=in_dim, in_axis=(self.heads, self.head_dim), key=k_proj, mp=mp)
+        # TODO: fix hf checkpoint compat
+        # self.c_attn = NamedLinear(out_axis=self.qkv, in_axis=in_dim, key=k_c, mp=mp)
+        # self.c_proj = NamedLinear(out_axis=in_dim, in_axis=self.total_head_dim, key=k_proj, mp=mp)
         self.dropout = pnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
@@ -172,7 +173,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         attn_output = hax.dot(key_seqlen, attn_weights, value)  # [heads, seq_len, head_dim]
 
-        attn_output = hax.flatten_axes(attn_output, (self.heads, self.head_dim), self.total_head_dim)
+        # attn_output = hax.flatten_axes(attn_output, (self.heads, self.head_dim), self.total_head_dim)
         attn_output = self.c_proj(attn_output)
 
         assert attn_output.dtype == self.mp.compute_dtype
