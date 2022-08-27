@@ -137,9 +137,9 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         rng_key = key
 
         qkv_out = logically_sharded(self.c_attn(hidden_states))  # [seq_len, 3 * embed_dim]
-        three = Axis("3", 3)
-        qkv_out = qkv_out.unflatten_axis(self.qkv, (three, self.heads, self.head_dim))
-        query, key, value = logically_sharded(qkv_out.unbind(three))
+        # three = Axis("3", 3)
+        # qkv_out = qkv_out.unflatten_axis(self.qkv, (three, self.heads, self.head_dim))
+        query, key, value = logically_sharded(qkv_out.unbind(self.qkv))
 
         key_seqlen = self.seqlen.alias("key_seqlen")
         key = key.rename({self.seqlen: key_seqlen})
