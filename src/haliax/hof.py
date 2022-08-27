@@ -6,7 +6,8 @@ import equinox
 import jax
 import jax.lax as lax
 
-from .core import Axis, NamedArray, _ensure_tuple
+from .core import Axis, NamedArray
+from .util import ensure_tuple, is_named_array
 
 
 Carry = TypeVar("Carry")
@@ -49,17 +50,17 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
     # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
     # invariants until we're ready to create the result.
 
-    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=_named_array_leaf)
+    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=is_named_array)
 
     # now get a template for where we fold over the axis in question
-    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=_named_array_leaf)
+    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=is_named_array)
     x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
     # now we can fold over the axis
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
         carry, y = f(carry, x)
-        y = jax.tree_util.tree_map(_chill_named_arrays, y, is_leaf=_named_array_leaf)
+        y = jax.tree_util.tree_map(_chill_named_arrays, y, is_leaf=is_named_array)
         return carry, y
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
@@ -95,10 +96,6 @@ def _select_0th(axis, leaf):
         return leaf
 
 
-def _named_array_leaf(leaf):
-    return isinstance(leaf, NamedArray)
-
-
 def _ensure_first(axis, leaf):
     if isinstance(leaf, NamedArray):
         return leaf.rearrange((axis, ...))
@@ -124,10 +121,10 @@ def fold_left(
     # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
     # invariants until we're ready to create the result.
 
-    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=_named_array_leaf)
+    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=is_named_array)
 
     # now get a template for where we fold over the axis in question
-    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=_named_array_leaf)
+    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=is_named_array)
     x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
     # now we can fold over the axis
@@ -151,7 +148,7 @@ def vmap(
     NamedArray aware version of jax.vmap.
     unmapped_argnums are the argnums of the function that are not batched over the axis.
     """
-    unmmapped_argnums = _ensure_tuple(unmapped_argnums)
+    unmmapped_argnums = ensure_tuple(unmapped_argnums)
 
     def _index_of_axis(array):
         if isinstance(array, NamedArray):
@@ -174,17 +171,15 @@ def vmap(
             if i in unmmapped_argnums:
                 mapped_axes.append(None)
             else:
-                chilled_arg = jax.tree_util.tree_map(_chill_named_arrays, arg, is_leaf=_named_array_leaf)
+                chilled_arg = jax.tree_util.tree_map(_chill_named_arrays, arg, is_leaf=is_named_array)
                 chilled_args.append(chilled_arg)
                 mapped_axis = jax.tree_util.tree_map(_index_of_axis, chilled_arg, is_leaf=_is_chill_array)
                 mapped_axes.append(mapped_axis)
 
         def wrapped_fn(*args):
-            unchilled_args = jax.tree_util.tree_map(
-                partial(_unchill_named_arrays, axis), args, is_leaf=_named_array_leaf
-            )
+            unchilled_args = jax.tree_util.tree_map(partial(_unchill_named_arrays, axis), args, is_leaf=is_named_array)
             r = fn(*unchilled_args)
-            chilled = jax.tree_util.tree_map(_chill_named_arrays, r, is_leaf=_named_array_leaf)
+            chilled = jax.tree_util.tree_map(_chill_named_arrays, r, is_leaf=is_named_array)
             return chilled
 
         result = jax.vmap(wrapped_fn, in_axes=mapped_axes, out_axes=0, axis_size=axis.size)(*args)

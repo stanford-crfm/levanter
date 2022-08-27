@@ -3,7 +3,8 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from haliax.core import AxisSpec, NamedArray, _ensure_tuple
+from haliax.core import AxisSpec, NamedArray
+from haliax.util import ensure_tuple
 
 
 def wrap_elemwise_unary(f):
@@ -35,7 +36,7 @@ def wrap_reduction_call(fn):
                 else:
                     return NamedArray(result, ())
             else:
-                axis = _ensure_tuple(axis)
+                axis = ensure_tuple(axis)
                 indices = a.lookup_indices(axis)
                 if indices is None or any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
@@ -66,7 +67,7 @@ def wrap_normalization_call(fn, single_axis_only: bool):
             if axis is None:
                 return NamedArray(fn(a.array, axis=None, **kwargs), ())
             else:
-                indices = _ensure_tuple(a.lookup_indices(axis))
+                indices = ensure_tuple(a.lookup_indices(axis))
                 if any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
                 if len(indices) == 1:

@@ -11,6 +11,7 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
+from haliax.partitioning import resource_mapping
 from levanter import callbacks
 from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
@@ -73,24 +74,24 @@ def main(config: TrainGpt2Config):
         microbatched=False,
     )
 
-    with config.trainer.device_mesh as mesh:
+    resource_partitions = {
+        "batch": ResourceAxis.DATA,
+        # ZERO-3
+        # "embed": ResourceAxis.DATA,
+        "vocab": ResourceAxis.MODEL,
+        "mlp": ResourceAxis.MODEL,
+        "qkv": ResourceAxis.MODEL,
+        "heads": ResourceAxis.MODEL,
+        "total_head_dim": ResourceAxis.MODEL,
+    }
+
+    with config.trainer.device_mesh as mesh, resource_mapping(resource_partitions):
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
         mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-
-        resource_partitions = {
-            "batch": ResourceAxis.DATA,
-            # ZERO-3
-            # "embed": ResourceAxis.DATA,
-            "vocab": ResourceAxis.MODEL,
-            "mlp": ResourceAxis.MODEL,
-            "qkv": ResourceAxis.MODEL,
-            "heads": ResourceAxis.MODEL,
-            "total_head_dim": ResourceAxis.MODEL,
-        }
 
         # initialize the model, and convert to appropriate dtype
 
