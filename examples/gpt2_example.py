@@ -80,9 +80,9 @@ def main(config: TrainGpt2Config):
         # "embed": ResourceAxis.DATA,
         "vocab": ResourceAxis.MODEL,
         "mlp": ResourceAxis.MODEL,
-        "qkv": ResourceAxis.MODEL,
+        # "qkv": ResourceAxis.MODEL,
         "heads": ResourceAxis.MODEL,
-        "total_head_dim": ResourceAxis.MODEL,
+        # "total_head_dim": ResourceAxis.MODEL,
     }
 
     with config.trainer.device_mesh as mesh, resource_mapping(resource_partitions):
