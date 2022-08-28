@@ -51,3 +51,21 @@ def test_fold_left():
     total = hax.fold_left(fold_fun, Depth, acc, named1)
 
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
+
+
+def test_vmap():
+    Batch = Axis("Batch", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hax.random.uniform(PRNGKey(0), (Width, Depth))
+
+    def vmap_fun(x):
+        return x.take(Width, 2)
+
+    selected = hax.vmap(vmap_fun, Batch)(named1)
+
+    expected_jax = jnp.array([named1.take(Width, 2).array for _ in range(Batch.size)])
+    expected_names = (Batch, Depth)
+
+    assert jnp.all(jnp.equal(selected.array, expected_jax))
+    assert selected.axes == expected_names
