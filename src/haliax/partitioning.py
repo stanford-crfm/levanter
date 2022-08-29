@@ -82,5 +82,4 @@ def logically_sharded(x: T, logical_axes: Optional[PyTree] = None) -> T:
         pspec = jax.tree_util.tree_map(_as_pspec, x, logical_axes, is_leaf=is_named_array)
 
     print(x, pspec)
-
     return pjit.with_sharding_constraint(x, pspec)

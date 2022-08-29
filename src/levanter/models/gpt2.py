@@ -303,7 +303,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
                 return block(states, inference=inference, layer_idx=layer_idx, key=key)
 
             if self.config.gradient_checkpointing:
-                do_block_train = jax.checkpoint(do_block_train)
+                do_block_train = jax.checkpoint(do_block_train, prevent_cse=False)
 
             hidden_states = hax.fold_left(
                 do_block_train, self.layers, hidden_states, (self.blocks, jnp.arange(self.layers.size), keys)
