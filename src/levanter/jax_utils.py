@@ -66,47 +66,6 @@ def flops_estimate(fn, *args):
     return costs["flops"]
 
 
-def backward_graph_size(fn, *args):
-    """
-    Estimates the size of the backward graph of a function, in terms of number of parameters.
-    This will sometimes overestimate the size of the graph, for two (known) reasons:
-      1. the provenance of constants hiding inside jitted functions are hard to track
-      2. it's possible that XLA will further optimize some of the code beyond what I can see.
-
-    vjp (which is the "forward" pass) returns a pytree fn that contains everything needed to compute the backward
-    pass, but it includes the parameters and inputs that are needed in the backward pass. But we already "pay"
-    for those in the forward pass/the parameter count, so we don't need to count them twice.
-    """
-
-    # first fine parameters/inputs that we've already priced in (parameters, inputs)
-    input_leaves = jax.tree_leaves((fn, args))
-    input_leaf_ids = {id(x): x for x in input_leaves}
-
-    faxpr = jax.make_jaxpr(fn)(*args)
-    # fold in consts that are only in the jaxpr (and not part of the pytree)
-    for const in faxpr.consts:
-        input_leaf_ids[id(const)] = const
-
-    dynamic, static = eqx.partition((fn, args), eqx.is_array_like)
-
-    def part_fn(dynamic):
-        fn, args = eqx.combine(dynamic, static)
-        return fn(*args)
-
-    primals, bkwd_fn = jax.vjp(part_fn, dynamic)
-
-    vjp_leaves = jax.tree_leaves(bkwd_fn)
-    new_leaves = {id(x): x for x in vjp_leaves if id(x) not in input_leaf_ids}
-
-    return parameter_count(list(new_leaves.values()))
-
-
-def dump_jaxpr(file, fn, *args, **kwargs):
-    jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
-    with open(file, "w") as f:
-        f.write(jaxpr.pretty_print(source_info=True, name_stack=True))
-
-
 def parameter_count(model: PyTree):
     def _is_param_leaf(x):
         return (isinstance(x, jax.ShapeDtypeStruct) and jnp.issubdtype(x.dtype, jnp.inexact)) or eqx.is_inexact_array(
