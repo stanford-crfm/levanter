@@ -79,13 +79,18 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, mp
     key = PRNGKey(0)
     model = Gpt2LMHeadModel(vocab, lev_config, key=key, mp=mp)
 
-    try:
+    has_transformer_prefix = False
+    for k in checkpoint.keys():
+        if k.startswith("transformer."):
+            has_transformer_prefix = True
+            break
+        elif k.startswith(".h"):
+            break
+
+    if has_transformer_prefix:
+        model = model.from_torch_dict(checkpoint, prefix="transformer")
+    else:
         model = model.from_torch_dict(checkpoint)
-    except KeyError as orig:
-        try:
-            model = model.from_torch_dict(checkpoint, prefix="transformer")
-        except KeyError:
-            raise orig
 
     return model
 

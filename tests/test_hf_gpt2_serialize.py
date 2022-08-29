@@ -27,7 +27,7 @@ def test_hf_gpt2_roundtrip():
 
 @pytest.mark.skipif(not has_torch(), reason="torch not installed")
 def test_mistral_gpt2_roundtrip():
-    _roundtrip_compare_gpt2_checkpoint("stanford-crfm/beren-gpt2-medium-x49", "checkpoint-60000")
+    _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
 
 
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
