@@ -1,0 +1,17 @@
+data:
+  train_urls:
+      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext.{1..8}-of-8.jsonl.gz"
+  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+model:
+  hidden_dim: 1608
+  num_heads: 24
+  num_layers: 48
+  seq_len: 1024
+  gradient_checkpointing: true
+trainer:
+  mp: p=f32,c=bfloat16
+  learning_rate: 1E-4
+  model_axis_size: 2
+  per_device_train_batch_size: 1
