@@ -4,7 +4,6 @@ import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
-import haliax.core
 from haliax import Axis, NamedArray
 
 
