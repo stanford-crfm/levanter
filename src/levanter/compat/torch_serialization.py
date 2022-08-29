@@ -39,13 +39,13 @@ class TorchSerializationMixin:
     """An eqx.Module that can be serialized to a torch-style state dict."""
 
     def to_torch_dict(self, prefix: Optional[str] = None) -> StateDict:
-        return _default_eqx_module_to_dict(self, prefix, key_map=self._torch_key_map())
+        return jax_tree_to_torch_state_dict(self, prefix)
 
     def from_torch_dict(self: Mod, torch_dict: StateDict, prefix: Optional[str] = None) -> Mod:
-        return _default_eqx_module_from_dict(self, torch_dict, prefix, key_map=self._torch_key_map())
+        return default_eqx_module_from_torch_dict(self, torch_dict, prefix)
 
     def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        return _default_update_dict_with_eqx_module(self, prefix, torch_dict, key_map=self._torch_key_map())
+        return default_update_torch_dict_with_eqx_module(torch_dict, self, prefix)
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         """Returns a dict mapping eqx.Module keys to torch keys that need to be renamed for serialization"""
@@ -69,7 +69,10 @@ def torch_to_jax(t: Optional[TorchTensor]) -> Optional[jnp.ndarray]:
 def jax_tree_from_torch_state_dict(tree: PyTree, torch_dict: StateDict, prefix: Optional[str] = None) -> PyTree:
     # TODO: assert compatibility of old and new values (type, shape, etc.)
     if isinstance(tree, eqx.Module):
-        return eqx_module_from_torch_dict(tree, torch_dict, prefix)
+        if hasattr(tree, "from_torch_dict"):
+            return tree.from_torch_dict(torch_dict, prefix)
+        else:
+            return default_eqx_module_from_torch_dict(tree, torch_dict, prefix)
     elif isinstance(tree, list):
         return [
             jax_tree_from_torch_state_dict(item, torch_dict, apply_prefix(prefix, str(i)))
@@ -97,7 +100,10 @@ def jax_tree_from_torch_state_dict(tree: PyTree, torch_dict: StateDict, prefix: 
 
 def update_torch_dict_with_jax_tree(tree: PyTree, torch_dict: StateDict, prefix: Optional[str] = None) -> None:
     if isinstance(tree, eqx.Module):
-        update_torch_dict_with_eqx_module(torch_dict, tree, prefix)
+        if hasattr(tree, "update_torch_dict"):
+            tree.update_torch_dict(torch_dict, prefix)
+        else:
+            default_update_torch_dict_with_eqx_module(torch_dict, tree, prefix)
     elif isinstance(tree, list):
         for i, item in enumerate(tree):
             update_torch_dict_with_jax_tree(item, torch_dict, prefix=apply_prefix(prefix, str(i)))
@@ -121,14 +127,11 @@ def jax_tree_to_torch_state_dict(tree: PyTree, prefix: Optional[str] = None) -> 
     return state_dict
 
 
-def eqx_module_from_torch_dict(mod: Mod, torch_dict: StateDict, prefix: Optional[str] = None) -> Mod:
-    if hasattr(mod, "from_torch_dict"):
-        return mod.from_torch_dict(torch_dict, prefix)
+def default_eqx_module_from_torch_dict(mod: Mod, torch_dict: StateDict, prefix: Optional[str] = None) -> Mod:
+    key_map = None
+    if hasattr(mod, "_torch_key_map"):
+        key_map = mod._torch_key_map()
 
-    return _default_eqx_module_from_dict(mod, torch_dict, prefix)
-
-
-def _default_eqx_module_from_dict(mod, torch_dict, prefix, key_map=None):
     old_values, mod_state = mod.tree_flatten()
     dyn_keys = mod_state[0]
 
@@ -142,32 +145,20 @@ def _default_eqx_module_from_dict(mod, torch_dict, prefix, key_map=None):
     return mod.tree_unflatten(mod_state, new_values)
 
 
-def eqx_module_to_torch_dict(mod: Mod, prefix: Optional[str] = None) -> StateDict:
-    if hasattr(mod, "to_torch_dict"):
-        return mod.to_torch_dict(prefix)
-
-    return _default_eqx_module_to_dict(mod, prefix)
-
-
-def _default_eqx_module_to_dict(mod, prefix, key_map=None):
-    state_dict = {}
-    update_torch_dict_with_eqx_module(state_dict, mod, prefix)
-
-    if key_map is not None:
-        state_dict = {key_map.get(k, k): v for k, v in state_dict.items()}
+def default_eqx_module_to_torch_dict(mod: Mod, prefix: Optional[str] = None) -> StateDict:
+    state_dict: StateDict = {}
+    default_update_torch_dict_with_eqx_module(state_dict, mod, prefix)
 
     return state_dict
 
 
-def update_torch_dict_with_eqx_module(state_dict: StateDict, mod: Mod, prefix: Optional[str] = None) -> StateDict:
-    if hasattr(mod, "update_torch_dict"):
-        mod.update_torch_dict(state_dict, prefix)
-        return state_dict
+def default_update_torch_dict_with_eqx_module(
+    state_dict: StateDict, mod: Mod, prefix: Optional[str] = None
+) -> StateDict:
+    key_map = None
+    if hasattr(mod, "_torch_key_map"):
+        key_map = mod._torch_key_map()
 
-    return _default_update_dict_with_eqx_module(mod, prefix, state_dict)
-
-
-def _default_update_dict_with_eqx_module(mod: eqx.Module, prefix, state_dict, key_map=None):
     values, mod_state = mod.tree_flatten()
     dyn_keys = mod_state[0]
     for k, v in zip(dyn_keys, values):

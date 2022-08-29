@@ -138,14 +138,13 @@ def fold_left(
     return carry
 
 
-# TODO: add test for vmap
 def vmap(
     fn,
     axis: Axis,
     unmapped_argnums: Union[int, Sequence[int]] = (),
 ):
     """
-    NamedArray aware version of jax.vmap.
+    NamedArray aware version of jax.vmap. Normal arrays are mapped over the 0th axis.
     unmapped_argnums are the argnums of the function that are not batched over the axis.
     """
     unmmapped_argnums = ensure_tuple(unmapped_argnums)
@@ -159,6 +158,8 @@ def vmap(
             return None
 
     # TODO: do fancier things with kwargs and signature and such
+    # TODO: allow specifying spmd axis name and/or inferring it from resource_mapping
+    # TODO: allow other axes to be mapped over
     # TODO: maybe implement equinox-style filtering vmap
     @wraps(fn)
     def wrapped_vmap_fn(*args):

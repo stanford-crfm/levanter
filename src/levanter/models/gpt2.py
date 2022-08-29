@@ -1,5 +1,6 @@
+import re
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional, cast
 
 import equinox as eqx
 import equinox.nn as nn
@@ -16,15 +17,7 @@ import levanter.nn as pnn
 from haliax import Axis, NamedArray
 from haliax.partitioning import logically_sharded
 from levanter import jax_utils
-from levanter.compat.torch_serialization import (
-    StateDict,
-    TorchSerializationMixin,
-    apply_prefix,
-    eqx_module_from_torch_dict,
-    jax_to_torch,
-    torch_to_jax,
-    update_torch_dict_with_jax_tree,
-)
+from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix
 from levanter.jax_utils import named_call
 from levanter.modeling_utils import ACT2FN
 from levanter.nn.linear import NamedLinear
@@ -180,6 +173,49 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         return attn_output
 
+    def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
+        # our c_attn is [embed] -> [3, heads, head_dim] and torch's is the flattened [embed] -> [3 * heads * head_dim]
+        # and our c_proj is [heads, head_dim] -> [embed] and torch's is the flattened [heads * head_dim] -> [embed]
+        # so we need to reshape the one in the dict before forwarding to the linear
+        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
+
+        my_dict: StateDict = {}
+
+        def fix_linear_layer(name, in_shape, out_shape):
+            weight = torch_dict[apply_prefix(prefix, name + ".weight")]
+            bias = torch_dict[apply_prefix(prefix, name + ".bias")]
+            weight = weight.reshape((-1,) + in_shape + out_shape)
+            bias = bias.reshape((-1,) + out_shape)
+            my_dict[apply_prefix(prefix, name + ".weight")] = weight
+            my_dict[apply_prefix(prefix, name + ".bias")] = bias
+
+        embed_size = cast(Axis, self.c_attn.in_axis).size
+        fix_linear_layer("c_attn", (embed_size,), (3, self.heads.size, self.head_dim.size))
+        fix_linear_layer("c_proj", (self.heads.size, self.head_dim.size), (embed_size,))
+
+        return super().from_torch_dict(my_dict, prefix)
+
+    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        # need to undo the reshape we did in from_torch_dict
+        # reminder that everything is vectorized
+        my_dict: StateDict = {}
+        super().update_torch_dict(my_dict, prefix)
+
+        def unfix_linear_layer(name, in_shape, out_shape):
+            weight = my_dict[apply_prefix(prefix, name + ".weight")]
+            bias = my_dict[apply_prefix(prefix, name + ".bias")]
+            weight = weight.reshape((-1,) + in_shape + out_shape)
+            bias = bias.reshape((-1,) + out_shape)
+            my_dict[apply_prefix(prefix, name + ".weight")] = weight
+            my_dict[apply_prefix(prefix, name + ".bias")] = bias
+
+        embed_size = cast(Axis, self.c_attn.in_axis).size
+        unfix_linear_layer("c_attn", (embed_size,), (3 * self.heads.size * self.head_dim.size,))
+        unfix_linear_layer("c_proj", (self.heads.size * self.head_dim.size,), (embed_size,))
+
+        torch_dict.update(my_dict)
+        return torch_dict
+
 
 class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mp: jmp.Policy = eqx.static_field()
@@ -318,70 +354,56 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         return {"blocks": "h"}
 
     def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None):
-        # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
-        # whereas in torch we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        def vectorized_load(tree, torch_dict, pattern: Optional[str]):
-            if isinstance(tree, eqx.Module):
-                # TODO: should vectorized_load know how to deal with custom from_torch_dict?
-                # could solve by doing gross surgery on the state dict
-                if hasattr(tree, "key_map"):
-                    key_map = tree.key_map
-                else:
-                    key_map = {}
-
-                old_values, mod_state = tree.tree_flatten()
-                dyn_keys = mod_state[0]
-
-                new_values = []
-                for k, old in zip(dyn_keys, old_values):
-                    k = key_map.get(k, k)
-                    new_values.append(vectorized_load(old, torch_dict, apply_prefix(pattern, k)))
-
-                return tree.tree_unflatten(mod_state, new_values)
-            elif isinstance(tree, NamedArray):
-                inner_array = vectorized_load(tree.array, torch_dict, pattern)
-                return NamedArray(inner_array, tree.axes)
-            else:
-                assert pattern is not None
-                my_tensors = [torch_to_jax(torch_dict[pattern.format(i)]) for i in range(self.config.num_layers)]
-                return jnp.stack(my_tensors, axis=0)
-
-        blocks = vectorized_load(self.blocks, torch_dict, apply_prefix(prefix, "h.{}"))
-        ln_f = eqx_module_from_torch_dict(self.ln_f, torch_dict, apply_prefix(prefix, "ln_f"))
-        mod = eqx.tree_at(lambda x: (x.blocks, x.ln_f), self, replace=(blocks, ln_f))
-
-        return mod
-
-    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         import torch
 
+        # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
+        # whereas in torch we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
+        # first we vectorize the keys for the torch dict
+        # the individual blocks are named h.0.FOO, h.1.FOO, etc.
+        # we want to vectorize them to h.FOO, h.FOO, etc.
+        vectorized_dict: StateDict = {}
+
+        tensors_to_vectorize: Dict[str, List[Optional[torch.Tensor]]] = {}
+        prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
+        other_keys_prefix = cast(str, apply_prefix(prefix, ""))
+        escaped = re.escape(prefix_to_vectorize)
+        pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
+        for k, v in torch_dict.items():
+            match = pattern.match(k)
+            if match:
+                block_idx = int(match.group(1))
+                block_key = match.group(2)
+                tensors = tensors_to_vectorize.setdefault(block_key, [None] * self.layers.size)
+                assert tensors[block_idx] is None, f"Duplicate key {k}"
+                tensors[block_idx] = v
+            elif k.startswith(other_keys_prefix):
+                k = k[len(other_keys_prefix) :]
+                vectorized_dict[k] = v
+
+        # now we just have to vectorize the tensors
+        for k, tensors in tensors_to_vectorize.items():
+            vectorized_dict[cast(str, apply_prefix("h", k))] = torch.stack(tensors, dim=0)
+
+        # now we can just call the base class. No prefix is needed because we've stripped it
+        out = super().from_torch_dict(vectorized_dict, prefix=None)
+        return out
+
+    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # this method is also a bit of a pain for the same reasons
-        def devectorized_save(tree, torch_dict, pattern: Optional[str]):
-            if isinstance(tree, eqx.Module):
-                # TODO: should devectorized_save know how to deal with custom to_torch_dict?
-                # could solve by doing gross surgery on the returned dicts?
-                if hasattr(tree, "key_map"):
-                    key_map = tree.key_map
-                else:
-                    key_map = {}
+        # first just do the normal thing with our own dict, which we'll post-process
+        my_state_dict: StateDict = {}
+        super().update_torch_dict(my_state_dict, prefix=None)
 
-                values, mod_state = tree.tree_flatten()
-                dyn_keys = mod_state[0]
-
-                for k, value in zip(dyn_keys, values):
-                    k = key_map.get(k, k)
-                    devectorized_save(value, torch_dict, apply_prefix(pattern, k))
-            elif isinstance(tree, NamedArray):
-                devectorized_save(tree.array, torch_dict, pattern)
+        # now go through and devectorize all the "h" keys
+        for k, v in my_state_dict.items():
+            if k.startswith("h."):
+                # this is a vectorized key, we need to devectorize it
+                unbound = v.unbind(dim=0)
+                for i, v2 in enumerate(unbound):
+                    torch_dict[cast(str, apply_prefix(prefix, f"h.{i}.{k[2:]}"))] = v2
             else:
-                assert pattern is not None
-                torch_tensors = torch.unbind(jax_to_torch(tree))
-                assert len(torch_tensors) == self.config.num_layers
-                for i in range(self.config.num_layers):
-                    torch_dict[pattern.format(i)] = torch_tensors[i]
-
-        devectorized_save(self.blocks, torch_dict, apply_prefix(prefix, "h.{}"))
-        update_torch_dict_with_jax_tree(self.ln_f, torch_dict, apply_prefix(prefix, "ln_f"))
+                # other keys just copy over
+                torch_dict[k] = v
 
         return torch_dict
 
