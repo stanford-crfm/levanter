@@ -365,6 +365,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
         tensors_to_vectorize: Dict[str, List[Optional[torch.Tensor]]] = {}
         prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
+        other_keys_prefix = cast(str, apply_prefix(prefix, ""))
         escaped = re.escape(prefix_to_vectorize)
         pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
         for k, v in torch_dict.items():
@@ -375,8 +376,8 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
                 tensors = tensors_to_vectorize.setdefault(block_key, [None] * self.layers.size)
                 assert tensors[block_idx] is None, f"Duplicate key {k}"
                 tensors[block_idx] = v
-            elif k.startswith(cast(str, apply_prefix(prefix, ""))):
-                # other keys just copy over
+            elif k.startswith(other_keys_prefix):
+                k = k[len(other_keys_prefix) :]
                 vectorized_dict[k] = v
 
         # now we just have to vectorize the tensors
