@@ -24,7 +24,6 @@ print(Counter([type(dev) for dev in jax.devices()]))
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jrandom
-import optax
 import pyrallis
 from transformers import GPT2Tokenizer
 
@@ -48,6 +47,8 @@ class TrainGpt2Config:
 
     run_base_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
+
+    log_z_regularization: float = 0.0
 
 
 @pyrallis.wrap()
@@ -117,17 +118,26 @@ def main(config: TrainGpt2Config):
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
-            pred_y = model(input_ids, inference=key is None, key=key)
+            inference = key is None
+            pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
-            token_loss = jnp.mean(
-                optax.softmax_cross_entropy(
-                    pred_y[:-1],
-                    jax.nn.one_hot(input_ids[1:], num_classes=vocab.size),
-                )
-            )
+            pred_y = pred_y[:-1]
+            target_y = input_ids[1:]
 
-            return token_loss
+            logits_max = jnp.max(pred_y, axis=-1, keepdims=True)
+            pred_y -= jax.lax.stop_gradient(logits_max)
+            label_logits = jnp.take_along_axis(pred_y, target_y[..., None], axis=-1)[..., 0]
+            log_normalizers = jnp.log(jnp.sum(jnp.exp(pred_y), axis=-1))
+
+            loss = log_normalizers - label_logits
+            loss = jnp.mean(loss)
+
+            if not inference and config.log_z_regularization > 0:
+                mean_logz = jnp.mean(log_normalizers)
+                loss += config.log_z_regularization * mean_logz * mean_logz
+
+            return loss
 
         compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0], spmd_axis_name=ResourceAxis.DATA)
 
