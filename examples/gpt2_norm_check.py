@@ -5,6 +5,8 @@ from functools import partial
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as onp
 import pyrallis
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
@@ -85,8 +87,10 @@ def main(config: EvalGpt2Config):
             all_logz.append(logz)
 
         all_logz = jnp.concatenate(all_logz, axis=0)
+        all_logz = onp.array(all_logz)
         # print a histogram of the logz
-        print(jnp.histogram(all_logz, bins=100))
+        plt.hist(all_logz, bins=50)
+        plt.savefig("logz.png")
 
 
 if __name__ == "__main__":
