@@ -94,4 +94,5 @@ __all__ = [
     "ResourceAxis",
     "infer_resource_partitions",
     "named_pjit_init",
+    "named_pjit",
 ]
