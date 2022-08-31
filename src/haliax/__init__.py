@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 
 import haliax.random as random
+from haliax import nn as nn
 
 from .core import (
     Axis,
