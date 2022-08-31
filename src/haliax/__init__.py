@@ -248,4 +248,5 @@ __all__ = [
     "scan",
     "reduce",
     "vmap",
+    "trace",
 ]

@@ -283,8 +283,8 @@ class NamedArray:
     def tolist(self) -> Any:
         return self.array.tolist()
 
-    # def trace(self, offset=0, axis1: int = 0, axis2: int = 1, dtype=None,
-    #           out=None) -> Any:
+    def trace(self, axis1: Axis, axis2: Axis, offset=0, dtype=None, out=None) -> "NamedArray":
+        return haliax.trace(self, offset=offset, axis1=axis1, axis2=axis2, dtype=dtype, out=out)
 
     def var(
         self,
