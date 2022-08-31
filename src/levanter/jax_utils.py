@@ -1,3 +1,4 @@
+import functools
 from functools import reduce
 from pathlib import Path
 from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union
@@ -160,3 +161,15 @@ def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
                 name = f.__qualname__
 
         return jax.named_scope(name)(f)
+
+
+@jax.tree_util.register_pytree_node_class
+class pytree_partial(functools.partial):
+    def tree_flatten(self):
+        return ((self.func, self.args, tuple(self.keywords.values())), tuple(self.keywords.keys()))
+
+    @classmethod
+    def tree_unflatten(cls, kw_keys, tree) -> "pytree_partial":
+        assert len(tree) == 3
+        func, args, kw_vals = tree
+        return cls(func, *args, **dict(zip(kw_keys, kw_vals)))

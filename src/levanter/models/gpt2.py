@@ -309,36 +309,29 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         )
         self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
 
-    # @eqx.filter_jit
     @named_call
     def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
-        keys = jax_utils.maybe_rng_split(key, self.Layers.size)
+        def do_block(hidden_states, block_layer_idx_key):
+            block, layer_idx = block_layer_idx_key[0], block_layer_idx_key[1]
+            if len(block_layer_idx_key) > 2:
+                block_key = block_layer_idx_key[2]
+            else:
+                block_key = (
+                    None  # key is none when we are in inference mode, and there's no way to scan over None keys
+                )
+            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=block_key)
 
-        if inference:
+        if self.config.gradient_checkpointing:
+            do_block = jax.checkpoint(do_block)
 
-            def do_block(states, block_and_layer):
-                block, layer_idx = block_and_layer
-                return block(states, inference=inference, layer_idx=layer_idx, key=None)
-
-            # unlikely we'll call grad with inference=True, but just in case
-            if self.config.gradient_checkpointing:
-                do_block = jax.checkpoint(do_block)
-
-            hidden_states = hax.fold_left(
+        if key is None:
+            hidden_states = hax.reduce(
                 do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size))
             )
         else:
-
-            def do_block_train(states, block_layer_idx_key):
-                block: Gpt2Block
-                block, layer_idx, key = block_layer_idx_key
-                return block(states, inference=inference, layer_idx=layer_idx, key=key)
-
-            if self.config.gradient_checkpointing:
-                do_block_train = jax.checkpoint(do_block_train, prevent_cse=False)
-
-            hidden_states = hax.fold_left(
-                do_block_train, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size), keys)
+            keys = jax_utils.maybe_rng_split(key, self.Layers.size)
+            hidden_states = hax.reduce(
+                do_block, self.Layers, hidden_states, (self.blocks, hax.arange(self.Layers), keys)
             )
 
         hidden_states = jax.vmap(self.ln_f)(hidden_states)

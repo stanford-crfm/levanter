@@ -35,7 +35,7 @@ def test_scan_not_0th_axis():
     assert jnp.all(jnp.equal(selected.array, named1.take(Width, 2).rearrange(selected.axes).array))
 
 
-def test_fold_left():
+def test_reduce():
 
     Height = Axis("Height", 10)
     Width = Axis("Width", 3)
@@ -48,7 +48,7 @@ def test_fold_left():
 
     acc = hax.zeros((Height, Width))
 
-    total = hax.fold_left(fold_fun, Depth, acc, named1)
+    total = hax.reduce(fold_fun, Depth, acc, named1)
 
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
 

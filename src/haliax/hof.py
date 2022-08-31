@@ -103,7 +103,7 @@ def _ensure_first(axis, leaf):
         return leaf
 
 
-def fold_left(
+def reduce(
     fn: Callable[[Carry, X], Carry], axis: Axis, init: Carry, xs: X, reverse: bool = False, unroll: int = 1
 ) -> Carry:
     """
@@ -190,4 +190,4 @@ def vmap(
     return wrapped_vmap_fn
 
 
-__all__ = ["scan", "fold_left", "vmap"]
+__all__ = ["scan", "reduce", "vmap"]
