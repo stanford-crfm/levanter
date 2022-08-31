@@ -134,8 +134,9 @@ def main(config: TrainGpt2Config):
             loss = jnp.mean(loss)
 
             if not inference and config.log_z_regularization > 0:
-                mean_logz = jnp.mean(log_normalizers)
-                loss += config.log_z_regularization * mean_logz * mean_logz
+                # want to compute MSE of log_normalizers
+                logz_mse = jnp.mean((log_normalizers**2))
+                loss += config.log_z_regularization * logz_mse
 
             return loss
 
