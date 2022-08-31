@@ -72,10 +72,10 @@ def main(config: EvalGpt2Config):
             return pred_y
 
         # [batch, seq_len]
-        compute_logz_vmap = jax.vmap(compute_logz, in_axes=[None, 0, 0], spmd_axis_name=ResourceAxis.DATA)
+        compute_logz_vmap = jax.vmap(compute_logz, in_axes=[None, 0], spmd_axis_name=ResourceAxis.DATA)
 
         compute_logz_pjit = pjit(
-            partial(compute_logz_vmap, key=None),
+            compute_logz_vmap,
             in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
             out_axis_resources=None,
         )
