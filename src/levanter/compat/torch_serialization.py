@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, TypeVar
+from typing import Any, Dict, Optional, Tuple, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -168,3 +168,20 @@ def default_update_torch_dict_with_eqx_module(
         update_torch_dict_with_jax_tree(v, state_dict, apply_prefix(prefix, k))
 
     return state_dict
+
+
+def reshape_linear_layer(
+    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
+) -> StateDict:
+    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
+    new_dict: StateDict = {}
+    weight_key = cast(str, apply_prefix(prefix, "weight"))
+    bias_key = cast(str, apply_prefix(prefix, "bias"))
+    weight = in_dict[weight_key]
+    bias = in_dict[bias_key]
+    weight = weight.reshape((-1,) + in_shape + out_shape)
+    bias = bias.reshape((-1,) + out_shape)
+    new_dict[weight_key] = weight
+    new_dict[bias_key] = bias
+
+    return new_dict
