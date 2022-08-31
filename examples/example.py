@@ -7,7 +7,7 @@ import jax.random as jrandom
 import optax  # https://github.com/deepmind/optax
 from optax import OptState
 
-from levanter.modeling_utils import fold_left
+from levanter.modeling_utils import reduce
 
 
 def dataloader(arrays, batch_size, *, key):
@@ -57,7 +57,7 @@ class RNN(eqx.Module):
     def __call__(self, input):
         hidden = jnp.zeros((self.hidden_size,))
 
-        out = fold_left(lambda hid, inp: self.cell(inp, hid), hidden, input)
+        out = reduce(lambda hid, inp: self.cell(inp, hid), hidden, input)
         # sigmoid because we're performing binary classification
         return jax.nn.sigmoid(self.linear(out) + self.bias)
 
