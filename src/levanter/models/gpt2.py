@@ -131,7 +131,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         qkv_out = logically_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
         query, key, value = logically_sharded(qkv_out.unbind(self.Qkv))
 
-        KeySeqLen = self.SeqLen.alias("KeySeqLen")
+        KeySeqLen = self.SeqLen.alias("KeySeqLen")  # haliax doesn't support unnamed axes or duplicate axes
         key = key.rename({self.SeqLen: KeySeqLen})
         value = value.rename({self.SeqLen: KeySeqLen})
 
