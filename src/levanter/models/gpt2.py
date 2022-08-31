@@ -17,7 +17,7 @@ import levanter.nn as pnn
 from haliax import Axis, NamedArray
 from haliax.partitioning import logically_sharded
 from levanter import jax_utils
-from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix
+from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.jax_utils import named_call
 from levanter.modeling_utils import ACT2FN
 from levanter.nn.linear import NamedLinear
@@ -178,21 +178,20 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        my_dict: StateDict = {}
+        es = cast(Axis, self.c_attn.In).size
+        d = {}
+        d.update(
+            reshape_linear_layer(
+                torch_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.HeadDim.size)
+            )
+        )
+        d.update(
+            reshape_linear_layer(
+                torch_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.HeadDim.size), (es,)
+            )
+        )
 
-        def fix_linear_layer(name, in_shape, out_shape):
-            weight = torch_dict[apply_prefix(prefix, name + ".weight")]
-            bias = torch_dict[apply_prefix(prefix, name + ".bias")]
-            weight = weight.reshape((-1,) + in_shape + out_shape)
-            bias = bias.reshape((-1,) + out_shape)
-            my_dict[apply_prefix(prefix, name + ".weight")] = weight
-            my_dict[apply_prefix(prefix, name + ".bias")] = bias
-
-        embed_size = cast(Axis, self.c_attn.In).size
-        fix_linear_layer("c_attn", (embed_size,), (3, self.Heads.size, self.HeadDim.size))
-        fix_linear_layer("c_proj", (self.Heads.size, self.HeadDim.size), (embed_size,))
-
-        return super().from_torch_dict(my_dict, prefix)
+        return super().from_torch_dict(d, prefix)
 
     def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # need to undo the reshape we did in from_torch_dict
@@ -200,17 +199,17 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_torch_dict(my_dict, prefix)
 
-        def unfix_linear_layer(name, in_shape, out_shape):
-            weight = my_dict[apply_prefix(prefix, name + ".weight")]
-            bias = my_dict[apply_prefix(prefix, name + ".bias")]
-            weight = weight.reshape((-1,) + in_shape + out_shape)
-            bias = bias.reshape((-1,) + out_shape)
-            my_dict[apply_prefix(prefix, name + ".weight")] = weight
-            my_dict[apply_prefix(prefix, name + ".bias")] = bias
-
-        embed_size = cast(Axis, self.c_attn.In).size
-        unfix_linear_layer("c_attn", (embed_size,), (3 * self.Heads.size * self.HeadDim.size,))
-        unfix_linear_layer("c_proj", (self.Heads.size * self.HeadDim.size,), (embed_size,))
+        es = cast(Axis, self.c_attn.In).size
+        my_dict.update(
+            reshape_linear_layer(
+                my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * self.Heads.size * self.HeadDim.size,)
+            )
+        )
+        my_dict.update(
+            reshape_linear_layer(
+                my_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size * self.HeadDim.size,), (es,)
+            )
+        )
 
         torch_dict.update(my_dict)
         return torch_dict
