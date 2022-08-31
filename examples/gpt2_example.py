@@ -103,12 +103,12 @@ def main(config: TrainGpt2Config):
         if vocab_resource_axis:
             vocab_axis_size = mesh.shape[vocab_resource_axis]
             vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
-        vocab = Axis("vocab", vocab_size)
+        Vocab = Axis("vocab", vocab_size)
 
         optim = config.trainer.optimizer()
 
         def init_state():
-            model = mp.cast_to_param(Gpt2LMHeadModel(vocab, config.model, key=model_key, mp=mp))
+            model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key, mp=mp))
             opt_state = optim.init(model)
             return model, opt_state
 

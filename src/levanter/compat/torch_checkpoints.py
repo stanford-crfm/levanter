@@ -74,10 +74,10 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, mp
 
     config = HfGpt2Config.from_dict(config)
 
-    vocab = Axis("vocab", config.vocab_size)
+    Vocab = Axis("vocab", config.vocab_size)
     lev_config = hf_gpt2_config_to_levanter(config)
     key = PRNGKey(0)
-    model = Gpt2LMHeadModel(vocab, lev_config, key=key, mp=mp)
+    model = Gpt2LMHeadModel(Vocab, lev_config, key=key, mp=mp)
 
     has_transformer_prefix = False
     for k in checkpoint.keys():

@@ -36,7 +36,7 @@ def main(config: EvalGpt2Config):
 
     # first load our checkpoint
     key = jax.random.PRNGKey(0)
-    vocab = Axis("vocab", len(tokenizer))
+    Vocab = Axis("vocab", len(tokenizer))
 
     with config.trainer.device_mesh:
         eval_dataset = ShardedIndexedDataset(
@@ -53,7 +53,7 @@ def main(config: EvalGpt2Config):
         }
 
         # initialize the model
-        model = Gpt2LMHeadModel(vocab, config.model, key=key, mp=config.trainer.mp)
+        model = Gpt2LMHeadModel(Vocab, config.model, key=key, mp=config.trainer.mp)
         model_resources = infer_resource_partitions(model, resource_partitions)
         model = config.trainer.mp.cast_to_param(model)
 
