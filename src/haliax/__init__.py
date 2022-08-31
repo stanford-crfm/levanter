@@ -134,6 +134,7 @@ max = wrap_reduction_call(jnp.max)
 mean = wrap_reduction_call(jnp.mean)
 min = wrap_reduction_call(jnp.min)
 prod = wrap_reduction_call(jnp.prod)
+ptp = wrap_reduction_call(jnp.ptp)
 product = wrap_reduction_call(jnp.product)
 sometrue = wrap_reduction_call(jnp.sometrue)
 std = wrap_reduction_call(jnp.std)
@@ -235,6 +236,7 @@ __all__ = [
     "min",
     "prod",
     "product",
+    "ptp",
     "sometrue",
     "std",
     "sum",

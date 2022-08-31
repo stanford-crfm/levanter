@@ -97,10 +97,10 @@ class NamedArray:
         return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
-    def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
+    def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> "NamedArray":
         return haliax.all(self, axis=axis, out=out, keepdims=keepdims)
 
-    def any(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
+    def any(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> "NamedArray":
         return haliax.any(self, axis=axis, out=out, keepdims=keepdims)
 
     # def select(self, axis: Axis, index: Union[int, 'NamedArray', jnp.ndarray]) -> Any:
@@ -120,7 +120,7 @@ class NamedArray:
     # def argsort(self, axis: Optional[int] = -1, kind='quicksort', order=None) -> Any:
     #     ...
 
-    def astype(self, dtype) -> Any:
+    def astype(self, dtype) -> "NamedArray":
         return NamedArray(self.array.astype(dtype), self.axes)
 
     # TODO
@@ -130,34 +130,30 @@ class NamedArray:
     # def compress(self, condition, axis: Optional[int] = None, out=None) -> Any:
     #     ...
 
-    def conj(self) -> Any:
+    def conj(self) -> "NamedArray":
         return NamedArray(self.array.conj(), self.axes)
 
-    def conjugate(self) -> Any:
+    def conjugate(self) -> "NamedArray":
         return NamedArray(self.array.conjugate(), self.axes)
 
-    def copy(self) -> Any:
+    def copy(self) -> "NamedArray":
         return NamedArray(self.array.copy(), self.axes)
 
-    def cumprod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> Any:
+    def cumprod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> "NamedArray":
         return haliax.cumprod(self, axis=axis, dtype=dtype, out=out)
 
-    def cumsum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> Any:
+    def cumsum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> "NamedArray":
         return haliax.cumsum(self, axis=axis, dtype=dtype, out=out)
 
     # def diagonal(self, offset=0, axis1: int = 0, axis2: int = 1) -> Any:
     #     ...
 
-    def dot(self, axis: AxisSpec, b, *, precision=None) -> Any:
+    def dot(self, axis: AxisSpec, b, *, precision=None) -> "NamedArray":
         return dot(axis, self, b, precision=precision)
 
     @property
-    def imag(self) -> Any:
+    def imag(self) -> "NamedArray":
         return NamedArray(self.array.imag, self.axes)
-
-    # TODO:
-    # def item(self, *args) -> Any:
-    #
 
     def max(
         self,
@@ -166,7 +162,7 @@ class NamedArray:
         keepdims=None,
         initial=None,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.max(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
     def mean(
@@ -177,7 +173,7 @@ class NamedArray:
         keepdims=False,
         *,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.mean(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
 
     def min(
@@ -187,7 +183,7 @@ class NamedArray:
         keepdims=None,
         initial=None,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.min(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
     # TODO
@@ -202,7 +198,7 @@ class NamedArray:
         keepdims=None,
         initial=None,
         where=None,
-    ):
+    ) -> "NamedArray":
         return haliax.prod(
             self,
             axis=axis,
@@ -213,25 +209,27 @@ class NamedArray:
             where=where,
         )
 
-    # def ptp(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, out=None,
-    #         keepdims=False, ) -> Any:
-    #     ...
+    def ptp(self, axis: AxisSpec = None) -> "NamedArray":
+        return haliax.ptp(self, axis=axis)
 
+    # TODO: implement ravel. Can only do if we either ask for an axis or add ProductAxis or something
     # def ravel(self, order='C') -> Any:
     #     ...
 
     @property
-    def real(self) -> Any:
+    def real(self) -> "NamedArray":
         return NamedArray(self.array.real, self.axes)
 
+    # TODO: implement repeat. Can only do if we either ask for an axis or add RepeatAxis or something
     # def repeat(self, repeats, axis: Optional[int] = None, *,
     #            total_repeat_length=None) -> Any:
     #     ...
 
+    # TODO: what should reshape look like?
     # def reshape(self, *args, order='C') -> Any:
     #     ...
 
-    def round(self, decimals=0, out=None) -> Any:
+    def round(self, decimals=0, out=None) -> "NamedArray":
         return haliax.round(self, decimals=decimals, out=out)
 
     # def searchsorted(self, v, side='left', sorter=None) -> Any:
@@ -297,7 +295,7 @@ class NamedArray:
         keepdims=False,
         *,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.var(
             self,
             axis=axis,
@@ -320,7 +318,7 @@ class NamedArray:
         raise NotImplementedError
 
     def __rmul__(self, other):
-        return self.__mul__(other)
+        raise NotImplementedError
 
     def __truediv__(self, other):
         if jnp.isscalar(other):
