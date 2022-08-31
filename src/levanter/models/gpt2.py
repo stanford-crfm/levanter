@@ -166,7 +166,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
 
-        # attn_output = hax.flatten_axes(attn_output, (self.heads, self.head_dim), self.total_head_dim)
         attn_output = self.c_proj(attn_output)
 
         assert attn_output.dtype == self.mp.compute_dtype
