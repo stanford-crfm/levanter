@@ -74,8 +74,27 @@ class NamedArray:
         else:
             return tuple(self._lookup_indices(a) for a in axis)
 
-    def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]):
+    # Axis rearrangement
+    def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]) -> "NamedArray":
         return rearrange(self, axis)
+
+    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
+        return haliax.split(self, axis=axis, new_axes=new_axes)
+
+    def flatten_axes(self, old_axes: Sequence[Axis], new_axis: Axis) -> "NamedArray":
+        return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
+
+    def unflatten_axis(self, axis: Axis, new_axes: Sequence[Axis]) -> "NamedArray":
+        return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
+
+    def unbind(self, axis: Axis) -> Sequence["NamedArray"]:
+        return haliax.unbind(self, axis=axis)
+
+    def rename(self, renames: Mapping[Axis, Axis]) -> "NamedArray":
+        return haliax.rename(self, renames=renames)
+
+    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> "NamedArray":
+        return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
     def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> Any:
@@ -218,26 +237,8 @@ class NamedArray:
     # def searchsorted(self, v, side='left', sorter=None) -> Any:
     #     ...
 
-    # def sort(self, axis: Optional[int] = -1, kind='quicksort', order=None) -> Any:
-    #     ...
-
-    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
-        return haliax.split(self, axis=axis, new_axes=new_axes)
-
-    def flatten_axes(self, old_axes: Sequence[Axis], new_axis: Axis) -> "NamedArray":
-        return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
-
-    def unflatten_axis(self, axis: Axis, new_axes: Sequence[Axis]) -> "NamedArray":
-        return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
-
-    def unbind(self, axis: Axis) -> Sequence["NamedArray"]:
-        return haliax.unbind(self, axis=axis)
-
-    def rename(self, renames: Mapping[Axis, Axis]) -> "NamedArray":
-        return haliax.rename(self, renames=renames)
-
-    # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
-    #     return haliax.squeeze(self, axis=axis)
+    def sort(self, axis: Axis, kind="quicksort") -> Any:
+        return haliax.sort(self, axis=axis, kind=kind)
 
     def std(
         self,
@@ -277,9 +278,6 @@ class NamedArray:
             initial=initial,
             where=where,
         )
-
-    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> "NamedArray":
-        return haliax.take(self, axis=axis, index=index)
 
     def tobytes(self, order="C") -> Any:
         return self.array.tobytes(order=order)
@@ -340,6 +338,8 @@ class NamedArray:
 def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedArray:
     """
     Selects elements from an array along an axis, by an index or by another named array
+
+    if index is a NamedArray, then those axes are added to the output array
     """
     axis_index = array._lookup_indices(axis)
     if axis_index is None:

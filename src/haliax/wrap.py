@@ -60,7 +60,7 @@ def wrap_reduction_call(fn):
     return wrapper
 
 
-def wrap_normalization_call(fn, single_axis_only: bool):
+def wrap_axiswise_call(fn, single_axis_only: bool):
     @functools.wraps(fn)
     def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
         if isinstance(a, NamedArray):
@@ -92,4 +92,4 @@ def wrap_normalization_call(fn, single_axis_only: bool):
     return wrapper
 
 
-__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_normalization_call"]
+__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call"]

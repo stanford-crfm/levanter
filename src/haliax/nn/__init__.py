@@ -4,7 +4,7 @@ import jax.nn as jnn
 import jax.numpy as jnp
 
 from ..core import Axis, NamedArray
-from ..wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 
 
 relu = wrap_elemwise_unary(jnn.relu)
@@ -28,10 +28,10 @@ gelu = wrap_elemwise_unary(jnn.gelu)
 
 logsumexp = wrap_reduction_call(jnn.logsumexp)
 
-softmax = wrap_normalization_call(jnn.softmax, False)
+softmax = wrap_axiswise_call(jnn.softmax, False)
 # TODO: standardize has optional "mean" and "variance" arguments we need to support
 # standardize = wrap_normalization_call(jnn.standardize, False)
-log_softmax = wrap_normalization_call(jnn.log_softmax, False)
+log_softmax = wrap_axiswise_call(jnn.log_softmax, False)
 
 
 @functools.wraps(jnn.one_hot)

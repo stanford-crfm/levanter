@@ -19,7 +19,8 @@ from .core import (
     unflatten_axis,
 )
 from .hof import reduce, scan, vmap
-from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+from .ops import trace
+from .wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 
 
 # creation routines
@@ -140,9 +141,10 @@ sum = wrap_reduction_call(jnp.sum)
 var = wrap_reduction_call(jnp.var)
 
 # "Normalization" functions that use an axis but don't change the shape
-cumsum = wrap_normalization_call(jnp.cumsum, True)
-cumprod = wrap_normalization_call(jnp.cumprod, True)
-cumproduct = wrap_normalization_call(jnp.cumproduct, True)
+cumsum = wrap_axiswise_call(jnp.cumsum, True)
+cumprod = wrap_axiswise_call(jnp.cumprod, True)
+cumproduct = wrap_axiswise_call(jnp.cumproduct, True)
+sort = wrap_axiswise_call(jnp.sort, True)
 
 __all__ = [
     "Axis",
@@ -240,6 +242,7 @@ __all__ = [
     "cumsum",
     "cumprod",
     "cumproduct",
+    "sort",
     "scan",
     "reduce",
     "vmap",
