@@ -142,14 +142,14 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
-        #  I strongly suspect jax can fuse the next two ops so we don't need to do that mistral tweak
-        # TODO: verify
+        # do this first to help keep FP values small
+        query = query * scale
+
         attn_weights = hax.dot(self.HeadDim, query, key)
         # TODO(haliax): add elemwise ops to hax
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
         attn_axes = attn_weights.axes
         attn_weights = attn_weights.array
-        attn_weights = attn_weights * scale
 
         if self.causal:
             # TODO(haliax) add tril to hax
