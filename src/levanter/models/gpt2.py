@@ -328,7 +328,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         else:
             keys = jax_utils.maybe_rng_split(key, self.Layers.size)
             hidden_states = hax.reduce(
-                do_block, self.Layers, hidden_states, (self.blocks, hax.arange(self.Layers), keys)
+                do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size), keys)
             )
 
         hidden_states = jax.vmap(self.ln_f)(hidden_states)
