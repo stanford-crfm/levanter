@@ -44,7 +44,7 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
     """
 
     # This implementation is a bit tricky.
-    # First we have to hoist the axis we're scanning over to the front of the array.
+    # First we have to hoist the axis we're scanning over to the front of the array, because that's what scan expects.
     # Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
     # We have to be careful that we don't try to create NamedArrays that have the shape of the scanned result
     # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
@@ -52,7 +52,7 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
 
     axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=is_named_array)
 
-    # now get a template for where we fold over the axis in question
+    # now get a template of an element of "X"
     x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=is_named_array)
     x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
@@ -149,7 +149,7 @@ def vmap(
     """
     unmmapped_argnums = ensure_tuple(unmapped_argnums)
 
-    def _index_of_axis(array):
+    def _index_of_batch_axis(array):
         if isinstance(array, NamedArray):
             return array.axes.index(axis)
         elif equinox.is_array(array):
@@ -174,7 +174,7 @@ def vmap(
             else:
                 chilled_arg = jax.tree_util.tree_map(_chill_named_arrays, arg, is_leaf=is_named_array)
                 chilled_args.append(chilled_arg)
-                mapped_axis = jax.tree_util.tree_map(_index_of_axis, chilled_arg, is_leaf=_is_chill_array)
+                mapped_axis = jax.tree_util.tree_map(_index_of_batch_axis, chilled_arg, is_leaf=_is_chill_array)
                 mapped_axes.append(mapped_axis)
 
         def wrapped_fn(*args):
