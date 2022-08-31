@@ -123,8 +123,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.dropout = pnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
-    # TODO: reorder_and_upcast_attn
-    # @eqx.filter_jit
     @named_call
     def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
@@ -263,7 +261,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             mp=mp,
         )
 
-    # @eqx.filter_jit
     @named_call
     def __call__(self, hidden_states: Array, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
