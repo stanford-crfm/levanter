@@ -39,7 +39,7 @@ def main(config: EvalGpt2Config):
 
     # first load our checkpoint
     key = jax.random.PRNGKey(0)
-    vocab = Axis("vocab", len(tokenizer))
+    Vocab = Axis("vocab", len(tokenizer))
 
     with config.trainer.device_mesh:
         eval_dataset = ShardedIndexedDataset(
@@ -56,7 +56,7 @@ def main(config: EvalGpt2Config):
         }
 
         # initialize the model
-        model = Gpt2LMHeadModel(vocab, config.model, key=key, mp=config.trainer.mp)
+        model = Gpt2LMHeadModel(Vocab, config.model, key=key, mp=config.trainer.mp)
         model_resources = infer_resource_partitions(model, resource_partitions)
         model = config.trainer.mp.cast_to_param(model)
 
@@ -70,10 +70,7 @@ def main(config: EvalGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
             pred_y = model(input_ids, key)
             token_loss = jnp.mean(
-                optax.softmax_cross_entropy(
-                    pred_y[:-1],
-                    jax.nn.one_hot(input_ids[1:], num_classes=tokenizer.vocab_size),
-                )
+                optax.softmax_cross_entropy(pred_y[:-1], jax.nn.one_hot(input_ids[1:], num_classes=Vocab.size))
             )
 
             return token_loss

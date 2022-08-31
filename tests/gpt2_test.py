@@ -24,10 +24,10 @@ def test_gradient_checkpointing():
         config_checkpoint = dataclasses.replace(config, gradient_checkpointing=True)
         key = PRNGKey(0)
 
-        vocab = Axis("vocab", 128)
+        Vocab = Axis("vocab", 128)
 
-        model = Gpt2LMHeadModel(vocab, config, key=key, mp=policy)
-        model_checkpoint = Gpt2LMHeadModel(vocab, config_checkpoint, key=key, mp=policy)
+        model = Gpt2LMHeadModel(Vocab, config, key=key, mp=policy)
+        model_checkpoint = Gpt2LMHeadModel(Vocab, config_checkpoint, key=key, mp=policy)
 
         input_ids = jnp.arange(16, dtype=jnp.int32)
 
