@@ -59,7 +59,7 @@ class NamedArray:
         assert len(tree) == 1
         return cls(tree[0], axes=aux)
 
-    def lookup_indices(self, axis: AxisSpec):
+    def _lookup_indices(self, axis: AxisSpec):
         """
         For a single axis, returns an int corresponding to the index of the axis.
         For multiple axes, returns a tuple of ints corresponding to the indices of the axes.
@@ -72,7 +72,7 @@ class NamedArray:
             except ValueError:
                 return None
         else:
-            return tuple(self.lookup_indices(a) for a in axis)
+            return tuple(self._lookup_indices(a) for a in axis)
 
     def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]):
         return rearrange(self, axis)
@@ -341,7 +341,7 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
     """
     Selects elements from an array along an axis, by an index or by another named array
     """
-    axis_index = array.lookup_indices(axis)
+    axis_index = array._lookup_indices(axis)
     if axis_index is None:
         raise ValueError(f"axis {axis} not found in {array}")
     if isinstance(index, int):
@@ -402,7 +402,7 @@ def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[Named
     if total_len != axis.size:
         raise ValueError(f"The total length of the new axes {total_len} does not match the length of the axis {axis}")
 
-    index = a.lookup_indices(axis)
+    index = a._lookup_indices(axis)
 
     # now we can split the array
     offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
@@ -451,7 +451,7 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
             ellipsis_pos = len(permute_spec) - 1
         else:
             assert isinstance(ax, Axis)  # please mypy
-            index = array.lookup_indices(ax)
+            index = array._lookup_indices(ax)
             if index is None:
                 raise ValueError(f"Axis {ax} not found in {array}")
             if used_indices[index]:
@@ -477,7 +477,7 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     """
     Unbind an array along an axis, returning a list of NamedArrays. Analogous to torch.unbind or np.rollaxis
     """
-    axis_index = array.lookup_indices(axis)
+    axis_index = array._lookup_indices(axis)
     if axis_index is None:
         raise ValueError(f"axis {axis} not found in {array}")
     new_axes = array.axes[:axis_index] + array.axes[axis_index + 1 :]
@@ -518,7 +518,7 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
     """
     Split an axis into a sequence of axes. The old axis must have the same size as the product of the new axes.
     """
-    old_index = array.lookup_indices(axis)
+    old_index = array._lookup_indices(axis)
     if old_index is None:
         raise ValueError(f"Axis {axis} not found in {array}")
 

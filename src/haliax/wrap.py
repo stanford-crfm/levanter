@@ -37,7 +37,7 @@ def wrap_reduction_call(fn):
                     return NamedArray(result, ())
             else:
                 axis = ensure_tuple(axis)
-                indices = a.lookup_indices(axis)
+                indices = a._lookup_indices(axis)
                 if indices is None or any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
                 new_axes = a.axes if keepdims else [ax for ax in a.axes if ax not in axis]
@@ -67,7 +67,7 @@ def wrap_normalization_call(fn, single_axis_only: bool):
             if axis is None:
                 return NamedArray(fn(a.array, axis=None, **kwargs), ())
             else:
-                indices = ensure_tuple(a.lookup_indices(axis))
+                indices = ensure_tuple(a._lookup_indices(axis))
                 if any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
                 if len(indices) == 1:
