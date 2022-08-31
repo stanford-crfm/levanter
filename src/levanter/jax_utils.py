@@ -1,5 +1,4 @@
-import functools
-from functools import reduce
+import functools as ft
 from pathlib import Path
 from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -53,7 +52,7 @@ X = TypeVar("X")
 Y = TypeVar("Y")
 
 
-def fold_left(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
+def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
     res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
     return res[0]
 
@@ -128,7 +127,7 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
         # when they're identical) so we can use the index to make the keys unique
         indices = [s.indices(x) for s, x in zip(index, global_shape)]
         starts = [i[0] for i in indices]
-        base_key = reduce(jrandom.fold_in, (s for s in starts), key)
+        base_key = ft.reduce(jrandom.fold_in, (s for s in starts), key)
 
         assert all(i[2] == 1 for i in indices)
         lens = [i[1] - i[0] for i in indices]
@@ -164,7 +163,7 @@ def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
 
 
 @jax.tree_util.register_pytree_node_class
-class pytree_partial(functools.partial):
+class pytree_partial(ft.partial):
     def tree_flatten(self):
         return ((self.func, self.args, tuple(self.keywords.values())), tuple(self.keywords.keys()))
 

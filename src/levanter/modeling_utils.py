@@ -6,7 +6,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from levanter.jax_utils import fold_left, named_call
+from levanter.jax_utils import named_call, reduce
 
 
 def quick_gelu(x):
@@ -50,7 +50,7 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
         acc_loss, acc_grad, n = acc
         return loss + acc_loss, jax.tree_map(jnp.add, acc_grad, grad), n + 1
 
-    total_loss, total_grad, total_n = fold_left(compute_and_accumulate, zero, *inputs)
+    total_loss, total_grad, total_n = reduce(compute_and_accumulate, zero, *inputs)
 
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
 
