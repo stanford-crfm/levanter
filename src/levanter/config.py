@@ -1,5 +1,6 @@
 # Various Pyrallis configs
 import dataclasses
+import tempfile
 from dataclasses import dataclass
 from functools import cached_property
 from typing import List, Optional, Union
@@ -39,15 +40,16 @@ class WandbConfig:
     def init(self, hparams=None, **extra_hparams):
         import wandb
 
+        hparams_to_save = {}
         if hparams is None:
-            hparams = {}
+            hparams_to_save = {}
         elif dataclasses.is_dataclass(hparams):
-            hparams = dataclasses.asdict(hparams)
+            hparams_to_save = dataclasses.asdict(hparams)
         else:
-            hparams = dict(hparams)
+            hparams_to_save = dict(hparams)
 
         if extra_hparams:
-            hparams.update(extra_hparams)
+            hparams_to_save.update(extra_hparams)
 
         # for distributed runs, we only want the primary worker to use wandb, so we disable everyone else
         mode = self.mode
@@ -62,8 +64,13 @@ class WandbConfig:
             id=self.id,
             group=self.group,
             mode=mode,
-            config=hparams,
+            config=hparams_to_save,
         )
+
+        if dataclasses.is_dataclass(hparams):
+            with tempfile.TemporaryFile() as tmpfile:
+                pyrallis.dump(hparams, tmpfile)
+                wandb.run.log_artifact(tmpfile.name, name="config.yaml")
 
         if isinstance(self.save_code, str):
             path = self.save_code
