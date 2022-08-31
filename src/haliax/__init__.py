@@ -17,7 +17,7 @@ from .core import (
     unbind,
     unflatten_axis,
 )
-from .hof import fold_left, scan, vmap
+from .hof import reduce, scan, vmap
 from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
 
 
@@ -240,6 +240,6 @@ __all__ = [
     "cumprod",
     "cumproduct",
     "scan",
-    "fold_left",
+    "reduce",
     "vmap",
 ]
