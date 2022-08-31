@@ -2,7 +2,7 @@
 import dataclasses
 from dataclasses import dataclass
 from functools import cached_property
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -32,6 +32,10 @@ class WandbConfig:
     group: Optional[str] = None
     mode: Optional[str] = None
 
+    save_code: Union[bool, str] = True
+    """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
+    typically don't run from the root of the repo)."""
+
     def init(self, hparams=None, **extra_hparams):
         import wandb
 
@@ -60,6 +64,25 @@ class WandbConfig:
             mode=mode,
             config=hparams,
         )
+
+        if isinstance(self.save_code, str):
+            path = self.save_code
+            wandb.run.log_code(path)
+        elif self.save_code:
+            # sniff out the main directory (since we typically don't run from the root of the repo)
+            # we'll walk the stack until we're at a git root
+            import os
+            import traceback
+
+            stack = traceback.extract_stack()
+            path_to_save = "."
+            for frame in stack:
+                dirname = os.path.dirname(frame.filename)
+                if os.path.exists(os.path.join(dirname, ".git")):
+                    path_to_save = dirname
+                    break
+
+            wandb.run.log_code(path_to_save)
 
 
 @dataclass
