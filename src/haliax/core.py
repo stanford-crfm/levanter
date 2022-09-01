@@ -108,10 +108,10 @@ class NamedArray:
     #         index = index.array
 
     # TODO
-    # def argmax(self, axis: Optional[int] = None, out=None, keepdims=None) -> Any:
+    # def argmax(self, axis: Optional[int] = None, keepdims=None) -> Any:
     #     ...
     #
-    # def argmin(self, axis: Optional[int] = None, out=None, keepdims=None) -> Any:
+    # def argmin(self, axis: Optional[int] = None, keepdims=None) -> Any:
     #     ...
     #
     # def argpartition(self, kth, axis=-1, kind='introselect', order=None) -> Any:
@@ -124,10 +124,10 @@ class NamedArray:
         return NamedArray(self.array.astype(dtype), self.axes)
 
     # TODO
-    # def clip(self, a_min=None, a_max=None, out=None) -> Any:
+    # def clip(self, a_min=None, a_max=None) -> Any:
     #     ...
 
-    # def compress(self, condition, axis: Optional[int] = None, out=None) -> Any:
+    # def compress(self, condition, axis: Optional[int] = None) -> Any:
     #     ...
 
     def conj(self) -> "NamedArray":
