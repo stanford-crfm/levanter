@@ -9,6 +9,9 @@ from haliax import AxisSpec, NamedArray
 
 
 class Linear(eqx.Module):
+    """A named Linear layer. This module allows you to specify multiple named axes for both input
+    and output, which is occasionally useful."""
+
     weight: NamedArray
     bias: Optional[NamedArray]
 
