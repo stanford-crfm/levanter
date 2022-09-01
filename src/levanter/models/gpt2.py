@@ -144,7 +144,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         query = query * scale
 
         attn_weights = hax.dot(self.HeadDim, query, key)
-        # TODO(haliax): add elemwise ops to hax
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
         attn_axes = attn_weights.axes
         attn_weights = attn_weights.array
@@ -159,7 +158,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = self.mp.cast_to_compute(attn_weights)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
-
         attn_weights = NamedArray(attn_weights, attn_axes)
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]

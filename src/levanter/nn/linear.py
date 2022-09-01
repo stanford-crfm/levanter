@@ -30,11 +30,7 @@ class NamedLinear(eqx.Module):
         q: NamedArray = inputs.dot(self.In, self.weight)
         q = self.mp.cast_to_compute(q)
         if self.bias is not None:
-            # TODO: add support for binary ops like addition to named axes and broadcasting
-            out_axis = _ensure_tuple(self.Out)
-            arr = q.rearrange((...,) + out_axis).array + self.bias.array
-            arr = self.mp.cast_to_output(arr)
-            q = NamedArray(arr, q.axes)
+            q = q + self.bias
 
         return q
 
