@@ -65,7 +65,7 @@ def wrap_axiswise_call(fn, single_axis_only: bool):
     def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
         if isinstance(a, NamedArray):
             if axis is None:
-                return NamedArray(fn(a.array, axis=None, **kwargs), ())
+                return NamedArray(fn(a.array, axis=None, **kwargs), a.axes)
             else:
                 indices = ensure_tuple(a._lookup_indices(axis))
                 if any(x is None for x in indices):
