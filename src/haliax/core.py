@@ -78,6 +78,13 @@ class NamedArray:
     def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]) -> "NamedArray":
         return rearrange(self, axis)
 
+    def broadcast_to(self, axes: AxisSpec) -> "NamedArray":
+        axes = ensure_tuple(axes)
+        return haliax.broadcast_to(self, axes=axes)
+
+    def broadcast_axis(self, axis: AxisSpec) -> "NamedArray":
+        return haliax.broadcast_axis(self, axis=axis)
+
     def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
@@ -217,11 +224,6 @@ class NamedArray:
     @property
     def real(self) -> "NamedArray":
         return NamedArray(self.array.real, self.axes)
-
-    # TODO: implement repeat. Can only do if we either ask for an axis or add RepeatAxis or something
-    # def repeat(self, repeats, axis: Optional[int] = None, *,
-    #            total_repeat_length=None) -> Any:
-    #     ...
 
     # TODO: what should reshape look like?
     # def reshape(self, *args, order='C') -> Any:
@@ -668,9 +670,13 @@ def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
 
 
 # Broadcasting Support
-def _broadcast_order(a: NamedArray, b: NamedArray) -> Tuple[Axis, ...]:
+def _broadcast_order(a: NamedArray, b: NamedArray, require_subset: bool = True) -> Tuple[Axis, ...]:
     """
-    Returns an ordering of axes for broadcasting a and b
+    Returns an ordering of axes for broadcasting a and b.
+
+    If require_subset is True, then one of the array's axes must be a subset of the other's. This requirement is
+    a bit stricter than a straightforward generalization of numpy's broadcasting rules, but I've been bitten by
+    numpy's rules too many times.
     """
     # special cases:
     if a.axes == b.axes:
@@ -679,6 +685,21 @@ def _broadcast_order(a: NamedArray, b: NamedArray) -> Tuple[Axis, ...]:
         return b.axes
     if len(b.axes) == 0:
         return a.axes
+
+    # TODO: decide under which conditions we want to allow broadcasting both arrays
+    # maybe just add a context manager to allow it?
+    if require_subset:
+        # check if one is a subset of the other
+        if set(a.axes).issubset(set(b.axes)):
+            return b.axes
+        elif set(b.axes).issubset(set(a.axes)):
+            return a.axes
+        else:
+            raise ValueError(
+                f"Cannot broadcast {a} and {b}: no subset relationship. "
+                "If you want to broadcast anyway, use the broadcast_axis function to explicitly add axes"
+            )
+
     # we want to order the axes in such a way that we minimize movement, or at least allow
     # large blocks to be memcpy'd when possible.
     # In particular, we'd like to avoid the case of reordering [Y, Z] + [X, Y, Z] -> [Y, Z, X] or other major reshuffles
@@ -693,18 +714,32 @@ def _broadcast_order(a: NamedArray, b: NamedArray) -> Tuple[Axis, ...]:
     return tuple(x for x in b.axes if x not in a.axes) + a.axes
 
 
-def _broadcast_to(a: NamedArray, axes: Tuple[Axis, ...]) -> jnp.ndarray:
+def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...]) -> NamedArray:
     """
     Broadcasts a to the given axes, reordering if necessary
     """
     if a.axes == axes:
-        return a.array
+        return a
+
     to_transpose = tuple(ax for ax in axes if ax in a.axes)
     to_add = tuple(ax for ax in axes if ax not in a.axes)
 
     a = rearrange(a, to_transpose)
     a = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + [ax.size for ax in a.axes])
-    return a
+
+    return NamedArray(a, axes)
+
+
+def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
+    """
+    Broadcasts a, ensuring that it has all the axes in axis
+    """
+    if isinstance(axis, Axis) and axis in a.axes:
+        return a
+
+    axis = ensure_tuple(axis)
+    new_axes = tuple(ax for ax in axis if ax not in a.axes)
+    return broadcast_to(a, new_axes + a.axes)
 
 
 __all__ = [
@@ -721,5 +756,6 @@ __all__ = [
     "unflatten_axis",
     "unbind",
     "_broadcast_order",
-    "_broadcast_to",
+    "broadcast_to",
+    "broadcast_axis",
 ]

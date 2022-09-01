@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
@@ -53,3 +54,10 @@ def test_add_broadcasting():
     named4 = named4.rearrange((Height, Width, Depth))
 
     assert jnp.all(jnp.isclose(named4.array, named1.array + named2.array))
+
+    # now for the broadcasting we don't like
+    named5 = hax.random.uniform(PRNGKey(1), (Height, Depth))
+    named6 = hax.random.uniform(PRNGKey(2), (Width, Depth))
+
+    with pytest.raises(ValueError):
+        _ = named5 + named6
