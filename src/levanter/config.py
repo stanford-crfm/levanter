@@ -68,9 +68,11 @@ class WandbConfig:
         )
 
         if dataclasses.is_dataclass(hparams):
-            with tempfile.TemporaryFile() as tmpfile:
-                pyrallis.dump(hparams, tmpfile)
-                wandb.run.log_artifact(tmpfile.name, name="config.yaml")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_path = f"{tmpdir}/config.yaml"
+                with open(config_path, "w") as f:
+                    pyrallis.dump(hparams, f, encoding="utf-8")
+                wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
         if isinstance(self.save_code, str):
             path = self.save_code
@@ -243,7 +245,13 @@ def register_codecs():
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
     def policy_encode(policy: jmp.Policy):
-        out = f"compute={policy.compute_dtype.name},param={policy.param_dtype.name},output={policy.output_dtype.name}"
+        def name(dtype):
+            if hasattr(dtype, "name"):
+                return dtype.name
+            elif hasattr(dtype, "dtype"):
+                return name(dtype.dtype)
+
+        out = f"compute={name(policy.compute_dtype)},params={name(policy.param_dtype)},output={name(policy.output_dtype)}"
         assert jmp.get_policy(out) == policy
         return out
 
