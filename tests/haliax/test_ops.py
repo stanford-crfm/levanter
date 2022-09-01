@@ -18,3 +18,38 @@ def test_trace():
     trace2 = hax.trace(named2, Width, Depth)
     assert jnp.all(jnp.isclose(trace2.array, jnp.trace(named2.array, axis1=1, axis2=2)))
     assert trace2.axes == (Height,)
+
+
+def test_add():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named2 = hax.random.uniform(PRNGKey(1), (Height, Width, Depth))
+
+    named3 = named1 + named2
+    assert jnp.all(jnp.isclose(named3.array, named1.array + named2.array))
+
+    named2_reorder = named2.rearrange((Width, Height, Depth))
+    named4 = named1 + named2_reorder
+    named4 = named4.rearrange((Height, Width, Depth))
+    assert jnp.all(jnp.isclose(named4.array, named1.array + named2.array))
+
+
+def test_add_broadcasting():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named2 = hax.random.uniform(PRNGKey(1), (Width, Depth))
+
+    named3 = named1 + named2
+    assert jnp.all(jnp.isclose(named3.array, named1.array + named2.array))
+
+    named2_reorder = named2.rearrange((Depth, Width))
+    named4 = named1 + named2_reorder
+    named4 = named4.rearrange((Height, Width, Depth))
+
+    assert jnp.all(jnp.isclose(named4.array, named1.array + named2.array))

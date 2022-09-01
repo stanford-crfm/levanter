@@ -97,11 +97,11 @@ class NamedArray:
         return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
-    def all(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> "NamedArray":
-        return haliax.all(self, axis=axis, out=out, keepdims=keepdims)
+    def all(self, axis: Optional[AxisSpec] = None, *, keepdims=None) -> "NamedArray":
+        return haliax.all(self, axis=axis, keepdims=keepdims)
 
-    def any(self, axis: Optional[AxisSpec] = None, out=None, keepdims=None) -> "NamedArray":
-        return haliax.any(self, axis=axis, out=out, keepdims=keepdims)
+    def any(self, axis: Optional[AxisSpec] = None, *, keepdims=None) -> "NamedArray":
+        return haliax.any(self, axis=axis, keepdims=keepdims)
 
     # def select(self, axis: Axis, index: Union[int, 'NamedArray', jnp.ndarray]) -> Any:
     #     if isinstance(index, NamedArray):
@@ -139,11 +139,11 @@ class NamedArray:
     def copy(self) -> "NamedArray":
         return NamedArray(self.array.copy(), self.axes)
 
-    def cumprod(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> "NamedArray":
-        return haliax.cumprod(self, axis=axis, dtype=dtype, out=out)
+    def cumprod(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
+        return haliax.cumprod(self, axis=axis, dtype=dtype)
 
-    def cumsum(self, axis: Optional[AxisSpec] = None, dtype=None, out=None) -> "NamedArray":
-        return haliax.cumsum(self, axis=axis, dtype=dtype, out=out)
+    def cumsum(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
+        return haliax.cumsum(self, axis=axis, dtype=dtype)
 
     # def diagonal(self, offset=0, axis1: int = 0, axis2: int = 1) -> Any:
     #     ...
@@ -158,33 +158,32 @@ class NamedArray:
     def max(
         self,
         axis: Optional[AxisSpec] = None,
-        out=None,
+        *,
         keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
-        return haliax.max(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
+        return haliax.max(self, axis=axis, keepdims=keepdims, initial=initial, where=where)
 
     def mean(
         self,
         axis: Optional[AxisSpec] = None,
-        dtype=None,
-        out=None,
-        keepdims=False,
         *,
+        dtype=None,
+        keepdims=False,
         where=None,
     ) -> "NamedArray":
-        return haliax.mean(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
+        return haliax.mean(self, axis=axis, dtype=dtype, keepdims=keepdims, where=where)
 
     def min(
         self,
         axis: Optional[AxisSpec] = None,
-        out=None,
+        *,
         keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
-        return haliax.min(self, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
+        return haliax.min(self, axis=axis, keepdims=keepdims, initial=initial, where=where)
 
     # TODO
     # def nonzero(self, *, size=None, fill_value=None) -> Any:
@@ -193,8 +192,8 @@ class NamedArray:
     def prod(
         self,
         axis: Optional[AxisSpec] = None,
+        *,
         dtype=None,
-        out=None,
         keepdims=None,
         initial=None,
         where=None,
@@ -203,7 +202,6 @@ class NamedArray:
             self,
             axis=axis,
             dtype=dtype,
-            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
@@ -229,8 +227,8 @@ class NamedArray:
     # def reshape(self, *args, order='C') -> Any:
     #     ...
 
-    def round(self, decimals=0, out=None) -> "NamedArray":
-        return haliax.round(self, decimals=decimals, out=out)
+    def round(self, decimals=0) -> "NamedArray":
+        return haliax.round(self, decimals=decimals)
 
     # def searchsorted(self, v, side='left', sorter=None) -> Any:
     #     ...
@@ -241,18 +239,16 @@ class NamedArray:
     def std(
         self,
         axis: Optional[AxisSpec] = None,
+        *,
         dtype=None,
-        out=None,
         ddof=0,
         keepdims=False,
-        *,
         where=None,
     ) -> "NamedArray":
         return haliax.std(
             self,
             axis=axis,
             dtype=dtype,
-            out=out,
             ddof=ddof,
             keepdims=keepdims,
             where=where,
@@ -261,8 +257,8 @@ class NamedArray:
     def sum(
         self,
         axis: Optional[AxisSpec] = None,
+        *,
         dtype=None,
-        out=None,
         keepdims=None,
         initial=None,
         where=None,
@@ -271,7 +267,6 @@ class NamedArray:
             self,
             axis=axis,
             dtype=dtype,
-            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
@@ -283,14 +278,13 @@ class NamedArray:
     def tolist(self) -> Any:
         return self.array.tolist()
 
-    def trace(self, axis1: Axis, axis2: Axis, offset=0, dtype=None, out=None) -> "NamedArray":
-        return haliax.trace(self, offset=offset, axis1=axis1, axis2=axis2, dtype=dtype, out=out)
+    def trace(self, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> "NamedArray":
+        return haliax.trace(self, offset=offset, axis1=axis1, axis2=axis2, dtype=dtype)
 
     def var(
         self,
         axis: Optional[AxisSpec] = None,
         dtype=None,
-        out=None,
         ddof=0,
         keepdims=False,
         *,
@@ -300,37 +294,143 @@ class NamedArray:
             self,
             axis=axis,
             dtype=dtype,
-            out=out,
             ddof=ddof,
             keepdims=keepdims,
             where=where,
         )
 
     # operators
-    def __add__(self, other) -> Any:
-        # TODO: check shape and broadcast
-        raise NotImplementedError
 
-    def __mul__(self, other):
-        if jnp.isscalar(other):
-            return NamedArray(self.array * other, self.axes)
+    # Comparisons
+    def __lt__(self, other) -> "NamedArray":
+        return haliax.less(self, other)
 
-        raise NotImplementedError
+    def __le__(self, other) -> "NamedArray":
+        return haliax.less_equal(self, other)
 
-    def __rmul__(self, other):
-        raise NotImplementedError
+    def __eq__(self, other):
+        return haliax.equal(self, other)
 
-    def __truediv__(self, other):
-        if jnp.isscalar(other):
-            return NamedArray(self.array / other, self.axes)
+    def __ne__(self, other):
+        return haliax.not_equal(self, other)
 
-        raise NotImplementedError
+    def __gt__(self, other) -> "NamedArray":
+        return haliax.greater(self, other)
 
-    def __rtruediv__(self, other):
-        if jnp.isscalar(other):
-            return NamedArray(other / self.array, self.axes)
+    def __ge__(self, other) -> "NamedArray":
+        return haliax.greater_equal(self, other)
 
-        raise NotImplementedError
+    # Unary arithmetic
+
+    def __neg__(self) -> "NamedArray":
+        return haliax.negative(self)
+
+    def __pos__(self) -> "NamedArray":
+        return haliax.positive(self)
+
+    def __abs__(self) -> "NamedArray":
+        return haliax.absolute(self)
+
+    def __invert__(self) -> "NamedArray":
+        return haliax.invert(self)
+
+    # Binary arithmetic
+
+    def __add__(self, other) -> "NamedArray":
+        return haliax.add(self, other)
+
+    def __sub__(self, other) -> "NamedArray":
+        return haliax.subtract(self, other)
+
+    def __mul__(self, other) -> "NamedArray":
+        return haliax.multiply(self, other)
+
+    def __matmul__(self, other) -> "NamedArray":
+        raise ValueError("matmul is too ambiguous with NamedArrays. Use dot instead.")
+
+    def __truediv__(self, other) -> "NamedArray":
+        return haliax.true_divide(self, other)
+
+    def __floordiv__(self, other) -> "NamedArray":
+        return haliax.floor_divide(self, other)
+
+    def __mod__(self, other) -> "NamedArray":
+        return haliax.mod(self, other)
+
+    def __divmod__(self, other) -> "NamedArray":
+        return haliax.divmod(self, other)
+
+    def __pow__(self, other) -> "NamedArray":
+        return haliax.power(self, other)
+
+    def __lshift__(self, other) -> "NamedArray":
+        return haliax.left_shift(self, other)
+
+    def __rshift__(self, other) -> "NamedArray":
+        return haliax.right_shift(self, other)
+
+    def __and__(self, other) -> "NamedArray":
+        return haliax.bitwise_and(self, other)
+
+    def __xor__(self, other) -> "NamedArray":
+        return haliax.bitwise_xor(self, other)
+
+    def __or__(self, other) -> "NamedArray":
+        return haliax.bitwise_or(self, other)
+
+    def __radd__(self, other) -> "NamedArray":
+        return haliax.add(other, self)
+
+    def __rsub__(self, other) -> "NamedArray":
+        return haliax.subtract(other, self)
+
+    def __rmul__(self, other) -> "NamedArray":
+        return haliax.multiply(other, self)
+
+    def __rmatmul__(self, other):
+        raise ValueError("Matrix multiplication is too ambiguous with NamedArrays. Use dot instead.")
+
+    def __rtruediv__(self, other) -> "NamedArray":
+        return haliax.true_divide(other, self)
+
+    def __rfloordiv__(self, other) -> "NamedArray":
+        return haliax.floor_divide(other, self)
+
+    def __rmod__(self, other) -> "NamedArray":
+        return haliax.mod(other, self)
+
+    def __rdivmod__(self, other) -> "NamedArray":
+        return haliax.divmod(other, self)
+
+    def __rpow__(self, other) -> "NamedArray":
+        return haliax.power(other, self)
+
+    def __rlshift__(self, other) -> "NamedArray":
+        return haliax.left_shift(other, self)
+
+    def __rrshift__(self, other) -> "NamedArray":
+        return haliax.right_shift(other, self)
+
+    def __rand__(self, other) -> "NamedArray":
+        return haliax.bitwise_and(other, self)
+
+    def __rxor__(self, other) -> "NamedArray":
+        return haliax.bitwise_xor(other, self)
+
+    def __ror__(self, other) -> "NamedArray":
+        return haliax.bitwise_or(other, self)
+
+    def __bool__(self) -> bool:
+        return bool(self.array)
+
+    def __complex__(self) -> complex:
+        return complex(self.array)
+
+    def __int__(self) -> int:
+        return int(self.array)
+
+    def __float__(self) -> float:
+        return float(self.array)
 
 
 def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedArray:
@@ -567,6 +667,46 @@ def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
         return a1 + a2
 
 
+# Broadcasting Support
+def _broadcast_order(a: NamedArray, b: NamedArray) -> Tuple[Axis, ...]:
+    """
+    Returns an ordering of axes for broadcasting a and b
+    """
+    # special cases:
+    if a.axes == b.axes:
+        return a.axes
+    if len(a.axes) == 0:
+        return b.axes
+    if len(b.axes) == 0:
+        return a.axes
+    # we want to order the axes in such a way that we minimize movement, or at least allow
+    # large blocks to be memcpy'd when possible.
+    # In particular, we'd like to avoid the case of reordering [Y, Z] + [X, Y, Z] -> [Y, Z, X] or other major reshuffles
+
+    # here's what we do: we try to preserve the order of axes in the bigger array, and then stick the axes from the
+    # other array on the front (because everything is row major)
+    # this ensures we only have to move one array around
+    if a.size < b.size:
+        a, b = b, a
+
+    # a is biggest so it goes at the end
+    return tuple(x for x in b.axes if x not in a.axes) + a.axes
+
+
+def _broadcast_to(a: NamedArray, axes: Tuple[Axis, ...]) -> jnp.ndarray:
+    """
+    Broadcasts a to the given axes, reordering if necessary
+    """
+    if a.axes == axes:
+        return a.array
+    to_transpose = tuple(ax for ax in axes if ax in a.axes)
+    to_add = tuple(ax for ax in axes if ax not in a.axes)
+
+    a = rearrange(a, to_transpose)
+    a = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + [ax.size for ax in a.axes])
+    return a
+
+
 __all__ = [
     "Axis",
     "AxisSpec",
@@ -580,4 +720,6 @@ __all__ = [
     "flatten_axes",
     "unflatten_axis",
     "unbind",
+    "_broadcast_order",
+    "_broadcast_to",
 ]

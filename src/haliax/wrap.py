@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from haliax.core import AxisSpec, NamedArray
+from haliax.core import AxisSpec, NamedArray, _broadcast_order, _broadcast_to
 from haliax.util import ensure_tuple
 
 
@@ -92,4 +92,22 @@ def wrap_axiswise_call(fn, single_axis_only: bool):
     return wrapper
 
 
-__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call"]
+def wrap_elemwise_binary(op):
+    @functools.wraps(op)
+    def binop(a, b):
+        if isinstance(a, NamedArray) and isinstance(b, NamedArray):
+            axes = _broadcast_order(a, b)
+            a = _broadcast_to(a, axes)
+            b = _broadcast_to(b, axes)
+            return NamedArray(op(a, b), axes)
+        elif isinstance(a, NamedArray) and jnp.isscalar(b):
+            return NamedArray(op(a.array, b), a.axes)
+        elif isinstance(b, NamedArray) and jnp.isscalar(a):
+            return NamedArray(op(a, b.array), b.axes)
+        else:
+            return op(a, b)
+
+    return binop
+
+
+__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call", "wrap_elemwise_binary"]

@@ -20,7 +20,7 @@ from .core import (
 )
 from .hof import reduce, scan, vmap
 from .ops import trace
-from .wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
+from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
 # creation routines
@@ -92,6 +92,7 @@ floor = wrap_elemwise_unary(jnp.floor)
 frexp = wrap_elemwise_unary(jnp.frexp)
 i0 = wrap_elemwise_unary(jnp.i0)
 imag = wrap_elemwise_unary(jnp.imag)
+invert = wrap_elemwise_unary(jnp.invert)
 iscomplex = wrap_elemwise_unary(jnp.iscomplex)
 isfinite = wrap_elemwise_unary(jnp.isfinite)
 isinf = wrap_elemwise_unary(jnp.isinf)
@@ -146,6 +147,44 @@ cumsum = wrap_axiswise_call(jnp.cumsum, True)
 cumprod = wrap_axiswise_call(jnp.cumprod, True)
 cumproduct = wrap_axiswise_call(jnp.cumproduct, True)
 sort = wrap_axiswise_call(jnp.sort, True)
+
+# elemwise binary ops
+add = wrap_elemwise_binary(jnp.add)
+arctan2 = wrap_elemwise_binary(jnp.arctan2)
+bitwise_and = wrap_elemwise_binary(jnp.bitwise_and)
+bitwise_or = wrap_elemwise_binary(jnp.bitwise_or)
+bitwise_xor = wrap_elemwise_binary(jnp.bitwise_xor)
+divide = wrap_elemwise_binary(jnp.divide)
+divmod = wrap_elemwise_binary(jnp.divmod)
+equal = wrap_elemwise_binary(jnp.equal)
+float_power = wrap_elemwise_binary(jnp.float_power)
+floor_divide = wrap_elemwise_binary(jnp.floor_divide)
+fmax = wrap_elemwise_binary(jnp.fmax)
+fmin = wrap_elemwise_binary(jnp.fmin)
+fmod = wrap_elemwise_binary(jnp.fmod)
+greater = wrap_elemwise_binary(jnp.greater)
+greater_equal = wrap_elemwise_binary(jnp.greater_equal)
+hypot = wrap_elemwise_binary(jnp.hypot)
+left_shift = wrap_elemwise_binary(jnp.left_shift)
+less = wrap_elemwise_binary(jnp.less)
+less_equal = wrap_elemwise_binary(jnp.less_equal)
+logaddexp = wrap_elemwise_binary(jnp.logaddexp)
+logaddexp2 = wrap_elemwise_binary(jnp.logaddexp2)
+logical_and = wrap_elemwise_binary(jnp.logical_and)
+logical_or = wrap_elemwise_binary(jnp.logical_or)
+logical_xor = wrap_elemwise_binary(jnp.logical_xor)
+maximum = wrap_elemwise_binary(jnp.maximum)
+minimum = wrap_elemwise_binary(jnp.minimum)
+mod = wrap_elemwise_binary(jnp.mod)
+multiply = wrap_elemwise_binary(jnp.multiply)
+nextafter = wrap_elemwise_binary(jnp.nextafter)
+not_equal = wrap_elemwise_binary(jnp.not_equal)
+power = wrap_elemwise_binary(jnp.power)
+remainder = wrap_elemwise_binary(jnp.remainder)
+right_shift = wrap_elemwise_binary(jnp.right_shift)
+subtract = wrap_elemwise_binary(jnp.subtract)
+true_divide = wrap_elemwise_binary(jnp.true_divide)
+
 
 __all__ = [
     "Axis",
