@@ -1,14 +1,14 @@
-from typing import List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Optional
 
 import equinox as eqx
+import jax
 import jmp
 
 import haliax as hax
 from haliax import AxisSpec, NamedArray
-from levanter.jax_utils import named_call
 
 
-class NamedLinear(eqx.Module):
+class Linear(eqx.Module):
     weight: NamedArray
     bias: Optional[NamedArray]
 
@@ -25,30 +25,12 @@ class NamedLinear(eqx.Module):
         self.Out = Out
         self.mp = mp
 
-    @named_call(name="linear")
+    @jax.named_scope(name="linear")
     def __call__(self, inputs):
-        q: NamedArray = inputs.dot(self.In, self.weight)
+        q = inputs.dot(self.In, self.weight)
         q = self.mp.cast_to_compute(q)
+
         if self.bias is not None:
             q = q + self.bias
 
         return q
-
-    def torch_key_leaves(self, prefix: Optional[str] = None):
-        return _apply_prefix(prefix, ["weight", "bias"] if self.bias is not None else ["weight"])
-
-
-def _apply_prefix(prefix: Optional[str], leaves: List[Optional[str]]) -> List[Optional[str]]:
-    if prefix is None:
-        return leaves
-    else:
-        return [prefix + "." + leaf if leaf else prefix for leaf in leaves]
-
-
-T = TypeVar("T")
-
-
-def _ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
-    if isinstance(x, Sequence):
-        return tuple(x)
-    return (x,)
