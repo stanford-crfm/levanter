@@ -142,6 +142,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         # do this first to help keep FP values small
         query = query * scale
+        query = self.mp.cast_to_compute(query)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
         # TODO(haliax): add elemwise ops to hax
