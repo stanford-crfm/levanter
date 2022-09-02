@@ -1,3 +1,4 @@
+import functools as ft
 from dataclasses import dataclass
 from math import prod
 from types import EllipsisType
@@ -679,26 +680,42 @@ def _broadcast_order(a: NamedArray, b: NamedArray, require_subset: bool = True) 
     numpy's rules too many times.
     """
     # special cases:
-    if a.axes == b.axes:
-        return a.axes
-    if len(a.axes) == 0:
-        return b.axes
-    if len(b.axes) == 0:
-        return a.axes
 
     # TODO: decide under which conditions we want to allow broadcasting both arrays
     # maybe just add a context manager to allow it?
+
+    broadcasted = _broadcast_axes(a.axes, b.axes, require_subset)
+    if broadcasted is None:
+        raise ValueError(
+            f"Cannot broadcast {a} and {b}: no subset relationship. "
+            "If you want to broadcast anyway, use the broadcast_axis function to explicitly add axes"
+        )
+    return broadcasted
+
+
+def _broadcast_axes(
+    a_axes: Tuple[Axis, ...], b_axes: Tuple[Axis, ...], require_subset: bool = True
+) -> Optional[Tuple[Axis, ...]]:
+    if a_axes == b_axes:
+        return a_axes
+    if len(a_axes) == 0:
+        return b_axes
+    if len(b_axes) == 0:
+        return a_axes
+
     if require_subset:
         # check if one is a subset of the other
-        if set(a.axes).issubset(set(b.axes)):
-            return b.axes
-        elif set(b.axes).issubset(set(a.axes)):
-            return a.axes
+        if set(a_axes).issubset(set(b_axes)):
+            return b_axes
+        elif set(b_axes).issubset(set(a_axes)):
+            return a_axes
         else:
-            raise ValueError(
-                f"Cannot broadcast {a} and {b}: no subset relationship. "
-                "If you want to broadcast anyway, use the broadcast_axis function to explicitly add axes"
-            )
+            return None
+
+    a_size = prod(ax.size for ax in a_axes)
+    b_size = prod(ax.size for ax in b_axes)
+    if a_size < b_size:
+        a_axes, b_axes = b_axes, a_axes
 
     # we want to order the axes in such a way that we minimize movement, or at least allow
     # large blocks to be memcpy'd when possible.
@@ -707,27 +724,61 @@ def _broadcast_order(a: NamedArray, b: NamedArray, require_subset: bool = True) 
     # here's what we do: we try to preserve the order of axes in the bigger array, and then stick the axes from the
     # other array on the front (because everything is row major)
     # this ensures we only have to move one array around
-    if a.size < b.size:
-        a, b = b, a
 
-    # a is biggest so it goes at the end
-    return tuple(x for x in b.axes if x not in a.axes) + a.axes
+    return tuple(x for x in b_axes if x not in a_axes) + a_axes
 
 
-def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...]) -> NamedArray:
+def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...], ensure_order: bool = True) -> NamedArray:
     """
-    Broadcasts a to the given axes, reordering if necessary
+    Broadcasts a to the given axes. If ensure_order is True (default), then the returned array will have the same axes
+    in the same order as the given axes. Otherwise, the axes may not be moved
     """
     if a.axes == axes:
         return a
 
-    to_transpose = tuple(ax for ax in axes if ax in a.axes)
     to_add = tuple(ax for ax in axes if ax not in a.axes)
 
-    a = rearrange(a, to_transpose)
-    a = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + [ax.size for ax in a.axes])
+    # broadcast whatever we need to the front and reorder
+    a_array = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + [ax.size for ax in a.axes])
+    a = NamedArray(a_array, to_add + a.axes)
 
-    return NamedArray(a, axes)
+    if ensure_order:
+        a = rearrange(a, axes)
+
+    return a
+
+
+def broadcast_arrays(
+    *arrays: NamedArray, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[NamedArray, ...]:
+    """
+    Broadcasts a sequence of arrays to a common set of axes.
+
+     Parameters
+    ----------
+    arrays: NamedArray
+        The arrays to broadcast
+    require_subset: bool
+        If True, then one of the arrays must be a subset of the other. This is a bit stricter than numpy's broadcasting
+        rules, but I've been bitten by numpy's rules too many times. If False is looser than numpy's rules, and allows
+        broadcasting any pair of arrays (so long as the axes don't overtly conflict with different sizes for the same
+        name.)
+    ensure_order: bool
+        If True, then the returned arrays will have the same axes in the same order as the given axes. Otherwise, the
+        axes may not be moved.
+    """
+    if len(arrays) == 0:
+        return ()
+
+    # sort the arrays by size, so that we use the biggest ones to broadcast the others
+    # need to hold on to the order so we can return the arrays in the same order
+    size_order = sorted(range(len(arrays)), key=lambda i: arrays[i].size, reverse=True)
+    all_axes = [arrays[i].axes for i in size_order]
+    full_axes = ft.reduce(lambda a, b: _broadcast_axes(a, b, require_subset) if a is not None else None, all_axes)  # type: ignore
+    if full_axes is None:
+        raise ValueError(f"Cannot broadcast arrays {arrays}: no subset relationship")
+
+    return tuple(broadcast_to(a, full_axes, ensure_order=ensure_order) for a in arrays)
 
 
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
@@ -758,4 +809,5 @@ __all__ = [
     "_broadcast_order",
     "broadcast_to",
     "broadcast_axis",
+    "broadcast_arrays",
 ]

@@ -61,3 +61,39 @@ def test_add_broadcasting():
 
     with pytest.raises(ValueError):
         _ = named5 + named6
+
+
+# TODO: test add with scalar
+# TODO: tests for other ops
+
+
+def test_where():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named2 = hax.random.uniform(PRNGKey(1), (Height, Width, Depth))
+
+    named3 = hax.where(named1 > named2, named1, named2)
+    assert jnp.all(jnp.isclose(named3.array, jnp.where(named1.array > named2.array, named1.array, named2.array)))
+
+    named2_reorder = named2.rearrange((Width, Height, Depth))
+    named4 = hax.where(named1 > named2_reorder, named1, named2_reorder)
+    named4 = named4.rearrange((Height, Width, Depth))
+    assert jnp.all(jnp.isclose(named4.array, jnp.where(named1.array > named2.array, named1.array, named2.array)))
+
+    # now some broadcasting
+    named5 = hax.random.uniform(PRNGKey(1), (Height, Width))
+    named6 = hax.random.uniform(PRNGKey(2), Width)
+
+    named7 = hax.where(named5 > named6, named5, named6)
+    named7 = named7.rearrange((Height, Width))
+    assert jnp.all(jnp.isclose(named7.array, jnp.where(named5.array > named6.array, named5.array, named6.array)))
+
+    # now for the broadcasting we don't like
+    named5 = hax.random.uniform(PRNGKey(1), (Height, Depth))
+    named6 = hax.random.uniform(PRNGKey(2), (Width, Depth))
+
+    with pytest.raises(ValueError):
+        _ = hax.where(named5 > named6, named5, named6)

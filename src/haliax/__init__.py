@@ -21,7 +21,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import reduce, scan, vmap
-from .ops import trace
+from .ops import trace, where
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -292,4 +292,40 @@ __all__ = [
     "reduce",
     "vmap",
     "trace",
+    "where",
+    "add",
+    "arctan2",
+    "bitwise_and",
+    "bitwise_or",
+    "bitwise_xor",
+    "divide",
+    "divmod",
+    "equal",
+    "float_power",
+    "floor_divide",
+    "fmax",
+    "fmin",
+    "fmod",
+    "greater",
+    "greater_equal",
+    "hypot",
+    "left_shift",
+    "less",
+    "less_equal",
+    "logaddexp",
+    "logaddexp2",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+    "maximum",
+    "minimum",
+    "mod",
+    "multiply",
+    "nextafter",
+    "not_equal",
+    "power",
+    "remainder",
+    "right_shift",
+    "subtract",
+    "true_divide",
 ]
