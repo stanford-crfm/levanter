@@ -124,13 +124,12 @@ def main(config: TrainGpt2Config):
 
             pred_y = pred_y[:-1]
             target_y = input_ids[1:]
+            labels = jax.nn.one_hot(target_y, vocab_size)
 
-            logits_max = jnp.max(pred_y, axis=-1, keepdims=True)
-            pred_y -= jax.lax.stop_gradient(logits_max)
-            label_logits = jnp.take_along_axis(pred_y, target_y[..., None], axis=-1)[..., 0]
-            log_normalizers = jnp.log(jnp.sum(jnp.exp(pred_y), axis=-1))
+            log_normalizers = jax.nn.logsumexp(pred_y, -1, keepdims=True)
+            log_normalized = pred_y - log_normalizers
 
-            loss = log_normalizers - label_logits
+            loss = -jnp.sum(labels * log_normalized, axis=-1)
             loss = jnp.mean(loss)
 
             if not inference and config.log_z_regularization > 0:
