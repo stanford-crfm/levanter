@@ -63,7 +63,19 @@ def test_add_broadcasting():
         _ = named5 + named6
 
 
-# TODO: test add with scalar
+def test_add_scalar():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named2 = named1 + 1.0
+    assert jnp.all(jnp.isclose(named2.array, named1.array + 1.0))
+
+    named3 = 1.0 + named1
+    assert jnp.all(jnp.isclose(named3.array, named1.array + 1.0))
+
+
 # TODO: tests for other ops
 
 

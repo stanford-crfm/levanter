@@ -60,8 +60,10 @@ def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
     return NamedArray(jnp.full_like(a.array, fill_value, dtype=dtype), a.axes)
 
 
-def arange(axis: Axis, dtype=None) -> NamedArray:
-    return NamedArray(jnp.arange(axis.size, dtype=dtype), (axis,))
+def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
+    """Version of jnp.arange that returns a NamedArray"""
+    stop = start + axis.size * step
+    return NamedArray(jnp.arange(start, stop, step, dtype=dtype), (axis,))
 
 
 # elementwise unary operations
