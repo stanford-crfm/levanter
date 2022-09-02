@@ -1,8 +1,9 @@
 # Various Pyrallis configs
 import dataclasses
+import tempfile
 from dataclasses import dataclass
 from functools import cached_property
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -32,18 +33,23 @@ class WandbConfig:
     group: Optional[str] = None
     mode: Optional[str] = None
 
+    save_code: Union[bool, str] = True
+    """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
+    typically don't run from the root of the repo)."""
+
     def init(self, hparams=None, **extra_hparams):
         import wandb
 
+        hparams_to_save = {}
         if hparams is None:
-            hparams = {}
+            hparams_to_save = {}
         elif dataclasses.is_dataclass(hparams):
-            hparams = dataclasses.asdict(hparams)
+            hparams_to_save = dataclasses.asdict(hparams)
         else:
-            hparams = dict(hparams)
+            hparams_to_save = dict(hparams)
 
         if extra_hparams:
-            hparams.update(extra_hparams)
+            hparams_to_save.update(extra_hparams)
 
         # for distributed runs, we only want the primary worker to use wandb, so we disable everyone else
         mode = self.mode
@@ -58,8 +64,34 @@ class WandbConfig:
             id=self.id,
             group=self.group,
             mode=mode,
-            config=hparams,
+            config=hparams_to_save,
         )
+
+        if dataclasses.is_dataclass(hparams):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_path = f"{tmpdir}/config.yaml"
+                with open(config_path, "w") as f:
+                    pyrallis.dump(hparams, f, encoding="utf-8")
+                wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
+
+        if isinstance(self.save_code, str):
+            path = self.save_code
+            wandb.run.log_code(path)
+        elif self.save_code:
+            # sniff out the main directory (since we typically don't run from the root of the repo)
+            # we'll walk the stack until we're at a git root
+            import os
+            import traceback
+
+            stack = traceback.extract_stack()
+            path_to_save = "."
+            for frame in stack:
+                dirname = os.path.dirname(frame.filename)
+                if os.path.exists(os.path.join(dirname, ".git")):
+                    path_to_save = dirname
+                    break
+
+            wandb.run.log_code(path_to_save)
 
 
 @dataclass
@@ -213,7 +245,13 @@ def register_codecs():
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
     def policy_encode(policy: jmp.Policy):
-        out = f"compute={policy.compute_dtype.name},param={policy.param_dtype.name},output={policy.output_dtype.name}"
+        def name(dtype):
+            if hasattr(dtype, "name"):
+                return dtype.name
+            elif hasattr(dtype, "dtype"):
+                return name(dtype.dtype)
+
+        out = f"compute={name(policy.compute_dtype)},params={name(policy.param_dtype)},output={name(policy.output_dtype)}"
         assert jmp.get_policy(out) == policy
         return out
 

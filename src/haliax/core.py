@@ -233,7 +233,7 @@ class NamedArray:
     def unbind(self, axis: Axis) -> Sequence["NamedArray"]:
         return haliax.unbind(self, axis=axis)
 
-    def rename(self, renames: Mapping[Axis, Axis]):
+    def rename(self, renames: Mapping[Axis, Axis]) -> "NamedArray":
         return haliax.rename(self, renames=renames)
 
     # def squeeze(self, axis: Optional[AxisSpec] = None) -> Any:
@@ -248,7 +248,7 @@ class NamedArray:
         keepdims=False,
         *,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.std(
             self,
             axis=axis,
@@ -267,7 +267,7 @@ class NamedArray:
         keepdims=None,
         initial=None,
         where=None,
-    ) -> Any:
+    ) -> "NamedArray":
         return haliax.sum(
             self,
             axis=axis,
@@ -278,7 +278,7 @@ class NamedArray:
             where=where,
         )
 
-    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> Any:
+    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
 
     def tobytes(self, order="C") -> Any:

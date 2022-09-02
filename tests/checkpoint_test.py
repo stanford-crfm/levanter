@@ -17,7 +17,7 @@ from levanter.checkpoint import load_checkpoint, save_checkpoint
 
 def assert_trees_not_close(a, b):
     try:
-        assert_trees_all_close(jax.tree_leaves(arrays_only(a)), jax.tree_leaves(arrays_only(b)))
+        assert_trees_all_close(jax.tree_util.tree_leaves(arrays_only(a)), jax.tree_util.tree_leaves(arrays_only(b)))
     except AssertionError:
         pass
     else:
@@ -134,8 +134,8 @@ def test_checkpoint_simple():
         )
 
         assert_trees_all_close(
-            jax.tree_leaves(arrays_only(restored_model)),
-            jax.tree_leaves(arrays_only(initial_model)),
+            jax.tree_util.tree_leaves(arrays_only(restored_model)),
+            jax.tree_util.tree_leaves(arrays_only(initial_model)),
         )
         assert all(np.isclose(rkey, initial_key))
         assert step == 10
@@ -181,11 +181,11 @@ def test_checkpoint_steps():
         )
 
         assert_trees_all_close(
-            jax.tree_leaves(arrays_only(restored_model)),
-            jax.tree_leaves(arrays_only(model)),
+            jax.tree_util.tree_leaves(arrays_only(restored_model)),
+            jax.tree_util.tree_leaves(arrays_only(model)),
         )
         assert_trees_all_close(
-            jax.tree_leaves(arrays_only(restored_optstate)),
-            jax.tree_leaves(arrays_only(state)),
+            jax.tree_util.tree_leaves(arrays_only(restored_optstate)),
+            jax.tree_util.tree_leaves(arrays_only(state)),
         )
         assert step == 3
