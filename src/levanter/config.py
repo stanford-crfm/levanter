@@ -1,5 +1,6 @@
 # Various Pyrallis configs
 import dataclasses
+import logging
 import tempfile
 from dataclasses import dataclass
 from functools import cached_property
@@ -11,12 +12,16 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
 from levanter import jax_utils
 from levanter.axis_names import ResourceAxis
 from levanter.mesh import MeshInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,19 +82,27 @@ class WandbConfig:
         if isinstance(self.save_code, str):
             path = self.save_code
             wandb.run.log_code(path)
+            logger.info(f"Logged code from {path} to wandb")
         elif self.save_code:
             # sniff out the main directory (since we typically don't run from the root of the repo)
-            # we'll walk the stack until we're at a git root
+            # we'll walk the stack and directories for the files in the stack the until we're at a git root
             import os
             import traceback
 
             stack = traceback.extract_stack()
             path_to_save = "."
+            # start from the top of the stack and work our way down since we want to hit the main file first
             for frame in stack:
                 dirname = os.path.dirname(frame.filename)
-                if os.path.exists(os.path.join(dirname, ".git")):
+                # see if it's under a git root
+                try:
+                    Repo(dirname, search_parent_directories=True)
                     path_to_save = dirname
                     break
+                except (NoSuchPathError, InvalidGitRepositoryError):
+                    logger.debug(f"Skipping {dirname} since it's not a git root")
+                    pass
+            logger.info(f"Logged code from {path_to_save} to wandb")
 
             wandb.run.log_code(path_to_save)
 
