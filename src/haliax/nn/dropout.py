@@ -28,7 +28,6 @@ class Dropout(eqx.Module):
         self.pdrop = pdrop
         self.broadcast_axes = broadcast_axes
 
-    @jax.named_scope(name="dropout")
     def __call__(
         self,
         x: NamedArray,
