@@ -1,11 +1,15 @@
+import jax
 import jax.numpy as jnp
 
 import haliax.random as random
+from haliax import nn as nn
 
 from .core import (
     Axis,
     AxisSpec,
     NamedArray,
+    broadcast_axis,
+    broadcast_to,
     concat_axis_specs,
     dot,
     flatten_axes,
@@ -18,7 +22,8 @@ from .core import (
     unflatten_axis,
 )
 from .hof import reduce, scan, vmap
-from .wrap import wrap_elemwise_unary, wrap_normalization_call, wrap_reduction_call
+from .ops import trace, where
+from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
 # creation routines
@@ -56,8 +61,10 @@ def full_like(a: NamedArray, fill_value, dtype=None) -> NamedArray:
     return NamedArray(jnp.full_like(a.array, fill_value, dtype=dtype), a.axes)
 
 
-def arange(axis: Axis, dtype=None) -> NamedArray:
-    return NamedArray(jnp.arange(axis.size, dtype=dtype), (axis,))
+def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
+    """Version of jnp.arange that returns a NamedArray"""
+    stop = start + axis.size * step
+    return NamedArray(jnp.arange(start, stop, step, dtype=dtype), (axis,))
 
 
 # elementwise unary operations
@@ -90,6 +97,7 @@ floor = wrap_elemwise_unary(jnp.floor)
 frexp = wrap_elemwise_unary(jnp.frexp)
 i0 = wrap_elemwise_unary(jnp.i0)
 imag = wrap_elemwise_unary(jnp.imag)
+invert = wrap_elemwise_unary(jnp.invert)
 iscomplex = wrap_elemwise_unary(jnp.iscomplex)
 isfinite = wrap_elemwise_unary(jnp.isfinite)
 isinf = wrap_elemwise_unary(jnp.isinf)
@@ -111,6 +119,7 @@ real = wrap_elemwise_unary(jnp.real)
 reciprocal = wrap_elemwise_unary(jnp.reciprocal)
 rint = wrap_elemwise_unary(jnp.rint)
 round = wrap_elemwise_unary(jnp.round)
+rsqrt = wrap_elemwise_unary(jax.lax.rsqrt)  # nb this is in lax
 sign = wrap_elemwise_unary(jnp.sign)
 signbit = wrap_elemwise_unary(jnp.signbit)
 sin = wrap_elemwise_unary(jnp.sin)
@@ -132,6 +141,7 @@ max = wrap_reduction_call(jnp.max)
 mean = wrap_reduction_call(jnp.mean)
 min = wrap_reduction_call(jnp.min)
 prod = wrap_reduction_call(jnp.prod)
+ptp = wrap_reduction_call(jnp.ptp)
 product = wrap_reduction_call(jnp.product)
 sometrue = wrap_reduction_call(jnp.sometrue)
 std = wrap_reduction_call(jnp.std)
@@ -139,14 +149,55 @@ sum = wrap_reduction_call(jnp.sum)
 var = wrap_reduction_call(jnp.var)
 
 # "Normalization" functions that use an axis but don't change the shape
-cumsum = wrap_normalization_call(jnp.cumsum, True)
-cumprod = wrap_normalization_call(jnp.cumprod, True)
-cumproduct = wrap_normalization_call(jnp.cumproduct, True)
+cumsum = wrap_axiswise_call(jnp.cumsum, True)
+cumprod = wrap_axiswise_call(jnp.cumprod, True)
+cumproduct = wrap_axiswise_call(jnp.cumproduct, True)
+sort = wrap_axiswise_call(jnp.sort, True)
+
+# elemwise binary ops
+add = wrap_elemwise_binary(jnp.add)
+arctan2 = wrap_elemwise_binary(jnp.arctan2)
+bitwise_and = wrap_elemwise_binary(jnp.bitwise_and)
+bitwise_or = wrap_elemwise_binary(jnp.bitwise_or)
+bitwise_xor = wrap_elemwise_binary(jnp.bitwise_xor)
+divide = wrap_elemwise_binary(jnp.divide)
+divmod = wrap_elemwise_binary(jnp.divmod)
+equal = wrap_elemwise_binary(jnp.equal)
+float_power = wrap_elemwise_binary(jnp.float_power)
+floor_divide = wrap_elemwise_binary(jnp.floor_divide)
+fmax = wrap_elemwise_binary(jnp.fmax)
+fmin = wrap_elemwise_binary(jnp.fmin)
+fmod = wrap_elemwise_binary(jnp.fmod)
+greater = wrap_elemwise_binary(jnp.greater)
+greater_equal = wrap_elemwise_binary(jnp.greater_equal)
+hypot = wrap_elemwise_binary(jnp.hypot)
+left_shift = wrap_elemwise_binary(jnp.left_shift)
+less = wrap_elemwise_binary(jnp.less)
+less_equal = wrap_elemwise_binary(jnp.less_equal)
+logaddexp = wrap_elemwise_binary(jnp.logaddexp)
+logaddexp2 = wrap_elemwise_binary(jnp.logaddexp2)
+logical_and = wrap_elemwise_binary(jnp.logical_and)
+logical_or = wrap_elemwise_binary(jnp.logical_or)
+logical_xor = wrap_elemwise_binary(jnp.logical_xor)
+maximum = wrap_elemwise_binary(jnp.maximum)
+minimum = wrap_elemwise_binary(jnp.minimum)
+mod = wrap_elemwise_binary(jnp.mod)
+multiply = wrap_elemwise_binary(jnp.multiply)
+nextafter = wrap_elemwise_binary(jnp.nextafter)
+not_equal = wrap_elemwise_binary(jnp.not_equal)
+power = wrap_elemwise_binary(jnp.power)
+remainder = wrap_elemwise_binary(jnp.remainder)
+right_shift = wrap_elemwise_binary(jnp.right_shift)
+subtract = wrap_elemwise_binary(jnp.subtract)
+true_divide = wrap_elemwise_binary(jnp.true_divide)
+
 
 __all__ = [
     "Axis",
     "NamedArray",
     "AxisSpec",
+    "broadcast_to",
+    "broadcast_axis",
     "named",
     "dot",
     "split",
@@ -213,6 +264,7 @@ __all__ = [
     "real",
     "reciprocal",
     "rint",
+    "rsqrt",
     "round",
     "sign",
     "signbit",
@@ -232,6 +284,7 @@ __all__ = [
     "min",
     "prod",
     "product",
+    "ptp",
     "sometrue",
     "std",
     "sum",
@@ -239,7 +292,45 @@ __all__ = [
     "cumsum",
     "cumprod",
     "cumproduct",
+    "sort",
     "scan",
     "reduce",
     "vmap",
+    "trace",
+    "where",
+    "add",
+    "arctan2",
+    "bitwise_and",
+    "bitwise_or",
+    "bitwise_xor",
+    "divide",
+    "divmod",
+    "equal",
+    "float_power",
+    "floor_divide",
+    "fmax",
+    "fmin",
+    "fmod",
+    "greater",
+    "greater_equal",
+    "hypot",
+    "left_shift",
+    "less",
+    "less_equal",
+    "logaddexp",
+    "logaddexp2",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+    "maximum",
+    "minimum",
+    "mod",
+    "multiply",
+    "nextafter",
+    "not_equal",
+    "power",
+    "remainder",
+    "right_shift",
+    "subtract",
+    "true_divide",
 ]

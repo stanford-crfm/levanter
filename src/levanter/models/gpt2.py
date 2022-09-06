@@ -15,12 +15,12 @@ from equinox.custom_types import Array
 import haliax as hax
 import levanter.nn as pnn
 from haliax import Axis, NamedArray
+from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
 from levanter import jax_utils
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.jax_utils import named_call
 from levanter.modeling_utils import ACT2FN
-from levanter.nn.linear import NamedLinear
 
 
 @dataclass(frozen=True)
@@ -63,13 +63,13 @@ class Gpt2Config:
 
 class Gpt2Mlp(eqx.Module):
     act: Callable = eqx.static_field()
-    c_fc: NamedLinear
-    c_proj: NamedLinear
+    c_fc: Linear
+    c_proj: Linear
 
     def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key, mp: jmp.Policy):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = NamedLinear(Out=Intermediate, In=Embed, key=k_fc, mp=mp)
-        self.c_proj = NamedLinear(Out=Embed, In=Intermediate, key=k_proj, mp=mp)
+        self.c_fc = Linear(Out=Intermediate, In=Embed, key=k_fc, mp=mp)
+        self.c_proj = Linear(Out=Embed, In=Intermediate, key=k_proj, mp=mp)
         self.act = ACT2FN[activation_fn]  # type: ignore
 
     @named_call
@@ -81,8 +81,8 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(TorchSerializationMixin, eqx.Module):
-    c_attn: NamedLinear
-    c_proj: NamedLinear
+    c_attn: Linear
+    c_proj: Linear
     dropout: pnn.Dropout
 
     causal: bool = eqx.static_field()
@@ -118,8 +118,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         k_c, k_proj = jrandom.split(key, 2)
 
-        self.c_attn = NamedLinear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c, mp=mp)
-        self.c_proj = NamedLinear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj, mp=mp)
+        self.c_attn = Linear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c, mp=mp)
+        self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj, mp=mp)
         self.dropout = pnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
@@ -144,7 +144,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         query = query * scale
 
         attn_weights = hax.dot(self.HeadDim, query, key)
-        # TODO(haliax): add elemwise ops to hax
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
         attn_axes = attn_weights.axes
         attn_weights = attn_weights.array
@@ -159,7 +158,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = self.mp.cast_to_compute(attn_weights)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
-
         attn_weights = NamedArray(attn_weights, attn_axes)
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]

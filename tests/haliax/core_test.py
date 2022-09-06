@@ -215,3 +215,16 @@ def test_rearrange_unused_ellipsis():
 
     assert jnp.all(jnp.equal(hax.rearrange(named1, (D, ..., W, H)).array, jnp.transpose(named1.array, (2, 1, 0))))
     assert hax.rearrange(named1, (D, ..., W, H)).axes == (D, W, H)
+
+
+def test_arange():
+    H = Axis("Height", 10)
+
+    assert jnp.all(jnp.equal(hax.arange(H).array, jnp.arange(10)))
+    assert hax.arange(H).axes == (H,)
+
+    # test stride
+    assert jnp.all(jnp.equal(hax.arange(H, step=2).array, jnp.arange(0, 20, 2)))
+
+    # test start and stride
+    assert jnp.all(jnp.equal(hax.arange(H, start=2, step=2).array, jnp.arange(2, 22, 2)))
