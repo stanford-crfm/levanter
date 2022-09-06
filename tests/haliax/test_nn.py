@@ -1,15 +1,12 @@
-from functools import wraps
-
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jrandom
+from jax import numpy as jnp
 
 import haliax as hax
-from haliax import NamedArray
+from haliax import Axis, NamedArray
 
 
 def _compare_eqx_and_haliax(hax_mod: eqx.Module, eqx_mod: eqx.Module):
-    @wraps(hax_mod.__call__)
     def f(x: NamedArray, *args, **kwargs):
         unnamed_x = x.array
         hax_out = hax_mod(x, *args, **kwargs)  # type: ignore
@@ -42,3 +39,26 @@ def test_dropout():
     out = f(hax.random.uniform(jrandom.PRNGKey(0), (H,)), key=key, inference=False)
 
     assert out.axes == (H,)
+
+
+def test_one_hot():
+    i = Axis("i", 3)
+    c = Axis("c", 3)
+    actual = hax.nn.one_hot(hax.NamedArray(jnp.array([0, 1, 2]), (i,)), c)
+    expected = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+    assert actual.axes == (i, c)
+    assert jnp.all(jnp.isclose(actual.array, expected))
+
+    actual = hax.nn.one_hot(hax.NamedArray(jnp.array([1, 2, 0]), (i,)), c)
+    expected = jnp.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    assert actual.axes == (i, c)
+    assert jnp.all(jnp.isclose(actual.array, expected))
+
+
+def test_one_hot_out_of_bound():
+    i = Axis("i", 2)
+    c = Axis("c", 3)
+    actual = hax.nn.one_hot(hax.NamedArray(jnp.array([-1, 3]), (i,)), c)
+    expected = jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    assert jnp.all(jnp.isclose(actual.array, expected))
