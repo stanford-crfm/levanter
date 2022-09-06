@@ -685,13 +685,10 @@ def _broadcast_order(a: NamedArray, b: NamedArray, require_subset: bool = True) 
     a bit stricter than a straightforward generalization of numpy's broadcasting rules, but I've been bitten by
     numpy's rules too many times.
     """
-    # special cases:
-
-    # TODO: decide under which conditions we want to allow broadcasting both arrays
-    # maybe just add a context manager to allow it?
-
     broadcasted = _broadcast_axes(a.axes, b.axes, require_subset)
     if broadcasted is None:
+        # TODO: decide under which conditions we want to allow broadcasting both arrays
+        # maybe just add a context manager to allow it?
         raise ValueError(
             f"Cannot broadcast {a} and {b}: no subset relationship. "
             "If you want to broadcast anyway, use the broadcast_axis function to explicitly add axes"
