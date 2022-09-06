@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 import haliax.random as random
@@ -118,6 +119,7 @@ real = wrap_elemwise_unary(jnp.real)
 reciprocal = wrap_elemwise_unary(jnp.reciprocal)
 rint = wrap_elemwise_unary(jnp.rint)
 round = wrap_elemwise_unary(jnp.round)
+rsqrt = wrap_elemwise_unary(jax.lax.rsqrt)  # nb this is in lax
 sign = wrap_elemwise_unary(jnp.sign)
 signbit = wrap_elemwise_unary(jnp.signbit)
 sin = wrap_elemwise_unary(jnp.sin)
@@ -262,6 +264,7 @@ __all__ = [
     "real",
     "reciprocal",
     "rint",
+    "rsqrt",
     "round",
     "sign",
     "signbit",

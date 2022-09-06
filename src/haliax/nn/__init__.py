@@ -5,6 +5,8 @@ import jax.numpy as jnp
 
 from ..core import Axis, NamedArray
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
+from .linear import Linear
+from .normalization import LayerNorm
 
 
 relu = wrap_elemwise_unary(jnn.relu)
@@ -62,4 +64,6 @@ __all__ = [
     "softmax",
     "log_softmax",
     "one_hot",
+    "LayerNorm",
+    "Linear",
 ]

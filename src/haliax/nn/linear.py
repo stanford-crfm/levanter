@@ -5,7 +5,8 @@ import jax
 import jmp
 
 import haliax as hax
-from haliax import AxisSpec, NamedArray
+
+from ..core import AxisSpec, NamedArray
 
 
 class Linear(eqx.Module):
