@@ -34,6 +34,12 @@ class NamedArray:
     def __post_init__(self):
         if not isinstance(self.axes, tuple):
             object.__setattr__(self, "axes", tuple(self.axes))
+        # ensure axes are all Axis objects
+        # TODO: anonymous positional axes?
+        for axis in self.axes:
+            if not isinstance(axis, Axis):
+                raise TypeError(f"Expected Axis, got {type(axis)}")
+
         # ensure unique axes for now
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")

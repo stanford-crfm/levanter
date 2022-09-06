@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 from ..core import Axis, NamedArray
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
+from .dropout import Dropout
 from .linear import Linear
 from .normalization import LayerNorm
 
@@ -64,6 +65,7 @@ __all__ = [
     "softmax",
     "log_softmax",
     "one_hot",
+    "Dropout",
     "LayerNorm",
     "Linear",
 ]
