@@ -21,10 +21,8 @@ def _wrap_random_function(func):
 
         # get shape
         orig_shape = sig.arguments["shape"]
-        if isinstance(orig_shape, Axis):
-            is_haliax = True
-            shape = ensure_tuple(orig_shape)
-        elif isinstance(orig_shape, Sequence):
+        orig_shape = ensure_tuple(orig_shape)
+        if isinstance(orig_shape, Sequence):
             is_haliax = len(orig_shape) == 0 or any(isinstance(s, Axis) for s in orig_shape)
             shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in orig_shape)
         else:
