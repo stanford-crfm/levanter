@@ -13,6 +13,7 @@ from equinox.custom_types import Array
 
 import haliax as hax
 import haliax.nn as hnn
+import levanter.nn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
@@ -434,7 +435,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
-        self.dropout = eqx.nn.Dropout(p=dropout_prob)
+        self.dropout = levanter.nn.Dropout(p=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
