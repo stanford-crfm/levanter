@@ -29,11 +29,15 @@ from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary,
 # creation routines
 def zeros(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 0"""
+    if dtype is None:
+        dtype = jnp.float32
     return full(shape, 0, dtype)
 
 
 def ones(shape: AxisSpec, dtype=None) -> NamedArray:
     """Creates a NamedArray with all elements set to 1"""
+    if dtype is None:
+        dtype = jnp.float32
     return full(shape, 1, dtype)
 
 
