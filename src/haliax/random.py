@@ -1,11 +1,13 @@
 """Wrappers around jax.random functions."""
 
 import functools
+import inspect
+from typing import Sequence
 
 import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
-from haliax.core import Axis, AxisSpec, NamedArray
+from haliax.core import Axis, NamedArray
 from haliax.util import ensure_tuple
 
 
@@ -13,14 +15,26 @@ def _wrap_random_function(func):
     """Wrap a jax random function to return a NamedArray and takes axes as inputs"""
 
     @functools.wraps(func)
-    def wrapper(key: jrandom.KeyArray, shape: AxisSpec, *args, **kwargs):
-        if isinstance(shape, Axis):
-            return NamedArray(func(key, shape.size, *args, **kwargs), (shape,))
-        else:
-            shape = ensure_tuple(shape)
-            lens = [ax.size for ax in shape]
+    def wrapper(key: jrandom.KeyArray, *args, **kwargs):
+        sig: inspect.BoundArguments = inspect.signature(func).bind(key, *args, **kwargs)
+        sig.apply_defaults()
 
-            return NamedArray(func(key, lens, *args, **kwargs), shape)
+        # get shape
+        orig_shape = sig.arguments["shape"]
+        orig_shape = ensure_tuple(orig_shape)
+        if isinstance(orig_shape, Sequence):
+            is_haliax = len(orig_shape) == 0 or any(isinstance(s, Axis) for s in orig_shape)
+            shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in orig_shape)
+        else:
+            is_haliax = False
+
+        if is_haliax:
+            sig.arguments["shape"] = shape
+
+        # now invoke
+        out = func(**sig.arguments)
+        if is_haliax:
+            return NamedArray(out, orig_shape)
 
     return wrapper
 
