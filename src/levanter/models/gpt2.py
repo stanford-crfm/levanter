@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, cast
 
 import equinox as eqx
-import equinox.nn as nn
 import jax
 import jax.lax as lax
 import jax.nn as jnn
@@ -13,7 +12,7 @@ import jmp
 from equinox.custom_types import Array
 
 import haliax as hax
-import levanter.nn as pnn
+import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
@@ -83,7 +82,7 @@ class Gpt2Mlp(eqx.Module):
 class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     c_attn: Linear
     c_proj: Linear
-    dropout: pnn.Dropout
+    dropout: hnn.Dropout
 
     causal: bool = eqx.static_field()
     SeqLen: Axis = eqx.static_field()
@@ -120,7 +119,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         self.c_attn = Linear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c, mp=mp)
         self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj, mp=mp)
-        self.dropout = pnn.Dropout(dropout_prob)
+        self.dropout = hnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
     @named_call
@@ -157,9 +156,9 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
             attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
 
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
+        attn_weights = NamedArray(attn_weights, attn_axes)
         attn_weights = self.mp.cast_to_compute(attn_weights)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
-        attn_weights = NamedArray(attn_weights, attn_axes)
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
 
@@ -214,11 +213,11 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
 class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mp: jmp.Policy = eqx.static_field()
-    ln_1: nn.LayerNorm
+    ln_1: hnn.LayerNorm
     attn: Gpt2Attention
-    ln_2: nn.LayerNorm
+    ln_2: hnn.LayerNorm
     mlp: Gpt2Mlp
-    resid_dropout: pnn.Dropout
+    resid_dropout: hnn.Dropout
 
     SeqLen: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
@@ -237,7 +236,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
 
         self.mp = mp
 
-        self.ln_1 = nn.LayerNorm(config.Embed.size, eps=config.layer_norm_epsilon)
+        self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
             SeqLen=config.SeqLen,
             InDim=config.Embed,
@@ -249,8 +248,8 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
             mp=mp,
         )
-        self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
-        self.ln_2 = nn.LayerNorm(config.Embed.size, eps=config.layer_norm_epsilon)
+        self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
+        self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
         self.mlp = Gpt2Mlp(
             Embed=config.Embed,
@@ -261,23 +260,21 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def __call__(self, hidden_states: Array, inference, layer_idx, *, key):
+    def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
-        hidden_states = jax.vmap(self.ln_1)(hidden_states)
+        hidden_states = self.ln_1(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
-        h = NamedArray(hidden_states, (self.SeqLen, self.Embed))
-        attn_output = self.attn(h, inference=inference, layer_idx=layer_idx, key=k1)
-        dout = self.resid_dropout(attn_output.array, key=k2, inference=inference)
-        hidden_states = residual + dout
+        attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        hidden_states = residual + attn_output
 
         residual = hidden_states
-        hidden_states = jax.vmap(self.ln_2)(hidden_states)
+        hidden_states = self.ln_2(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
-        h = NamedArray(hidden_states, (self.SeqLen, self.Embed))
-        ff_output = self.mlp(h)
-        dout = self.resid_dropout(ff_output.array, key=k3, inference=inference)
+        ff_output = self.mlp(hidden_states)
+        dout = self.resid_dropout(ff_output, key=k3, inference=inference)
         hidden_states = residual + dout
 
         assert attn_output.dtype == self.mp.compute_dtype
@@ -289,7 +286,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
     mp: jmp.Policy = eqx.static_field()
     blocks: Gpt2Block
-    ln_f: nn.LayerNorm
+    ln_f: hnn.LayerNorm
 
     @property
     def Layers(self) -> Axis:
@@ -303,11 +300,11 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key, mp=mp), self.Layers)(
             jax_utils.shaped_rng_split(key, config.num_layers),
         )
-        self.ln_f = nn.LayerNorm(config.hidden_dim, eps=config.layer_norm_epsilon)
+        self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
-    def __call__(self, hidden_states: Array, inference=True, *, key) -> Array:
-        def do_block(hidden_states, block_layer_idx_key):
+    def __call__(self, hidden_states: NamedArray, inference=True, *, key) -> NamedArray:
+        def do_block(hidden_states: NamedArray, block_layer_idx_key) -> NamedArray:
             block, layer_idx = block_layer_idx_key[0], block_layer_idx_key[1]
             if len(block_layer_idx_key) > 2:
                 block_key = block_layer_idx_key[2]
@@ -330,7 +327,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
                 do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size), keys)
             )
 
-        hidden_states = jax.vmap(self.ln_f)(hidden_states)
+        hidden_states = self.ln_f(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
 
         return hidden_states
@@ -397,7 +394,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
     token_embeddings: NamedArray
     position_embeddings: NamedArray
     token_out_embeddings: Optional[NamedArray]
-    dropout: pnn.Dropout
+    dropout: hnn.Dropout
 
     # axes
     Vocab: Axis = eqx.static_field()
@@ -429,7 +426,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
-        self.dropout = pnn.Dropout(p=dropout_prob)
+        self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
@@ -494,8 +491,9 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
 
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
         hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
-        lm_logits = self.embeddings.unembed(hidden_states)
+        named_states = NamedArray(hidden_states, (self.embeddings.SeqLen, self.embeddings.Embed))
+        named_states = self.transformer(named_states, inference=inference, key=k_transformer)
+        lm_logits = self.embeddings.unembed(named_states.array)
 
         return lm_logits
 
