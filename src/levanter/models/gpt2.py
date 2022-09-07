@@ -279,15 +279,16 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = residual + attn_output
+        assert hidden_states.dtype == self.mp.compute_dtype
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         ff_output = self.mlp(hidden_states)
-        dout = self.resid_dropout(ff_output, key=k3, inference=inference)
-        hidden_states = residual + dout
+        ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
+        hidden_states = residual + ff_output
 
-        assert attn_output.dtype == self.mp.compute_dtype
+        assert hidden_states.dtype == self.mp.compute_dtype
 
         return hidden_states
 
