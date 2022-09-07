@@ -56,7 +56,6 @@ class Dropout(eqx.Module):
             raise RuntimeError("Dropout requires a key when running in non-deterministic mode.")
         else:
             with jax.named_scope(name="dropout"):
-
                 if self.broadcast_axes is None:
                     if isinstance(x, NamedArray):
                         shape_to_generate = x.axes
