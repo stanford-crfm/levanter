@@ -58,7 +58,10 @@ class Dropout(eqx.Module):
             with jax.named_scope(name="dropout"):
 
                 if self.broadcast_axes is None:
-                    shape_to_generate = x.axes
+                    if isinstance(x, NamedArray):
+                        shape_to_generate = x.axes
+                    else:
+                        shape_to_generate = x.shape
                 else:
                     axes = ensure_tuple(self.broadcast_axes)
                     shape_to_generate = tuple(ax for ax in x.axes if ax not in axes)
@@ -67,6 +70,6 @@ class Dropout(eqx.Module):
                 q = x.dtype.type(q)
                 mask = haliax.random.bernoulli(key, q, shape_to_generate)
 
-                out = haliax.where(mask, x / q, haliax.zeros_like(x))  # type: ignore
+                out = haliax.where(mask, x / q, x.dtype.type(0))  # type: ignore
                 assert out.dtype == x.dtype
                 return out

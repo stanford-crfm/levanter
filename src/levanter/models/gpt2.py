@@ -434,7 +434,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
-        self.dropout = hnn.Dropout(pdrop=dropout_prob)
+        self.dropout = eqx.nn.Dropout(p=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
