@@ -46,6 +46,7 @@ def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
         layer_norm_epsilon=config.layer_norm_epsilon,
         activation_function=config.activation_function,
         scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+        upcast_attn=config.reorder_and_upcast_attn,
     )
 
     return levanter_config
@@ -64,6 +65,7 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
         layer_norm_epsilon=config.layer_norm_epsilon,
         activation_function=config.activation_function,
         scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+        reorder_and_upcast_attn=config.upcast_attn,
     )
 
     return hf_config

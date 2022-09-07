@@ -36,8 +36,9 @@ class Gpt2Config:
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
-    # mistral tweak:
+    # mistral tweaks:
     scale_attn_by_inverse_layer_idx: bool = False
+    upcast_attn: bool = True
 
     gradient_checkpointing: bool = False
     gradient_checkpointing_block_size: int = 5
@@ -91,6 +92,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     Qkv: Axis = eqx.static_field()
 
     scale_by_inverse_layer_idx: bool = eqx.static_field()
+    upcast: bool = eqx.static_field()
     mp: jmp.Policy = eqx.static_field()
 
     def __init__(
@@ -101,6 +103,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         HeadDim: Axis,
         dropout_prob: float,
         scale_by_inverse_layer_idx: bool,
+        upcast: bool,
         *,
         key,
         mp: jmp.Policy,
@@ -113,6 +116,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         self.Qkv = Axis("qkv", 3)
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
+        self.upcast = upcast
         self.mp = mp
 
         k_c, k_proj = jrandom.split(key, 2)
@@ -141,7 +145,10 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         # do this first to help keep FP values small
         query = query * scale
-        query = self.mp.cast_to_compute(query)
+
+        if self.upcast:
+            query = self.mp.cast_to_param(query)
+            key = self.mp.cast_to_param(key)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
@@ -246,6 +253,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             key=k_attn,
             causal=True,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+            upcast=config.upcast_attn,
             mp=mp,
         )
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
