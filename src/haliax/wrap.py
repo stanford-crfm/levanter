@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from haliax.core import AxisSpec, NamedArray
+from haliax.core import AxisSpec, NamedArray, _broadcast_order, broadcast_to
 from haliax.util import ensure_tuple
 
 
@@ -37,7 +37,7 @@ def wrap_reduction_call(fn):
                     return NamedArray(result, ())
             else:
                 axis = ensure_tuple(axis)
-                indices = a.lookup_indices(axis)
+                indices = a._lookup_indices(axis)
                 if indices is None or any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
                 new_axes = a.axes if keepdims else [ax for ax in a.axes if ax not in axis]
@@ -60,14 +60,14 @@ def wrap_reduction_call(fn):
     return wrapper
 
 
-def wrap_normalization_call(fn, single_axis_only: bool):
+def wrap_axiswise_call(fn, single_axis_only: bool):
     @functools.wraps(fn)
     def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
         if isinstance(a, NamedArray):
             if axis is None:
-                return NamedArray(fn(a.array, axis=None, **kwargs), ())
+                return NamedArray(fn(a.array, axis=None, **kwargs), a.axes)
             else:
-                indices = ensure_tuple(a.lookup_indices(axis))
+                indices = ensure_tuple(a._lookup_indices(axis))
                 if any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
                 if len(indices) == 1:
@@ -82,7 +82,7 @@ def wrap_normalization_call(fn, single_axis_only: bool):
 
     wrapper.__doc__ = (
         """
-    This function augments the behavior of `{fn}` to support NamedArrays, so that axis is a NamedArray.
+    This function augments the behavior of `{fn}` to support NamedArrays, so that axis is an Axis of sequence of axes.
     At the moment, neither `where` nor `out` are supported.
     =====
 
@@ -92,4 +92,22 @@ def wrap_normalization_call(fn, single_axis_only: bool):
     return wrapper
 
 
-__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_normalization_call"]
+def wrap_elemwise_binary(op):
+    @functools.wraps(op)
+    def binop(a, b):
+        if isinstance(a, NamedArray) and isinstance(b, NamedArray):
+            axes = _broadcast_order(a, b)
+            a = broadcast_to(a, axes)
+            b = broadcast_to(b, axes)
+            return NamedArray(op(a.array, b.array), axes)
+        elif isinstance(a, NamedArray) and jnp.isscalar(b):
+            return NamedArray(op(a.array, b), a.axes)
+        elif isinstance(b, NamedArray) and jnp.isscalar(a):
+            return NamedArray(op(a, b.array), b.axes)
+        else:
+            return op(a, b)
+
+    return binop
+
+
+__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call", "wrap_elemwise_binary"]
