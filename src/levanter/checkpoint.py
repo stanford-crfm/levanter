@@ -50,15 +50,16 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
 
     If training_state is None, the loaded training state will be returned as None.
     """
+    fs: AbstractFileSystem
+    fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
+
     if discover_latest:
         checkpoint_path = discover_latest_checkpoint(checkpoint_path)
 
     if checkpoint_path is None:
         return None
 
-    model_state = tree_deserialise_leaves(f"{checkpoint_path}/model.eqx", model_state)
-    fs: AbstractFileSystem
-    fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
+    model_state = tree_deserialise_leaves(f"{checkpoint_path}/model.eqx", model_state, fs=fs)
 
     with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
         metadata = json.load(metadata_in)
@@ -66,7 +67,7 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
     if training_state is None:
         training_state = None
     else:
-        training_state = tree_deserialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state)
+        training_state = tree_deserialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state, fs=fs)
 
     return model_state, training_state, metadata["step"]
 
@@ -117,12 +118,18 @@ def tree_deserialise_leaves(
     like: PyTree,
     filter_spec=default_deserialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
+    fs=None
 ) -> PyTree:
     """
     Analog to `equinox.tree_serialise_leaves`, but loads the leaves of a PyTree using fsspec.
     """
 
-    with fsspec.open(path, "rb") as f:
+    if fs is None:
+        fs, _, (path_to_open, ) = fsspec.get_fs_token_paths(path)
+    else:
+        path_to_open = path
+
+    with fs.open(path_to_open, "rb") as f:
 
         def _deserialise(spec, x):
             def __deserialise(y):
@@ -131,5 +138,5 @@ def tree_deserialise_leaves(
             return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
 
         out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
-    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
+    #jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
     return out
