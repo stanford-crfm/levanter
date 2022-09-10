@@ -196,11 +196,12 @@ def main(config: TrainGpt2Config):
         # TODO: wandb resume logic?
         resume_step = None
         if config.trainer.load_last_checkpoint:
-            checkpoint = load_checkpoint(
-                model,
-                (opt_state, training_key),
-                config.trainer.load_checkpoint_path or run_dir,
-            )
+            with jax.default_device(jax.devices("cpu")[0]):
+                checkpoint = load_checkpoint(
+                    model,
+                    (opt_state, training_key),
+                    config.trainer.load_checkpoint_path or run_dir,
+                )
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
             elif config.trainer.load_checkpoint_path:
@@ -211,7 +212,8 @@ def main(config: TrainGpt2Config):
         if resume_step is not None:
             # step is after the batch, so we need to seek to step
             # TODO: iter_data.seek(resume_step +1)
-            for _ in range(resume_step + 1):
+            import tqdm
+            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data"):
                 next(iter_data)
             resume_step = resume_step + 1
         else:
