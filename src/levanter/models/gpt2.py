@@ -39,7 +39,7 @@ class Gpt2Config:
 
     # mistral tweaks:
     scale_attn_by_inverse_layer_idx: bool = False
-    upcast_attn: bool = True
+    upcast_attn: bool = False
 
     gradient_checkpointing: bool = False
     gradient_checkpointing_block_size: int = 5
