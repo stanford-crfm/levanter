@@ -79,11 +79,18 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
-        if isinstance(self.save_code, str):
-            path = self.save_code
+        if self.save_code is not False:
+            WandbConfig._save_code(self.save_code)
+
+    @staticmethod
+    def _save_code(save_code: Union[bool, str]):
+        import wandb
+
+        if isinstance(save_code, str):
+            path = save_code
             wandb.run.log_code(path)
             logger.info(f"Logged code from {path} to wandb")
-        elif self.save_code:
+        elif save_code:
             # sniff out the main directory (since we typically don't run from the root of the repo)
             # we'll walk the stack and directories for the files in the stack the until we're at a git root
             import os
@@ -96,8 +103,8 @@ class WandbConfig:
                 dirname = os.path.dirname(frame.filename)
                 # see if it's under a git root
                 try:
-                    Repo(dirname, search_parent_directories=True)
-                    path_to_save = dirname
+                    repo = Repo(dirname, search_parent_directories=True)
+                    path_to_save = repo.working_dir
                     break
                 except (NoSuchPathError, InvalidGitRepositoryError):
                     logger.debug(f"Skipping {dirname} since it's not a git root")
