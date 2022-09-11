@@ -91,27 +91,32 @@ class WandbConfig:
             wandb.run.log_code(path)
             logger.info(f"Logged code from {path} to wandb")
         elif save_code:
-            # sniff out the main directory (since we typically don't run from the root of the repo)
-            # we'll walk the stack and directories for the files in the stack the until we're at a git root
-            import os
-            import traceback
+            path_to_save = WandbConfig._infer_experiment_git_root() or "."
 
-            stack = traceback.extract_stack()
-            path_to_save = "."
-            # start from the top of the stack and work our way down since we want to hit the main file first
-            for frame in stack:
-                dirname = os.path.dirname(frame.filename)
-                # see if it's under a git root
-                try:
-                    repo = Repo(dirname, search_parent_directories=True)
-                    path_to_save = repo.working_dir
-                    break
-                except (NoSuchPathError, InvalidGitRepositoryError):
-                    logger.debug(f"Skipping {dirname} since it's not a git root")
-                    pass
-            logger.info(f"Logged code from {path_to_save} to wandb")
-
+            logger.info(f"Logging code from {path_to_save} to wandb")
             wandb.run.log_code(path_to_save)
+
+    @staticmethod
+    def _infer_experiment_git_root() -> Optional[str]:
+        # sniff out the main directory (since we typically don't run from the root of the repo)
+        # we'll walk the stack and directories for the files in the stack the until we're at a git root
+        import os
+        import traceback
+
+        stack = traceback.extract_stack()
+        # start from the top of the stack and work our way down since we want to hit the main file first
+        top_git_root = None
+        for frame in stack:
+            dirname = os.path.dirname(frame.filename)
+            # see if it's under a git root
+            try:
+                repo = Repo(dirname, search_parent_directories=True)
+                top_git_root = repo.working_dir
+                break
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.debug(f"Skipping {dirname} since it's not a git root")
+                pass
+        return top_git_root
 
 
 @dataclass
