@@ -108,6 +108,9 @@ class WandbConfig:
         top_git_root = None
         for frame in stack:
             dirname = os.path.dirname(frame.filename)
+            # bit hacky but we want to skip anything that's in the python env
+            if "site-packages" in dirname:
+                continue
             # see if it's under a git root
             try:
                 repo = Repo(dirname, search_parent_directories=True)
