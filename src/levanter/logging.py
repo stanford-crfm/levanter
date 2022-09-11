@@ -69,7 +69,7 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
     pbar = tqdm(**kwargs)
 
     def update_pbar(step: StepInfo):
-        pbar.update(1)
+        pbar.update(step.step - pbar.n)
         pbar.set_postfix(loss=step.loss)
 
     return update_pbar
