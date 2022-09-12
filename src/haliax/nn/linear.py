@@ -36,5 +36,6 @@ class Linear(eqx.Module):
 
         if self.bias is not None:
             q = q + self.bias
+            q = self.mp.cast_to_compute(q)
 
         return q

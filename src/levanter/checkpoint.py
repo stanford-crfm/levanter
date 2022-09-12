@@ -7,12 +7,7 @@ from typing import Any, Callable, Optional, Union
 import fsspec
 import jax
 from equinox.custom_types import PyTree
-from equinox.serialisation import (
-    _assert_same,
-    _is_index,
-    default_deserialise_filter_spec,
-    default_serialise_filter_spec,
-)
+from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 
 
@@ -129,14 +124,14 @@ def tree_deserialise_leaves(
     like: PyTree,
     filter_spec=default_deserialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
-    fs=None
+    fs=None,
 ) -> PyTree:
     """
     Analog to `equinox.tree_serialise_leaves`, but loads the leaves of a PyTree using fsspec.
     """
 
     if fs is None:
-        fs, _, (path_to_open, ) = fsspec.get_fs_token_paths(path)
+        fs, _, (path_to_open,) = fsspec.get_fs_token_paths(path)
     else:
         path_to_open = path
 
@@ -151,3 +146,17 @@ def tree_deserialise_leaves(
         out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
     #jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
     return out
+
+
+# similar to eqx but it's a bit more permissive: it just wants things that have shapes and dtypes to be the same
+def _assert_same(new, old):
+    if hasattr(new, "shape") and hasattr(old, "shape"):
+        assert new.shape == old.shape, f"Shapes don't match: {new.shape} vs {old.shape}"
+    if hasattr(new, "dtype") and hasattr(old, "dtype"):
+        assert new.dtype == old.dtype, f"Dtypes don't match: {new.dtype} vs {old.dtype}"
+
+    # now get mad if one has a shape and the other doesn't
+    if hasattr(new, "shape") != hasattr(old, "shape"):
+        raise ValueError(f"One has a shape and the other doesn't: {new} vs {old}")
+    if hasattr(new, "dtype") != hasattr(old, "dtype"):
+        raise ValueError(f"One has a dtype and the other doesn't: {new} vs {old}")
