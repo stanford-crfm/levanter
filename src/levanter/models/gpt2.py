@@ -150,6 +150,9 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         if self.upcast:
             query = self.mp.cast_to_param(query)
             key = self.mp.cast_to_param(key)
+        else:
+            query = self.mp.cast_to_compute(query)
+            key = self.mp.cast_to_compute(key)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
@@ -169,6 +172,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
+        attn_output = self.mp.cast_to_compute(attn_output)
 
         attn_output = self.c_proj(attn_output)
         attn_output = self.mp.cast_to_compute(attn_output)
