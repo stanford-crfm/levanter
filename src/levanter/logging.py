@@ -1,6 +1,9 @@
 import copy
+import logging as pylogging
+from pathlib import Path
 from typing import Optional
 
+import jax
 import jax.numpy as jnp
 from optax import MultiStepsState
 from tqdm import tqdm
@@ -78,3 +81,19 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
 def log_to_wandb(step: StepInfo):
     wandb.log({"train/loss": step.loss}, step=step.step)
     log_optimizer_hyperparams(step.opt_state, step=step.step)
+
+
+def init_logger(path: Path, level: int = pylogging.INFO) -> None:
+    """
+    Initialize logging.Logger with the appropriate name, console, and file handlers.
+
+    :param path: Path for writing log file
+    :param level: Default logging level
+    """
+    process_index = jax.process_index()
+    log_format = f"%(asctime)s - {process_index} - %(name)s - %(filename)s:%(lineno)d - %(levelname)s :: %(message)s"
+    file_handler = pylogging.FileHandler(path, mode="a")
+    file_handler.setFormatter(pylogging.Formatter(log_format))
+
+    # Create Root Logger w/ Base Formatting
+    pylogging.basicConfig(level=level, format=log_format, handlers=[file_handler])
