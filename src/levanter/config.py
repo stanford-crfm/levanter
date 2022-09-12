@@ -4,6 +4,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import List, Optional, Union
 
 import jax
@@ -18,6 +19,7 @@ from pyrallis import field
 
 from levanter import jax_utils
 from levanter.axis_names import ResourceAxis
+from levanter.logging import init_logger
 from levanter.mesh import MeshInfo
 
 
@@ -79,38 +81,55 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
-        if isinstance(self.save_code, str):
-            path = self.save_code
-            wandb.run.log_code(path)
-            logger.info(f"Logged code from {path} to wandb")
-        elif self.save_code:
-            # sniff out the main directory (since we typically don't run from the root of the repo)
-            # we'll walk the stack and directories for the files in the stack the until we're at a git root
-            import os
-            import traceback
+        if self.save_code is not False:
+            WandbConfig._save_code(self.save_code)
 
-            stack = traceback.extract_stack()
-            path_to_save = "."
-            # start from the top of the stack and work our way down since we want to hit the main file first
-            for frame in stack:
-                dirname = os.path.dirname(frame.filename)
-                # see if it's under a git root
-                try:
-                    Repo(dirname, search_parent_directories=True)
-                    path_to_save = dirname
-                    break
-                except (NoSuchPathError, InvalidGitRepositoryError):
-                    logger.debug(f"Skipping {dirname} since it's not a git root")
-                    pass
-            logger.info(f"Logged code from {path_to_save} to wandb")
+    @staticmethod
+    def _save_code(save_code: Union[bool, str]):
+        import wandb
 
-            wandb.run.log_code(path_to_save)
+        if isinstance(save_code, str):
+            path = save_code
+        elif save_code:
+            path = WandbConfig._infer_experiment_git_root() or "."
+        else:
+            return
+
+        logger.info(f"Logging code from {path} to wandb")
+        wandb.run.log_code(path)
+
+    @staticmethod
+    def _infer_experiment_git_root() -> Optional[str]:
+        # sniff out the main directory (since we typically don't run from the root of the repo)
+        # we'll walk the stack and directories for the files in the stack the until we're at a git root
+        import os
+        import traceback
+
+        stack = traceback.extract_stack()
+        # start from the top of the stack and work our way down since we want to hit the main file first
+        top_git_root = None
+        for frame in stack:
+            dirname = os.path.dirname(frame.filename)
+            # bit hacky but we want to skip anything that's in the python env
+            if "site-packages" in dirname:
+                continue
+            # see if it's under a git root
+            try:
+                repo = Repo(dirname, search_parent_directories=True)
+                top_git_root = repo.working_dir
+                break
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.debug(f"Skipping {dirname} since it's not a git root")
+                pass
+        return top_git_root
 
 
 @dataclass
 class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
+
+    log_dir: Optional[Path] = None
 
     # Config related to batch sizes
     model_axis_size: int = 1  # how many devices to shard each model over
@@ -177,6 +196,11 @@ class TrainerConfig:
     def initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
+
+    def initialize_logging(self, exp_name: str):
+        log_dir = self.log_dir or Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        init_logger(log_dir / f"{exp_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""

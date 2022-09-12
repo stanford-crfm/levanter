@@ -53,10 +53,14 @@ class TrainGpt2Config:
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
-    config.trainer.initialize_jax_config()
 
+    # TODO: probably factor out all this init stuff into config
+    config.trainer.initialize_jax_config()
     config.wandb.init(config)
+
     run_name = wandb.run.name or wandb.run.id
+    config.trainer.initialize_logging(run_name)
+
     run_dir = f"{config.run_base_dir}/{run_name}"
     checkpoint_dir = f"{config.checkpoint_dir}/{run_name}"
 
@@ -133,7 +137,6 @@ def main(config: TrainGpt2Config):
             loss = jnp.mean(loss)
 
             if not inference and config.log_z_regularization > 0:
-                # want to compute MSE of log_normalizers
                 logz_mse = jnp.mean((log_normalizers**2))
                 loss += config.log_z_regularization * logz_mse
 
