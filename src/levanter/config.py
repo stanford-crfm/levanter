@@ -4,6 +4,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import List, Optional, Union
 
 import jax
@@ -18,6 +19,7 @@ from pyrallis import field
 
 from levanter import jax_utils
 from levanter.axis_names import ResourceAxis
+from levanter.logging import init_logger
 from levanter.mesh import MeshInfo
 
 
@@ -88,13 +90,13 @@ class WandbConfig:
 
         if isinstance(save_code, str):
             path = save_code
-            wandb.run.log_code(path)
-            logger.info(f"Logged code from {path} to wandb")
         elif save_code:
-            path_to_save = WandbConfig._infer_experiment_git_root() or "."
+            path = WandbConfig._infer_experiment_git_root() or "."
+        else:
+            return
 
-            logger.info(f"Logging code from {path_to_save} to wandb")
-            wandb.run.log_code(path_to_save)
+        logger.info(f"Logging code from {path} to wandb")
+        wandb.run.log_code(path)
 
     @staticmethod
     def _infer_experiment_git_root() -> Optional[str]:
@@ -126,6 +128,8 @@ class WandbConfig:
 class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
+
+    log_dir: Optional[Path] = None
 
     # Config related to batch sizes
     model_axis_size: int = 1  # how many devices to shard each model over
@@ -192,6 +196,11 @@ class TrainerConfig:
     def initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
+
+    def initialize_logging(self, exp_name: str):
+        log_dir = self.log_dir or Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        init_logger(log_dir / f"{exp_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""

@@ -1,4 +1,5 @@
 import json
+import logging
 import pathlib
 from datetime import datetime
 from typing import Any, Callable, Optional, Union
@@ -15,6 +16,9 @@ from equinox.serialisation import (
 from fsspec import AbstractFileSystem
 
 
+logger = logging.getLogger(__name__)
+
+
 def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_ok=False):
     """
     Save a checkpoint to a given path.
@@ -24,6 +28,8 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_
     """
     if jax.process_index() != 0:
         return checkpoint_path
+
+    logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
     fs: AbstractFileSystem
     fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
@@ -36,6 +42,8 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_
     }
     with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
         json.dump(metadata, json_out)
+
+    logger.info(f"Saved checkpoint for step {step}")
 
     return checkpoint_path
 
@@ -87,8 +95,11 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
         return datetime.fromisoformat(metadata["timestamp"])
 
     if len(ckpt_dirs) > 0:
-        return max(ckpt_dirs, key=checkpoint_timestamp)
+        out = max(ckpt_dirs, key=checkpoint_timestamp)
+        logger.info(f"Discovered latest checkpoint from {checkpoint_path} at {out}")
+        return out
     else:
+        logger.warning(f"No checkpoints found in {checkpoint_path}")
         return None
 
 

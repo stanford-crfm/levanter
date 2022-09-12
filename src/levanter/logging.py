@@ -1,7 +1,7 @@
 import copy
 import logging as pylogging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -92,8 +92,10 @@ def init_logger(path: Path, level: int = pylogging.INFO) -> None:
     """
     process_index = jax.process_index()
     log_format = f"%(asctime)s - {process_index} - %(name)s - %(filename)s:%(lineno)d - %(levelname)s :: %(message)s"
-    file_handler = pylogging.FileHandler(path, mode="a")
-    file_handler.setFormatter(pylogging.Formatter(log_format))
+    # use ISO 8601 format for timestamps, except no TZ, because who cares
+    date_format = "%Y-%m-%dT%H:%M:%S"
+
+    handlers: List[pylogging.Handler] = [pylogging.FileHandler(path, mode="a"), pylogging.StreamHandler()]
 
     # Create Root Logger w/ Base Formatting
-    pylogging.basicConfig(level=level, format=log_format, handlers=[file_handler])
+    pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
