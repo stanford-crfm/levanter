@@ -24,6 +24,9 @@ class Axis:
 
 AxisSpec = Union[Axis, Sequence[Axis]]
 
+Scalar = Union[float, int]
+NamedNumeric = Union[Scalar, "NamedArray"]
+
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -752,7 +755,9 @@ def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...], ensure_order: bool = Tru
 
 
 def broadcast_arrays(
-    *arrays: NamedArray, require_subset: bool = True, ensure_order: bool = True
+    *arrays: NamedArray,
+    require_subset: bool = True,
+    ensure_order: bool = True,
 ) -> Tuple[NamedArray, ...]:
     """
     Broadcasts a sequence of arrays to a common set of axes.
