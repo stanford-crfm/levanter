@@ -277,27 +277,11 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
-        # residual = hidden_states
-        # hidden_states = self.ln_1(hidden_states)
-        # hidden_states = self.mp.cast_to_compute(hidden_states)
-        # attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
-        # attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
-        # hidden_states = residual + attn_output
-        # assert hidden_states.dtype == self.mp.compute_dtype
-        #
-        # residual = hidden_states
-        # hidden_states = self.ln_2(hidden_states)
-        # hidden_states = self.mp.cast_to_compute(hidden_states)
-        # ff_output = self.mlp(hidden_states)
-        # ff_output = self.mp.cast_to_compute(ff_output)
-        # ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
-        # hidden_states = residual + ff_output
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
         dout = self.resid_dropout(attn_output, key=k2, inference=inference)
-        # dout = NamedArray(dout, (self.SeqLen, self.Embed))
         hidden_states = residual + dout
 
         residual = hidden_states
@@ -305,7 +289,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         hidden_states = self.mp.cast_to_compute(hidden_states)
         ff_output = self.mlp(hidden_states)
         dout = self.resid_dropout(ff_output, key=k3, inference=inference)
-        # dout = NamedArray(dout, (self.SeqLen, self.Embed))
         hidden_states = residual + dout
 
         assert hidden_states.dtype == self.mp.compute_dtype
