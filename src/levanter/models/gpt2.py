@@ -262,7 +262,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             upcast=config.upcast_attn,
             mp=mp,
         )
-        self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
+        self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
         self.mlp = Gpt2Mlp(
@@ -296,16 +296,16 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
-        dout = self.resid_dropout(attn_output.array, key=k2, inference=inference)
-        dout = NamedArray(dout, (self.SeqLen, self.Embed))
+        dout = self.resid_dropout(attn_output, key=k2, inference=inference)
+        # dout = NamedArray(dout, (self.SeqLen, self.Embed))
         hidden_states = residual + dout
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         ff_output = self.mlp(hidden_states)
-        dout = self.resid_dropout(ff_output.array, key=k3, inference=inference)
-        dout = NamedArray(dout, (self.SeqLen, self.Embed))
+        dout = self.resid_dropout(ff_output, key=k3, inference=inference)
+        # dout = NamedArray(dout, (self.SeqLen, self.Embed))
         hidden_states = residual + dout
 
         assert hidden_states.dtype == self.mp.compute_dtype
