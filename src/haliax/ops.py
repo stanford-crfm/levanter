@@ -3,9 +3,7 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-import haliax
-
-from .core import Axis, NamedArray, broadcast_arrays
+from .core import Axis, NamedArray, NamedNumeric, broadcast_arrays
 
 
 def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> NamedArray:
@@ -27,7 +25,7 @@ def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> 
     return NamedArray(inner, axes)
 
 
-def where(condition: Union[NamedArray, bool], x: NamedArray, y: NamedArray) -> NamedArray:
+def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric) -> NamedArray:
     """Like jnp.where, but with named axes. This version currently only accepts the three argument form."""
 
     # TODO: support the one argument form
@@ -42,12 +40,12 @@ def where(condition: Union[NamedArray, bool], x: NamedArray, y: NamedArray) -> N
     assert isinstance(condition, NamedArray)
 
     if jnp.isscalar(x):
-        x = haliax.full_like(condition, x)
+        x = NamedArray(jnp.broadcast_to(x, condition.array.shape), condition.axes)
 
     if jnp.isscalar(y):
-        y = haliax.full_like(condition, y)
+        y = NamedArray(jnp.broadcast_to(y, condition.array.shape), condition.axes)
 
-    condition, x, y = broadcast_arrays(condition, x, y)
+    condition, x, y = broadcast_arrays(condition, x, y)  # type: ignore
     return NamedArray(jnp.where(condition.array, x.array, y.array), condition.axes)
 
 
