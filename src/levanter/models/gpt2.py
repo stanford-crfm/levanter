@@ -13,7 +13,7 @@ from equinox.custom_types import Array
 
 import haliax as hax
 import haliax.nn as hnn
-import levanter.nn
+import levanter.nn as pnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
@@ -262,7 +262,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             upcast=config.upcast_attn,
             mp=mp,
         )
-        self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
+        self.resid_dropout = pnn.Dropout(p=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
         self.mlp = Gpt2Mlp(
@@ -277,21 +277,36 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
         k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
 
+        # residual = hidden_states
+        # hidden_states = self.ln_1(hidden_states)
+        # hidden_states = self.mp.cast_to_compute(hidden_states)
+        # attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
+        # attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        # hidden_states = residual + attn_output
+        # assert hidden_states.dtype == self.mp.compute_dtype
+        #
+        # residual = hidden_states
+        # hidden_states = self.ln_2(hidden_states)
+        # hidden_states = self.mp.cast_to_compute(hidden_states)
+        # ff_output = self.mlp(hidden_states)
+        # ff_output = self.mp.cast_to_compute(ff_output)
+        # ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
+        # hidden_states = residual + ff_output
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
-        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
-        hidden_states = residual + attn_output
-        assert hidden_states.dtype == self.mp.compute_dtype
+        dout = self.resid_dropout(attn_output.array, key=k2, inference=inference)
+        hidden_states = residual.array + dout
 
         residual = hidden_states
+        hidden_states = NamedArray(hidden_states, (self.SeqLen, self.Embed))
         hidden_states = self.ln_2(hidden_states)
         hidden_states = self.mp.cast_to_compute(hidden_states)
         ff_output = self.mlp(hidden_states)
-        ff_output = self.mp.cast_to_compute(ff_output)
-        ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
-        hidden_states = residual + ff_output
+        dout = self.resid_dropout(ff_output.array, key=k3, inference=inference)
+        hidden_states = residual + dout
+        hidden_states = NamedArray(hidden_states, (self.SeqLen, self.Embed))
 
         assert hidden_states.dtype == self.mp.compute_dtype
 
@@ -442,7 +457,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
-        self.dropout = levanter.nn.Dropout(p=dropout_prob)
+        self.dropout = pnn.Dropout(p=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
