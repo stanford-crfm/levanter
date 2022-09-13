@@ -48,7 +48,7 @@ class Dropout(eqx.Module):
 
         if isinstance(self.pdrop, (int, float)) and self.pdrop == 0:
             return x
-        elif self.pdrop == 1:
+        elif isinstance(self.pdrop, (int, float)) and self.pdrop == 1:
             return haliax.zeros_like(x)
         elif inference:
             return x
