@@ -69,6 +69,7 @@ class Dropout(eqx.Module):
                 mask = haliax.random.bernoulli(key, q, shape_to_generate)
                 q = x.dtype.type(q)
 
-                out = haliax.where(mask, x / q, haliax.zeros_like(x))
+                # out = haliax.where(mask, x / q, haliax.zeros_like(x))
+                out = haliax.where(mask, x / q, x.dtype.type(0))
                 assert out.dtype == x.dtype
                 return out
