@@ -41,10 +41,8 @@ def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric
 
     if jnp.isscalar(x):
         x = NamedArray(jnp.broadcast_to(x, condition.array.shape), condition.axes)
-        # x = NamedArray(jnp.full_like(condition.array, x), condition.axes)
 
     if jnp.isscalar(y):
-        # y = NamedArray(jnp.full_like(condition.array, y), condition.axes)
         y = NamedArray(jnp.broadcast_to(y, condition.array.shape), condition.axes)
 
     condition, x, y = broadcast_arrays(condition, x, y)  # type: ignore
