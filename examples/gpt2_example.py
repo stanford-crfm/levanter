@@ -14,9 +14,9 @@ from haliax import Axis
 from haliax.partitioning import resource_mapping
 from levanter import callbacks
 from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
+from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
-from levanter.logging import log_performance_stats, pbar_logger, wandb_logger
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
