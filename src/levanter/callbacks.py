@@ -1,11 +1,14 @@
+import copy
 import logging
-from typing import Callable, Iterator, TypeVar
+from typing import Callable, Iterator, Optional, TypeVar
 
 import jax.numpy as jnp
 from tqdm import tqdm
 
 import wandb
 from levanter.checkpoint import save_checkpoint
+from levanter.config import WandbConfig
+from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.modeling_utils import RunningMean
 from levanter.trainer_hooks import StepInfo
 
@@ -62,3 +65,62 @@ def compute_validation_loss(
         return total_loss
 
     return compute_loss
+
+
+def wandb_logger(config: WandbConfig):
+    def log_to_wandb(step: StepInfo):
+        wandb.log({"train/loss": step.loss}, step=step.step)
+        log_optimizer_hyperparams(step.opt_state, step=step.step)
+        # TODO: hacky
+        if config.save_xla_code and step.step % 1000 == 1:
+            save_xla_dumps_to_wandb()
+
+    return log_to_wandb
+
+
+def log_performance_stats(
+    tokens_per_example: int,
+    batch_size: int,
+    flops_per_example: Optional[float] = None,
+    prefix: Optional[str] = "throughput",
+):
+    def wrap_key(key):
+        if prefix:
+            return f"{prefix}/{key}"
+        return key
+
+    def log_performance_stats(step_info: StepInfo):
+        if step_info.step_duration != 0.0:
+            wandb.log(
+                {
+                    wrap_key("examples_per_second"): float(batch_size) / step_info.step_duration,
+                    wrap_key("tokens_per_second"): float(tokens_per_example) / step_info.step_duration * batch_size,
+                    wrap_key("duration"): step_info.step_duration,
+                },
+                step=step_info.step,
+            )
+
+            if flops_per_example is not None:
+                wandb.log(
+                    {
+                        wrap_key("gflops_per_second"): flops_per_example / 1e9 / step_info.step_duration * batch_size,
+                    },
+                    step=step_info.step,
+                )
+
+    return log_performance_stats
+
+
+def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
+    kwargs = copy.copy(tqdm_mkwargs)
+    if "desc" not in kwargs:
+        kwargs["desc"] = desc
+    if "iterable" not in kwargs:
+        kwargs["iterable"] = iterable
+    pbar = tqdm(**kwargs)
+
+    def update_pbar(step: StepInfo):
+        pbar.update(step.step - pbar.n)
+        pbar.set_postfix(loss=step.loss)
+
+    return update_pbar
