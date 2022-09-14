@@ -16,7 +16,7 @@ from levanter import callbacks
 from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
-from levanter.logging import log_performance_stats, log_to_wandb, pbar_logger
+from levanter.logging import log_performance_stats, pbar_logger, wandb_logger
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
@@ -170,7 +170,7 @@ def main(config: TrainGpt2Config):
         # wandb.summary["flops_per_example"] = flops
 
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(log_to_wandb, every=1)
+        engine.add_hook(wandb_logger(config.wandb), every=1)
         engine.add_hook(
             log_performance_stats(
                 config.model.seq_len,
@@ -216,6 +216,7 @@ def main(config: TrainGpt2Config):
             # step is after the batch, so we need to seek to step
             # TODO: iter_data.seek(resume_step +1)
             import tqdm
+
             for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data"):
                 next(iter_data)
             resume_step = resume_step + 1

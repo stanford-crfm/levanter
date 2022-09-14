@@ -9,8 +9,12 @@ from optax import MultiStepsState
 from tqdm import tqdm
 
 import wandb
+from levanter.config import WandbConfig
 from levanter.jax_utils import jnp_to_python
 from levanter.trainer_hooks import StepInfo
+
+
+logger = pylogging.getLogger(__name__)
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
@@ -78,9 +82,15 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
     return update_pbar
 
 
-def log_to_wandb(step: StepInfo):
-    wandb.log({"train/loss": step.loss}, step=step.step)
-    log_optimizer_hyperparams(step.opt_state, step=step.step)
+def wandb_logger(config: WandbConfig):
+    def log_to_wandb(step: StepInfo):
+        wandb.log({"train/loss": step.loss}, step=step.step)
+        log_optimizer_hyperparams(step.opt_state, step=step.step)
+        # TODO: hacky
+        if config.save_xla_code and step.step % 1000 == 1:
+            save_xla_dumps_to_wandb()
+
+    return log_to_wandb
 
 
 def init_logger(path: Path, level: int = pylogging.INFO) -> None:
@@ -99,3 +109,18 @@ def init_logger(path: Path, level: int = pylogging.INFO) -> None:
 
     # Create Root Logger w/ Base Formatting
     pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
+
+
+def save_xla_dumps_to_wandb():
+    import os
+
+    # attempt to parse xla_flags to see if we're dumping assembly files
+    flags = os.getenv("XLA_FLAGS", None)
+    if flags is not None and "xla_dump_to" in flags:
+        # parse the path
+        # this isn't robust to quotes
+        path = flags.split("xla_dump_to=")[1].split(" ")[0]
+        logger.info(f"Found xla_dump_to={path}, logging to wandb")
+        wandb.save(glob_str=f"{path}/module_*", base_path=path, policy="live")
+    else:
+        logger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
