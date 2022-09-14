@@ -17,9 +17,9 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
+import levanter.logging
 from levanter import jax_utils
 from levanter.axis_names import ResourceAxis
-from levanter.logging import init_logger
 from levanter.mesh import MeshInfo
 
 
@@ -44,10 +44,12 @@ class WandbConfig:
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
     typically don't run from the root of the repo)."""
 
+    save_xla_code: bool = False
+    """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
+
     def init(self, hparams=None, **extra_hparams):
         import wandb
 
-        hparams_to_save = {}
         if hparams is None:
             hparams_to_save = {}
         elif dataclasses.is_dataclass(hparams):
@@ -200,7 +202,7 @@ class TrainerConfig:
     def initialize_logging(self, exp_name: str):
         log_dir = self.log_dir or Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        init_logger(log_dir / f"{exp_name}.log")
+        levanter.logging.init_logger(log_dir / f"{exp_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""
