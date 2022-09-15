@@ -18,8 +18,8 @@ from jax.experimental.maps import Mesh
 from pyrallis import field
 
 import levanter.logging
+from haliax.partitioning import ResourceAxis
 from levanter import jax_utils
-from levanter.axis_names import ResourceAxis
 from levanter.mesh import MeshInfo
 
 

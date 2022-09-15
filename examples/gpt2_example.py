@@ -10,9 +10,8 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
-from haliax.partitioning import resource_mapping
+from haliax.partitioning import ResourceAxis, infer_resource_partitions, named_pjit, resource_mapping
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
@@ -113,15 +112,15 @@ def main(config: TrainGpt2Config):
         # doing this in a pjit means that the model and optimizer states are already sharded
         # TODO: think about how we want to do this if we want to load a checkpoint
         # TODO: think about how we want to do this if we want optimizer states sharded more than the model
-        @named_pjit(axis_resources=resource_partitions)
+        @named_pjit
         def init_state():
             model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
             opt_state = optim.init(model)
             return model, opt_state
 
         model, opt_state = init_state()
-        opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
-        model_resources = infer_resource_partitions(model, resource_partitions)
+        opt_state_resources = infer_resource_partitions(opt_state)
+        model_resources = infer_resource_partitions(model)
 
         # log some info about the model
         wandb.summary["parameter_count"] = parameter_count(model)

@@ -8,7 +8,7 @@ from jax.experimental.maps import Mesh
 from transformers import BatchEncoding
 from utils import skip_if_not_enough_devices
 
-from levanter.axis_names import ResourceAxis
+from haliax.partitioning import ResourceAxis
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.mesh import MeshInfo
