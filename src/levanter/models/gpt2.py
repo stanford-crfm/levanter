@@ -150,9 +150,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         if self.upcast:
             query = self.mp.cast_to_param(query)
             key = self.mp.cast_to_param(key)
-        else:
-            query = self.mp.cast_to_compute(query)
-            key = self.mp.cast_to_compute(key)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
@@ -168,14 +165,12 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
         attn_weights = NamedArray(attn_weights, attn_axes)
-        attn_weights = self.mp.cast_to_compute(attn_weights)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
         attn_output = self.mp.cast_to_compute(attn_output)
 
         attn_output = self.c_proj(attn_output)
-        attn_output = self.mp.cast_to_compute(attn_output)
 
         assert attn_output.dtype == self.mp.compute_dtype
 
@@ -279,14 +274,12 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        hidden_states = self.mp.cast_to_compute(hidden_states)
         attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
         dout = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = residual + dout
 
         residual = hidden_states
         hidden_states = self.ln_2(hidden_states)
-        hidden_states = self.mp.cast_to_compute(hidden_states)
         ff_output = self.mlp(hidden_states)
         dout = self.resid_dropout(ff_output, key=k3, inference=inference)
         hidden_states = residual + dout
@@ -342,7 +335,6 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             )
 
         hidden_states = self.ln_f(hidden_states)
-        hidden_states = self.mp.cast_to_compute(hidden_states)
 
         return hidden_states
 
@@ -453,10 +445,8 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         # input_embeds = self.token_embeddings.select(self.vocab, input_ids)
         # position_embeds = self.position_embeddings.select(self.seqlen, jnp.arange(input_ids.shape[-1], dtype="i4"))
         input_embeds = self.token_embeddings.array[input_ids]
-        input_embeds = self.mp.cast_to_compute(input_embeds)
 
         position_embeds = self.position_embeddings.array[jnp.arange(input_ids.shape[-1], dtype="i4")]
-        position_embeds = self.mp.cast_to_compute(position_embeds)
 
         hidden_states = input_embeds + position_embeds
         hidden_states = self.dropout(hidden_states, inference=inference, key=key)

@@ -32,10 +32,8 @@ class Linear(eqx.Module):
     @jax.named_scope(name="linear")
     def __call__(self, inputs):
         q = inputs.dot(self.In, self.weight)
-        q = self.mp.cast_to_compute(q)
 
         if self.bias is not None:
             q = q + self.bias
-            q = self.mp.cast_to_compute(q)
 
         return q
