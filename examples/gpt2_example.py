@@ -98,8 +98,6 @@ def main(config: TrainGpt2Config):
         mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-        # initialize the model, and convert to appropriate dtype
-
         # TODO: factor this out
         vocab_size = len(tokenizer)
         # round up so that we can shard it if it's sharded
@@ -109,6 +107,7 @@ def main(config: TrainGpt2Config):
             vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
         Vocab = Axis("vocab", vocab_size)
 
+        # initialize the model and optimizer, and convert to appropriate dtype
         optim = config.trainer.optimizer()
 
         # doing this in a pjit means that the model and optimizer states are already sharded
@@ -123,6 +122,9 @@ def main(config: TrainGpt2Config):
         model, opt_state = init_state()
         opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
         model_resources = infer_resource_partitions(model, resource_partitions)
+
+        # log some info about the model
+        wandb.summary["parameter_count"] = parameter_count(model)
 
         # loss function
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
@@ -162,27 +164,9 @@ def main(config: TrainGpt2Config):
 
         # boilerplate hooks and such
         engine = TrainerHooks()
-
-        wandb.summary["parameter_count"] = parameter_count(model)
-
-        # flops = flops_estimate(
-        #    compute_loss_and_grad,
-        #    model,
-        #    jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
-        #    None,
-        # )
-        # wandb.summary["flops_per_example"] = flops
-
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(wandb_logger(config.wandb), every=1)
-        engine.add_hook(
-            log_performance_stats(
-                config.model.seq_len,
-                config.trainer.train_batch_size,
-                # flops_per_example=flops,
-            ),
-            every=1,
-        )
+        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
 
         def eval_dataloader():
             # TODO: only do one pass
@@ -191,7 +175,6 @@ def main(config: TrainGpt2Config):
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
-        # TODO: model sharded saving
         save = callbacks.save_model(checkpoint_dir)
         engine.add_hook(save, every=config.trainer.steps_per_save)
 
@@ -265,8 +248,8 @@ def main(config: TrainGpt2Config):
                 # split keys into microsteps, and one for each example *on this node*
                 micro_keys = global_key_array(my_key, dataset.batch_shape[:-1], mesh, dataset.partition_spec[:-1])
 
-            step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
-            step_loss = jnp.mean(step_loss).item()
+                step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
+                step_loss = jnp.mean(step_loss).item()
 
             engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
 
