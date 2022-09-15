@@ -1,7 +1,6 @@
 import json
 import os
 
-import jmp
 import torch
 from huggingface_hub import cached_download, hf_hub_url
 from jax.random import PRNGKey
@@ -71,7 +70,7 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, mp: jmp.Policy = jmp.get_policy("f32")):
+def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
     config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
@@ -79,7 +78,7 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, mp
     Vocab = Axis("vocab", config.vocab_size)
     lev_config = hf_gpt2_config_to_levanter(config)
     key = PRNGKey(0)
-    model = Gpt2LMHeadModel(Vocab, lev_config, key=key, mp=mp)
+    model = Gpt2LMHeadModel(Vocab, lev_config, key=key)
 
     has_transformer_prefix = False
     for k in checkpoint.keys():

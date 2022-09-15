@@ -112,7 +112,7 @@ def main(config: TrainGpt2Config):
         optim = config.trainer.optimizer()
 
         def init_state():
-            model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key, mp=mp))
+            model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
             opt_state = optim.init(model)
             return model, opt_state
 
@@ -185,8 +185,8 @@ def main(config: TrainGpt2Config):
             for batch in itertools.islice(eval_dataset, 50):
                 yield (batch,)
 
-        #evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader, mp.compute_dtype)
-        #engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
+        evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
+        engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
         save = callbacks.save_model(checkpoint_dir)
         engine.add_hook(save, every=config.trainer.steps_per_save)

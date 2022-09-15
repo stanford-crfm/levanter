@@ -8,7 +8,6 @@ import jax.lax as lax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import jmp
 from equinox.custom_types import Array
 
 import haliax as hax
@@ -67,10 +66,10 @@ class Gpt2Mlp(eqx.Module):
     c_fc: Linear
     c_proj: Linear
 
-    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key, mp: jmp.Policy):
+    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = Linear(Out=Intermediate, In=Embed, key=k_fc, mp=mp)
-        self.c_proj = Linear(Out=Embed, In=Intermediate, key=k_proj, mp=mp)
+        self.c_fc = Linear(Out=Intermediate, In=Embed, key=k_fc)
+        self.c_proj = Linear(Out=Embed, In=Intermediate, key=k_proj)
         self.act = ACT2FN[activation_fn]  # type: ignore
 
     @named_call
@@ -94,7 +93,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
     scale_by_inverse_layer_idx: bool = eqx.static_field()
     upcast: bool = eqx.static_field()
-    mp: jmp.Policy = eqx.static_field()
 
     def __init__(
         self,
@@ -107,7 +105,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         upcast: bool,
         *,
         key,
-        mp: jmp.Policy,
         causal: bool = True,
     ):
         self.causal = causal
@@ -118,12 +115,11 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.Qkv = Axis("qkv", 3)
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.upcast = upcast
-        self.mp = mp
 
         k_c, k_proj = jrandom.split(key, 2)
 
-        self.c_attn = Linear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c, mp=mp)
-        self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj, mp=mp)
+        self.c_attn = Linear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c)
+        self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj)
         self.dropout = hnn.Dropout(dropout_prob)
 
     # TODO: cross-attention
@@ -148,8 +144,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         query = query * scale
 
         if self.upcast:
-            query = self.mp.cast_to_param(query)
-            key = self.mp.cast_to_param(key)
+            query = query.astype(jnp.float32)
+            key = key.astype(jnp.float32)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
         attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
@@ -167,12 +163,14 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_weights = NamedArray(attn_weights, attn_axes)
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
+        # ensure that if we upcast attention weights, we downcast the values
+        attn_weights = attn_weights.astype(hidden_states.dtype)
+
         attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
-        attn_output = self.mp.cast_to_compute(attn_output)
 
         attn_output = self.c_proj(attn_output)
 
-        assert attn_output.dtype == self.mp.compute_dtype
+        assert attn_output.dtype == hidden_states.dtype
 
         return attn_output
 
@@ -220,7 +218,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
 
 class Gpt2Block(TorchSerializationMixin, eqx.Module):
-    mp: jmp.Policy = eqx.static_field()
     ln_1: hnn.LayerNorm
     attn: Gpt2Attention
     ln_2: hnn.LayerNorm
@@ -230,7 +227,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     SeqLen: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
 
-    def __init__(self, config: Gpt2Config, *, key, mp: jmp.Policy):
+    def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         self.Embed = config.Embed
@@ -241,8 +238,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         assert (
             config.Embed.size % config.num_heads == 0
         ), f"embed_dim={config.Embed} must be divisible by num_heads={config.num_heads}"
-
-        self.mp = mp
 
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
@@ -255,7 +250,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             causal=True,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
             upcast=config.upcast_attn,
-            mp=mp,
         )
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
@@ -265,7 +259,6 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             Intermediate=Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
-            mp=mp,
         )
 
     @named_call
@@ -284,14 +277,11 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         dout = self.resid_dropout(ff_output, key=k3, inference=inference)
         hidden_states = residual + dout
 
-        assert hidden_states.dtype == self.mp.compute_dtype
-
         return hidden_states
 
 
 class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
-    mp: jmp.Policy = eqx.static_field()
     blocks: Gpt2Block
     ln_f: hnn.LayerNorm
 
@@ -299,12 +289,11 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     def Layers(self) -> Axis:
         return self.config.Layers
 
-    def __init__(self, config: Gpt2Config, *, key, mp: jmp.Policy):
+    def __init__(self, config: Gpt2Config, *, key):
         super().__init__()
         self.config = config
-        self.mp = mp
 
-        self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key, mp=mp), self.Layers)(
+        self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key), self.Layers)(
             jax_utils.shaped_rng_split(key, config.num_layers),
         )
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
@@ -407,8 +396,6 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
     SeqLen: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
 
-    mp: jmp.Policy = eqx.static_field()
-
     def __init__(
         self,
         Embed: Axis,
@@ -419,7 +406,6 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         dropout_prob: float,
         *,
         key,
-        mp: jmp.Policy,
     ):
         super().__init__()
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
@@ -427,8 +413,6 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         self.Vocab = Vocab
         self.SeqLen = SeqLen
         self.Embed = Embed
-
-        self.mp = mp
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
@@ -475,9 +459,9 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
     def vocab_size(self) -> int:
         return self.embeddings.Vocab.size
 
-    def __init__(self, Vocab: Axis, config: Gpt2Config, *, key, mp: jmp.Policy):
+    def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
-        self.transformer = Gpt2Transformer(config, key=k_t, mp=mp)
+        self.transformer = Gpt2Transformer(config, key=k_t)
         self.embeddings = Gpt2Embeddings(
             Vocab=Vocab,
             Embed=config.Embed,
@@ -486,7 +470,6 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             tie_word_embeddings=True,
             dropout_prob=config.embed_pdrop,
             key=k_embeddings,
-            mp=mp,
         )
 
     def __call__(self, input_ids, *, inference, key):

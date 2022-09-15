@@ -1,6 +1,5 @@
 import itertools
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 import jax.nn as jnn
@@ -53,7 +52,7 @@ def main(config: EvalGpt2Config):
         }
 
         # initialize the model
-        model = Gpt2LMHeadModel(Vocab, config.model, key=key, mp=config.trainer.mp)
+        model = Gpt2LMHeadModel(Vocab, config.model, key=key)
         model_resources = infer_resource_partitions(model, resource_partitions)
         model = config.trainer.mp.cast_to_param(model)
 
