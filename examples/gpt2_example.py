@@ -111,12 +111,16 @@ def main(config: TrainGpt2Config):
 
         optim = config.trainer.optimizer()
 
+        # doing this in a pjit means that the model and optimizer states are already sharded
+        # TODO: think about how we want to do this if we want to load a checkpoint
+        # TODO: think about how we want to do this if we want optimizer states sharded more than the model
+        @named_pjit(axis_resources=resource_partitions)
         def init_state():
             model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
             opt_state = optim.init(model)
             return model, opt_state
 
-        model, opt_state = named_pjit(init_state, resource_partitions)()
+        model, opt_state = init_state()
         opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
         model_resources = infer_resource_partitions(model, resource_partitions)
 

@@ -70,13 +70,16 @@ def named_pjit_init(cls: typing.Type[T], axis_resources, **pjit_args):
         inst = cls(*args, **kwargs)
         return inst
 
-    return named_pjit(init, axis_resources, **pjit_args)
+    return named_pjit(init, axis_resources=axis_resources, **pjit_args)
 
 
-def named_pjit(fn, axis_resources, **pjit_args):
+def named_pjit(fn=None, *, axis_resources, **pjit_args):
     """
     Uses NamedArrays to infer the resource partitions for calling a function
     """
+
+    if fn is None:
+        return functools.partial(named_pjit, axis_resources=axis_resources, **pjit_args)
 
     @functools.wraps(fn)
     def f(*args, **kwargs):
