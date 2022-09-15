@@ -7,11 +7,9 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
-from equinox.custom_types import Array
 
 import haliax as hax
 import haliax.nn as hnn
-import levanter.nn as pnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
@@ -410,7 +408,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
         self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
         self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
-        self.dropout = pnn.Dropout(p=dropout_prob)
+        self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
@@ -419,22 +417,17 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
     @named_call
     def embed(self, input_ids, inference, *, key):
-        # TODO: select
-        # input_embeds = self.token_embeddings.select(self.vocab, input_ids)
-        # position_embeds = self.position_embeddings.select(self.seqlen, jnp.arange(input_ids.shape[-1], dtype="i4"))
-        input_embeds = self.token_embeddings.array[input_ids]
-
-        position_embeds = self.position_embeddings.array[jnp.arange(input_ids.shape[-1], dtype="i4")]
+        input_embeds = self.token_embeddings.take(self.Vocab, input_ids)
+        position_embeds = self.position_embeddings
 
         hidden_states = input_embeds + position_embeds
         hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
         return hidden_states
 
-    def unembed(self, hidden_states: Array):
+    def unembed(self, hidden_states: NamedArray):
         embeddings = self.token_out_embeddings or self.token_embeddings
-        # return hax.dot(self.hidden, hidden_states, embeddings)
-        return jnp.einsum("... l h, ... v h -> ... l v", hidden_states, embeddings.array)
+        return hax.dot(self.Embed, hidden_states, embeddings)
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         assert self.token_out_embeddings is None
@@ -452,6 +445,14 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
     @property
     def vocab_size(self) -> int:
         return self.embeddings.Vocab.size
+
+    @property
+    def Vocab(self) -> Axis:
+        return self.embeddings.Vocab
+
+    @property
+    def SeqLen(self) -> Axis:
+        return self.embeddings.SeqLen
 
     def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
@@ -471,12 +472,12 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             raise ValueError("key must be provided for training")
 
         k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
-        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        named_states = NamedArray(hidden_states, (self.embeddings.SeqLen, self.embeddings.Embed))
-        named_states = self.transformer(named_states, inference=inference, key=k_transformer)
-        lm_logits = self.embeddings.unembed(named_states.array)
+        named_input_ids = hax.named(input_ids, self.SeqLen)
+        hidden_states = self.embeddings.embed(named_input_ids, inference=inference, key=k_embed)
+        hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
+        lm_logits = self.embeddings.unembed(hidden_states)
 
-        return lm_logits
+        return lm_logits.rearrange((self.SeqLen, self.Vocab)).array
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}
