@@ -85,6 +85,10 @@ def test_reduction_functions():
         )
     )
 
+    # argmax
+    assert jnp.all(jnp.equal(hax.argmax(m1).array, jnp.argmax(m1.array)))
+    assert jnp.all(jnp.equal(hax.argmax(m1, axis=Height).array, jnp.argmax(m1.array, axis=0)))
+
 
 def test_split():
     Height = Axis("Height", 2)
@@ -165,6 +169,12 @@ def test_cumsum_etc():
 
     assert jnp.all(jnp.equal(hax.cumprod(named1, axis=Depth).array, jnp.cumprod(named1.array, axis=2)))
     assert hax.cumprod(named1, axis=Depth).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.argsort(named1, axis=Height).array, jnp.argsort(named1.array, axis=0)))
+    assert hax.argsort(named1, axis=Height).axes == (Height, Width, Depth)
+
+    assert jnp.all(jnp.equal(hax.argsort(named1, axis=Width).array, jnp.argsort(named1.array, axis=1)))
+    assert hax.argsort(named1, axis=Width).axes == (Height, Width, Depth)
 
 
 def test_rearrange():
