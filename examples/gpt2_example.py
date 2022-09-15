@@ -1,5 +1,4 @@
 import itertools
-import time
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -17,6 +16,7 @@ from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_p
 from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
+from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
@@ -254,24 +254,21 @@ def main(config: TrainGpt2Config):
             donate_argnums=(0, 1),
         )
 
-        train_mesh_info = config.trainer.train_mesh_info
-
         for step in range(resume_step, config.trainer.num_train_steps):
-            time_in = time.perf_counter()
-            my_key, training_key = jrandom.split(training_key, 2)
+            with capture_time() as step_time:
 
-            input_ids = next(iter_data)
+                with log_time_to_wandb("throughput/loading_time", step=step):
+                    input_ids = next(iter_data)
 
-            # split keys into microsteps, and one for each example *on this node*
-            micro_keys = global_key_array(
-                my_key, dataset.batch_shape[:-1], train_mesh_info.mesh, dataset.partition_spec[:-1]
-            )
+                my_key, training_key = jrandom.split(training_key, 2)
+
+                # split keys into microsteps, and one for each example *on this node*
+                micro_keys = global_key_array(my_key, dataset.batch_shape[:-1], mesh, dataset.partition_spec[:-1])
 
             step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
             step_loss = jnp.mean(step_loss).item()
 
-            time_out = time.perf_counter()
-            engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, time_out - time_in))
+            engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
@@ -279,7 +276,7 @@ def main(config: TrainGpt2Config):
             opt_state,
             step_loss,
             training_key,
-            time_out - time_in,
+            step_duration=step_time(),
         )
 
         evaluate(last_step)
