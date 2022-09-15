@@ -5,7 +5,6 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import jmp
 import optax
 import pyrallis
 from jax.experimental.pjit import pjit
@@ -81,7 +80,7 @@ def main(config: EvalGpt2Config):
 
         # initialize the model
         if config.checkpoint_path is not None:
-            model = Gpt2LMHeadModel(Vocab, config.model, key=key, mp=config.trainer.mp)
+            model = Gpt2LMHeadModel(Vocab, config.model, key=key)
             model_resources = infer_resource_partitions(model, resource_partitions)
             model = config.trainer.mp.cast_to_param(model)
 
@@ -103,7 +102,7 @@ def main(config: EvalGpt2Config):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision, mp=jmp.get_policy("bfloat16"))
+                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
             jax.lib.xla_bridge.get_backend().defragment()
             hf_model = named_pjit(lambda m: m, axis_resources=resource_partitions, donate_argnums=(0,))(hf_model)
             jax.lib.xla_bridge.get_backend().defragment()
