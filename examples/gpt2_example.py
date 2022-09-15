@@ -5,7 +5,7 @@ from functools import partial
 
 import equinox as eqx
 import jax
-from jax import vmap
+from equinox import filter_vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
@@ -125,8 +125,7 @@ def main(config: TrainGpt2Config):
         model_resources = infer_resource_partitions(model, resource_partitions)
 
         # loss function
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
-            inference = key is None
+        def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
@@ -146,19 +145,20 @@ def main(config: TrainGpt2Config):
 
             return loss
 
-        compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0], spmd_axis_name=ResourceAxis.DATA)
+        # None here means the first argument (the model) is not vectorized but instead broadcasted
+        compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
-            return jnp.mean(compute_loss_vmap(model, input_ids, key))
+        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         compute_loss_pjit = pjit(
-            partial(mean_loss, key=None),
+            partial(mean_loss, inference=True, key=None),
             in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
             out_axis_resources=None,
         )
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
+        compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
 
         # boilerplate hooks and such
         engine = TrainerHooks()
