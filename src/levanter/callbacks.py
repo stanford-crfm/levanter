@@ -2,6 +2,7 @@ import copy
 import logging
 from typing import Callable, Iterator, Optional, TypeVar
 
+import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
@@ -43,14 +44,17 @@ Y = TypeVar("Y")
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
     dataloader: Callable[[], Iterator[tuple]],
+    model_dtype
 ):
     def compute_loss(info: StepInfo):
         total_loss = RunningMean(shape=1)
         test_loader = dataloader()
 
+        model = jax.tree_util.tree_map(lambda m: m.astype(model_dtype), info.model)
+
         pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
         for batch in pbar:
-            loss = loss_fn(info.model, *batch)
+            loss = loss_fn(model, *batch)
             # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
             total_loss.update(loss)

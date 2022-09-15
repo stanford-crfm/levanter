@@ -185,8 +185,8 @@ def main(config: TrainGpt2Config):
             for batch in itertools.islice(eval_dataset, 50):
                 yield (batch,)
 
-        evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
-        engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
+        #evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader, mp.compute_dtype)
+        #engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         # TODO: model sharded saving
         save = callbacks.save_model(checkpoint_dir)
         engine.add_hook(save, every=config.trainer.steps_per_save)
@@ -225,7 +225,8 @@ def main(config: TrainGpt2Config):
 
         # input_ids and keys are [microsteps, microbatch_size, ...]
         def train_step(model, opt_state, input_ids, keys):
-            loss, grads = accumulate_gradients(compute_loss_and_grad, model, input_ids, keys)
+            model_inf = mp.cast_to_compute(model)
+            loss, grads = accumulate_gradients(compute_loss_and_grad, model_inf, input_ids, keys)
 
             with jax.named_scope("optimizer"):
                 updates, opt_state = optim.update(grads, opt_state, params=model)
