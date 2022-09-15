@@ -114,28 +114,21 @@ class NamedArray:
         return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
-    def all(self, axis: Optional[AxisSpec] = None, *, keepdims=None) -> "NamedArray":
-        return haliax.all(self, axis=axis, keepdims=keepdims)
+    def all(self, axis: Optional[AxisSpec] = None) -> "NamedArray":
+        return haliax.all(self, axis=axis)
 
-    def any(self, axis: Optional[AxisSpec] = None, *, keepdims=None) -> "NamedArray":
-        return haliax.any(self, axis=axis, keepdims=keepdims)
+    def any(self, axis: Optional[AxisSpec] = None) -> "NamedArray":
+        return haliax.any(self, axis=axis)
 
-    # def select(self, axis: Axis, index: Union[int, 'NamedArray', jnp.ndarray]) -> Any:
-    #     if isinstance(index, NamedArray):
-    #         index = index.array
+    # TODO: test
+    def argmax(self, axis: Axis) -> "NamedArray":
+        return haliax.argmax(self, axis=axis)
 
-    # TODO
-    # def argmax(self, axis: Optional[int] = None, keepdims=None) -> Any:
-    #     ...
-    #
-    # def argmin(self, axis: Optional[int] = None, keepdims=None) -> Any:
-    #     ...
-    #
-    # def argpartition(self, kth, axis=-1, kind='introselect', order=None) -> Any:
-    #     ...
-    #
-    # def argsort(self, axis: Optional[int] = -1, kind='quicksort', order=None) -> Any:
-    #     ...
+    def argmin(self, axis: Axis) -> "NamedArray":
+        return haliax.argmin(self, axis=axis)
+
+    def argsort(self, axis: Axis) -> "NamedArray":
+        return haliax.argsort(self, axis=axis)
 
     def astype(self, dtype) -> "NamedArray":
         return NamedArray(self.array.astype(dtype), self.axes)
@@ -176,31 +169,28 @@ class NamedArray:
         self,
         axis: Optional[AxisSpec] = None,
         *,
-        keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
-        return haliax.max(self, axis=axis, keepdims=keepdims, initial=initial, where=where)
+        return haliax.max(self, axis=axis, initial=initial, where=where)
 
     def mean(
         self,
         axis: Optional[AxisSpec] = None,
         *,
         dtype=None,
-        keepdims=False,
         where=None,
     ) -> "NamedArray":
-        return haliax.mean(self, axis=axis, dtype=dtype, keepdims=keepdims, where=where)
+        return haliax.mean(self, axis=axis, dtype=dtype, where=where)
 
     def min(
         self,
         axis: Optional[AxisSpec] = None,
         *,
-        keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
-        return haliax.min(self, axis=axis, keepdims=keepdims, initial=initial, where=where)
+        return haliax.min(self, axis=axis, initial=initial, where=where)
 
     # TODO
     # def nonzero(self, *, size=None, fill_value=None) -> Any:
@@ -211,7 +201,6 @@ class NamedArray:
         axis: Optional[AxisSpec] = None,
         *,
         dtype=None,
-        keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
@@ -219,7 +208,6 @@ class NamedArray:
             self,
             axis=axis,
             dtype=dtype,
-            keepdims=keepdims,
             initial=initial,
             where=where,
         )
@@ -254,7 +242,6 @@ class NamedArray:
         *,
         dtype=None,
         ddof=0,
-        keepdims=False,
         where=None,
     ) -> "NamedArray":
         return haliax.std(
@@ -262,7 +249,6 @@ class NamedArray:
             axis=axis,
             dtype=dtype,
             ddof=ddof,
-            keepdims=keepdims,
             where=where,
         )
 
@@ -271,7 +257,6 @@ class NamedArray:
         axis: Optional[AxisSpec] = None,
         *,
         dtype=None,
-        keepdims=None,
         initial=None,
         where=None,
     ) -> "NamedArray":
@@ -279,7 +264,6 @@ class NamedArray:
             self,
             axis=axis,
             dtype=dtype,
-            keepdims=keepdims,
             initial=initial,
             where=where,
         )
@@ -298,7 +282,6 @@ class NamedArray:
         axis: Optional[AxisSpec] = None,
         dtype=None,
         ddof=0,
-        keepdims=False,
         *,
         where=None,
     ) -> "NamedArray":
@@ -307,7 +290,6 @@ class NamedArray:
             axis=axis,
             dtype=dtype,
             ddof=ddof,
-            keepdims=keepdims,
             where=where,
         )
 
@@ -652,7 +634,7 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
 def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
     if isinstance(axis, Axis):
-        if jnp.shape(a) != axis.size:
+        if jnp.shape(a) != (axis.size,):
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match size of axis {axis.size}")
         return NamedArray(a, (axis,))
     else:

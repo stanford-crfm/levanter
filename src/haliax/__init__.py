@@ -22,7 +22,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import reduce, scan, vmap
-from .ops import trace, where
+from .ops import trace, tril, triu, where
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -139,8 +139,8 @@ trunc = wrap_elemwise_unary(jnp.trunc)
 all = wrap_reduction_call(jnp.all)
 amax = wrap_reduction_call(jnp.amax)
 any = wrap_reduction_call(jnp.any)
-# argmax = wrap_reduction_call(jnp.argmax)
-# argmin = wrap_reduction_call(jnp.argmin)
+argmax = wrap_reduction_call(jnp.argmax, single_axis_only=True)
+argmin = wrap_reduction_call(jnp.argmin, single_axis_only=True)
 max = wrap_reduction_call(jnp.max)
 mean = wrap_reduction_call(jnp.mean)
 min = wrap_reduction_call(jnp.min)
@@ -157,6 +157,7 @@ cumsum = wrap_axiswise_call(jnp.cumsum, True)
 cumprod = wrap_axiswise_call(jnp.cumprod, True)
 cumproduct = wrap_axiswise_call(jnp.cumproduct, True)
 sort = wrap_axiswise_call(jnp.sort, True)
+argsort = wrap_axiswise_call(jnp.argsort, True)
 
 # elemwise binary ops
 add = wrap_elemwise_binary(jnp.add)
@@ -283,6 +284,8 @@ __all__ = [
     "all",
     "amax",
     "any",
+    "argmax",
+    "argmin",
     "max",
     "mean",
     "min",
@@ -302,6 +305,8 @@ __all__ = [
     "vmap",
     "trace",
     "where",
+    "tril",
+    "triu",
     "add",
     "arctan2",
     "bitwise_and",

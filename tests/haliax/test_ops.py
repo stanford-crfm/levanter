@@ -109,3 +109,24 @@ def test_where():
 
     with pytest.raises(ValueError):
         _ = hax.where(named5 > named6, named5, named6)
+
+
+def test_tril_triu():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    for hax_fn, jnp_fn in [(hax.tril, jnp.tril), (hax.triu, jnp.triu)]:
+        named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+        named2 = hax_fn(named1, Width, Depth)
+        assert jnp.all(jnp.isclose(named2.array, jnp_fn(named1.array)))
+
+        named3 = hax_fn(named1, Width, Depth, k=1)
+        assert jnp.all(jnp.isclose(named3.array, jnp_fn(named1.array, k=1)))
+
+        named4 = hax_fn(named1, Width, Depth, k=-1)
+        assert jnp.all(jnp.isclose(named4.array, jnp_fn(named1.array, k=-1)))
+
+        named5 = hax_fn(named1, Height, Depth)
+        expected5 = jnp_fn(named1.array.transpose([1, 0, 2]))
+        assert jnp.all(jnp.isclose(named5.array, expected5))

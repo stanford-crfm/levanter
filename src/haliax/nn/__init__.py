@@ -29,7 +29,7 @@ selu = wrap_elemwise_unary(jnn.selu)
 gelu = wrap_elemwise_unary(jnn.gelu)
 # TODO: glu = wrap_elemwise_unary(jnn.gelu)
 
-logsumexp = wrap_reduction_call(jnn.logsumexp)
+logsumexp = wrap_reduction_call(jnn.logsumexp, False)
 
 softmax = wrap_axiswise_call(jnn.softmax, False)
 # TODO: standardize has optional "mean" and "variance" arguments we need to support

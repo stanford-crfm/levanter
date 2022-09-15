@@ -20,33 +20,40 @@ def wrap_elemwise_unary(f):
     return wrapper
 
 
-def wrap_reduction_call(fn):
+def wrap_reduction_call(fn, single_axis_only: bool = False):
     @functools.wraps(fn)
-    def wrapper(a, axis: Optional[AxisSpec] = None, keepdims=False, **kwargs):
+    def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
         if kwargs.get("where", None) is not None:
             raise ValueError("where is not supported yet for NamedArray")
         if kwargs.get("out", None) is not None:
-            raise ValueError("where is not supported yet for NamedArray")
+            raise ValueError("out is not supported yet for NamedArray")
+        if kwargs.get("keepdims", False):
+            raise ValueError("keepdims is not supported for NamedArray")
 
         if isinstance(a, NamedArray):
             if axis is None:
-                result = fn(a.array, axis=None, keepdims=keepdims, **kwargs)
+                result = fn(a.array, axis=None, **kwargs)
                 if jnp.isscalar(result):
                     return result
                 else:
                     return NamedArray(result, ())
             else:
                 axis = ensure_tuple(axis)
+                if single_axis_only and len(axis) > 1:
+                    raise ValueError(f"{fn.__name__} only supports a single axis")
                 indices = a._lookup_indices(axis)
                 if indices is None or any(x is None for x in indices):
                     raise ValueError(f"axis {axis} is not in {a.axes}")
-                new_axes = a.axes if keepdims else [ax for ax in a.axes if ax not in axis]
-                result = fn(a.array, axis=indices, keepdims=keepdims, **kwargs)
+                new_axes = [ax for ax in a.axes if ax not in axis]
+                if single_axis_only:
+                    result = fn(a.array, axis=indices[0], **kwargs)
+                else:
+                    result = fn(a.array, axis=indices, **kwargs)
                 if jnp.isscalar(result):
                     return result
-                return NamedArray(fn(a.array, axis=indices, keepdims=keepdims, **kwargs), tuple(new_axes))
+                return NamedArray(result, tuple(new_axes))
         else:
-            return fn(a, axis=axis, keepdims=keepdims, **kwargs)
+            return fn(a, axis=axis, **kwargs)
 
     wrapper.__doc__ = (
         """
