@@ -22,7 +22,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import reduce, scan, vmap
-from .ops import trace, where
+from .ops import trace, tril, triu, where
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -302,6 +302,8 @@ __all__ = [
     "vmap",
     "trace",
     "where",
+    "tril",
+    "triu",
     "add",
     "arctan2",
     "bitwise_and",

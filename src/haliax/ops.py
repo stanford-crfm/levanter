@@ -49,4 +49,20 @@ def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric
     return NamedArray(jnp.where(condition.array, x.array, y.array), condition.axes)
 
 
-__all__ = ["trace", "where"]
+def tril(array: NamedArray, axis1: Axis, axis2: Axis, k=0) -> NamedArray:
+    """Compute the lower triangular part of an array along two named axes."""
+    array = array.rearrange((..., axis1, axis2))
+
+    inner = jnp.tril(array.array, k=k)
+    return NamedArray(inner, array.axes)
+
+
+def triu(array: NamedArray, axis1: Axis, axis2: Axis, k=0) -> NamedArray:
+    """Compute the upper triangular part of an array along two named axes."""
+    array = array.rearrange((..., axis1, axis2))
+
+    inner = jnp.triu(array.array, k=k)
+    return NamedArray(inner, array.axes)
+
+
+__all__ = ["trace", "where", "tril", "triu"]
