@@ -145,8 +145,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
             key = key.astype(jnp.float32)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
-        # TODO: ensure we don't need to do this for perf
-        # attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
 
         if self.causal:
             causal_mask = hax.tril(hax.ones((self.SeqLen, KeySeqLen), dtype=jnp.bool_), self.SeqLen, KeySeqLen)
