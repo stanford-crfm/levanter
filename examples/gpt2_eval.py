@@ -12,8 +12,8 @@ from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 from haliax import Axis
+from haliax.partitioning import ResourceAxis, infer_resource_partitions, named_pjit, resource_mapping
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.torch_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
@@ -41,24 +41,24 @@ def main(config: EvalGpt2Config):
     key = jax.random.PRNGKey(0)
     Vocab = Axis("vocab", len(tokenizer))
 
-    with config.trainer.device_mesh:
+    resource_partitions = {
+        "batch": ResourceAxis.DATA,
+        # ZERO-3
+        # "embed": ResourceAxis.DATA,
+        # "vocab": ResourceAxis.MODEL,
+        "mlp": ResourceAxis.MODEL,
+        # "qkv": ResourceAxis.MODEL,
+        # "heads": ResourceAxis.MODEL,
+        # "total_head_dim": ResourceAxis.MODEL,
+    }
+
+    with config.trainer.device_mesh, resource_mapping(resource_partitions):
         eval_dataset = ShardedIndexedDataset(
             config.data.build_or_load_document_cache("validation"),
             config.trainer.eval_mesh_info,
             config.model.seq_len,
             microbatched=False,
         )
-
-        resource_partitions = {
-            "batch": ResourceAxis.DATA,
-            # ZERO-3
-            # "embed": ResourceAxis.DATA,
-            # "vocab": ResourceAxis.MODEL,
-            "mlp": ResourceAxis.MODEL,
-            # "qkv": ResourceAxis.MODEL,
-            # "heads": ResourceAxis.MODEL,
-            # "total_head_dim": ResourceAxis.MODEL,
-        }
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
             pred_y = model(input_ids, inference=True, key=key)
@@ -81,7 +81,7 @@ def main(config: EvalGpt2Config):
         # initialize the model
         if config.checkpoint_path is not None:
             model = Gpt2LMHeadModel(Vocab, config.model, key=key)
-            model_resources = infer_resource_partitions(model, resource_partitions)
+            model_resources = infer_resource_partitions(model)
             model = config.trainer.mp.cast_to_param(model)
 
             model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
@@ -102,11 +102,13 @@ def main(config: EvalGpt2Config):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
+                hf_model = load_hf_gpt2_checkpoint(
+                    config.hf_checkpoint, revision=config.hf_revision
+                )
             jax.lib.xla_bridge.get_backend().defragment()
             hf_model = named_pjit(lambda m: m, axis_resources=resource_partitions, donate_argnums=(0,))(hf_model)
             jax.lib.xla_bridge.get_backend().defragment()
-            model_resources = infer_resource_partitions(hf_model, resource_partitions)
+            model_resources = infer_resource_partitions(hf_model)
 
             compute_loss_pjit = pjit(
                 partial(mean_loss, key=None),

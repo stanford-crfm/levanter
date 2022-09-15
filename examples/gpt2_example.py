@@ -1,22 +1,21 @@
 import itertools
-import time
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
 import jax
-from jax import vmap
+from equinox import filter_vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
-from haliax.partitioning import resource_mapping
+from haliax.partitioning import ResourceAxis, infer_resource_partitions, named_pjit, resource_mapping
 from levanter import callbacks
-from levanter.axis_names import ResourceAxis, infer_resource_partitions, named_pjit
 from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
+from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
@@ -98,8 +97,6 @@ def main(config: TrainGpt2Config):
         mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-        # initialize the model, and convert to appropriate dtype
-
         # TODO: factor this out
         vocab_size = len(tokenizer)
         # round up so that we can shard it if it's sharded
@@ -109,20 +106,27 @@ def main(config: TrainGpt2Config):
             vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
         Vocab = Axis("vocab", vocab_size)
 
+        # initialize the model and optimizer, and convert to appropriate dtype
         optim = config.trainer.optimizer()
 
+        # doing this in a pjit means that the model and optimizer states are already sharded
+        # TODO: think about how we want to do this if we want to load a checkpoint
+        # TODO: think about how we want to do this if we want optimizer states sharded more than the model
+        @named_pjit
         def init_state():
             model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
             opt_state = optim.init(model)
             return model, opt_state
 
-        model, opt_state = named_pjit(init_state, resource_partitions)()
-        opt_state_resources = infer_resource_partitions(opt_state, resource_partitions)
-        model_resources = infer_resource_partitions(model, resource_partitions)
+        model, opt_state = init_state()
+        opt_state_resources = infer_resource_partitions(opt_state)
+        model_resources = infer_resource_partitions(model)
+
+        # log some info about the model
+        wandb.summary["parameter_count"] = parameter_count(model)
 
         # loss function
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
-            inference = key is None
+        def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
@@ -142,43 +146,26 @@ def main(config: TrainGpt2Config):
 
             return loss
 
-        compute_loss_vmap = vmap(compute_loss, in_axes=[None, 0, 0], spmd_axis_name=ResourceAxis.DATA)
+        # None here means the first argument (the model) is not vectorized but instead broadcasted
+        compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key):
-            return jnp.mean(compute_loss_vmap(model, input_ids, key))
+        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         compute_loss_pjit = pjit(
-            partial(mean_loss, key=None),
+            partial(mean_loss, inference=True, key=None),
             in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
             out_axis_resources=None,
         )
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(mean_loss)
+        compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
 
         # boilerplate hooks and such
         engine = TrainerHooks()
-
-        wandb.summary["parameter_count"] = parameter_count(model)
-
-        # flops = flops_estimate(
-        #    compute_loss_and_grad,
-        #    model,
-        #    jnp.zeros((1, config.model.seq_len), dtype=jnp.uint32),
-        #    None,
-        # )
-        # wandb.summary["flops_per_example"] = flops
-
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(wandb_logger(config.wandb), every=1)
-        engine.add_hook(
-            log_performance_stats(
-                config.model.seq_len,
-                config.trainer.train_batch_size,
-                # flops_per_example=flops,
-            ),
-            every=1,
-        )
+        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
 
         def eval_dataloader():
             # TODO: only do one pass
@@ -187,7 +174,6 @@ def main(config: TrainGpt2Config):
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
-        # TODO: model sharded saving
         save = callbacks.save_model(checkpoint_dir)
         engine.add_hook(save, every=config.trainer.steps_per_save)
 
@@ -250,24 +236,21 @@ def main(config: TrainGpt2Config):
             donate_argnums=(0, 1),
         )
 
-        train_mesh_info = config.trainer.train_mesh_info
-
         for step in range(resume_step, config.trainer.num_train_steps):
-            time_in = time.perf_counter()
-            my_key, training_key = jrandom.split(training_key, 2)
+            with capture_time() as step_time:
 
-            input_ids = next(iter_data)
+                with log_time_to_wandb("throughput/loading_time", step=step):
+                    input_ids = next(iter_data)
 
-            # split keys into microsteps, and one for each example *on this node*
-            micro_keys = global_key_array(
-                my_key, dataset.batch_shape[:-1], train_mesh_info.mesh, dataset.partition_spec[:-1]
-            )
+                my_key, training_key = jrandom.split(training_key, 2)
 
-            step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
-            step_loss = jnp.mean(step_loss).item()
+                # split keys into microsteps, and one for each example *on this node*
+                micro_keys = global_key_array(my_key, dataset.batch_shape[:-1], mesh, dataset.partition_spec[:-1])
 
-            time_out = time.perf_counter()
-            engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, time_out - time_in))
+                step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
+                step_loss = jnp.mean(step_loss).item()
+
+            engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
@@ -275,7 +258,7 @@ def main(config: TrainGpt2Config):
             opt_state,
             step_loss,
             training_key,
-            time_out - time_in,
+            step_duration=step_time(),
         )
 
         evaluate(last_step)
