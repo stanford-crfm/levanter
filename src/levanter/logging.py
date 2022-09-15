@@ -1,4 +1,6 @@
+import contextlib
 import logging as pylogging
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -61,3 +63,25 @@ def save_xla_dumps_to_wandb():
         wandb.save(glob_str=f"{path}/module_*", base_path=path, policy="live")
     else:
         logger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
+
+
+@contextlib.contextmanager
+def capture_time():
+    start = time.perf_counter()
+    done = False
+
+    def fn():
+        if done:
+            return end - start
+        else:
+            return time.perf_counter() - start
+
+    yield fn
+    end = time.time()
+
+
+@contextlib.contextmanager
+def log_time_to_wandb(name: str, *, step=None):
+    with capture_time() as fn:
+        yield fn
+    wandb.log({name: fn()}, step=step)

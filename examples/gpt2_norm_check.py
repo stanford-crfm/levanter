@@ -13,7 +13,7 @@ from tqdm import tqdm
 from transformers import GPT2Tokenizer
 
 from haliax import Axis
-from levanter.axis_names import ResourceAxis, infer_resource_partitions
+from haliax.partitioning import ResourceAxis, infer_resource_partitions, resource_mapping
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
@@ -37,7 +37,13 @@ def main(config: EvalGpt2Config):
     key = jax.random.PRNGKey(0)
     Vocab = Axis("vocab", len(tokenizer))
 
-    with config.trainer.device_mesh:
+    resource_partitions = {
+        "embed": ResourceAxis.MODEL,
+        # "mlp": ResourceAxis.MODEL,
+        "batch": ResourceAxis.DATA,
+    }
+
+    with config.trainer.device_mesh, resource_mapping(resource_partitions):
         eval_dataset = ShardedIndexedDataset(
             config.data.build_or_load_document_cache("validation"),
             config.trainer.eval_mesh_info,
@@ -45,15 +51,9 @@ def main(config: EvalGpt2Config):
             microbatched=False,
         )
 
-        resource_partitions = {
-            "embed": ResourceAxis.MODEL,
-            # "mlp": ResourceAxis.MODEL,
-            "batch": ResourceAxis.DATA,
-        }
-
         # initialize the model
         model = Gpt2LMHeadModel(Vocab, config.model, key=key)
-        model_resources = infer_resource_partitions(model, resource_partitions)
+        model_resources = infer_resource_partitions(model)
         model = config.trainer.mp.cast_to_param(model)
 
         model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
