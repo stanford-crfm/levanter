@@ -5,7 +5,6 @@ from typing import Callable, Dict, List, Optional, cast
 import equinox as eqx
 import jax
 import jax.lax as lax
-import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
 from equinox.custom_types import Array
@@ -122,7 +121,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj)
         self.dropout = hnn.Dropout(dropout_prob)
 
-    # TODO: cross-attention
     @named_call
     def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
         # hidden_states has shape [seq_len, embed_dim]
@@ -131,7 +129,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         qkv_out = logically_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
         query, key, value = logically_sharded(qkv_out.unbind(self.Qkv))
 
-        KeySeqLen = self.SeqLen.alias("KeySeqLen")  # haliax doesn't support unnamed axes or duplicate axes
+        # haliax doesn't support unnamed axes or duplicate axes
+        KeySeqLen = self.SeqLen.alias("KeySeqLen")
         key = key.rename({self.SeqLen: KeySeqLen})
         value = value.rename({self.SeqLen: KeySeqLen})
 
@@ -148,19 +147,14 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
             key = key.astype(jnp.float32)
 
         attn_weights = hax.dot(self.HeadDim, query, key)
-        attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
-        attn_axes = attn_weights.axes
-        attn_weights = attn_weights.array
+        # TODO: ensure we don't need to do this for perf
+        # attn_weights = hax.rearrange(attn_weights, (..., self.Heads, self.SeqLen, KeySeqLen))
 
         if self.causal:
-            # TODO(haliax) add tril to hax
-            causal_mask = jnp.tril(jnp.ones((self.SeqLen.size, KeySeqLen.size), dtype=jnp.bool_))
+            causal_mask = hax.tril(hax.ones((self.SeqLen, KeySeqLen), dtype=jnp.bool_), self.SeqLen, KeySeqLen)
+            attn_weights = hax.where(causal_mask, attn_weights, -1e9)
 
-            # TODO(haliax): add where ops to hax
-            attn_weights = jnp.where(causal_mask, attn_weights, -1e9)
-
-        attn_weights = jnn.softmax(attn_weights)  # heads, seqlen, seqlen
-        attn_weights = NamedArray(attn_weights, attn_axes)
+        attn_weights = hnn.softmax(attn_weights, KeySeqLen)  # heads, seqlen, seqlen
         attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
 
         # ensure that if we upcast attention weights, we downcast the values
