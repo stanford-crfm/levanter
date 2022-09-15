@@ -1,12 +1,18 @@
 import pathlib
 
-from git import Repo
+import pytest
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.config import WandbConfig
 
 
 def test_infer_experiment_git_root():
-    # TODO: bit of a hack since we rely on the fact that this test runs in a git repo
+    # make sure this test is running in a git repo
+    try:
+        repo = Repo(pathlib.Path(__file__), search_parent_directories=True)
+    except (InvalidGitRepositoryError, NoSuchPathError):
+        pytest.skip("test not running in a git repo")
+
     root = WandbConfig._infer_experiment_git_root()
 
     # ensure that 1) this is a git root and 2) this source file is underneath
