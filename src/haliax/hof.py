@@ -161,12 +161,12 @@ def vmap(
     # TODO: allow specifying spmd axis name and/or inferring it from resource_mapping
     # TODO: allow other axes to be mapped over
     # TODO: maybe implement equinox-style filtering vmap
+    # TODO: tests to exercise this more
     @wraps(fn)
     def wrapped_vmap_fn(*args):
         # TODO: this probably results in a lot of compilation misses. Need to think about it.
         mapped_axes = []
         chilled_args = []
-        # TODO: have to figure out element structure, but not relevant today
 
         for i, arg in enumerate(args):
             if i in unmmapped_argnums:
