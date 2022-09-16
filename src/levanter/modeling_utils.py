@@ -6,7 +6,8 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from levanter.jax_utils import named_call, reduce
+from haliax.util import named_call
+from levanter.jax_utils import reduce
 
 
 def quick_gelu(x):

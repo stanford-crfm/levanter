@@ -8,12 +8,13 @@ import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
 from haliax.core import Axis, NamedArray
-from haliax.util import ensure_tuple
+from haliax.util import ensure_tuple, named_call
 
 
 def _wrap_random_function(func):
     """Wrap a jax random function to return a NamedArray and takes axes as inputs"""
 
+    @named_call(name=func.__name__)
     @functools.wraps(func)
     def wrapper(key: jrandom.KeyArray, *args, **kwargs):
         sig: inspect.BoundArguments = inspect.signature(func).bind(key, *args, **kwargs)
