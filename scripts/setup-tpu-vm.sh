@@ -43,3 +43,5 @@ sudo mount -a
 
 # default to loading the venv
 sudo bash -c "echo \"source ${MOUNT_POINT}/venv310/bin/activate\" > /etc/profile.d/activate_shared_venv.sh"
+
+git config --global --add safe.directory /files/levanter
