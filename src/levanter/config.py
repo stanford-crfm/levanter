@@ -13,6 +13,7 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
+from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
 from pyrallis import field
@@ -131,7 +132,10 @@ class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
 
-    log_dir: Optional[Path] = None
+    wandb: WandbConfig = WandbConfig()
+    log_dir: Path = Path("logs/")
+    run_base_dir: furl = furl("runs/")
+    checkpoint_dir: furl = furl("checkpoints/")
 
     # config related to partitioning
     model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
@@ -149,7 +153,7 @@ class TrainerConfig:
 
     steps_per_save: int = 20_000
     load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[str] = None
+    load_checkpoint_path: Optional[furl] = None
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -163,6 +167,26 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
+
+    @property
+    def run_name(self) -> str:
+        import wandb
+
+        return wandb.run.name or wandb.run.id
+
+    @property
+    def run_dir(self) -> furl:
+        return self.run_base_dir / self.run_name
+
+    @property
+    def checkpoint_path(self) -> furl:
+        return self.checkpoint_dir / self.run_name
+
+    def initialize(self, all_config):
+        """Initializes jax, wandb, logging, setting the run name in the process"""
+        self._initialize_jax_config()
+        self.wandb.init(all_config)
+        self._initialize_logging()
 
     @cached_property
     def device_mesh(self) -> Mesh:
@@ -197,14 +221,14 @@ class TrainerConfig:
     def train_total_microbatches(self):
         return self.num_train_steps * self.train_mesh_info.microbatches_per_step
 
-    def initialize_jax_config(self):
+    def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
 
-    def initialize_logging(self, exp_name: str):
-        log_dir = self.log_dir or Path("logs")
+    def _initialize_logging(self):
+        log_dir = self.log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(log_dir / f"{exp_name}.log")
+        levanter.logging.init_logger(log_dir / f"{self.run_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""
@@ -284,6 +308,8 @@ def register_codecs():
     pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
     pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
+    pyrallis.decode.register(furl, furl)
+    pyrallis.encode.register(furl, str)
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):

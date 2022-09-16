@@ -9,6 +9,7 @@ import jax
 from equinox.custom_types import PyTree
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
+from furl import furl
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
     If training_state is None, the loaded training state will be returned as None.
     """
     fs: AbstractFileSystem
-    fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
+    fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
 
     if discover_latest:
         checkpoint_path = discover_latest_checkpoint(checkpoint_path)
@@ -81,6 +82,7 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
     """
     # need to use fsspec for this, as glob.glob doesn't work on gs://
     fs: AbstractFileSystem
+    checkpoint_path = str(checkpoint_path)
     fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
     ckpt_dirs = [d for d in fs.glob(f"{checkpoint_path}/*") if fs.isdir(d)] + [checkpoint_path]
     ckpt_dirs = [d[:-1] if d.endswith("/") else d for d in ckpt_dirs]
@@ -100,14 +102,14 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
 
 
 def tree_serialise_leaves(
-    path: Union[str, pathlib.Path],
+    path: Union[str, furl, pathlib.Path],
     pytree: PyTree,
     filter_spec=default_serialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
 ) -> None:
     """Analog to `equinox.tree_deserialise_leaves`, but saves the leaves of a PyTree using fsspec."""
 
-    with fsspec.open(path, "wb") as f:
+    with fsspec.open(str(path), "wb") as f:
 
         def _serialise(spec, x):
             def __serialise(y):
@@ -120,7 +122,7 @@ def tree_serialise_leaves(
 
 
 def tree_deserialise_leaves(
-    path: Union[str, pathlib.Path],
+    path: Union[str, furl, pathlib.Path],
     like: PyTree,
     filter_spec=default_deserialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
@@ -129,6 +131,8 @@ def tree_deserialise_leaves(
     """
     Analog to `equinox.tree_serialise_leaves`, but loads the leaves of a PyTree using fsspec.
     """
+
+    path = str(path)
 
     if fs is None:
         fs, _, (path_to_open,) = fsspec.get_fs_token_paths(path)
@@ -144,7 +148,7 @@ def tree_deserialise_leaves(
             return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
 
         out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
-    #jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
+    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
     return out
 
 
