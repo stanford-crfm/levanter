@@ -66,6 +66,19 @@ class WandbConfig:
         if jax.process_index() != 0:
             mode = "disabled"
 
+        other_settings = wandb.Settings()
+
+        if isinstance(self.save_code, str):
+            code_dir = self.save_code
+        elif self.save_code:
+            code_dir = WandbConfig._infer_experiment_git_root() or "."
+        else:
+            code_dir = None
+
+        if code_dir is not None:
+            logger.info(f"Setting wandb code_dir to {code_dir}")
+            other_settings.code_dir = code_dir
+
         wandb.init(
             entity=self.entity,
             project=self.project,
@@ -75,6 +88,7 @@ class WandbConfig:
             group=self.group,
             mode=mode,
             config=hparams_to_save,
+            settings=other_settings,
         )
 
         if dataclasses.is_dataclass(hparams):
@@ -83,23 +97,6 @@ class WandbConfig:
                 with open(config_path, "w") as f:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
-
-        if self.save_code is not False:
-            WandbConfig._save_code(self.save_code)
-
-    @staticmethod
-    def _save_code(save_code: Union[bool, str]):
-        import wandb
-
-        if isinstance(save_code, str):
-            path = save_code
-        elif save_code:
-            path = WandbConfig._infer_experiment_git_root() or "."
-        else:
-            return
-
-        logger.info(f"Logging code from {path} to wandb")
-        wandb.run.log_code(path)
 
     @staticmethod
     def _infer_experiment_git_root() -> Optional[str]:
