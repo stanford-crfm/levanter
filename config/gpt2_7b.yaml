@@ -18,7 +18,7 @@ trainer:
   model_axis_size: 4
   per_device_train_batch_size: 8
   per_device_eval_batch_size: 8
-  batch_size: 1024
+  train_batch_size: 1024
 
   axis_mapping:
     batch: "data"
