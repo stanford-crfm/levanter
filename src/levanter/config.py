@@ -77,6 +77,7 @@ class WandbConfig:
         if code_dir is not None:
             logger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
+            other_settings["git_root"] = code_dir
 
         wandb.init(
             entity=self.entity,
