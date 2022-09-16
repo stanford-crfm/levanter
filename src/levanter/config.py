@@ -5,7 +5,7 @@ import tempfile
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Mapping, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -133,9 +133,11 @@ class TrainerConfig:
 
     log_dir: Optional[Path] = None
 
-    # Config related to batch sizes
-    model_axis_size: int = 1  # how many devices to shard each model over
+    # config related to partitioning
+    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
+    axis_mapping: Mapping[str, str] = field(default_factory=dict)
 
+    # Config related to batch sizes
     train_batch_size: int = 512
     per_device_train_batch_size: int = -1
 

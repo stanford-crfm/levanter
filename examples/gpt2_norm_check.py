@@ -13,7 +13,7 @@ from tqdm import tqdm
 from transformers import GPT2Tokenizer
 
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, infer_resource_partitions, resource_mapping
+from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
@@ -43,7 +43,7 @@ def main(config: EvalGpt2Config):
         "batch": ResourceAxis.DATA,
     }
 
-    with config.trainer.device_mesh, resource_mapping(resource_partitions):
+    with config.trainer.device_mesh, axis_mapping(resource_partitions):
         eval_dataset = ShardedIndexedDataset(
             config.data.build_or_load_document_cache("validation"),
             config.trainer.eval_mesh_info,

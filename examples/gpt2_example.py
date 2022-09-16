@@ -10,7 +10,7 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, infer_resource_partitions, named_pjit, resource_mapping
+from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
@@ -78,18 +78,7 @@ def main(config: TrainGpt2Config):
         microbatched=False,
     )
 
-    resource_partitions = {
-        "batch": ResourceAxis.DATA,
-        # ZERO-3
-        # "embed": ResourceAxis.DATA,
-        "vocab": ResourceAxis.MODEL,
-        "mlp": ResourceAxis.MODEL,
-        # "qkv": ResourceAxis.MODEL,
-        "heads": ResourceAxis.MODEL,
-        # "total_head_dim": ResourceAxis.MODEL,
-    }
-
-    with config.trainer.device_mesh as mesh, resource_mapping(resource_partitions):
+    with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_mapping):
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -100,7 +89,7 @@ def main(config: TrainGpt2Config):
         # TODO: factor this out
         vocab_size = len(tokenizer)
         # round up so that we can shard it if it's sharded
-        vocab_resource_axis = resource_partitions.get("vocab")
+        vocab_resource_axis = config.trainer.axis_mapping.get("vocab")
         if vocab_resource_axis:
             vocab_axis_size = mesh.shape[vocab_resource_axis]
             vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size

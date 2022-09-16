@@ -40,7 +40,7 @@ _mapping_holder = _ResourceMappingHolder()
 
 
 @contextlib.contextmanager
-def resource_mapping(mapping: ResourceMapping, **kwargs):
+def axis_mapping(mapping: ResourceMapping, **kwargs):
     """Context manager for setting the global resource mapping"""
     if len(kwargs):
         mapping = dict(mapping)
@@ -167,7 +167,7 @@ __all__ = [
     "PhysicalAxisSpec",
     "ResourceAxis",
     "ResourceMapping",
-    "resource_mapping",
+    "axis_mapping",
     "logically_sharded",
     "infer_resource_partitions",
     "eval_resource_partitions",

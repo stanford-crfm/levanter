@@ -12,7 +12,7 @@ from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, infer_resource_partitions, named_pjit, resource_mapping
+from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.torch_checkpoints import load_hf_gpt2_checkpoint
@@ -41,18 +41,7 @@ def main(config: EvalGpt2Config):
     key = jax.random.PRNGKey(0)
     Vocab = Axis("vocab", len(tokenizer))
 
-    resource_partitions = {
-        "batch": ResourceAxis.DATA,
-        # ZERO-3
-        # "embed": ResourceAxis.DATA,
-        # "vocab": ResourceAxis.MODEL,
-        "mlp": ResourceAxis.MODEL,
-        # "qkv": ResourceAxis.MODEL,
-        # "heads": ResourceAxis.MODEL,
-        # "total_head_dim": ResourceAxis.MODEL,
-    }
-
-    with config.trainer.device_mesh, resource_mapping(resource_partitions):
+    with config.trainer.device_mesh, axis_mapping(config.trainer.axis_mapping):
         eval_dataset = ShardedIndexedDataset(
             config.data.build_or_load_document_cache("validation"),
             config.trainer.eval_mesh_info,
@@ -102,11 +91,9 @@ def main(config: EvalGpt2Config):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(
-                    config.hf_checkpoint, revision=config.hf_revision
-                )
+                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
             jax.lib.xla_bridge.get_backend().defragment()
-            hf_model = named_pjit(lambda m: m, axis_resources=resource_partitions, donate_argnums=(0,))(hf_model)
+            hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
             jax.lib.xla_bridge.get_backend().defragment()
             model_resources = infer_resource_partitions(hf_model)
 
