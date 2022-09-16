@@ -23,7 +23,7 @@ trainer:
   axis_mapping:
     batch: "data"
     # ZERO-3
-    # "embed": ResourceAxis.DATA,
+    embed: "data"
     vocab: "model"
     mlp: "model"
     heads: "model"
