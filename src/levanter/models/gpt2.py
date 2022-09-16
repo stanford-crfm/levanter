@@ -13,9 +13,9 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
+from haliax.util import named_call
 from levanter import jax_utils
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
-from levanter.jax_utils import named_call
 from levanter.modeling_utils import ACT2FN
 
 
