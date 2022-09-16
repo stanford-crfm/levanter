@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer
 
 import wandb
 from levanter.checkpoint import load_checkpoint
-from levanter.config import TrainerConfig, WandbConfig
+from levanter.config import TrainerConfig
 from levanter.jax_utils import global_key_array, parameter_count
 from levanter.modeling_utils import accumulate_gradients
 from levanter.trainer_hooks import StepInfo, TrainerHooks
@@ -40,28 +40,15 @@ from levanter.trainer_hooks import StepInfo, TrainerHooks
 @dataclass
 class TrainGpt2Config:
     data: CachedLMDatasetConfig = CachedLMDatasetConfig()
-    wandb: WandbConfig = WandbConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
-
-    run_base_dir: str = "runs/"
-    checkpoint_dir: str = "checkpoints/"
 
     log_z_regularization: float = 0.0
 
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
-
-    # TODO: probably factor out all this init stuff into config
-    config.trainer.initialize_jax_config()
-    config.wandb.init(config)
-
-    run_name = wandb.run.name or wandb.run.id
-    config.trainer.initialize_logging(run_name)
-
-    run_dir = f"{config.run_base_dir}/{run_name}"
-    checkpoint_dir = f"{config.checkpoint_dir}/{run_name}"
+    config.trainer.initialize(config)
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(
@@ -153,7 +140,7 @@ def main(config: TrainGpt2Config):
         # boilerplate hooks and such
         engine = TrainerHooks()
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(wandb_logger(config.wandb), every=1)
+        engine.add_hook(wandb_logger(config.trainer.wandb), every=1)
         engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
 
         def eval_dataloader():
@@ -163,7 +150,7 @@ def main(config: TrainGpt2Config):
 
         evaluate = callbacks.compute_validation_loss(compute_loss_pjit, eval_dataloader)
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
-        save = callbacks.save_model(checkpoint_dir)
+        save = callbacks.save_model(config.trainer.checkpoint_path)
         engine.add_hook(save, every=config.trainer.steps_per_save)
 
         # data loader
@@ -178,7 +165,7 @@ def main(config: TrainGpt2Config):
                 checkpoint = load_checkpoint(
                     model,
                     (opt_state, training_key),
-                    config.trainer.load_checkpoint_path or run_dir,
+                    config.trainer.load_checkpoint_path or config.trainer.checkpoint_path,
                 )
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
