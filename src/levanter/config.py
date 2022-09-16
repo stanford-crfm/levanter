@@ -66,8 +66,6 @@ class WandbConfig:
         if jax.process_index() != 0:
             mode = "disabled"
 
-        other_settings = wandb.Settings()
-
         if isinstance(self.save_code, str):
             code_dir = self.save_code
         elif self.save_code:
@@ -75,9 +73,10 @@ class WandbConfig:
         else:
             code_dir = None
 
+        other_settings = dict()
         if code_dir is not None:
             logger.info(f"Setting wandb code_dir to {code_dir}")
-            other_settings.code_dir = code_dir
+            other_settings["code_dir"] = code_dir
 
         wandb.init(
             entity=self.entity,
