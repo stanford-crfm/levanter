@@ -45,7 +45,7 @@ class WandbConfig:
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
     typically don't run from the root of the repo)."""
 
-    save_xla_code: bool = False
+    save_xla_dumps: bool = False
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
     def init(self, hparams=None, **extra_hparams):

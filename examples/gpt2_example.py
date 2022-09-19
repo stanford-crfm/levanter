@@ -19,7 +19,7 @@ from haliax.partitioning import (
     round_axis_for_partitioning,
 )
 from levanter import callbacks
-from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
+from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.logging import capture_time, log_time_to_wandb
@@ -148,7 +148,7 @@ def main(config: TrainGpt2Config):
         # boilerplate hooks and such
         engine = TrainerHooks()
         engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(wandb_logger(config.trainer.wandb), every=1)
+        engine.add_hook(log_to_wandb, every=1)
         engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
 
         def eval_dataloader():
@@ -160,6 +160,9 @@ def main(config: TrainGpt2Config):
         engine.add_hook(evaluate, every=config.trainer.steps_per_eval)
         save = callbacks.save_model(config.trainer.checkpoint_path)
         engine.add_hook(save, every=config.trainer.steps_per_save)
+
+        # a bit hacky, but we'd prefer this go after eval, so that we can capture the xla dumps for eval too
+        engine.add_hook(wandb_xla_logger(config.trainer.wandb), every=1000)
 
         # data loader
         iter_data = iter(dataset)

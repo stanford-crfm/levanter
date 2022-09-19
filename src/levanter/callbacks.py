@@ -1,5 +1,6 @@
 import copy
 import logging
+import time
 from typing import Callable, Iterator, Optional, TypeVar
 
 import jax.numpy as jnp
@@ -68,15 +69,24 @@ def compute_validation_loss(
     return compute_loss
 
 
-def wandb_logger(config: WandbConfig):
-    def log_to_wandb(step: StepInfo):
-        wandb.log({"train/loss": step.loss}, step=step.step)
-        log_optimizer_hyperparams(step.opt_state, step=step.step)
-        # TODO: hacky
-        if config.save_xla_code and step.step % 1000 == 1:
-            save_xla_dumps_to_wandb()
+def log_to_wandb(step: StepInfo):
+    wandb.log({"train/loss": step.loss}, step=step.step)
+    log_optimizer_hyperparams(step.opt_state, step=step.step)
 
-    return log_to_wandb
+
+def wandb_xla_logger(config: WandbConfig):
+    last_mtime = wandb.run.start_time
+
+    def log_xla_to_wandb(step: StepInfo):
+        nonlocal last_mtime
+        save_xla_dumps_to_wandb(last_mtime)
+        # update time to now
+        last_mtime = time.time()
+
+    if config.save_xla_dumps:
+        return log_xla_to_wandb
+    else:
+        return lambda x: None
 
 
 def log_performance_stats(
