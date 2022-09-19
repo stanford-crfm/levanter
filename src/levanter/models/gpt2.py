@@ -9,12 +9,12 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
+import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
 from haliax.partitioning import logically_sharded
 from haliax.util import named_call
-from levanter import jax_utils
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
 
@@ -253,7 +253,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
-        k1, k2, k3 = jax_utils.maybe_rng_split(key, 3)
+        k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -284,7 +284,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         self.config = config
 
         self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key), self.Layers)(
-            jax_utils.shaped_rng_split(key, config.num_layers),
+            haliax.jax_utils.shaped_rng_split(key, config.num_layers),
         )
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
@@ -308,7 +308,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
                 do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size))
             )
         else:
-            keys = jax_utils.maybe_rng_split(key, self.Layers.size)
+            keys = haliax.jax_utils.maybe_rng_split(key, self.Layers.size)
             hidden_states = hax.reduce(
                 do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size), keys)
             )
@@ -469,7 +469,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
-        k_embed, k_transformer = jax_utils.maybe_rng_split(key, 2)
+        k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         named_input_ids = hax.named(input_ids, self.SeqLen)
         hidden_states = self.embeddings.embed(named_input_ids, inference=inference, key=k_embed)
         hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)

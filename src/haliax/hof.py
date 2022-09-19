@@ -7,6 +7,7 @@ import jax
 import jax.lax as lax
 
 from .core import Axis, NamedArray
+from .partitioning import physical_axis_name
 from .util import ensure_tuple, is_named_array
 
 
@@ -183,7 +184,11 @@ def vmap(
             chilled = jax.tree_util.tree_map(_chill_named_arrays, r, is_leaf=is_named_array)
             return chilled
 
-        result = jax.vmap(wrapped_fn, in_axes=mapped_axes, out_axes=0, axis_size=axis.size)(*args)
+        spmd_axis_name = physical_axis_name(axis)
+
+        result = jax.vmap(
+            wrapped_fn, in_axes=mapped_axes, out_axes=0, axis_size=axis.size, spmd_axis_name=spmd_axis_name
+        )(*args)
         result = jax.tree_util.tree_map(partial(_unchill_named_arrays, axis), result, is_leaf=_is_chill_array)
         return result
 
