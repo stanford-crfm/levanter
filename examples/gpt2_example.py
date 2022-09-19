@@ -199,7 +199,8 @@ def main(config: TrainGpt2Config):
             model_inf = mp.cast_to_compute(model)
             with axis_mapping(config.trainer.axis_resources, merge=False):
                 model_inf = hax.logically_sharded(model_inf)
-                loss, grads = accumulate_gradients_sharded(
+
+            loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 mesh_info.data_axis_size,
                 mesh_info.per_device_parallelism,
