@@ -17,7 +17,7 @@ trainer:
   model_axis_size: 2
   per_device_train_batch_size: 1
 
-  axis_mapping:
+  axis_resources:
     batch: "data"
     # ZERO-3
     # "embed": ResourceAxis.DATA,
