@@ -48,7 +48,11 @@ def _wrap_random_function(func):
 
             # what we do is we take the biggest axis that is sharded and split on it, ties going to the first axis
             pspec = pspec_for_axis(orig_shape)
-            biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: x[0].size if x[1] else 0)
+            if pspec:
+                biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: x[0].size if x[1] else 0)
+            else:
+                biggest_axis = biggest_physical = None
+
             if biggest_physical and biggest_axis.size > 1:
                 index_of_biggest_axis = orig_shape.index(biggest_axis)
                 shape = shape[:index_of_biggest_axis] + shape[index_of_biggest_axis + 1 :]
