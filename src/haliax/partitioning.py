@@ -10,7 +10,7 @@ from equinox.custom_types import PyTree
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
-from .core import NamedArray
+from .core import Axis, AxisSpec, NamedArray
 from .util import StringHolderEnum, ensure_tuple, is_named_array
 
 
@@ -156,9 +156,28 @@ def named_pjit(fn=None, **pjit_args):
         shapes = jax.eval_shape(fn, *args, **kwargs)
         out_resources = infer_resource_partitions(shapes)
 
-        return pjit(lambda args, kwargs: fn(*args, **kwargs), in_resources, out_resources, **pjit_args)(args, kwargs)
+        @functools.wraps(fn)
+        def fn_to_call(args, kwargs):
+            return fn(*args, **kwargs)
+
+        return pjit(fn_to_call, in_resources, out_resources, **pjit_args)(args, kwargs)
 
     return f
+
+
+def physical_axis_name(axis: Axis) -> Optional[PhysicalAxis]:
+    """Get the physical axis name for a logical axis"""
+    mapping = _mapping_holder.thread_data.resource_mapping
+    if mapping is None:
+        return None
+    else:
+        return mapping.get(axis.name, None)
+
+
+def pspec_for_axis(axis: AxisSpec) -> PartitionSpec:
+    """Get the PartitionSpec for a single axis"""
+    axis = ensure_tuple(axis)
+    return PartitionSpec(*(physical_axis_name(a) for a in axis))
 
 
 __all__ = [
@@ -173,4 +192,6 @@ __all__ = [
     "eval_resource_partitions",
     "named_pjit_init",
     "named_pjit",
+    "physical_axis_name",
+    "pspec_for_axis",
 ]

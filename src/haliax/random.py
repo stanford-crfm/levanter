@@ -4,11 +4,14 @@ import functools
 import inspect
 from typing import Sequence
 
+import jax
 import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
 from haliax.core import Axis, NamedArray
 from haliax.util import ensure_tuple, named_call
+
+from .partitioning import pspec_for_axis
 
 
 def _wrap_random_function(func):
@@ -30,12 +33,43 @@ def _wrap_random_function(func):
             is_haliax = False
 
         if is_haliax:
-            sig.arguments["shape"] = shape
 
-        # now invoke
-        out = func(**sig.arguments)
-        if is_haliax:
-            return NamedArray(out, orig_shape)
+            # this is a bit tricky but, for sharded models, we sometimes want to split the random key so that we only
+            # need to generate the random numbers for the local shard. We do this because the RNG can't actually
+            # auto-shard, meaning that if you want to generate a [1024] vector across 4 devices, each one actually
+            # generates all 1024 numbers, and then only uses 256 of them. This is a waste of time, especially when it's
+            # not a [1024] vector but a [1600, 6400] matrix (for say, gpt-2). So we split the key here, and then let
+            # vmap hopefully only generate the random numbers for the local shard.
+            #
+            # However, we don't want to oversplit or it kind of ruins the whole point since we have to split the key on
+            # every node... So instead we just split along the *largest* axis that is sharded
+            # TODO: we won't need to do this when they add better splitting for random numbers
+            #  (froystig is maybe going to do this?)
+
+            # what we do is we take the biggest axis that is sharded and split on it, ties going to the first axis
+            pspec = pspec_for_axis(orig_shape)
+            if pspec:
+                biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: x[0].size if x[1] else 0)
+            else:
+                biggest_axis = biggest_physical = None
+
+            if biggest_physical and biggest_axis.size > 1:
+                index_of_biggest_axis = orig_shape.index(biggest_axis)
+                shape = shape[:index_of_biggest_axis] + shape[index_of_biggest_axis + 1 :]
+                sig.arguments["shape"] = shape
+                keys = jrandom.split(key, biggest_axis.size)
+
+                def fn(key):
+                    return func(key, *sig.args[1:], **sig.kwargs)
+
+                out = jax.vmap(fn, in_axes=(0,), out_axes=index_of_biggest_axis)(keys)
+                return NamedArray(out, orig_shape)
+            else:
+                sig.arguments["shape"] = shape
+                out = func(**sig.arguments)
+                return NamedArray(out, orig_shape)
+        else:
+            return func(**sig.arguments)
 
     return wrapper
 
