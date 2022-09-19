@@ -50,7 +50,7 @@ def init_logger(path: Path, level: int = pylogging.INFO) -> None:
     pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
 
 
-def save_xla_dumps_to_wandb():
+def save_xla_dumps_to_wandb(initial_time: float):
     import os
 
     # attempt to parse xla_flags to see if we're dumping assembly files
@@ -60,7 +60,16 @@ def save_xla_dumps_to_wandb():
         # this isn't robust to quotes
         path = flags.split("xla_dump_to=")[1].split(" ")[0]
         logger.info(f"Found xla_dump_to={path}, logging to wandb")
-        wandb.save(glob_str=f"{path}/module_*", base_path=path, policy="live")
+        if wandb.run:
+            # only want to save the files that were generated during this run
+            # XLA_FLAGS has to be set before the first jax call, so we can't just set it in the middle of the run
+            # which means it's a pain to control where the files are saved
+            # so we just save all the files that were generated during this run
+            # this is a bit hacky, but it works
+            def include_file(path: str):
+                return os.path.getmtime(path) > initial_time
+
+            wandb.run.log_code(root=path, name="xla_dumps", include_fn=include_file)
     else:
         logger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
 
