@@ -112,6 +112,8 @@ def main(config: TrainGpt2Config):
             pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
+            # TODO: would prefer to do this in haliax name land, but it's not clear how to do that
+            # could add a where mask which is pretty normal
             pred_y = pred_y[:-1]
             target_y = input_ids[1:]
             labels = jax.nn.one_hot(target_y, Vocab.size)
