@@ -10,6 +10,7 @@ from equinox import filter_vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
+import haliax as hax
 from haliax import Axis
 from haliax.partitioning import (
     ResourceAxis,
@@ -73,7 +74,7 @@ def main(config: TrainGpt2Config):
         config.model.seq_len,
     )
 
-    with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_mapping):
+    with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
 
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -87,20 +88,20 @@ def main(config: TrainGpt2Config):
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         # initialize the model and optimizer, and convert to appropriate dtype
-        optim = config.trainer.optimizer()
-
         # doing this in a pjit means that the model and optimizer states are already sharded
         # TODO: think about how we want to do this if we want to load a checkpoint
-        # TODO: think about how we want to do this if we want optimizer states sharded more than the model
-        @named_pjit
-        def init_state():
-            model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
-            opt_state = optim.init(model)
-            return model, opt_state
+        with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
+            optim = config.trainer.optimizer()
 
-        model, opt_state = init_state()
-        opt_state_resources = infer_resource_partitions(opt_state)
-        model_resources = infer_resource_partitions(model)
+            @named_pjit
+            def init_state():
+                model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
+                opt_state = optim.init(model)
+                return model, opt_state
+
+            model, opt_state = init_state()
+            opt_state_resources = infer_resource_partitions(opt_state)
+            model_resources = infer_resource_partitions(model)
 
         # log some info about the model
         wandb.summary["parameter_count"] = parameter_count(model)
@@ -196,8 +197,9 @@ def main(config: TrainGpt2Config):
 
         def train_step(model, opt_state, input_ids, keys):
             model_inf = mp.cast_to_compute(model)
-
-            loss, grads = accumulate_gradients_sharded(
+            with axis_mapping(config.trainer.axis_resources, merge=False):
+                model_inf = hax.logically_sharded(model_inf)
+                loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 mesh_info.data_axis_size,
                 mesh_info.per_device_parallelism,

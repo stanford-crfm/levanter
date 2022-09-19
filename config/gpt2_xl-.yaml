@@ -19,10 +19,13 @@ trainer:
   per_device_train_batch_size: 8
   per_device_eval_batch_size: 8
 
-  axis_mapping:
+  axis_resources:
     batch: "data"
     # ZERO-3
     # "embed": ResourceAxis.DATA,
     vocab: "model"
     mlp: "model"
     heads: "model"
+  # ZERO-3
+  parameter_axis_resources:
+    embed: "data"

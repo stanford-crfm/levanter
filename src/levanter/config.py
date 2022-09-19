@@ -135,8 +135,11 @@ class TrainerConfig:
     checkpoint_dir: furl = furl("checkpoints/")
 
     # config related to partitioning
+    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
     model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
-    axis_mapping: Mapping[str, str] = field(default_factory=dict)
+    axis_resources: Mapping[str, str] = field(default_factory=dict)  # mapping from logical axis to physical axis
+    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    # and optimizer sharding
 
     # Config related to batch sizes
     train_batch_size: int = 512
