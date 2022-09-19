@@ -1,4 +1,5 @@
 import itertools
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -10,7 +11,13 @@ from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
+from haliax.partitioning import (
+    ResourceAxis,
+    axis_mapping,
+    infer_resource_partitions,
+    named_pjit,
+    round_axis_for_partitioning,
+)
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, pbar_logger, wandb_logger
 from levanter.data import CachedLMDatasetConfig
@@ -32,6 +39,9 @@ from levanter.config import TrainerConfig
 from levanter.jax_utils import global_key_array, parameter_count
 from levanter.modeling_utils import accumulate_gradients
 from levanter.trainer_hooks import StepInfo, TrainerHooks
+
+
+logger = logging.getLogger(__name__)
 
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
@@ -73,14 +83,10 @@ def main(config: TrainGpt2Config):
         mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-        # TODO: factor this out
         vocab_size = len(tokenizer)
-        # round up so that we can shard it if it's sharded
-        vocab_resource_axis = config.trainer.axis_mapping.get("vocab")
-        if vocab_resource_axis:
-            vocab_axis_size = mesh.shape[vocab_resource_axis]
-            vocab_size = (vocab_size + vocab_axis_size - 1) // vocab_axis_size * vocab_axis_size
-        Vocab = Axis("vocab", vocab_size)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
+        if vocab_size != Vocab.size:
+            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         # initialize the model and optimizer, and convert to appropriate dtype
         optim = config.trainer.optimizer()
@@ -108,7 +114,7 @@ def main(config: TrainGpt2Config):
 
             pred_y = pred_y[:-1]
             target_y = input_ids[1:]
-            labels = jax.nn.one_hot(target_y, vocab_size)
+            labels = jax.nn.one_hot(target_y, Vocab.size)
 
             log_normalizers = jax.nn.logsumexp(pred_y, -1, keepdims=True)
             log_normalized = pred_y - log_normalizers
@@ -157,7 +163,6 @@ def main(config: TrainGpt2Config):
         iter_data = iter(dataset)
 
         # load the last checkpoint and resume if we want
-        # TODO: need to seek in dataloader
         # TODO: wandb resume logic?
         resume_step = None
         if config.trainer.load_last_checkpoint:
@@ -172,7 +177,7 @@ def main(config: TrainGpt2Config):
             elif config.trainer.load_checkpoint_path:
                 raise ValueError("No checkpoint found")
             else:
-                print("No checkpoint found. Starting from scratch")
+                logger.info("No checkpoint found. Starting from scratch")
 
         if resume_step is not None:
             # step is after the batch, so we need to seek to step

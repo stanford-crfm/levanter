@@ -2,6 +2,7 @@ import contextlib
 import functools
 import threading
 import typing
+from math import prod
 from typing import List, Mapping, Optional, Sequence, TypeVar, Union
 
 import jax
@@ -174,10 +175,40 @@ def physical_axis_name(axis: Axis) -> Optional[PhysicalAxis]:
         return mapping.get(axis.name, None)
 
 
+def physical_axis_size(axis: Axis) -> Optional[int]:
+    """Get the physical axis size for a logical axis. This is the product of the size of all physical axes
+    that this logical axis is mapped to."""
+    # TODO: shouldn't be accessing this internal api, but...
+    from jax.experimental.maps import thread_resources
+
+    try:
+        mesh_shape = thread_resources.env.shape
+    except AttributeError:
+        raise ValueError("No resource mapping found")
+
+    name: Union[None, str, Sequence[str]] = physical_axis_name(axis)
+    if name is None:
+        return None
+    elif isinstance(name, str):
+        name = (name,)
+
+    return prod([mesh_shape[n] for n in name])
+
+
 def pspec_for_axis(axis: AxisSpec) -> PartitionSpec:
     """Get the PartitionSpec for a single axis"""
     axis = ensure_tuple(axis)
     return PartitionSpec(*(physical_axis_name(a) for a in axis))
+
+
+def round_axis_for_partitioning(axis: Axis) -> Axis:
+    """Round an axis so that it's divisible by the size of the partition it's on"""
+    size = physical_axis_size(axis)
+    if size is None:
+        return axis
+    else:
+        new_size = (axis.size + size - 1) // size * size
+        return Axis(axis.name, new_size)
 
 
 __all__ = [

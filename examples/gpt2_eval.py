@@ -1,4 +1,5 @@
 import itertools
+import logging
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional
@@ -12,7 +13,13 @@ from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
+from haliax.partitioning import (
+    ResourceAxis,
+    axis_mapping,
+    infer_resource_partitions,
+    named_pjit,
+    round_axis_for_partitioning,
+)
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.torch_checkpoints import load_hf_gpt2_checkpoint
@@ -21,6 +28,9 @@ from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,7 +49,6 @@ def main(config: EvalGpt2Config):
 
     # first load our checkpoint
     key = jax.random.PRNGKey(0)
-    Vocab = Axis("vocab", len(tokenizer))
 
     with config.trainer.device_mesh, axis_mapping(config.trainer.axis_mapping):
         eval_dataset = ShardedIndexedDataset(
@@ -48,6 +57,11 @@ def main(config: EvalGpt2Config):
             config.model.seq_len,
             microbatched=False,
         )
+
+        vocab_size = len(tokenizer)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
+        if vocab_size != Vocab.size:
+            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key):
             pred_y = model(input_ids, inference=True, key=key)
