@@ -1,5 +1,5 @@
 import dataclasses
-from functools import partial, wraps
+from functools import wraps
 from typing import Any, Callable, Sequence, Tuple, TypeVar, Union
 
 import equinox
@@ -16,29 +16,6 @@ X = TypeVar("X")
 Y = TypeVar("Y")
 
 
-@jax.tree_util.register_pytree_node_class
-@dataclasses.dataclass(frozen=True)
-class _ScannedArrayResult:
-    """With scan in NamedArray, we can't just have the scan tree prepend the scanned axis to the result, because
-    we don't have a way to feed it the name of the scanned axis. This class is a 'chill' version of NamedArray
-    that doesn't check invariants until we're ready to create the result
-    """
-
-    array: jax.numpy.ndarray
-    main_axes: Tuple[Axis, ...]
-
-    def to_named_array(self, scan_axis: Axis):
-        return NamedArray(self.array, (scan_axis,) + self.main_axes)
-
-    def tree_flatten(self) -> Any:
-        return ((self.array,), self.main_axes)
-
-    @classmethod
-    def tree_unflatten(cls, aux, tree: Any) -> Any:
-        assert len(tree) == 1
-        return cls(tree[0], main_axes=aux)
-
-
 def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: X, reverse=False, unroll=1):
     """
     Scan over a named axis. Arrays that are not part of a named axis will have their 0th dim scanned over
@@ -51,57 +28,25 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
     # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
     # invariants until we're ready to create the result.
 
-    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=is_named_array)
+    axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), xs, is_leaf=is_named_array)
 
     # now get a template of an element of "X"
-    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=is_named_array)
+    x_elem = jax.tree_util.tree_map(_select_0th(axis), axis_first_xs, is_leaf=is_named_array)
     x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
     # now we can fold over the axis
+    @wraps(f)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
         carry, y = f(carry, x)
-        y = jax.tree_util.tree_map(_chill_named_arrays, y, is_leaf=is_named_array)
+        y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
         return carry, y
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
     carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-    ys = jax.tree_util.tree_map(partial(_unchill_named_arrays, axis), ys, is_leaf=_is_chill_array)
+    ys = jax.tree_util.tree_map(_to_active_named_array(axis), ys, is_leaf=_is_passive_array)
 
     return carry, ys
-
-
-def _is_chill_array(arr):
-    return isinstance(arr, _ScannedArrayResult)
-
-
-def _unchill_named_arrays(axis, leaf):
-    if isinstance(leaf, _ScannedArrayResult):
-        return leaf.to_named_array(axis)
-    else:
-        return leaf
-
-
-def _chill_named_arrays(leaf):
-    if isinstance(leaf, NamedArray):
-        return _ScannedArrayResult(leaf.array, leaf.axes)
-    else:
-        return leaf
-
-
-def _select_0th(axis, leaf):
-    if isinstance(leaf, NamedArray):
-        return leaf.take(axis, 0)
-    else:
-        # other leaves don't matter
-        return leaf
-
-
-def _ensure_first(axis, leaf):
-    if isinstance(leaf, NamedArray):
-        return leaf.rearrange((axis, ...))
-    else:
-        return leaf
 
 
 def reduce(
@@ -122,13 +67,14 @@ def reduce(
     # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
     # invariants until we're ready to create the result.
 
-    axis_first_xs = jax.tree_util.tree_map(partial(_ensure_first, axis), xs, is_leaf=is_named_array)
+    axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), xs, is_leaf=is_named_array)
 
     # now get a template for where we fold over the axis in question
-    x_elem = jax.tree_util.tree_map(partial(_select_0th, axis), axis_first_xs, is_leaf=is_named_array)
+    x_elem = jax.tree_util.tree_map(_select_0th(axis), axis_first_xs, is_leaf=is_named_array)
     x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
     # now we can fold over the axis
+    @wraps(fn)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
         return fn(carry, x), None
@@ -173,15 +119,15 @@ def vmap(
             if i in unmmapped_argnums:
                 mapped_axes.append(None)
             else:
-                chilled_arg = jax.tree_util.tree_map(_chill_named_arrays, arg, is_leaf=is_named_array)
+                chilled_arg = jax.tree_util.tree_map(_pacify_named_arrays, arg, is_leaf=is_named_array)
                 chilled_args.append(chilled_arg)
-                mapped_axis = jax.tree_util.tree_map(_index_of_batch_axis, chilled_arg, is_leaf=_is_chill_array)
+                mapped_axis = jax.tree_util.tree_map(_index_of_batch_axis, chilled_arg, is_leaf=_is_passive_array)
                 mapped_axes.append(mapped_axis)
 
         def wrapped_fn(*args):
-            unchilled_args = jax.tree_util.tree_map(partial(_unchill_named_arrays, axis), args, is_leaf=is_named_array)
+            unchilled_args = jax.tree_util.tree_map(_to_active_named_array(axis), args, is_leaf=is_named_array)
             r = fn(*unchilled_args)
-            chilled = jax.tree_util.tree_map(_chill_named_arrays, r, is_leaf=is_named_array)
+            chilled = jax.tree_util.tree_map(_pacify_named_arrays, r, is_leaf=is_named_array)
             return chilled
 
         spmd_axis_name = physical_axis_name(axis)
@@ -189,10 +135,85 @@ def vmap(
         result = jax.vmap(
             wrapped_fn, in_axes=mapped_axes, out_axes=0, axis_size=axis.size, spmd_axis_name=spmd_axis_name
         )(*args)
-        result = jax.tree_util.tree_map(partial(_unchill_named_arrays, axis), result, is_leaf=_is_chill_array)
+        result = jax.tree_util.tree_map(_to_active_named_array(axis), result, is_leaf=_is_passive_array)
         return result
 
     return wrapped_vmap_fn
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class _PassiveNamedArray:
+    """For some higher-order jax manipulations, jax will insert/remove an axis at the beginning of the array (or
+    sometimes elsewhere). Jax doesn't know about our NamedArray wrapper, so we need a variant of NamedArray
+    that doesn't care about the axis names. This is that variant.This class is a 'chill' version of NamedArray
+    that doesn't check invariants until we're ready to create the result
+
+    For example, with scan in NamedArray, we can't just have the scan tree prepend the scanned axis to the result,
+    because we don't have a way to feed it the name of the scanned axis.
+    """
+
+    array: jax.numpy.ndarray
+    main_axes: Tuple[Axis, ...]
+
+    def as_scanned_result(self, scan_axis: Axis):
+        return NamedArray(self.array, (scan_axis,) + self.main_axes)
+
+    def tree_flatten(self) -> Any:
+        return ((self.array,), self.main_axes)
+
+    @classmethod
+    def tree_unflatten(cls, aux, tree: Any) -> Any:
+        assert len(tree) == 1
+        return cls(tree[0], main_axes=aux)
+
+
+def _is_passive_array(arr):
+    return isinstance(arr, _PassiveNamedArray)
+
+
+def _to_active_named_array(leading_axis):
+    def to_active_named_array(leaf):
+        if isinstance(leaf, _PassiveNamedArray):
+            return leaf.as_scanned_result(leading_axis)
+        else:
+            return leaf
+
+    return to_active_named_array
+
+
+def _pacify_named_arrays(leaf):
+    if isinstance(leaf, NamedArray):
+        return _PassiveNamedArray(leaf.array, leaf.axes)
+    elif isinstance(leaf, _PassiveNamedArray):
+        assert False, "PassiveNamedArray should not be present in the tree"
+    else:
+        return leaf
+
+
+def _select_0th(axis):
+    def select_0th(leaf):
+        if isinstance(leaf, NamedArray):
+            return leaf.take(axis, 0)
+        elif isinstance(leaf, _PassiveNamedArray):
+            assert False, "PassiveNamedArray should not be present in the tree"
+        else:
+            # other leaves don't matter
+            return leaf
+
+    return select_0th
+
+
+def _ensure_first(axis):
+    def ensure_first(leaf):
+        if isinstance(leaf, NamedArray):
+            return leaf.rearrange((axis, ...))
+        elif isinstance(leaf, _PassiveNamedArray):
+            assert False, "PassiveNamedArray should not be present in the tree"
+        else:
+            return leaf
+
+    return ensure_first
 
 
 __all__ = ["scan", "reduce", "vmap"]
