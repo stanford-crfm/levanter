@@ -36,10 +36,8 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         doc_cache: TokenizedDocumentCache,
         mesh_info: MeshInfo,
         seq_len: int,
-        microbatched: bool = True,
     ):
         self.mesh_info = mesh_info
-        self.microbatched = microbatched
         process_data_pos = self.mesh_info.process_mesh_position[0]
         num_data_process_groups = self.mesh_info.process_mesh_size[0]
 
@@ -97,19 +95,8 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
 
     @property
     def partition_spec(self):
-        if self.microbatched:
-            pspec = PartitionSpec(None, self.mesh_info.data_axis_name, None)
-        else:
-            pspec = PartitionSpec(self.mesh_info.data_axis_name, None)
-        return pspec
+        return PartitionSpec(self.mesh_info.data_axis_name, None)
 
     @property
     def batch_shape(self):
-        if self.microbatched:
-            return (
-                self.mesh_info.microbatches_per_step,
-                self.mesh_info.microbatch_size,
-                self.indexed_dataset.seq_len,
-            )
-        else:
-            return (self.mesh_info.batch_size, self.indexed_dataset.seq_len)
+        return (self.mesh_info.batch_size, self.indexed_dataset.seq_len)
