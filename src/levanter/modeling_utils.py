@@ -89,9 +89,11 @@ def accumulate_gradients_sharded(
     with hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
         losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
 
+    with jax.named_scope("reduce grads"):
         # losses and grads have Data leading axis
-        loss = jnp.mean(losses)
-        grad = hax.mean(grads, axis=Data)
+        with hax.axis_mapping({"embed": ResourceAxis.DATA}, merge=True):
+            loss = jnp.mean(losses)
+            grad = hax.mean(grads, axis=Data)
 
     return loss, grad
 
