@@ -141,7 +141,7 @@ def main(config: TrainGpt2Config):
         )
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
+        compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
 
         # boilerplate hooks and such
         engine = TrainerHooks()

@@ -85,16 +85,16 @@ def accumulate_gradients_sharded(
     inputs = jax.tree_util.tree_map(_reshape, inputs)
 
     Data = hax.Axis("data", data_axis_size)
-    Parallelism = hax.Axis("parallelism", per_device_parallelism)
+    # Parallelism = hax.Axis("parallelism", per_device_parallelism)
 
     # vmap the per_device_parallelism axis:
-    def mean_fn(*x):
-        f_vmap = hax.vmap(f, axis=Parallelism, unmapped_argnums=0)
-        loss, grads = f_vmap(*x)
-        return jnp.mean(loss), hax.mean(grads, axis=Parallelism)
+    # def mean_fn(*x):
+    #     f_vmap = hax.vmap(f, axis=Parallelism, unmapped_argnums=0)
+    #     loss, grads = f_vmap(*x)
+    #     return jnp.mean(loss), hax.mean(grads, axis=Parallelism)
 
     with hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
-        losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(mean_fn, model, *inputs)
+        losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
 
         # losses and grads have Data leading axis
         loss = jnp.mean(losses)
