@@ -1,6 +1,7 @@
 import functools
 from typing import Optional
 
+import jax
 import jax.numpy as jnp
 
 from haliax.core import AxisSpec, NamedArray, _broadcast_order, broadcast_to
@@ -30,30 +31,34 @@ def wrap_reduction_call(fn, single_axis_only: bool = False):
         if kwargs.get("keepdims", False):
             raise ValueError("keepdims is not supported for NamedArray")
 
-        if isinstance(a, NamedArray):
-            if axis is None:
-                result = fn(a.array, axis=None, **kwargs)
-                if jnp.isscalar(result):
-                    return result
+        def reduce_one_leaf(a):
+            nonlocal axis
+            if isinstance(a, NamedArray):
+                if axis is None:
+                    result = fn(a.array, axis=None, **kwargs)
+                    if jnp.isscalar(result):
+                        return result
+                    else:
+                        return NamedArray(result, ())
                 else:
-                    return NamedArray(result, ())
+                    axis = ensure_tuple(axis)
+                    if single_axis_only and len(axis) > 1:
+                        raise ValueError(f"{fn.__name__} only supports a single axis")
+                    indices = a._lookup_indices(axis)
+                    if indices is None or any(x is None for x in indices):
+                        raise ValueError(f"axis {axis} is not in {a.axes}")
+                    new_axes = [ax for ax in a.axes if ax not in axis]
+                    if single_axis_only:
+                        result = fn(a.array, axis=indices[0], **kwargs)
+                    else:
+                        result = fn(a.array, axis=indices, **kwargs)
+                    if jnp.isscalar(result):
+                        return result
+                    return NamedArray(result, tuple(new_axes))
             else:
-                axis = ensure_tuple(axis)
-                if single_axis_only and len(axis) > 1:
-                    raise ValueError(f"{fn.__name__} only supports a single axis")
-                indices = a._lookup_indices(axis)
-                if indices is None or any(x is None for x in indices):
-                    raise ValueError(f"axis {axis} is not in {a.axes}")
-                new_axes = [ax for ax in a.axes if ax not in axis]
-                if single_axis_only:
-                    result = fn(a.array, axis=indices[0], **kwargs)
-                else:
-                    result = fn(a.array, axis=indices, **kwargs)
-                if jnp.isscalar(result):
-                    return result
-                return NamedArray(result, tuple(new_axes))
-        else:
-            return fn(a, axis=axis, **kwargs)
+                return fn(a, axis=axis, **kwargs)
+
+        return jax.tree_util.tree_map(reduce_one_leaf, a, is_leaf=lambda x: isinstance(x, NamedArray))
 
     wrapper.__doc__ = (
         """
