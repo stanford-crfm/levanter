@@ -128,9 +128,8 @@ def main(config: TrainGpt2Config):
 
             return loss
 
-        # None here means the first argument (the model) is not vectorized but instead broadcasted
-        # TODO: I'd like to get rid of mean_loss but it messes up the evaluation loop
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            # None here means the first argument (the model) is not vectorized but instead broadcasted
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
