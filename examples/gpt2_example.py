@@ -200,18 +200,19 @@ def main(config: TrainGpt2Config):
             with axis_mapping(config.trainer.axis_resources, merge=False):
                 model_inf = hax.logically_sharded(model_inf)
 
-            loss, grads = accumulate_gradients_sharded(
-                compute_loss_and_grad,
-                mesh_info.data_axis_size,
-                mesh_info.per_device_parallelism,
-                model_inf,
-                input_ids,
-                keys,
-            )
+                loss, grads = accumulate_gradients_sharded(
+                    compute_loss_and_grad,
+                    mesh_info.data_axis_size,
+                    mesh_info.per_device_parallelism,
+                    model_inf,
+                    input_ids,
+                    keys,
+                )
 
             with jax.named_scope("optimizer"):
-                updates, opt_state = optim.update(grads, opt_state, params=model)
-                model = eqx.apply_updates(model, updates)
+                with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
+                    updates, opt_state = optim.update(grads, opt_state, params=model)
+                    model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
 
