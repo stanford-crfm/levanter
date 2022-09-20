@@ -41,13 +41,17 @@ _mapping_holder = _ResourceMappingHolder()
 
 
 @contextlib.contextmanager
-def axis_mapping(mapping: ResourceMapping, **kwargs):
+def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
     """Context manager for setting the global resource mapping"""
-    if len(kwargs):
-        mapping = dict(mapping)
-        mapping.update(kwargs)
+    mapping = dict(mapping)
 
     old_mapping = _mapping_holder.thread_data.resource_mapping
+    if merge:
+        mapping.update(old_mapping or {})
+
+    if len(kwargs):
+        mapping.update(kwargs)
+
     _mapping_holder.thread_data.resource_mapping = mapping
     yield
     _mapping_holder.thread_data.resource_mapping = old_mapping
