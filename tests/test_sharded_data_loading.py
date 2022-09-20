@@ -67,39 +67,3 @@ def test_sharded_data_loading_model_axis_2():
                             assert not np.all(shard_i.data == shard_j.data)
 
             # print(localized.device_buffers)
-
-
-@skip_if_not_enough_devices(2)
-def test_sharded_data_loading_model_axis_2_not_microbatched():
-    devices = jax.devices()
-    model_axis_size = 2
-
-    mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
-    )
-    with mesh:
-
-        mesh_info = MeshInfo(mesh, batch_size=4, per_device_parallelism=1)
-        seq_len = 128
-        cache = _small_dataset(seq_len)
-        dataset = ShardedIndexedDataset(cache, mesh_info, seq_len, microbatched=False)
-
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
-        for batch in batches:
-            assert batch.shape == dataset.batch_shape
-            # localized = pjit(
-            #     lambda x: x,
-            #     in_axis_resources=batch.mesh_axes,
-            #     out_axis_resources=PartitionSpec(None, None),
-            # )(batch)
-            shard_i: Shard
-            for i, shard_i in enumerate(batch.global_shards):
-                data_axis_pos_i = shard_i.device.id // mesh_info.model_axis_size
-                for j, shard_j in enumerate(batch.global_shards):
-                    data_axis_pos_j = shard_j.device.id // mesh_info.model_axis_size
-                    if shard_i.data is not None and shard_j.data is not None:
-                        if data_axis_pos_i == data_axis_pos_j:
-                            assert np.all(shard_i.data == shard_j.data)
-                        else:
-                            assert not np.all(shard_i.data == shard_j.data)

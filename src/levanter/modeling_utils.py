@@ -5,7 +5,11 @@ from typing import Callable, Tuple, TypeVar
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
+from jax.experimental.pjit import with_sharding_constraint
+from jax.interpreters.pxla import PartitionSpec
 
+import haliax as hax
+from haliax.partitioning import ResourceAxis
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -54,6 +58,42 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     total_loss, total_grad, total_n = reduce(compute_and_accumulate, zero, *inputs)
 
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
+
+
+def accumulate_gradients_sharded(
+    f: Callable[[M, X], Tuple[float, M]], data_axis_size: int, per_device_parallelism: int, model: M, *inputs: X
+) -> Tuple[float, M]:
+    """
+    Accumulate gradients across a sharded dataset, keeping a local copy of the gradient on each row of the data
+     parallel axis. (If the model is not sharded, then a copy of the gradient is on each individual device.)
+
+     Parameters:
+        f: a function that takes a model and a batch of inputs and returns a tuple of (loss, gradient)
+        data_axis_size: the size of the data parallel axis
+        per_device_parallelism: how many examples to process at once on each device
+        inputs: inputs with a leading batch axis, which will be reshaped/split
+    """
+    # data comes in as (batch, ...), and we'll reshape to (data_axis_size, num_micro_steps, per_device_parallelism, ...)
+    batch_size = jnp.shape(inputs[0])[0]
+    num_micro_steps = batch_size // (data_axis_size * per_device_parallelism)
+    assert num_micro_steps * data_axis_size * per_device_parallelism == batch_size
+
+    def _reshape(x):
+        x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
+        return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
+
+    inputs = jax.tree_util.tree_map(_reshape, inputs)
+
+    Data = hax.Axis("data", data_axis_size)
+
+    with hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
+        losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+
+        # losses and grads have Data leading axis
+        loss = jnp.mean(losses)
+        grad = hax.mean(grads, axis=Data)
+
+    return loss, grad
 
 
 # from https://github.com/google/jax/issues/4285
