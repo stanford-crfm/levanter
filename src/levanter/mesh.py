@@ -101,19 +101,20 @@ class MeshInfo:
         return self.data_axis_size * self.per_device_parallelism
 
     @property
+    def per_device_batch_size(self):
+        """number of examples processed by a device for an entire batch"""
+        if self.batch_size is None:
+            return self.per_device_parallelism
+
+        assert self.batch_size % self.data_axis_size == 0
+        ret = self.batch_size // self.data_axis_size
+
+        return ret
+
+    @property
     def microbatches_per_step(self):
         if self.batch_size is None:
             return 1
 
         assert self.batch_size % self.microbatch_size == 0
         return self.batch_size // self.microbatch_size
-
-    @property
-    def local_microbatch_size(self):
-        """number of examples in a microbatch per process in the training run. typically one process per node"""
-        return self.local_data_axis_size * self.per_device_parallelism
-
-    @property
-    def local_batch_size(self):
-        """number of examples processed by this process for an entire batch. typically one process per node"""
-        return self.microbatches_per_step * self.local_microbatch_size

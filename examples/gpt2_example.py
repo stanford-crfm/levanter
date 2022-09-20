@@ -37,7 +37,7 @@ import wandb
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.jax_utils import global_key_array, parameter_count
-from levanter.modeling_utils import accumulate_gradients
+from levanter.modeling_utils import accumulate_gradients_sharded
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 
@@ -65,14 +65,12 @@ def main(config: TrainGpt2Config):
         config.data.build_or_load_document_cache("train"),
         config.trainer.train_mesh_info,
         config.model.seq_len,
-        microbatched=True,
     )
 
     eval_dataset = ShardedIndexedDataset(
         config.data.build_or_load_document_cache("validation"),
         config.trainer.eval_mesh_info,
         config.model.seq_len,
-        microbatched=False,
     )
 
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_mapping):
@@ -130,10 +128,9 @@ def main(config: TrainGpt2Config):
 
             return loss
 
-        # None here means the first argument (the model) is not vectorized but instead broadcasted
-        compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
-
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            # None here means the first argument (the model) is not vectorized but instead broadcasted
+            compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         compute_loss_pjit = pjit(
@@ -195,10 +192,19 @@ def main(config: TrainGpt2Config):
         else:
             resume_step = 0
 
-        # input_ids and keys are [microsteps, microbatch_size, ...]
+        mesh_info = config.trainer.train_mesh_info
+
         def train_step(model, opt_state, input_ids, keys):
             model_inf = mp.cast_to_compute(model)
-            loss, grads = accumulate_gradients(compute_loss_and_grad, model_inf, input_ids, keys)
+
+            loss, grads = accumulate_gradients_sharded(
+                compute_loss_and_grad,
+                mesh_info.data_axis_size,
+                mesh_info.per_device_parallelism,
+                model_inf,
+                input_ids,
+                keys,
+            )
 
             with jax.named_scope("optimizer"):
                 updates, opt_state = optim.update(grads, opt_state, params=model)
@@ -227,11 +233,8 @@ def main(config: TrainGpt2Config):
 
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-
-                my_key, training_key = jrandom.split(training_key, 2)
-
-                # split keys into microsteps, and one for each example *on this node*
-                micro_keys = global_key_array(my_key, dataset.batch_shape[:-1], mesh, dataset.partition_spec[:-1])
+                    my_key, training_key = jrandom.split(training_key, 2)
+                    micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, dataset.partition_spec[:-1])
 
                 step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
                 step_loss = jnp.mean(step_loss).item()

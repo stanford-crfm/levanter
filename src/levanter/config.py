@@ -209,15 +209,6 @@ class TrainerConfig:
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 
-    @property
-    def local_eval_batch_size(self):
-        """number of examples processed by this process for an entire batch during eval. typically one process per node"""
-        return self.eval_mesh_info.local_batch_size
-
-    @property
-    def train_total_microbatches(self):
-        return self.num_train_steps * self.train_mesh_info.microbatches_per_step
-
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
