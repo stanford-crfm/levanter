@@ -129,9 +129,9 @@ def main(config: TrainGpt2Config):
             return loss
 
         # None here means the first argument (the model) is not vectorized but instead broadcasted
-        compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
-
+        # TODO: I'd like to get rid of mean_loss but it messes up the evaluation loop
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         compute_loss_pjit = pjit(
@@ -141,7 +141,7 @@ def main(config: TrainGpt2Config):
         )
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
+        compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
 
         # boilerplate hooks and such
         engine = TrainerHooks()
