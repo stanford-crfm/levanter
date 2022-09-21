@@ -9,7 +9,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.partitioning import ResourceAxis
+from haliax.partitioning import ResourceAxis, logically_sharded
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -93,7 +93,9 @@ def accumulate_gradients_sharded(
         # losses and grads have Data leading axis
         with hax.axis_mapping({"embed": ResourceAxis.DATA}, merge=True):
             loss = jnp.mean(losses)
+            loss = logically_sharded(loss)
             grad = hax.mean(grads, axis=Data)
+            grad = logically_sharded(grad)
 
     return loss, grad
 
