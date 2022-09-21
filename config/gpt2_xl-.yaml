@@ -27,5 +27,5 @@ trainer:
     mlp: "model"
     heads: "model"
   # ZERO-3
-  parameter_axis_resources:
-    embed: "data"
+  #parameter_axis_resources:
+  #  embed: "data"

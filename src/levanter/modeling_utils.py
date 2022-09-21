@@ -91,11 +91,11 @@ def accumulate_gradients_sharded(
 
     with jax.named_scope("reduce grads"):
         # losses and grads have Data leading axis
-        with hax.axis_mapping({"embed": ResourceAxis.DATA}, merge=True):
-            loss = jnp.mean(losses)
-            loss = logically_sharded(loss)
-            grad = hax.mean(grads, axis=Data)
-            grad = logically_sharded(grad)
+        #with hax.axis_mapping({"embed": ResourceAxis.DATA}, merge=True):
+        loss = jnp.mean(losses)
+        loss = logically_sharded(loss)
+        grad = hax.mean(grads, axis=Data)
+        grad = logically_sharded(grad)
 
     return loss, grad
 
