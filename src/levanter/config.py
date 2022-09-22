@@ -40,6 +40,7 @@ class WandbConfig:
     id: Optional[str] = None
     group: Optional[str] = None
     mode: Optional[str] = None
+    resume: Optional[Union[bool, str]] = None
 
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
@@ -87,6 +88,7 @@ class WandbConfig:
             id=self.id,
             group=self.group,
             mode=mode,
+            resume=self.resume,
             config=hparams_to_save,
             settings=other_settings,
         )
