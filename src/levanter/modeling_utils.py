@@ -60,6 +60,7 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
 
 
+@named_call
 def accumulate_gradients_sharded(
     f: Callable[[M, X], Tuple[float, M]], data_axis_size: int, per_device_parallelism: int, model: M, *inputs: X
 ) -> Tuple[float, M]:
@@ -82,11 +83,12 @@ def accumulate_gradients_sharded(
         x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
         return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
 
-    inputs = jax.tree_util.tree_map(_reshape, inputs)
+    with jax.named_scope("mass reshape"):
+        inputs = jax.tree_util.tree_map(_reshape, inputs)
 
     Data = hax.Axis("data", data_axis_size)
 
-    with hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
+    with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
         losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
 
     with jax.named_scope("reduce grads"):
