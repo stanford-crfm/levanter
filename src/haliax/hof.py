@@ -105,7 +105,6 @@ def vmap(
             return None
 
     # TODO: do fancier things with kwargs and signature and such
-    # TODO: allow specifying spmd axis name and/or inferring it from resource_mapping
     # TODO: allow other axes to be mapped over
     # TODO: maybe implement equinox-style filtering vmap
     # TODO: tests to exercise this more
