@@ -16,6 +16,7 @@ from haliax.partitioning import (
     ResourceAxis,
     axis_mapping,
     infer_resource_partitions,
+    logically_sharded,
     named_pjit,
     round_axis_for_partitioning,
 )
@@ -211,6 +212,7 @@ def main(config: TrainGpt2Config):
 
             with jax.named_scope("optimizer"):
                 with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
+                    grads = logically_sharded(grads)
                     updates, opt_state = optim.update(grads, opt_state, params=model)
                     model = eqx.apply_updates(model, updates)
 

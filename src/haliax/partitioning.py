@@ -62,10 +62,10 @@ T = TypeVar("T", bound=PyTree)
 
 def auto_sharded(x: T) -> T:
     """
-    Shard a PyTree using the global resource mapping. NamedArrays in the PyTree are sharded using the resource mapping
+    Shard a PyTree using the global axis mapping. NamedArrays in the PyTree are sharded using the axis mapping
      and the names in the tree.
 
-    If there is no global resource mapping, this function is a no-op.
+    If there is no axis mapping, the global axis mapping, this function is a no-op.
     """
     mapping = _mapping_holder.thread_data.resource_mapping
 
