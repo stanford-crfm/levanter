@@ -9,12 +9,14 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 # type of box (default: v3-32
 # vm image (default: tpu-vm-base)
 # preemptible (default: false)
+# autodelete (default: true)
 
 # set defaults
 ZONE="us-east1-d"
 TYPE="v3-32"
 VM_IMAGE="tpu-vm-base"
 PREEMPTIBLE=false
+AUTODELETE=true
 
 # parse args
 while [[ $# -gt 0 ]]; do
@@ -39,6 +41,10 @@ while [[ $# -gt 0 ]]; do
       PREEMPTIBLE="true"
       shift # past argument
       ;;
+    -a|--autodelete)
+      AUTODELETE="false"
+      shift # past argument
+      ;;
     *)    # unknown option, assume it's the vm name
       # error out if we already set a name
       if [ -n "$VM_NAME" ]; then
@@ -55,6 +61,16 @@ done
 if [ -z "$VM_NAME" ]; then
   echo "Error: VM name not set"
   exit 1
+fi
+
+# first delete if we're supposed to
+if [ "$AUTODELETE" = "true" ]; then
+  # check if it's there
+  gcloud compute tpus tpu-vm describe --zone $ZONE $VM_NAME &> /dev/null
+  if [ $? -eq 0 ]; then
+    echo "Deleting existing VM $VM_NAME"
+    gcloud compute tpus tpu-vm delete --zone $ZONE $VM_NAME
+  fi
 fi
 
 # create the vm
