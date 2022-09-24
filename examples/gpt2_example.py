@@ -159,8 +159,7 @@ def main(config: TrainGpt2Config):
             yield from itertools.islice(eval_dataset, 50)
 
         def evaluate_step(info: StepInfo):
-            with hax.axis_mapping(config.trainer.axis_resources):
-                model_inf = named_pjit(prepare_model_for_compute)(info.model)
+            model_inf = named_pjit(prepare_model_for_compute)(info.model)
 
             loss = 0.0
             n = 0
