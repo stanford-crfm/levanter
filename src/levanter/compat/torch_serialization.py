@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Tuple, TypeVar, cast
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as onp
-from equinox.custom_types import PyTree
+from jaxtyping import PyTree
 
 from haliax import NamedArray
 
