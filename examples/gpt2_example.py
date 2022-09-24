@@ -10,7 +10,6 @@ from equinox import filter_vmap
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 
-import haliax as hax
 from haliax import Axis
 from haliax.partitioning import (
     ResourceAxis,
@@ -106,17 +105,17 @@ def main(config: TrainGpt2Config):
             opt_state_resources = infer_resource_partitions(opt_state)
             model_resources = infer_resource_partitions(model)
 
-        # how we want data to be partitioned (i.e. leading axis is batch)
-        data_resources = dataset.partition_spec
+        with axis_mapping(config.trainer.axis_resources):
+            compute_model_resources = infer_resource_partitions(model)
+            data_resources = dataset.partition_spec
 
-        def prepare_model_for_compute(model):
-            # when it's time to do actual compute, we want to convert the model to the compute dtype and shard it
-            # for inference
-            model_inf = mp.cast_to_compute(model)
-            with axis_mapping(config.trainer.axis_resources, merge=False):
-                model_inf = hax.logically_sharded(model_inf)
-
-            return model_inf
+        # when it's time to do actual compute, we want to convert the model to the compute dtype and shard it
+        # for inference
+        prepare_model_for_compute = pjit(
+            lambda m: mp.cast_to_compute(m),
+            in_axis_resources=(model_resources,),
+            out_axis_resources=compute_model_resources,
+        )
 
         # log some info about the model
         wandb.summary["parameter_count"] = parameter_count(model)
@@ -159,7 +158,7 @@ def main(config: TrainGpt2Config):
             yield from itertools.islice(eval_dataset, 50)
 
         def evaluate_step(info: StepInfo):
-            model_inf = named_pjit(prepare_model_for_compute)(info.model)
+            model_inf = prepare_model_for_compute(info.model)
 
             loss = 0.0
             n = 0
