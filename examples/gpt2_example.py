@@ -144,18 +144,19 @@ def main(config: TrainGpt2Config):
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
-        compute_loss_pjit = pjit(
-            partial(mean_loss, inference=True, key=None),
-            in_axis_resources=(model_resources, PartitionSpec(ResourceAxis.DATA, None)),
-            out_axis_resources=None,
-        )
-
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
 
+        # Set up evaluation: dataloader, loop
         def eval_dataloader():
             # TODO: only do one pass
             yield from itertools.islice(eval_dataset, 50)
+
+        compute_loss_pjit = pjit(
+            partial(mean_loss, inference=True, key=None),
+            in_axis_resources=(compute_model_resources, PartitionSpec(ResourceAxis.DATA, None)),
+            out_axis_resources=None,
+        )
 
         def evaluate_step(info: StepInfo):
             model_inf = prepare_model_for_compute(info.model)
