@@ -112,3 +112,13 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def cross_entropy_loss_and_log_normalizers(pred_y, labels):
+    log_normalizers = jax.nn.logsumexp(pred_y, -1, keepdims=True)
+    log_normalized = pred_y - log_normalizers
+
+    loss = -jnp.sum(labels * log_normalized, axis=-1)
+    loss = jnp.mean(loss)
+
+    return loss, log_normalizers
