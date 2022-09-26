@@ -13,7 +13,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.nn.linear import Linear
-from haliax.partitioning import logically_sharded
+from haliax.partitioning import auto_sharded
 from haliax.util import named_call
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
@@ -124,8 +124,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         # hidden_states has shape [seq_len, embed_dim]
         rng_key = key
 
-        qkv_out = logically_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
-        query, key, value = logically_sharded(qkv_out.unbind(self.Qkv))
+        qkv_out = auto_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
+        query, key, value = auto_sharded(qkv_out.unbind(self.Qkv))
 
         # haliax doesn't support unnamed axes or duplicate axes
         KeySeqLen = self.SeqLen.alias("KeySeqLen")

@@ -23,7 +23,7 @@ from .core import (
 )
 from .hof import reduce, scan, vmap
 from .ops import trace, tril, triu, where
-from .partitioning import axis_mapping, logically_sharded
+from .partitioning import auto_sharded, axis_mapping
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -343,6 +343,6 @@ __all__ = [
     "right_shift",
     "subtract",
     "true_divide",
-    "logically_sharded",
+    "auto_sharded",
     "axis_mapping",
 ]
