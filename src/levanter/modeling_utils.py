@@ -9,7 +9,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.partitioning import ResourceAxis
+from haliax.partitioning import ResourceAxis, ResourceMapping, logically_sharded
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -62,7 +62,13 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
 
 @named_call
 def accumulate_gradients_sharded(
-    f: Callable[[M, X], Tuple[float, M]], data_axis_size: int, per_device_parallelism: int, model: M, *inputs: X
+    f: Callable[[M, X], Tuple[float, M]],
+    model: M,
+    *inputs: X,
+    data_axis_size: int,
+    per_device_parallelism: int,
+    compute_axis_mapping: ResourceMapping,
+    parameter_axis_mapping: ResourceMapping,
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded dataset, keeping a local copy of the gradient on each row of the data
@@ -79,22 +85,27 @@ def accumulate_gradients_sharded(
     num_micro_steps = batch_size // (data_axis_size * per_device_parallelism)
     assert num_micro_steps * data_axis_size * per_device_parallelism == batch_size
 
-    def _reshape(x):
-        x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
-        return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
+    # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
+    with hax.axis_mapping(compute_axis_mapping):
 
-    with jax.named_scope("mass reshape"):
-        inputs = jax.tree_util.tree_map(_reshape, inputs)
+        def _reshape(x):
+            x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
+            return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
 
-    Data = hax.Axis("data", data_axis_size)
+        with jax.named_scope("mass reshape"):
+            inputs = jax.tree_util.tree_map(_reshape, inputs)
 
-    with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
-        losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+        Data = hax.Axis("data", data_axis_size)
 
-    with jax.named_scope("reduce grads"):
+        with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
+            losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+
+    # compute means and shard according to the parameter_axis_mapping
+    with jax.named_scope("reduce grads"), hax.axis_mapping(parameter_axis_mapping):
         # losses and grads have Data leading axis
-        loss = jnp.mean(losses)
+        grads = logically_sharded(grads)
         grad = hax.mean(grads, axis=Data)
+        loss = jnp.mean(losses)
 
     return loss, grad
 

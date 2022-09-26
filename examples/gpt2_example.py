@@ -15,7 +15,6 @@ from haliax.partitioning import (
     ResourceAxis,
     axis_mapping,
     infer_resource_partitions,
-    logically_sharded,
     named_pjit,
     round_axis_for_partitioning,
 )
@@ -222,19 +221,23 @@ def main(config: TrainGpt2Config):
         def train_step(model, opt_state, input_ids, keys):
             model_inf = prepare_model_for_compute(model)
 
+            parameter_axis_mapping = dict(config.trainer.axis_resources)
+            parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
+
             with axis_mapping(config.trainer.axis_resources, merge=False):
                 loss, grads = accumulate_gradients_sharded(
                     compute_loss_and_grad,
-                    mesh_info.data_axis_size,
-                    mesh_info.per_device_parallelism,
                     model_inf,
                     input_ids,
                     keys,
+                    data_axis_size=mesh_info.data_axis_size,
+                    per_device_parallelism=mesh_info.per_device_parallelism,
+                    compute_axis_mapping=config.trainer.axis_resources,
+                    parameter_axis_mapping=parameter_axis_mapping,
                 )
 
             with jax.named_scope("optimizer"), axis_mapping(config.trainer.parameter_axis_resources, merge=True):
                 # distribute gradients across the mesh and apply them
-                grads = logically_sharded(grads)
                 updates, opt_state = optim.update(grads, opt_state, params=model)
                 model = eqx.apply_updates(model, updates)
 
