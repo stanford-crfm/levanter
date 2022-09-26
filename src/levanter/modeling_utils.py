@@ -100,15 +100,16 @@ def accumulate_gradients_sharded(
 
         with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
             losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+            grads = logically_sharded(grads)
 
     # compute means and shard according to the parameter_axis_mapping
     with jax.named_scope("reduce grads"), hax.axis_mapping(parameter_axis_mapping):
         # losses and grads have Data leading axis
+        grads = hax.mean(grads, axis=Data)
         grads = logically_sharded(grads)
-        grad = hax.mean(grads, axis=Data)
         loss = jnp.mean(losses)
 
-    return loss, grad
+    return loss, grads
 
 
 # from https://github.com/google/jax/issues/4285
