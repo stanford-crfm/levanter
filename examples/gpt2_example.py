@@ -139,8 +139,7 @@ def main(config: TrainGpt2Config):
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
-            # the spmd axis tells jax that we want the vmapped axis to be parallelized across the mesh on this axis
-            compute_loss_vmap = filter_vmap(compute_loss, args=(None,), spmd_axis_name=ResourceAxis.DATA)
+            compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         # get the gradient using a wrapper around jax.value_and_grad
