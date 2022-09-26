@@ -86,7 +86,8 @@ def accumulate_gradients_sharded(
     assert num_micro_steps * data_axis_size * per_device_parallelism == batch_size
 
     # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
-    with hax.axis_mapping(compute_axis_mapping):
+    with hax.axis_mapping(compute_axis_mapping, merge=False):
+        model = logically_sharded(model)
 
         def _reshape(x):
             x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])

@@ -224,17 +224,16 @@ def main(config: TrainGpt2Config):
             parameter_axis_mapping = dict(config.trainer.axis_resources)
             parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
 
-            with axis_mapping(config.trainer.axis_resources, merge=False):
-                loss, grads = accumulate_gradients_sharded(
-                    compute_loss_and_grad,
-                    model_inf,
-                    input_ids,
-                    keys,
-                    data_axis_size=mesh_info.data_axis_size,
-                    per_device_parallelism=mesh_info.per_device_parallelism,
-                    compute_axis_mapping=config.trainer.axis_resources,
-                    parameter_axis_mapping=parameter_axis_mapping,
-                )
+            loss, grads = accumulate_gradients_sharded(
+                compute_loss_and_grad,
+                model_inf,
+                input_ids,
+                keys,
+                data_axis_size=mesh_info.data_axis_size,
+                per_device_parallelism=mesh_info.per_device_parallelism,
+                compute_axis_mapping=config.trainer.axis_resources,
+                parameter_axis_mapping=parameter_axis_mapping,
+            )
 
             with jax.named_scope("optimizer"), axis_mapping(config.trainer.parameter_axis_resources, merge=True):
                 # distribute gradients across the mesh and apply them
