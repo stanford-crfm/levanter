@@ -60,10 +60,10 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
 T = TypeVar("T", bound=PyTree)
 
 
-def logically_sharded(x: T, logical_axes: Optional[PyTree] = None) -> T:
+def auto_sharded(x: T) -> T:
     """
     Shard a PyTree using the global resource mapping. NamedArrays in the PyTree are sharded using the resource mapping
-     and the names in the tree. Non-NamedArrays are sharded using the logical_axes argument, if provided.
+     and the names in the tree.
 
     If there is no global resource mapping, this function is a no-op.
     """
@@ -72,13 +72,22 @@ def logically_sharded(x: T, logical_axes: Optional[PyTree] = None) -> T:
     if mapping is None:
         return x
 
-    def _as_pspec(x, logical_axis=None):
+    return shard_with_resources(x, mapping)
+
+
+def shard_with_resources(x: T, mapping: ResourceMapping) -> T:
+    """
+    Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
+    Other arrays are not sharded.
+
+    :param x:
+    :param mapping:
+    :return:
+    """
+
+    def _as_pspec(x):
         if isinstance(x, NamedArray):
             physical_names: List[Optional[PhysicalAxisSpec]] = [mapping.get(a.name, None) for a in x.axes]
-        elif logical_axis is not None:
-            physical_names: List[Optional[PhysicalAxisSpec]] = [
-                mapping.get(a, None) for a in ensure_tuple(logical_axis)
-            ]
         elif is_array(x):
             physical_names = [None] * len(x.shape)
         else:
@@ -89,12 +98,7 @@ def logically_sharded(x: T, logical_axes: Optional[PyTree] = None) -> T:
         )
         return spec
 
-    if logical_axes is None:
-        # TODO: support logical_axes as a tree prefix. jax doesn't seem to have a good utility for this.
-        pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-    else:
-        pspec = jax.tree_util.tree_map(_as_pspec, x, logical_axes, is_leaf=is_named_array)
-
+    pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
     return with_sharding_constraint(x, pspec)
 
 
@@ -222,7 +226,7 @@ __all__ = [
     "ResourceAxis",
     "ResourceMapping",
     "axis_mapping",
-    "logically_sharded",
+    "auto_sharded",
     "infer_resource_partitions",
     "eval_resource_partitions",
     "named_pjit_init",
