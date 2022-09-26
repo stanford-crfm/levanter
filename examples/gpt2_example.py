@@ -6,18 +6,12 @@ from functools import partial
 
 import equinox as eqx
 import jax
+import jmp
 from equinox import filter_vmap
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import PartitionSpec
 
 from haliax import Axis
-from haliax.partitioning import (
-    ResourceAxis,
-    axis_mapping,
-    infer_resource_partitions,
-    named_pjit,
-    round_axis_for_partitioning,
-)
+from haliax.partitioning import axis_mapping, infer_resource_partitions, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
@@ -74,33 +68,54 @@ def main(config: TrainGpt2Config):
     )
 
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
-
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
-        mp = config.trainer.mp
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
+        # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
+        # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
+        # tokens: gpt-2 has 50257, for example. So we round up.
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # initialize the model and optimizer, and convert to appropriate dtype
-        # doing this in a pjit means that the model and optimizer states are already sharded
-        # TODO: think about how we want to do this if we want to load a checkpoint
-        # with the axis_mapping below, we're saying that the model and optimizer states should be sharded according to
-        # the axis resources specified in the config. This allows Zero-3-style parameter partitioning
-        with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
-            optim = config.trainer.optimizer()
+        # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
+        # 1) compute (typically bfloat16)
+        # 2) parameter (typically float32)
+        # 3) output (sometimes float32)
+        # I like to think of these as "semantic" dtypes: compute is the dtype we do most of our math in, parameter is
+        # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
+        mp: jmp.Policy = config.trainer.mp
 
-            @named_pjit
+        # initialize the model and optimizer
+        # this doesn't actually perform any compute because Jax is lazy
+        model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+        wandb.summary["parameter_count"] = parameter_count(model)
+
+        optim = config.trainer.optimizer()
+
+        # now shard the model and optimizer across the mesh, using "parameter axis resources".
+        # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
+        # and then use a "reducer" to aggregate the gradients across the mesh.
+        with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
+
             def init_state():
-                model = mp.cast_to_param(Gpt2LMHeadModel(Vocab, config.model, key=model_key))
-                opt_state = optim.init(model)
+                # TODO: think about how we want to do this if we want to load a checkpoint
+                _model = mp.cast_to_param(model)
+                opt_state = optim.init(_model)
                 return model, opt_state
 
-            model, opt_state = init_state()
+            # doing this in a pjit means that the model and optimizer states are already sharded
+            model, opt_state = named_pjit(init_state)()
+
+            # model and opt_state are what Jax calls "pytrees", which is just a fancy word for "python object that
+            # has 'leaf' attributes". Typically leaves are ndarrays or scalars, but they can be be anything.
+
+            # we need to tell Jax how to split the pytree across the mesh, so we use the infer_resource_partitions
+            # function, which returns a Pytree with the same structure as the input, but all of the leaves are replaced
+            # with PartitionSpecs, which tell Jax how to split the leaf across the mesh. We'll use these with pjit
             opt_state_resources = infer_resource_partitions(opt_state)
             model_resources = infer_resource_partitions(model)
 
@@ -116,13 +131,10 @@ def main(config: TrainGpt2Config):
             out_axis_resources=compute_model_resources,
         )
 
-        # log some info about the model
-        wandb.summary["parameter_count"] = parameter_count(model)
-
-        # loss function
+        # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            # cast_to_output: sometimes the loss is computed at full precision even though inference is done at lower
-            pred_y = mp.cast_to_output(model(input_ids, inference=inference, key=key))
+            pred_y = model(input_ids, inference=inference, key=key)
+            pred_y = mp.cast_to_output(pred_y)
 
             # TODO: would prefer to do this in haliax name land, but it's not clear how to do that
             # could add a where mask which is pretty normal
@@ -137,6 +149,7 @@ def main(config: TrainGpt2Config):
 
             return loss
 
+        # mean_loss: this computes the mean loss over a batch of examples
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
@@ -145,20 +158,23 @@ def main(config: TrainGpt2Config):
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
 
+        # pjit tells jax how to split the arguments across the mesh and how the returned values should be sharded
+        # we use the resources we inferred above
+        compute_loss_pjit = pjit(
+            partial(mean_loss, inference=True, key=None),
+            in_axis_resources=(compute_model_resources, data_resources),
+            out_axis_resources=None,
+        )
+
         # Set up evaluation: dataloader, loop
         def eval_dataloader():
             # TODO: only do one pass
             yield from itertools.islice(eval_dataset, 50)
 
-        compute_loss_pjit = pjit(
-            partial(mean_loss, inference=True, key=None),
-            in_axis_resources=(compute_model_resources, PartitionSpec(ResourceAxis.DATA, None)),
-            out_axis_resources=None,
-        )
-
         def evaluate_step(info: StepInfo):
             model_inf = prepare_model_for_compute(info.model)
 
+            # standard evaluation loop
             loss = 0.0
             n = 0
 
@@ -215,6 +231,7 @@ def main(config: TrainGpt2Config):
         else:
             resume_step = 0
 
+        # training loop
         mesh_info = config.trainer.train_mesh_info
 
         def train_step(model, opt_state, input_ids, keys):
