@@ -7,6 +7,7 @@ model:
 trainer:
   mp: f32
   num_train_steps: 100
+  steps_per_save: 50
   per_device_eval_batch_size: 1
   per_device_train_batch_size: 1
   train_batch_size: 32
