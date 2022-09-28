@@ -9,7 +9,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
+from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded, shard_with_axis_mapping
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -89,12 +89,13 @@ def accumulate_gradients_sharded(
 
     # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
     with hax.axis_mapping(compute_axis_mapping, merge=False):
-
-        def _reshape(x):
-            x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
-            return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
-
+        model = shard_with_axis_mapping(model, parameter_axis_mapping)
         with jax.named_scope("mass reshape"):
+
+            def _reshape(x):
+                x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
+                return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
+
             inputs = jax.tree_util.tree_map(_reshape, inputs)
 
         Data = hax.Axis("data", data_axis_size)

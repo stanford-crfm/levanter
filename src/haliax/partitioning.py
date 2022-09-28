@@ -72,10 +72,10 @@ def auto_sharded(x: T) -> T:
     if mapping is None:
         return x
 
-    return shard_with_resources(x, mapping)
+    return shard_with_axis_mapping(x, mapping)
 
 
-def shard_with_resources(x: T, mapping: ResourceMapping) -> T:
+def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
     Other arrays are not sharded.
