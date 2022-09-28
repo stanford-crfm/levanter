@@ -1,7 +1,10 @@
 import functools
+from typing import Union
 
 import jax.nn as jnn
 import jax.numpy as jnp
+
+import haliax
 
 from ..core import Axis, NamedArray
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
@@ -37,10 +40,20 @@ softmax = wrap_axiswise_call(jnn.softmax, False)
 log_softmax = wrap_axiswise_call(jnn.log_softmax, False)
 
 
+# def logsumexp(x: NamedArray, axis: AxisSpec) -> NamedArray:
+
+
 @functools.wraps(jnn.one_hot)
-def one_hot(x: NamedArray, class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
-    array = jnn.one_hot(x.array, num_classes=class_axis.size, dtype=dtype)
-    return NamedArray(array, x.axes + (class_axis,))
+def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
+    if isinstance(x, NamedArray):
+        array = jnn.one_hot(x.array, num_classes=class_axis.size, dtype=dtype)
+        return NamedArray(array, x.axes + (class_axis,))
+    else:
+        assert isinstance(x, int)
+        assert class_axis.size > x and x >= -class_axis.size
+
+        array = jnp.zeros(class_axis.size).at[x].set(1)
+        return haliax.named(array, class_axis)
 
 
 __all__ = [

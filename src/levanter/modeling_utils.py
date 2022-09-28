@@ -10,6 +10,7 @@ from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
 from haliax.jax_utils import named_call
+from haliax import Axis, NamedArray
 from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
 from levanter.jax_utils import reduce
 
@@ -132,11 +133,13 @@ def recursive_checkpoint(funs, threshold=2):
         return lambda x: f2(jax.remat(f1)(x))
 
 
-def cross_entropy_loss_and_log_normalizers(pred_y, labels):
-    log_normalizers = jax.nn.logsumexp(pred_y, -1, keepdims=True)
+def cross_entropy_loss_and_log_normalizers(
+    pred_y: NamedArray, Label: Axis, target_y: NamedArray
+) -> Tuple[float, NamedArray]:
+    log_normalizers = hax.nn.logsumexp(pred_y, Label)
     log_normalized = pred_y - log_normalizers
 
-    loss = -jnp.sum(labels * log_normalized, axis=-1)
-    loss = jnp.mean(loss)
+    loss = -hax.sum(target_y * log_normalized, axis=Label)
+    loss = hax.mean(loss)
 
     return loss, log_normalizers
