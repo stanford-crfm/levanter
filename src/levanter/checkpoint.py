@@ -157,7 +157,7 @@ def tree_deserialise_leaves(
             return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
 
         out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
-    #jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
+    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
     return out
 
 

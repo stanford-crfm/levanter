@@ -30,7 +30,7 @@ from transformers import GPT2Tokenizer
 import wandb
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
-from levanter.jax_utils import global_key_array, parameter_count
+from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
@@ -90,10 +90,6 @@ def main(config: TrainGpt2Config):
         mp: jmp.Policy = config.trainer.mp
 
         # initialize the model and optimizer
-        # this doesn't actually perform any compute because Jax is lazy
-        model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
-        wandb.summary["parameter_count"] = parameter_count(model)
-
         optim = config.trainer.optimizer()
 
         # now shard the model and optimizer across the mesh, using "parameter axis resources".
@@ -102,9 +98,10 @@ def main(config: TrainGpt2Config):
         with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
 
             def init_state():
+                model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
                 # TODO: think about how we want to do this if we want to load a checkpoint
-                _model = mp.cast_to_param(model)
-                opt_state = optim.init(_model)
+                model = mp.cast_to_param(model)
+                opt_state = optim.init(model)
                 return model, opt_state
 
             # doing this in a pjit means that the model and optimizer states are already sharded
@@ -118,6 +115,8 @@ def main(config: TrainGpt2Config):
             # with PartitionSpecs, which tell Jax how to split the leaf across the mesh. We'll use these with pjit
             opt_state_resources = infer_resource_partitions(opt_state)
             model_resources = infer_resource_partitions(model)
+
+        wandb.summary["parameter_count"] = parameter_count(model)
 
         with axis_mapping(config.trainer.axis_resources):
             compute_model_resources = infer_resource_partitions(model)
@@ -179,7 +178,7 @@ def main(config: TrainGpt2Config):
             n = 0
 
             for batch in eval_dataloader():
-                loss += compute_loss_pjit(model_inf, batch)
+                loss += simplify_gdas(compute_loss_pjit(model_inf, batch))
                 n += 1
 
             if n > 0:
@@ -216,10 +215,10 @@ def main(config: TrainGpt2Config):
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
                 # TODO: switch to GlobalDeviceArray loading/saving or something so we don't have to do this
-                #model = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=model_resources)(model)
-                #opt_state = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=opt_state_resources)(
+                # model = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=model_resources)(model)
+                # opt_state = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=opt_state_resources)(
                 #    opt_state
-                #)
+                # )
                 assert training_key.shape == jrandom.PRNGKey(0).shape
             elif config.trainer.load_checkpoint_path:
                 raise ValueError("No checkpoint found")
@@ -283,7 +282,7 @@ def main(config: TrainGpt2Config):
                     my_key, training_key = jrandom.split(training_key, 2)
                     micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, dataset.partition_spec[:-1])
 
-                step_loss, model, opt_state = train_step(model, opt_state, input_ids, micro_keys)
+                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, micro_keys))
                 step_loss = jnp.mean(step_loss).item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
