@@ -61,7 +61,8 @@ class WandbConfig:
         if extra_hparams:
             hparams_to_save.update(extra_hparams)
 
-        # for distributed runs, we only want the primary worker to use wandb, so we disable everyone else
+        # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
+        # however, we do share information about the run id, so that we can link to it from the other workers
         mode = self.mode
         if jax.process_index() != 0:
             mode = "disabled"
@@ -79,7 +80,7 @@ class WandbConfig:
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
 
-        wandb.init(
+        r = wandb.init(
             entity=self.entity,
             project=self.project,
             name=self.name,
@@ -90,6 +91,26 @@ class WandbConfig:
             config=hparams_to_save,
             settings=other_settings,
         )
+
+        if jax.process_count() > 1:
+            # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
+            metadata_to_share = dict(
+                entity=r.entity,
+                project=r.project,
+                name=r.name,
+                tags=r.tags,
+                id=r.id,
+                group=r.group,
+            )
+            metadata_to_share = jax_utils.multihost_broadcast_obj(
+                metadata_to_share, is_source=jax.process_index() == 0
+            )
+            if jax.process_index() != 0:
+                assert r.mode == "disabled"
+                for k, v in metadata_to_share.items():
+                    setattr(r, k, v)
+
+            logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
 
         if dataclasses.is_dataclass(hparams):
             with tempfile.TemporaryDirectory() as tmpdir:
