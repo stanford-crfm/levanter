@@ -216,10 +216,10 @@ def main(config: TrainGpt2Config):
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
                 # TODO: switch to GlobalDeviceArray loading/saving or something so we don't have to do this
-                model = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=model_resources)(model)
-                opt_state = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=opt_state_resources)(
-                    opt_state
-                )
+                #model = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=model_resources)(model)
+                #opt_state = pjit(lambda m: m, in_axis_resources=(None,), out_axis_resources=opt_state_resources)(
+                #    opt_state
+                #)
                 assert training_key.shape == jrandom.PRNGKey(0).shape
             elif config.trainer.load_checkpoint_path:
                 raise ValueError("No checkpoint found")
