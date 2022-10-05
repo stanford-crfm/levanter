@@ -7,10 +7,9 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, c
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxlib.xla_extension import DeviceArray
 
 import haliax
-from haliax.util import ensure_tuple
+from haliax.util import ensure_tuple, is_jax_array_like
 
 
 @dataclass(frozen=True)
@@ -47,7 +46,7 @@ class NamedArray:
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
 
-        if isinstance(self.array, jax.core.Tracer) or isinstance(self.array, DeviceArray):
+        if is_jax_array_like(self.array):
             s = jnp.shape(self.array)
             if s != tuple(a.size for a in self.axes):
                 raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
