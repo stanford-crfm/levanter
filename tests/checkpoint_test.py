@@ -1,7 +1,6 @@
 import tempfile
 
 import equinox as eqx
-import equinox.nn as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,7 +8,7 @@ import optax
 
 # TODO: chex doesn't seem to respect custom nodes...
 from chex import assert_trees_all_close
-from utils import arrays_only, assert_trees_not_close
+from utils import MLP, arrays_only, assert_trees_not_close
 
 from levanter.checkpoint import load_checkpoint, save_checkpoint
 
@@ -19,7 +18,7 @@ def test_checkpoint_simple():
     key1 = jax.random.PRNGKey(1)
 
     def make_state(key):
-        model = nn.MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
+        model = MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
         optim = optax.adam(1e-4)
         opt_state = optim.init(arrays_only(model))
 
@@ -60,7 +59,7 @@ def test_checkpoint_steps():
     optim = optax.adam(1e-4)
 
     def make_state(key):
-        model = nn.MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
+        model = MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
         opt_state = optim.init(arrays_only(model))
 
         return model, opt_state, key
