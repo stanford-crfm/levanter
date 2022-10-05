@@ -70,7 +70,7 @@ def compute_validation_loss(
 
 
 def log_to_wandb(step: StepInfo):
-    wandb.log({"train/loss": step.loss}, step=step.step)
+    wandb.log({"train/loss": step.loss, "global_step": step.step}, step=step.step)
     log_optimizer_hyperparams(step.opt_state, step=step.step)
 
 
