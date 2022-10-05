@@ -28,7 +28,7 @@ class TrainerHooks:
         for hook in self.hooks:
             hook(info)
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], None]] = None, *, every: int = 1):
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
         def decorator(fn: Callable[[StepInfo], None]):
             if every == 1:
                 self.hooks.append(fn)
