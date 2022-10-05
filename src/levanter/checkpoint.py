@@ -11,40 +11,47 @@ from fsspec import AbstractFileSystem
 from furl import furl
 from jaxtyping import PyTree
 
+from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+
 
 logger = logging.getLogger(__name__)
 
 
 def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_ok=False):
     """
-    Save a checkpoint to a given path.
+    Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
+    will be saved even if a checkpoint already exists at the given path.
 
     If the path does not exist, it will be created.
 
-    """
-    if jax.process_index() != 0:
-        return checkpoint_path
+    If training_state is None, no training state will be saved.
 
+    This method is GlobalDeviceArray-aware, and will save shards in a way that can be restored
+    """
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
     fs: AbstractFileSystem
     fs, _, _ = fsspec.get_fs_token_paths(checkpoint_path)
     fs.makedirs(checkpoint_path, exist_ok=exist_ok)
-    tree_serialise_leaves(f"{checkpoint_path}/model.eqx", model)
-    tree_serialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state)
+    tree_serialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
+    if training_state is not None:
+        tree_serialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
+
     metadata = {
         "step": step,
         "timestamp": datetime.now().isoformat(),
     }
-    with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
-        json.dump(metadata, json_out)
+
+    if jax.process_index() == 0:
+        with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
+            json.dump(metadata, json_out)
 
     logger.info(f"Saved checkpoint for step {step}")
 
     return checkpoint_path
 
 
-def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_latest=True):
+def load_checkpoint(model, training_state, checkpoint_path, *, discover_latest=True):
     """
     Load a checkpoint from a given path.
 
@@ -52,7 +59,7 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
     the latest checkpoint in the given path will be loaded. Otherwise, the checkpoint at
     the given path will be loaded. If no checkpoint is found, returns None
 
-    If training_state is None, the loaded training state will be returned as None.
+    If training_state is None, no training state will be loaded.
     """
     fs: AbstractFileSystem
     fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
@@ -63,17 +70,18 @@ def load_checkpoint(model_state, training_state, checkpoint_path, *, discover_la
     if checkpoint_path is None:
         return None
 
-    model_state = tree_deserialise_leaves(f"{checkpoint_path}/model.eqx", model_state, fs=fs)
-
+    logger.info(f"Loading checkpoint from {checkpoint_path}")
     with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
         metadata = json.load(metadata_in)
+
+    model = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
 
     if training_state is None:
         training_state = None
     else:
-        training_state = tree_deserialise_leaves(f"{checkpoint_path}/training_state.eqx", training_state, fs=fs)
+        training_state = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
 
-    return model_state, training_state, metadata["step"]
+    return model, training_state, metadata["step"]
 
 
 def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
@@ -107,9 +115,10 @@ def tree_serialise_leaves(
     filter_spec=default_serialise_filter_spec,
     is_leaf: Callable[[Any], bool] = _is_index,
 ) -> None:
-    """Analog to `equinox.tree_deserialise_leaves`, but saves the leaves of a PyTree using fsspec."""
+    """Analog to `equinox.tree_serialise_leaves`, but saves the leaves of a PyTree using fsspec."""
 
     with fsspec.open(str(path), "wb") as f:
+        logger.info(f"Serializing to {path}")
 
         def _serialise(spec, x):
             def __serialise(y):
@@ -129,7 +138,7 @@ def tree_deserialise_leaves(
     fs=None,
 ) -> PyTree:
     """
-    Analog to `equinox.tree_serialise_leaves`, but loads the leaves of a PyTree using fsspec.
+    Analog to `equinox.tree_deserialise_leaves`, but loads the leaves of a PyTree using fsspec.
     """
 
     path = str(path)
