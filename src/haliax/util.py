@@ -19,6 +19,10 @@ def ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
     return (x,)
 
 
+def is_jax_array_like(x):
+    return hasattr(x, "shape") and hasattr(x, "dtype")
+
+
 class StringHolderEnum(type):
     """Like a python enum but just holds string constants, as opposed to wrapped string constants"""
 
