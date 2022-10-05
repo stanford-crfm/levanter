@@ -634,7 +634,7 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
 def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
     if isinstance(axis, Axis):
-        if jnp.shape(a) != (axis.size,):
+        if a.shape != (axis.size,):
             raise ValueError(f"Shape of array {jnp.shape(a)} does not match size of axis {axis.size}")
         return NamedArray(a, (axis,))
     else:
