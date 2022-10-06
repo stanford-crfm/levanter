@@ -9,7 +9,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.partitioning import ResourceAxis
+from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded, shard_with_axis_mapping
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -60,8 +60,15 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
 
 
+@named_call
 def accumulate_gradients_sharded(
-    f: Callable[[M, X], Tuple[float, M]], data_axis_size: int, per_device_parallelism: int, model: M, *inputs: X
+    f: Callable[[M, X], Tuple[float, M]],
+    model: M,
+    *inputs: X,
+    data_axis_size: int,
+    per_device_parallelism: int,
+    compute_axis_mapping: ResourceMapping,
+    parameter_axis_mapping: ResourceMapping,
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded dataset, keeping a local copy of the gradient on each row of the data
@@ -72,28 +79,39 @@ def accumulate_gradients_sharded(
         data_axis_size: the size of the data parallel axis
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with a leading batch axis, which will be reshaped/split
+        compute_axis_mapping: a ResourceMapping for doing compute. The model should be sharded this way
+        parameter_axis_mapping: a ResourceMapping for doing parameter updates. The model should be sharded this way
     """
     # data comes in as (batch, ...), and we'll reshape to (data_axis_size, num_micro_steps, per_device_parallelism, ...)
     batch_size = jnp.shape(inputs[0])[0]
     num_micro_steps = batch_size // (data_axis_size * per_device_parallelism)
     assert num_micro_steps * data_axis_size * per_device_parallelism == batch_size
 
-    def _reshape(x):
-        x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
-        return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
+    # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
+    with hax.axis_mapping(compute_axis_mapping, merge=False):
+        model = shard_with_axis_mapping(model, parameter_axis_mapping)
+        with jax.named_scope("mass reshape"):
 
-    inputs = jax.tree_util.tree_map(_reshape, inputs)
+            def _reshape(x):
+                x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
+                return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
 
-    Data = hax.Axis("data", data_axis_size)
+            inputs = jax.tree_util.tree_map(_reshape, inputs)
 
-    with hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
-        losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+        Data = hax.Axis("data", data_axis_size)
 
+        with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
+            losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+            grads = auto_sharded(grads)
+
+    # compute means and shard according to the parameter_axis_mapping
+    with jax.named_scope("reduce grads"), hax.axis_mapping(parameter_axis_mapping):
         # losses and grads have Data leading axis
+        grads = hax.mean(grads, axis=Data)
+        grads = auto_sharded(grads)
         loss = jnp.mean(losses)
-        grad = hax.mean(grads, axis=Data)
 
-    return loss, grad
+    return loss, grads
 
 
 # from https://github.com/google/jax/issues/4285
@@ -109,3 +127,13 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def cross_entropy_loss_and_log_normalizers(pred_y, labels):
+    log_normalizers = jax.nn.logsumexp(pred_y, -1, keepdims=True)
+    log_normalized = pred_y - log_normalizers
+
+    loss = -jnp.sum(labels * log_normalized, axis=-1)
+    loss = jnp.mean(loss)
+
+    return loss, log_normalizers

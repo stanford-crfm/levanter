@@ -5,7 +5,7 @@ data:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 model:
-  hidden_dim: 1608
+  hidden_dim: 1536
   num_heads: 24
   num_layers: 48
   seq_len: 1024
@@ -15,14 +15,12 @@ trainer:
   mp: p=f32,c=bfloat16
   learning_rate: 1E-4
   weight_decay: 0.1
-  model_axis_size: 4
-  per_device_train_batch_size: 8
+  model_axis_size: 1
+  per_device_train_batch_size: 2
   per_device_eval_batch_size: 8
 
   axis_resources:
     batch: "data"
-    # ZERO-3
-    # "embed": ResourceAxis.DATA,
     vocab: "model"
     mlp: "model"
     heads: "model"

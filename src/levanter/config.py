@@ -156,8 +156,11 @@ class TrainerConfig:
     checkpoint_dir: furl = furl("checkpoints/")
 
     # config related to partitioning
+    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
     model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
-    axis_mapping: Mapping[str, str] = field(default_factory=dict)
+    axis_resources: Mapping[str, str] = field(default_factory=dict)  # mapping from logical axis to physical axis
+    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    # and optimizer sharding
 
     # Config related to batch sizes
     train_batch_size: int = 512
@@ -185,6 +188,7 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
+    use_gda: bool = True  # whether or not to use GlobalDeviceArrays for pjitted models.
 
     @property
     def run_name(self) -> str:
@@ -233,6 +237,7 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
+        jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
 
     def _initialize_logging(self):
         log_dir = self.log_dir

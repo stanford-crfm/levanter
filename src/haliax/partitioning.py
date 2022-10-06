@@ -62,20 +62,20 @@ T = TypeVar("T", bound=PyTree)
 
 def auto_sharded(x: T) -> T:
     """
-    Shard a PyTree using the global resource mapping. NamedArrays in the PyTree are sharded using the resource mapping
+    Shard a PyTree using the global axis mapping. NamedArrays in the PyTree are sharded using the axis mapping
      and the names in the tree.
 
-    If there is no global resource mapping, this function is a no-op.
+    If there is no axis mapping, the global axis mapping, this function is a no-op.
     """
     mapping = _mapping_holder.thread_data.resource_mapping
 
     if mapping is None:
         return x
 
-    return shard_with_resources(x, mapping)
+    return shard_with_axis_mapping(x, mapping)
 
 
-def shard_with_resources(x: T, mapping: ResourceMapping) -> T:
+def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
     Other arrays are not sharded.
@@ -102,30 +102,31 @@ def shard_with_resources(x: T, mapping: ResourceMapping) -> T:
     return with_sharding_constraint(x, pspec)
 
 
-def infer_resource_partitions(tree: PyTree) -> PyTree:
+def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceMapping] = None) -> PyTree:
     """
     Infer the resource partitions for a module, to be used with pjit.
     The basic idea is to tree all NamedArrays as leaves for the purposes of this function,
-    and to create PartitionSpecs from those names plus the contextual resource_mapping.
+    and to create PartitionSpecs from those names plus the resource_mapping.
+
+    If resource_mapping is not provided, this function attempts to use the global resource mapping.
     """
+    if resource_mapping is None:
+        resource_mapping = _mapping_holder.thread_data.resource_mapping
 
-    def named_array_is_leaf(x):
-        return isinstance(x, NamedArray)
-
-    axis_resources = _mapping_holder.thread_data.resource_mapping
-
-    if axis_resources is None:
+    if resource_mapping is None:
         raise ValueError("No resource mapping found")
+
+    _resource_mapping = typing.cast(ResourceMapping, resource_mapping)  # for mypy
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
             return NamedArray(
-                PartitionSpec(*tuple(axis_resources.get(axis.name, None) for axis in node.axes)), node.axes
+                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)), node.axes
             )
         else:
             return None
 
-    return jax.tree_util.tree_map(partition_spec, tree, is_leaf=named_array_is_leaf)
+    return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 
 
 def eval_resource_partitions(fn):

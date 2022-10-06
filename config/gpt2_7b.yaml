@@ -20,10 +20,10 @@ trainer:
   per_device_eval_batch_size: 8
   train_batch_size: 1024
 
-  axis_mapping:
+  axis_resources:
     batch: "data"
     # ZERO-3
-    embed: "data"
+#    embed: "data"
     vocab: "model"
     mlp: "model"
     heads: "model"
