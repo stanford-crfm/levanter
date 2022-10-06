@@ -11,7 +11,7 @@ import jax.random as jrandom
 from haliax.core import Axis, NamedArray
 from haliax.util import ensure_tuple, named_call
 
-from .partitioning import pspec_for_axis
+from .partitioning import pspec_for_axis, auto_sharded, physical_axis_size
 
 
 def _wrap_random_function(func):
@@ -42,14 +42,14 @@ def _wrap_random_function(func):
             # vmap hopefully only generate the random numbers for the local shard.
             #
             # However, we don't want to oversplit or it kind of ruins the whole point since we have to split the key on
-            # every node... So instead we just split along the *largest* axis that is sharded
+            # every node... So instead we just split along the *largest* physical axis
             # TODO: we won't need to do this when they add better splitting for random numbers
             #  (froystig is maybe going to do this?)
 
             # what we do is we take the biggest axis that is sharded and split on it, ties going to the first axis
             pspec = pspec_for_axis(orig_shape)
             if pspec:
-                biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: x[0].size if x[1] else 0)
+                biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: (physical_axis_size(x[0]) or 0) if x[1] else 0)
             else:
                 biggest_axis = biggest_physical = None
 
