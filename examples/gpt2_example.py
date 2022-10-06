@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 import jmp
 from equinox import filter_vmap
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.pjit import pjit
 
 from haliax import Axis
@@ -120,6 +121,16 @@ def main(config: TrainGpt2Config):
             with open("model_resources.txt", "w") as f:
                 f.write(str(model_resources))
             wandb.save("model_resources.txt")
+
+            # also log shardings for gdas
+            def gda_sharding_info(gda):
+                if isinstance(gda, GlobalDeviceArray):
+                    return (gda.shape, gda.mesh_axes, gda.mesh)
+                return None
+
+            with open("model_sharding_info.txt", "w") as f:
+                shardings = jax.tree_util.tree_map(gda_sharding_info, model)
+                f.write(str(shardings))
 
         wandb.summary["parameter_count"] = parameter_count(model)
 
