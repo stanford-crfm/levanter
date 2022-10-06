@@ -89,8 +89,10 @@ def accumulate_gradients_sharded(
     num_micro_steps = batch_size // microbatch_size
     assert num_micro_steps * microbatch_size == batch_size
 
+    pam = parameter_axis_mapping
+    parameter_axis_mapping = dict(**compute_axis_mapping)
+    parameter_axis_mapping.update(pam)
     model = shard_with_axis_mapping(model, compute_axis_mapping)
-    grads = jax.tree_util.tree_map(jnp.zeros_like, model)
     # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
     with hax.axis_mapping(compute_axis_mapping, merge=False):
         with jax.named_scope("mass reshape"):
