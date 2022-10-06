@@ -116,6 +116,11 @@ def main(config: TrainGpt2Config):
             opt_state_resources = infer_resource_partitions(opt_state)
             model_resources = infer_resource_partitions(model)
 
+            # log the model_resources to wandb
+            with open("model_resources.txt", "w") as f:
+                f.write(str(model_resources))
+            wandb.save("model_resources.txt")
+
         wandb.summary["parameter_count"] = parameter_count(model)
 
         with axis_mapping(config.trainer.axis_resources):
