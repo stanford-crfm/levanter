@@ -117,21 +117,6 @@ def main(config: TrainGpt2Config):
             opt_state_resources = infer_resource_partitions(opt_state)
             model_resources = infer_resource_partitions(model)
 
-            # log the model_resources to wandb
-            with open("model_resources.txt", "w") as f:
-                f.write(str(model_resources))
-            wandb.save("model_resources.txt")
-
-            # also log shardings for gdas
-            def gda_sharding_info(gda):
-                if isinstance(gda, GlobalDeviceArray):
-                    return (gda.shape, gda.mesh_axes, gda.mesh)
-                return None
-
-            with open("model_sharding_info.txt", "w") as f:
-                shardings = jax.tree_util.tree_map(gda_sharding_info, model)
-                f.write(str(shardings))
-
         wandb.summary["parameter_count"] = parameter_count(model)
 
         with axis_mapping(config.trainer.axis_resources):
