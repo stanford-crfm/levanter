@@ -60,6 +60,7 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
     return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
 
 
+# cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
 @named_call
 def accumulate_gradients_sharded(
     f: Callable[[M, X], Tuple[float, M]],
@@ -84,30 +85,36 @@ def accumulate_gradients_sharded(
     """
     # data comes in as (batch, ...), and we'll reshape to (data_axis_size, num_micro_steps, per_device_parallelism, ...)
     batch_size = jnp.shape(inputs[0])[0]
-    num_micro_steps = batch_size // (data_axis_size * per_device_parallelism)
-    assert num_micro_steps * data_axis_size * per_device_parallelism == batch_size
+    microbatch_size = data_axis_size * per_device_parallelism
+    num_micro_steps = batch_size // microbatch_size
+    assert num_micro_steps * microbatch_size == batch_size
 
+    pam = parameter_axis_mapping
+    parameter_axis_mapping = dict(**compute_axis_mapping)
+    parameter_axis_mapping.update(pam)
+    model = shard_with_axis_mapping(model, compute_axis_mapping)
     # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
     with hax.axis_mapping(compute_axis_mapping, merge=False):
-        model = shard_with_axis_mapping(model, parameter_axis_mapping)
         with jax.named_scope("mass reshape"):
 
             def _reshape(x):
-                x = x.reshape((data_axis_size, num_micro_steps, per_device_parallelism) + x.shape[1:])
+                x = x.reshape((microbatch_size, num_micro_steps) + x.shape[1:])
                 return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
 
             inputs = jax.tree_util.tree_map(_reshape, inputs)
 
-        Data = hax.Axis("data", data_axis_size)
+        Microbatch = hax.Axis("microbatch", microbatch_size)
 
-        with jax.named_scope("accumulate grad vmap"), hax.axis_mapping({Data.name: ResourceAxis.DATA}, merge=True):
-            losses, grads = hax.vmap(accumulate_gradients, axis=Data, unmapped_argnums=(0, 1))(f, model, *inputs)
+        with jax.named_scope("accumulate grad vmap"), hax.axis_mapping(
+            {Microbatch.name: ResourceAxis.DATA}, merge=True
+        ):
+            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch, unmapped_argnums=0)(f, model, *inputs)
             grads = auto_sharded(grads)
 
     # compute means and shard according to the parameter_axis_mapping
     with jax.named_scope("reduce grads"), hax.axis_mapping(parameter_axis_mapping):
         # losses and grads have Data leading axis
-        grads = hax.mean(grads, axis=Data)
+        grads = hax.mean(grads, axis=Microbatch)
         grads = auto_sharded(grads)
         loss = jnp.mean(losses)
 

@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 import jmp
 from equinox import filter_vmap
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.pjit import pjit
 
 from haliax import Axis
@@ -155,7 +156,7 @@ def main(config: TrainGpt2Config):
             return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(partial(mean_loss, inference=False))
+        compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
 
         # pjit tells jax how to split the arguments across the mesh and how the returned values should be sharded
         # we use the resources we inferred above
