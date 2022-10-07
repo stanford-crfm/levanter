@@ -238,6 +238,7 @@ class TrainerConfig:
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
         jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
+        jax.config.update("jax_log_compiles", True)
 
     def _initialize_logging(self):
         log_dir = self.log_dir
