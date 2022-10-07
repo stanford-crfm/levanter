@@ -6,12 +6,12 @@ import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
-from equinox.custom_types import PyTree
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
+from jaxtyping import PyTree
 
 
 def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
