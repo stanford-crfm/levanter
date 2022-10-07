@@ -2,9 +2,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from equinox.custom_types import Array
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec, Replicated, ShardedAxis
+from jaxtyping import Array
 from utils import skip_if_not_enough_devices
 
 import haliax as hax
