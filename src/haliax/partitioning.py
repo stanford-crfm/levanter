@@ -124,9 +124,14 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            return NamedArray(
-                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)), node.axes
-            )
+            if isinstance(node.array, GlobalDeviceArray):
+                # TODO: should probably check for compatibility
+                return FROM_GDA
+            else:
+                return NamedArray(
+                    PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
+                    node.axes,
+                )
         elif isinstance(node, GlobalDeviceArray):
             return FROM_GDA
         # TODO: jax.Array
@@ -281,6 +286,7 @@ def named_pjit(
         return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
 
     return f
+
 
 def physical_axis_name(axis: Axis) -> Optional[PhysicalAxis]:
     """Get the physical axis name for a logical axis"""
