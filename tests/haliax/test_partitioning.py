@@ -9,7 +9,7 @@ from utils import skip_if_not_enough_devices
 
 import haliax as hax
 from haliax import Axis, NamedArray
-from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit_init
+from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
 
 
 class MyModule(eqx.Module):
@@ -56,7 +56,7 @@ def test_pjit_class_init():
     with axis_mapping(resource_map):
         devices = jax.devices()
         with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod = named_pjit_init(MyModuleInit)()
+            mod = named_pjit(MyModuleInit)()
 
         assert mod.named.array.shape == (Dim2.size, Dim3.size)
         assert mod.named.array.sharding_spec.mesh_mapping == (
@@ -88,7 +88,7 @@ def test_pjit_class_nested_init():
 
         devices = jax.devices()
         with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod2 = named_pjit_init(Mod2)()
+            mod2 = named_pjit(Mod2)()
 
         mod = mod2.inner
         assert mod.named.array.shape == (Dim2.size, Dim3.size)
@@ -109,7 +109,7 @@ def test_pjit_class_init_with_args():
 
         devices = jax.devices()
         with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod = named_pjit_init(ModWithArgs)(hax.ones((Dim1, Dim2)))
+            mod = named_pjit(ModWithArgs)(hax.ones((Dim1, Dim2)))
         assert isinstance(mod, ModWithArgs)
         assert mod.array.array.shape == (Dim1.size, Dim2.size)
         assert mod.array2.array.shape == (Dim3.size,)
