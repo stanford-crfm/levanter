@@ -84,8 +84,8 @@ class NamedArray:
             if s != tuple(a.size for a in self.axes):
                 raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
 
-    def __array__(self):
-        return self.array.__array__()
+    def item(self):
+        return self.array.item()
 
     # shape = property(lambda self: self.array.shape)
     dtype = property(lambda self: self.array.dtype)
