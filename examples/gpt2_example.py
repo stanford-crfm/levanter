@@ -139,20 +139,17 @@ def main(config: TrainGpt2Config):
             pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
-            # TODO: would prefer to do this in haliax name land, but it's not clear how to do that
-            # could add a where mask which is pretty normal
-            pred_y = pred_y[:-1]
-
             # need to roll the target tokens back by one so that each token is predicting the next token
             target_y = haliax.roll(input_ids, -1, SeqLen)
 
             loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+            loss = hax.mean(loss, where=loss_mask)
 
             if not inference and config.log_z_regularization > 0:
-                logz_mse = jnp.mean((log_normalizers**2))
+                logz_mse = hax.mean((log_normalizers**2))
                 loss += config.log_z_regularization * logz_mse
 
-            return loss
+            return loss.array
 
         # mean_loss: this computes the mean loss over a batch of examples
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):

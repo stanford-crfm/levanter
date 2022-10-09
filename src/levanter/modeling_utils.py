@@ -134,12 +134,13 @@ def recursive_checkpoint(funs, threshold=2):
 
 
 def cross_entropy_loss_and_log_normalizers(
-    pred_y: NamedArray, Label: Axis, target_y: NamedArray
-) -> Tuple[float, NamedArray]:
+    pred_y: NamedArray,
+    Label: Axis,
+    target_y: NamedArray,
+) -> Tuple[NamedArray, NamedArray]:
     log_normalizers = hax.nn.logsumexp(pred_y, Label)
     log_normalized = pred_y - log_normalizers
 
     loss = -hax.sum(target_y * log_normalized, axis=Label)
-    loss = hax.mean(loss)
 
     return loss, log_normalizers

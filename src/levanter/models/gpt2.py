@@ -448,7 +448,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
         hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
 
-        return lm_logits.rearrange((self.SeqLen, self.Vocab)).array
+        return lm_logits
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}
