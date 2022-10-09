@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 import haliax
 
-from ..core import Axis, NamedArray
+from ..core import Axis, AxisSpec, NamedArray
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
@@ -32,15 +32,13 @@ selu = wrap_elemwise_unary(jnn.selu)
 gelu = wrap_elemwise_unary(jnn.gelu)
 # TODO: glu = wrap_elemwise_unary(jnn.gelu)
 
-logsumexp = wrap_reduction_call(jnn.logsumexp, False)
+logsumexp = wrap_reduction_call(jnn.logsumexp, False, supports_where=False)
 
+# TODO: support where in softmax, etc
 softmax = wrap_axiswise_call(jnn.softmax, False)
 # TODO: standardize has optional "mean" and "variance" arguments we need to support
 # standardize = wrap_normalization_call(jnn.standardize, False)
 log_softmax = wrap_axiswise_call(jnn.log_softmax, False)
-
-
-# def logsumexp(x: NamedArray, axis: AxisSpec) -> NamedArray:
 
 
 @functools.wraps(jnn.one_hot)
