@@ -2,8 +2,6 @@ import tempfile
 
 import equinox
 import jax
-import jax.numpy as jnp
-import jax.random as jrandom
 import numpy as onp
 import optax
 import pytest
@@ -11,6 +9,8 @@ from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
+
+import haliax as hax
 
 from levanter.config import TrainerConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
@@ -63,7 +63,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     def compute(input):
-        return jax.nn.softmax(model(input, inference=True, key=None), axis=-1)
+        return hax.nn.softmax(model(input, inference=True, key=None), axis=model.Vocab).array
 
     compute = jax.jit(compute)
     jax_out = compute(input)

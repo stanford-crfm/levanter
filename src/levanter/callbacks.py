@@ -22,8 +22,6 @@ def save_model(run_dir, prepare_fn=None):
         prepare_fn = lambda x: x  # noqa F731
 
     def save(info: StepInfo):
-        # it's actually pretty easy to save the model and the optimizer state
-        # and enable resuming
         if info.step != 0:
             save_checkpoint(
                 model=prepare_fn(info.model),

@@ -3,6 +3,7 @@ import dataclasses
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
+import haliax as hax
 from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
@@ -26,9 +27,9 @@ def test_gradient_checkpointing():
         model = Gpt2LMHeadModel(Vocab, config, key=key)
         model_checkpoint = Gpt2LMHeadModel(Vocab, config_checkpoint, key=key)
 
-        input_ids = jnp.arange(16, dtype=jnp.int32)
+        input_ids = hax.arange(config.SeqLen, dtype=jnp.int32)
 
         a1 = model(input_ids, inference=False, key=key)
         a2 = model_checkpoint(input_ids, inference=False, key=key)
 
-        assert jnp.all(jnp.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
+        assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"

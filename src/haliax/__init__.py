@@ -25,7 +25,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import fold, scan, vmap
-from .ops import clip, trace, tril, triu, where
+from .ops import isclose, clip, trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
@@ -352,4 +352,5 @@ __all__ = [
     "axis_mapping",
     "shape_checks",
     "are_shape_checks_enabled",
+    "isclose",
 ]
