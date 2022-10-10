@@ -23,7 +23,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
-from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerFast
+from transformers import BatchEncoding
 
 from levanter.data.utils import batched
 
@@ -307,17 +307,3 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
         labels[0 : target_len - stride] = sentinel
 
     return labels
-
-
-if __name__ == "__main__":
-    import datasets
-
-    tokenizer: PreTrainedTokenizerFast = AutoTokenizer.from_pretrained("gpt2")
-    dataset = datasets.load_dataset("dlwh/wikitext_103_detokenized", split="train")
-
-    indexed = preprocess_dataset(
-        dataset, tokenizer, cache_dir="cache/wikitext-103-indexed", seq_len=512, num_shards=8, enforce_eos=True
-    )
-
-    for i, batch in enumerate(indexed):
-        print(i, batch)
