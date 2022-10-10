@@ -1,6 +1,6 @@
 import itertools
 from math import prod
-from typing import Iterable, Iterator, Sequence, Tuple, TypeVar
+from typing import Iterable, Iterator, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
@@ -36,12 +36,15 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         doc_cache: TokenizedDocumentCache,
         mesh_info: MeshInfo,
         seq_len: int,
+        override_process_data_pos: Optional[int] = None,  # for testing
+        override_process_data_groups: Optional[int] = None,  # for testing
     ):
         self.mesh_info = mesh_info
-        process_data_pos = self.mesh_info.process_mesh_position[0]
-        num_data_process_groups = self.mesh_info.process_mesh_size[0]
+        process_data_pos = override_process_data_pos or self.mesh_info.process_mesh_position[0]
+        num_data_process_groups = override_process_data_groups or self.mesh_info.process_mesh_size[0]
 
-        assert num_data_process_groups <= self.mesh_info.process_count
+        if not override_process_data_groups:
+            assert num_data_process_groups <= self.mesh_info.process_count
 
         self.indexed_dataset = IndexedDataset(doc_cache, seq_len, stride=None).shard(
             process_data_pos,
