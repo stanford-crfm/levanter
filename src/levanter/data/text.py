@@ -208,14 +208,20 @@ def build_cache(
                 f.close()
 
         # if we successfully wrote the whole iterator, we can write the ledger
-        with fsspec.open(ledger_file, "w") as w:
-            ledger = {
-                "files": [
-                    {"file_name": str(name), "num_tokens": count}
-                    for name, count in zip(file_names, tokens_written_to_shard)
-                ]
-            }
-            json.dump(ledger, w)
+        # edge case: if we didn't write any documents, write an empty ledger
+        if writers is None:
+            with fsspec.open(ledger_file, "w") as w:
+                ledger: dict = {"files": []}
+                json.dump(ledger, w)
+        else:
+            with fsspec.open(ledger_file, "w") as w:
+                ledger = {
+                    "files": [
+                        {"file_name": str(name), "num_tokens": count}
+                        for name, count in zip(file_names, tokens_written_to_shard)
+                    ]
+                }
+                json.dump(ledger, w)
         return
 
     except (KeyboardInterrupt, InterruptedError):
@@ -238,7 +244,7 @@ def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
         return tokenizer(texts, return_attention_mask=False)
 
 
-def preprocess_dataset(dataset, tokenizer, seq_len, cache_dir, num_shards, enforce_eos, doc_group_size=1000):
+def preprocess_dataset(dataset, tokenizer, cache_dir, seq_len, num_shards, enforce_eos, doc_group_size=1000):
     data = (x["text"] for x in dataset)
 
     token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, doc_group_size))
@@ -310,12 +316,7 @@ if __name__ == "__main__":
     dataset = datasets.load_dataset("dlwh/wikitext_103_detokenized", split="train")
 
     indexed = preprocess_dataset(
-        dataset,
-        tokenizer,
-        seq_len=512,
-        cache_dir="cache/wikitext-103-indexed",
-        num_shards=8,
-        enforce_eos=True,
+        dataset, tokenizer, cache_dir="cache/wikitext-103-indexed", seq_len=512, num_shards=8, enforce_eos=True
     )
 
     for i, batch in enumerate(indexed):
