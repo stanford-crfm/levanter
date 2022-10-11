@@ -39,17 +39,21 @@ overwatch = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class IndexedDataset:
+class TokenSeqDataset:
+    """
+    A dataset that yields sequences of tokens from a TokenizedDocumentCache.
+    """
+
     def __init__(self, doc_cache, seq_len: int, stride: Optional[int]):
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self.stride = stride
 
-    def shard(self, process_id: int, num_processes: int) -> "IndexedDataset":
+    def shard(self, process_id: int, num_processes: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return IndexedDataset(self.doc_cache.shard(process_id, num_processes), self.seq_len, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(process_id, num_processes), self.seq_len, self.stride)
 
     def __iter__(self) -> Iterator[BatchEncoding]:
         for doc in self.doc_cache:
@@ -63,10 +67,10 @@ class IndexedDataset:
         num_shards: int,
         stride: Optional[int] = None,
         file_template: str = "docs-{}.parquet",
-    ) -> "IndexedDataset":
+    ) -> "TokenSeqDataset":
         build_cache(token_iter, cache_dir, num_shards, file_template)
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return IndexedDataset(doc_cache, seq_len, stride)
+        return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
 def _load_ledger(cache_dir):
@@ -248,7 +252,7 @@ def preprocess_dataset(dataset, tokenizer, cache_dir, seq_len, num_shards, enfor
     data = (x["text"] for x in dataset)
 
     token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, doc_group_size))
-    return IndexedDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
+    return TokenSeqDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
 
 
 def concatenate_and_group_texts(

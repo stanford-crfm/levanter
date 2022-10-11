@@ -6,20 +6,20 @@ The current data loader (in levanter/data/text.py and levanter/data/sharded.py) 
 * We build a TokenizedDocumentCache, which creates a (user-specified) number of shards (default 128 for training). Documents are tokenized (via an HF tokenizer) and written to the cache in batches of 1000 (by default), with each batch being written to the *smallest* shard.
 * The underlying format is a Parquet file, for text data this means a sequence of input_ids stored in a batched columnar layout and compressed
 * When you iterate through the TokenizedDocumentCache, it reads the shards in a round-robin fashion, and yields batches of documents, as they were written.
-* It can optionally "flatten" a batch of documents into a single doc (which are delimited by eos), which is what we do with IndexedDataset.
+* It can optionally "flatten" a batch of documents into a single doc (which are delimited by eos), which is what we do with TokenSeqDataset.
 
 
-### IndexedDataset
-* At load time, a TokenizedDocumentCache is typically wrapped in an IndexedDataset, which just wraps the
+### TokenSeqDataset
+* At load time, a TokenizedDocumentCache is typically wrapped in an TokenSeqDataset, which just wraps the
 TokenizedDocumentCache and sets a max_seq_len. This is the fundamental data structure that is used by the data loader.
-* The IndexedDataset iterates through the TokenizedDocumentCache one batch at a time. The docs are (implicitly)
+* The TokenSeqDataset iterates through the TokenizedDocumentCache one batch at a time. The docs are (implicitly)
 concatenated together. If a concatenated doc is longer than max_seq_len, then it is split into chunks of max_seq_len. Any left over at the end of a batch is currently thrown out, matching Mistral's behavior.
 
-### ShardedIndexedDataset
+### ShardedTokenSeqDataset
 
 * Recall that model computation is done by creating a 2-D grid of TPUs, with the first axis being "data" and the other being "model". All devices on the same row process the same slice of a batch. Typically a row does not span multiple nodes, but usually a node will have multiple rows.
 * We can conceptually group the rows into "row groups" such that either a row group is just 1 row, or it spans all rows that are on the same node.
-* The job of the ShardedIndexedDataset is to shard the IndexedDataset into a number of shards and loads the data so that each row gets its own data. Each row group of the 2-d mesh is assigned a shard (i.e. a set of cache files) that it loads from exclusively.
+* The job of the ShardedTokenSeqDataset is to shard the TokenSeqDataset into a number of shards and loads the data so that each row gets its own data. Each row group of the 2-d mesh is assigned a shard (i.e. a set of cache files) that it loads from exclusively.
 * For each batch, a node reads however many examples it needs to fill its row group. We then create a GlobalDeviceArray which orchestrates the shards together.
 
 ### Misc notes / problems
@@ -50,13 +50,13 @@ and the random seed to disk when we checkpoint, so that we can resume easily.
 
 ### Tasks
 
-#### IndexedDataset
+#### TokenSeqDataset
 * [] supports seek that jumps to a random offset in a random shard in the TokenizedDocumentCache
 * [] can report current position for serialization
 * [] can resume from a position
 
 #### JumpingDataset
-* [] has a policy for jumping around in an IndexedDataset
+* [] has a policy for jumping around in an TokenSeqDataset
 * [] has a random key and a position within the policy
 * [] can report key and current position for serialization
 
