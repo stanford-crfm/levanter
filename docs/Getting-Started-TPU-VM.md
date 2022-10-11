@@ -91,7 +91,7 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_
 ```
 
 ## Common Issues
-### Permission denied on `/files`
+### (CRFM) Permission denied on `/files`
 
 If you get a permission denied error on `/files`, you probably need to run `sudo chmod -R a+rw /files/whatever` on the
 TPU VM instance. This is because the TPU VM instance sets different UID/GID for the user on each and every worker, so
@@ -106,3 +106,18 @@ add a safe directory on your workers:
 ```bash
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'git config --global --add safe.directory /files/<wherever>'
 ```
+
+### Can't find TPUs
+
+If you get the warning `No GPU/TPU found, falling back to CPU.` then something else might be using the TPU, like a zombie python
+process. You can kill all python processes with `gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'pkill python'`
+
+If that fails, you can try rebooting the TPU VM instance. This is harder than it sounds, because you can't just reboot the instance
+from the console or with a special command. You have to do it with ssh:
+
+```bash
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'sudo reboot'
+```
+
+**and then you have to ctrl-c this after about 10 seconds**. Otherwise, gcloud will think the command failed and will
+try again, and get stuck in a loop forever. (You can ctrl-c it at any point after 10 seconds.)
