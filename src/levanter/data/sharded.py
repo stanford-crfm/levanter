@@ -6,7 +6,7 @@ import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 
-from levanter.data.text import IndexedDataset, TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 from levanter.mesh import MeshInfo
 
 
@@ -46,7 +46,7 @@ class ShardedIndexedDataset(Iterable[GlobalDeviceArray]):
         if not override_process_data_groups:
             assert num_data_process_groups <= self.mesh_info.process_count
 
-        self.indexed_dataset = IndexedDataset(doc_cache, seq_len, stride=None).shard(
+        self.indexed_dataset = TokenSeqDataset(doc_cache, seq_len, stride=None).shard(
             process_data_pos,
             num_data_process_groups,
         )
