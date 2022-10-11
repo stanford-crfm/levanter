@@ -38,15 +38,23 @@ Goal: a streaming dataset that is:
 2. reasonably random, including robust to long documents.
 3. resumable (meaning it's relatively cheap to resume if a run crashes)
 4. doesn't eat too much disk
+5. fully replicable with same configuration (meaning that if you run the same code on the same data, you get the same results)
+6. (stretch) fully replicable with different configurations (meaning that if you run the same code on the same data, you get the same results, even if you change the number of nodes)
 
-It's easy to get (1) with streaming, and (2) by jumping to random offsets for every sample. Shuffle buffers
-get you (1) and (2) together, but only if documents aren't too long. (3) comes easily
-if you do streaming OR random jumping constantly, but is a bit painful with a shuffle buffer.
-You can get (1), (2) and (3) if you are willing to lay out the entire shuffled dataset on disk for every epoch. But that's not ideal.
+It's easy to get (1) with streaming, and (2) by jumping to random offsets for every sample. Shuffle buffers get you (1)
+and (2) together, but only if documents aren't too long. (3) comes easily if you do streaming OR random jumping
+constantly, but is a bit painful with a shuffle buffer. You can get (1), (2) and (3) if you are willing to lay out the
+entire shuffled dataset on disk for every epoch. But that's not ideal.
 
-We take a middle path: we stream into a shuffle buffer, but we jump to random offsets after every K samples. Moreover,
-we serialize the shuffle buffer, the positions of the datasets,
-and the random seed to disk when we checkpoint, so that we can resume easily.
+
+For (1)-(4), we take a middle path: we stream into a shuffle buffer, but we jump to random offsets after every K samples. Moreover,
+we serialize the shuffle buffer, the positions of the datasets, and the random seed to disk when we checkpoint, so that we can resume easily.
+
+(5) is easy if you serialize the relevant state, or can just restart your iterators deterministically.
+(6) is hard to do in a sharded way. It's easy to "scale down" by emulating a larger number of nodes with a smaller
+number of nodes, but it's hard to "scale up". To do this, we can think of each row as having its own stream of data,
+perhaps sliced out of a larger stream? TODO for version 3
+
 
 ### Tasks
 
