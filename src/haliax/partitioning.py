@@ -131,9 +131,9 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
                 return NamedArray(
                     PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
                     node.axes,
-                )
-        #elif isinstance(node, GlobalDeviceArray):
-        #    return FROM_GDA
+               )
+        elif isinstance(node, GlobalDeviceArray):
+            return FROM_GDA
         # TODO: jax.Array
         else:
             return None
@@ -263,6 +263,8 @@ def named_pjit(
             dargs = donate_args or (False,) * len(args)
             dkwargs = donate_kwargs or {k: False for k in kwargs}
             dynamic_donated, dynamic_reserved = eqx.partition(dynamic, (False, (dargs, dkwargs)))
+            print("donated:", dynamic_donated[1][0][0].embeddings.token_embeddings)
+            print("not donated:", dynamic_reserved[1][0][0].embeddings.token_embeddings)
         else:
             dynamic_donated = jax.tree_util.tree_map(lambda _: None, dynamic)
             dynamic_reserved = dynamic
@@ -280,7 +282,9 @@ def named_pjit(
 
         my_pjit_args = dict(**pjit_args)
         my_pjit_args["in_axis_resources"] = in_resources
+        dump_shardings(in_resources, f"{fn.__name__}.in.txt")
         my_pjit_args["out_axis_resources"] = out_resources
+        dump_shardings(out_resources, f"{fn.__name__}.out.txt")
         cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
 
         return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
@@ -331,6 +335,10 @@ def round_axis_for_partitioning(axis: Axis) -> Axis:
     else:
         new_size = (axis.size + size - 1) // size * size
         return Axis(axis.name, new_size)
+
+def dump_shardings(resources, name):
+    with open(name, 'w') as f:
+        print(resources, file=f)
 
 
 __all__ = [

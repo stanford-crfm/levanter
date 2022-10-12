@@ -12,7 +12,7 @@ from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.pjit import pjit
 
 from haliax import Axis
-from haliax.partitioning import axis_mapping, infer_resource_partitions, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping
+from haliax.partitioning import axis_mapping, infer_resource_partitions, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping, dump_shardings
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
@@ -67,6 +67,9 @@ def main(config: TrainGpt2Config):
         config.trainer.eval_mesh_info,
         config.model.seq_len,
     )
+
+    parameter_axis_mapping = dict(config.trainer.axis_resources)
+    parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
 
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
@@ -238,9 +241,6 @@ def main(config: TrainGpt2Config):
         def train_step(model, opt_state, input_ids, keys):
             model_inf = shard_with_axis_mapping(mp.cast_to_compute(model), config.trainer.axis_resources)
 
-            parameter_axis_mapping = dict(config.trainer.axis_resources)
-            parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
-
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 model_inf,
@@ -259,17 +259,27 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        train_step = pjit(
-            train_step,
-            in_axis_resources=(
-                model_resources,
-                opt_state_resources,
-                data_resources,  # input_ids
-                data_resources,  # keys are shared same as data
-            ),
-            out_axis_resources=(None, model_resources, opt_state_resources),
-            donate_argnums=(0, 1),
-        )
+        if True:
+          train_step = named_pjit(
+              train_step,
+              axis_resources=(parameter_axis_mapping),
+              donate_args=(True, True, False, False)
+          )
+        else:
+           dump_shardings((model_resources, opt_state_resources, data_resources, data_resources), 'manual.in.txt')
+           dump_shardings((None, model_resources, opt_state_resources), 'manual.out.txt')
+           train_step = pjit(
+              train_step,
+              in_axis_resources=(
+                  model_resources,
+                  opt_state_resources,
+                  data_resources,  # input_ids
+                  data_resources,  # keys are shared same as data
+              ),
+              out_axis_resources=(None, model_resources, opt_state_resources),
+             # donate_argnums=(0, 1),
+            )
+
 
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
