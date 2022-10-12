@@ -8,9 +8,11 @@ import equinox as eqx
 import jax
 import jmp
 from equinox import filter_vmap
+from jax.experimental.global_device_array import GlobalDeviceArray
+from jax.experimental.pjit import pjit
 
 from haliax import Axis
-from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping
+from haliax.partitioning import axis_mapping, infer_resource_partitions, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
@@ -35,6 +37,7 @@ from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 
 logger = logging.getLogger(__name__)
+
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
@@ -87,38 +90,45 @@ def main(config: TrainGpt2Config):
         # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
         mp: jmp.Policy = config.trainer.mp
 
-        # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
+        # initialize the model and optimizer
+        optim = config.trainer.optimizer()
+
+        # now shard the model and optimizer across the mesh, using "parameter axis resources".
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
-        # TODO: move this into TrainerConfig
-        parameter_axis_mapping = dict(**config.trainer.axis_resources)
-        parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
+        # and then use a "reducer" to aggregate the gradients across the mesh.
+        with axis_mapping(config.trainer.parameter_axis_resources, merge=True):
 
-        # initialize the model
-        # This function
-        # 1) initializes model weights
-        # 2) ensures all model weights are the right dtype
-        # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
-        @named_pjit(axis_resources=parameter_axis_mapping)
-        def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
-            model = mp.cast_to_param(model)
-            return model
+            def init_state():
+                model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+                # TODO: think about how we want to do this if we want to load a checkpoint
+                model = mp.cast_to_param(model)
+                opt_state = optim.init(model)
+                return model, opt_state
 
-        model = init_model()
+            # doing this in a pjit means that the model and optimizer states are already sharded
+            model, opt_state = named_pjit(init_state)()
+
+            # model and opt_state are what Jax calls "pytrees", which is just a fancy word for "python object that
+            # has 'leaf' attributes". Typically leaves are ndarrays or scalars, but they can be be anything.
+
+            # we need to tell Jax how to split the pytree across the mesh, so we use the infer_resource_partitions
+            # function, which returns a Pytree with the same structure as the input, but all of the leaves are replaced
+            # with PartitionSpecs, which tell Jax how to split the leaf across the mesh. We'll use these with pjit
+            opt_state_resources = infer_resource_partitions(opt_state)
+            model_resources = infer_resource_partitions(model)
 
         wandb.summary["parameter_count"] = parameter_count(model)
 
-        # initialize the optimizer
-        # This is basically the same as the model.
-        optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        with axis_mapping(config.trainer.axis_resources):
+            compute_model_resources = infer_resource_partitions(model)
+            data_resources = dataset.partition_spec
 
-        # when it's time to do compute, we want to convert the model to the compute dtype and shard it for inference.
-        # We use this invocation of named_pjit to do that.
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=config.trainer.axis_resources,
+        # when it's time to do actual compute, we want to convert the model to the compute dtype and shard it
+        # for inference
+        prepare_model_for_compute = pjit(
+            lambda m: mp.cast_to_compute(m),
+            in_axis_resources=(model_resources,),
+            out_axis_resources=compute_model_resources,
         )
 
         # loss function: this computes the loss with respect to a single example
@@ -148,9 +158,12 @@ def main(config: TrainGpt2Config):
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
 
-        compute_loss_pjit = named_pjit(
+        # pjit tells jax how to split the arguments across the mesh and how the returned values should be sharded
+        # we use the resources we inferred above
+        compute_loss_pjit = pjit(
             partial(mean_loss, inference=True, key=None),
-            axis_resources=config.trainer.axis_resources,
+            in_axis_resources=(compute_model_resources, data_resources),
+            out_axis_resources=None,
         )
 
         # Set up evaluation: dataloader, loop
@@ -224,6 +237,10 @@ def main(config: TrainGpt2Config):
 
         def train_step(model, opt_state, input_ids, keys):
             model_inf = shard_with_axis_mapping(mp.cast_to_compute(model), config.trainer.axis_resources)
+
+            parameter_axis_mapping = dict(config.trainer.axis_resources)
+            parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
+
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 model_inf,
@@ -237,13 +254,22 @@ def main(config: TrainGpt2Config):
 
             with jax.named_scope("optimizer"), axis_mapping(config.trainer.parameter_axis_resources, merge=True):
                 # distribute gradients across the mesh and apply them
-                updates, opt_state = optimizer.update(grads, opt_state, params=model)
+                updates, opt_state = optim.update(grads, opt_state, params=model)
                 model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
 
-        # donate the model and the opt_state so they can used for outputs
-        train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
+        train_step = pjit(
+            train_step,
+            in_axis_resources=(
+                model_resources,
+                opt_state_resources,
+                data_resources,  # input_ids
+                data_resources,  # keys are shared same as data
+            ),
+            out_axis_resources=(None, model_resources, opt_state_resources),
+            donate_argnums=(0, 1),
+        )
 
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:

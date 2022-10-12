@@ -124,16 +124,16 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            if isinstance(node.array, GlobalDeviceArray):
+            #if isinstance(node.array, GlobalDeviceArray):
                 # TODO: should probably check for compatibility
-                return FROM_GDA
-            else:
+            #    return FROM_GDA
+            # else:
                 return NamedArray(
                     PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
                     node.axes,
                 )
-        elif isinstance(node, GlobalDeviceArray):
-            return FROM_GDA
+        #elif isinstance(node, GlobalDeviceArray):
+        #    return FROM_GDA
         # TODO: jax.Array
         else:
             return None
