@@ -223,8 +223,7 @@ def main(config: TrainGpt2Config):
         mesh_info = config.trainer.train_mesh_info
 
         def train_step(model, opt_state, input_ids, keys):
-            model_inf = prepare_model_for_compute(model)
-
+            model_inf = mp.cast_to_compute(model)
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 model_inf,
