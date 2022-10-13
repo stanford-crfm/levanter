@@ -338,11 +338,6 @@ def round_axis_for_partitioning(axis: Axis) -> Axis:
         return Axis(axis.name, new_size)
 
 
-def dump_shardings(resources, name):
-    with open(name, "w") as f:
-        print(resources, file=f)
-
-
 __all__ = [
     "LogicalAxisName",
     "PhysicalAxis",
