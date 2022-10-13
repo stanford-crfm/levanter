@@ -14,6 +14,7 @@ from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
 from haliax.jax_utils import shaped_rng_split
+from haliax.util import is_jax_array_like
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -43,14 +44,9 @@ def flops_estimate(fn, *args):
 
 
 def parameter_count(model: PyTree):
-    def _is_param_leaf(x):
-        return (isinstance(x, jax.ShapeDtypeStruct) and jnp.issubdtype(x.dtype, jnp.inexact)) or eqx.is_inexact_array(
-            x
-        )
-
     # especially with jax.vjp, we get duplicate arrays and want to uniq them
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
-    leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if _is_param_leaf(x)}
+    leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if is_jax_array_like(x)}
     return sum(x.size for x in leaves.values())
 
 

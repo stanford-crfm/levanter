@@ -9,7 +9,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded, shard_with_axis_mapping
+from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
 from haliax.util import named_call
 from levanter.jax_utils import reduce
 
@@ -89,10 +89,6 @@ def accumulate_gradients_sharded(
     num_micro_steps = batch_size // microbatch_size
     assert num_micro_steps * microbatch_size == batch_size
 
-    pam = parameter_axis_mapping
-    parameter_axis_mapping = dict(**compute_axis_mapping)
-    parameter_axis_mapping.update(pam)
-    model = shard_with_axis_mapping(model, compute_axis_mapping)
     # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
     with hax.axis_mapping(compute_axis_mapping, merge=False):
         with jax.named_scope("mass reshape"):
@@ -108,7 +104,7 @@ def accumulate_gradients_sharded(
         with jax.named_scope("accumulate grad vmap"), hax.axis_mapping(
             {Microbatch.name: ResourceAxis.DATA}, merge=True
         ):
-            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch, unmapped_argnums=0)(f, model, *inputs)
+            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch, unmapped_argnums=(0, 1))(f, model, *inputs)
             grads = auto_sharded(grads)
 
     # compute means and shard according to the parameter_axis_mapping

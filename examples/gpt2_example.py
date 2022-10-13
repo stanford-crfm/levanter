@@ -36,6 +36,7 @@ from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 logger = logging.getLogger(__name__)
 
+
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
 
@@ -223,7 +224,7 @@ def main(config: TrainGpt2Config):
         mesh_info = config.trainer.train_mesh_info
 
         def train_step(model, opt_state, input_ids, keys):
-            model_inf = prepare_model_for_compute(model)
+            model_inf = mp.cast_to_compute(model)
 
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
