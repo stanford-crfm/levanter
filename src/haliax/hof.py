@@ -7,7 +7,7 @@ import jax
 import jax.lax as lax
 
 from .core import Axis, NamedArray
-from .partitioning import physical_axis_name
+from .partitioning import auto_sharded, physical_axis_name
 from .util import ensure_tuple, is_named_array
 
 
@@ -38,8 +38,10 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
     @wraps(f)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
+        x = auto_sharded(x)
         carry, y = f(carry, x)
         y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
+        y = auto_sharded(y)
         return carry, y
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
@@ -63,10 +65,6 @@ def reduce(
     # This implementation is a bit tricky.
     # First we have to hoist the axis we're scanning over to the front of the array.
     # Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
-    # We have to be careful that we don't try to create NamedArrays that have the shape of the scanned result
-    # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
-    # invariants until we're ready to create the result.
-
     axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), xs, is_leaf=is_named_array)
 
     # now get a template for where we fold over the axis in question
@@ -77,6 +75,7 @@ def reduce(
     @wraps(fn)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
+        x = auto_sharded(x)
         return fn(carry, x), None
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)

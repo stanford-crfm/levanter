@@ -124,14 +124,14 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            if isinstance(node.array, GlobalDeviceArray):
-                # TODO: should probably check for compatibility
-                return FROM_GDA
-            else:
-                return NamedArray(
-                    PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
-                    node.axes,
-                )
+            # if isinstance(node.array, GlobalDeviceArray):
+            # TODO: should probably check for compatibility
+            #    return FROM_GDA
+            # else:
+            return NamedArray(
+                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
+                node.axes,
+            )
         elif isinstance(node, GlobalDeviceArray):
             return FROM_GDA
         # TODO: jax.Array
@@ -139,58 +139,6 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
             return None
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
-
-
-def eval_resource_partitions(fn):
-    """
-    Similar to jax.eval_shape but for resource partitions. It returns a PyTree of PartitionSpecs.
-    """
-
-    def f(*args, **kwargs):
-        out_shape = jax.eval_shape(fn, *args, **kwargs)
-        return infer_resource_partitions(out_shape)
-
-    return f
-
-
-# This is more or less copy-pasted from Equinox's similar functions (pmap, vmap, etc), but
-# it's not really explained there so we'll explain it here.
-# Many jax functions work by compiling functions to XLA. The compilation process is expensive,
-# so we want to cache the compiled functions. However, the compiled functions are tied to the
-# "static" arguments to the functions. This is particularly important for a library like Equinox,
-# which Haliax is built on top of, because Equinox uses pytrees extensively for modules, and mixes "static"
-# configuration with "dynamic" data.
-# Thus we need to carefully partition the arguments to the function into "static" and "dynamic" arguments,
-# and cache our compiled functions based on the static arguments.
-# In Equinox conceptually there are three types of "arguments": positional, named, and the function itself.
-# All of these are pytrees, and we need to partition them into static and dynamic arguments.
-# Inside the function, we then combine the arguments into a single pytree, and pass that to the original function.
-# With pjit we also have "donated" arguments, which are arguments that we promise not to use after the function
-# returns. This is useful for conserving memory, but we also have to splice them back in.
-# Also recall that a "pytree" can split into leaves and a "treedef", which can then be reconstructed.
-@compile_cache
-def _named_pjit_cache(fun_names, **jitkwargs):
-    def fun_wrapped(dynamic_donated, dynamic_reserved, static):
-        dynamic = eqx.combine(dynamic_donated, dynamic_reserved)
-        dynamic_fun, dynamic_spec = dynamic
-
-        (
-            static_fun_treedef,
-            static_fun_leaves,
-            static_spec_treedef,
-            static_spec_leaves,
-        ) = static
-
-        fun = hashable_combine(dynamic_fun, static_fun_leaves, static_fun_treedef)
-        args, kwargs = hashable_combine(dynamic_spec, static_spec_leaves, static_spec_treedef)
-        out = fun(*args, **kwargs)
-        return out
-
-    fun_name, fun_qualname = fun_names
-    fun_wrapped.__name__ = fun_name
-    fun_wrapped.__qualname__ = fun_qualname
-
-    return pjit(fun_wrapped, static_argnums=2, donate_argnums=0, **jitkwargs)
 
 
 def named_pjit(
@@ -274,9 +222,9 @@ def named_pjit(
             static_argspec,
         )
 
+        output_shape = _cached_filter_eval_shape(fn, *args, **kwargs)
         in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
-        shapes = filter_eval_shape(fn, *args, **kwargs)
-        out_resources = infer_resource_partitions(shapes, out_axis_resources)
+        out_resources = infer_resource_partitions(output_shape, out_axis_resources)
 
         my_pjit_args = dict(**pjit_args)
         my_pjit_args["in_axis_resources"] = in_resources
@@ -288,8 +236,65 @@ def named_pjit(
     return f
 
 
+# This is more or less copy-pasted from Equinox's similar functions (pmap, vmap, etc), but
+# it's not really explained there so we'll explain it here.
+# Many jax functions work by compiling functions to XLA. The compilation process is expensive,
+# so we want to cache the compiled functions. However, the compiled functions are tied to the
+# "static" arguments to the functions. This is particularly important for a library like Equinox,
+# which Haliax is built on top of, because Equinox uses pytrees extensively for modules, and mixes "static"
+# configuration with "dynamic" data.
+# Thus we need to carefully partition the arguments to the function into "static" and "dynamic" arguments,
+# and cache our compiled functions based on the static arguments.
+# In Equinox conceptually there are three types of "arguments": positional, named, and the function itself.
+# All of these are pytrees, and we need to partition them into static and dynamic arguments.
+# Inside the function, we then combine the arguments into a single pytree, and pass that to the original function.
+# With pjit we also have "donated" arguments, which are arguments that we promise not to use after the function
+# returns. This is useful for conserving memory, but we also have to splice them back in.
+# Also recall that a "pytree" can split into leaves and a "treedef", which can then be reconstructed.
+@compile_cache
+def _named_pjit_cache(fun_names, **jitkwargs):
+    def fun_wrapped(dynamic_donated, dynamic_reserved, static):
+        dynamic = eqx.combine(dynamic_donated, dynamic_reserved)
+        dynamic_fun, dynamic_spec = dynamic
+
+        (
+            static_fun_treedef,
+            static_fun_leaves,
+            static_spec_treedef,
+            static_spec_leaves,
+        ) = static
+
+        fun = hashable_combine(dynamic_fun, static_fun_leaves, static_fun_treedef)
+        args, kwargs = hashable_combine(dynamic_spec, static_spec_leaves, static_spec_treedef)
+        out = fun(*args, **kwargs)
+        return out
+
+    fun_name, fun_qualname = fun_names
+    fun_wrapped.__name__ = fun_name
+    fun_wrapped.__qualname__ = fun_qualname
+
+    return pjit(fun_wrapped, donate_argnums=0, static_argnums=2, **jitkwargs)
+
+
+_eval_shape_cache = {}
+
+
+def _cached_filter_eval_shape(fun, *args, **kwargs):
+    """
+    eval_shape is surprisingly expensive, so we cache it. We use this for named_pjit for evaluating resource partitions
+    of the output.
+    """
+    dynamic, static, treedef = hashable_partition((fun, args, kwargs), is_jax_array_like)
+    key = (static, treedef)
+
+    if key not in _eval_shape_cache:
+        _eval_shape_cache[key] = filter_eval_shape(fun, *args, **kwargs)
+
+    return _eval_shape_cache[key]
+
+
 def physical_axis_name(axis: Axis) -> Optional[PhysicalAxis]:
-    """Get the physical axis name for a logical axis"""
+    """Get the physical axis name for a logical axis from the global mapping. Returns none if the axis is not mapped."""
     mapping = _mapping_holder.thread_data.resource_mapping
     if mapping is None:
         return None
@@ -342,7 +347,6 @@ __all__ = [
     "axis_mapping",
     "auto_sharded",
     "infer_resource_partitions",
-    "eval_resource_partitions",
     "named_pjit",
     "physical_axis_name",
     "pspec_for_axis",
