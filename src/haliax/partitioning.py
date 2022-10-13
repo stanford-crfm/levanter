@@ -285,7 +285,7 @@ def _cached_filter_eval_shape(fun, *args, **kwargs):
     of the output.
     """
     dynamic, static, treedef = hashable_partition((fun, args, kwargs), is_jax_array_like)
-    key = (fun.__name__, fun.__qualname__, static, treedef)
+    key = (static, treedef)
 
     if key not in _eval_shape_cache:
         _eval_shape_cache[key] = filter_eval_shape(fun, *args, **kwargs)
