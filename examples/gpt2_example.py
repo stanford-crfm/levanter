@@ -10,7 +10,7 @@ import jmp
 from equinox import filter_vmap
 
 from haliax import Axis
-from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping
+from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
@@ -224,7 +224,7 @@ def main(config: TrainGpt2Config):
         mesh_info = config.trainer.train_mesh_info
 
         def train_step(model, opt_state, input_ids, keys):
-            model_inf = shard_with_axis_mapping(mp.cast_to_compute(model), config.trainer.axis_resources)
+            model_inf = mp.cast_to_compute(model)
 
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,

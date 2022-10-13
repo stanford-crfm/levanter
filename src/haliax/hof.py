@@ -38,10 +38,10 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
     @wraps(f)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
-        #x = auto_sharded(x)
+        x = auto_sharded(x)
         carry, y = f(carry, x)
         y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
-        #y = auto_sharded(y)
+        y = auto_sharded(y)
         return carry, y
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
@@ -75,7 +75,7 @@ def reduce(
     @wraps(fn)
     def wrapped_fn(carry, x):
         x = jax.tree_util.tree_unflatten(x_elem_structure, x)
-        #x = auto_sharded(x)
+        x = auto_sharded(x)
         return fn(carry, x), None
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
