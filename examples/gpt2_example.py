@@ -8,11 +8,16 @@ import equinox as eqx
 import jax
 import jmp
 from equinox import filter_vmap
-from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.pjit import pjit
 
 from haliax import Axis
-from haliax.partitioning import axis_mapping, infer_resource_partitions, named_pjit, round_axis_for_partitioning, shard_with_axis_mapping, dump_shardings
+from haliax.partitioning import (
+    axis_mapping,
+    infer_resource_partitions,
+    named_pjit,
+    round_axis_for_partitioning,
+    shard_with_axis_mapping,
+)
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
@@ -96,6 +101,9 @@ def main(config: TrainGpt2Config):
         # initialize the model and optimizer
         optim = config.trainer.optimizer()
 
+        parameter_axis_mapping = dict(config.trainer.axis_resources)
+        parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
+
         # now shard the model and optimizer across the mesh, using "parameter axis resources".
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
         # and then use a "reducer" to aggregate the gradients across the mesh.
@@ -111,15 +119,6 @@ def main(config: TrainGpt2Config):
             # doing this in a pjit means that the model and optimizer states are already sharded
             model, opt_state = named_pjit(init_state)()
 
-            # model and opt_state are what Jax calls "pytrees", which is just a fancy word for "python object that
-            # has 'leaf' attributes". Typically leaves are ndarrays or scalars, but they can be be anything.
-
-            # we need to tell Jax how to split the pytree across the mesh, so we use the infer_resource_partitions
-            # function, which returns a Pytree with the same structure as the input, but all of the leaves are replaced
-            # with PartitionSpecs, which tell Jax how to split the leaf across the mesh. We'll use these with pjit
-            opt_state_resources = infer_resource_partitions(opt_state)
-            model_resources = infer_resource_partitions(model)
-
         wandb.summary["parameter_count"] = parameter_count(model)
 
         with axis_mapping(config.trainer.axis_resources):
@@ -128,10 +127,10 @@ def main(config: TrainGpt2Config):
 
         # when it's time to do actual compute, we want to convert the model to the compute dtype and shard it
         # for inference
-        prepare_model_for_compute = pjit(
+        prepare_model_for_compute = named_pjit(
             lambda m: mp.cast_to_compute(m),
-            in_axis_resources=(model_resources,),
-            out_axis_resources=compute_model_resources,
+            in_axis_resources=parameter_axis_mapping,
+            out_axis_resources=config.trainer.axis_resources,
         )
 
         # loss function: this computes the loss with respect to a single example
@@ -259,27 +258,11 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        if True:
-          train_step = named_pjit(
-              train_step,
-              axis_resources=(parameter_axis_mapping),
-              donate_args=(True, True, False, False)
-          )
-        else:
-           dump_shardings((model_resources, opt_state_resources, data_resources, data_resources), 'manual.in.txt')
-           dump_shardings((None, model_resources, opt_state_resources), 'manual.out.txt')
-           train_step = pjit(
-              train_step,
-              in_axis_resources=(
-                  model_resources,
-                  opt_state_resources,
-                  data_resources,  # input_ids
-                  data_resources,  # keys are shared same as data
-              ),
-              out_axis_resources=(None, model_resources, opt_state_resources),
-             # donate_argnums=(0, 1),
-            )
-
+        train_step = named_pjit(
+            train_step,
+            axis_resources=parameter_axis_mapping,
+            donate_args=(True, True, False, False),
+        )
 
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
