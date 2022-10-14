@@ -58,7 +58,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     input = _rand_input(PRNGKey(0), config.n_positions, config.vocab_size)
 
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
-    torch_out = torch_model(torch.from_numpy(onp.array(input)).to(torch.int32))
+    torch_out = torch_model(torch.from_numpy(onp.array(input)).to(torch.int32).unsqueeze(0))
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
