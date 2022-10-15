@@ -24,8 +24,8 @@ trainer:
 
   train_batch_size: 2048
   num_train_steps: 100000
-  num_eval_steps: 500
-  num_save_steps: 4000
+  steps_per_eval: 500
+  steps_per_save: 4000
 
   axis_resources:
     batch: "data"
