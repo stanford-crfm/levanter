@@ -79,9 +79,7 @@ async def load_array_from_tensorstore(spec):
 
 async def _deserialize_one_leaf(like, spec):
     if isinstance(like, GlobalDeviceArray):
-        return await gda_ser.async_deserialize(
-            like.mesh, like.mesh_axes, spec, global_shape=like.shape, dtype=like.dtype
-        )
+        return await gda_ser.async_deserialize(like.sharding, spec, global_shape=like.shape, dtype=like.dtype)
     elif isinstance(like, (bool, float, complex, int)):
         arr = await load_array_from_tensorstore(spec)
         return arr.item()
