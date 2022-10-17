@@ -76,11 +76,55 @@ def cumsum(arr):
     return jax.lax.scan(body, 0, arr)[1]
 ```
 
-Scan returns both the final result of the scan and the intermediate results. In this case, we only care about the intermediates results, so we index into the tuple with `[1]`.
+Scan returns both the final result of the scan and the intermediate results. In this case, we only care about the
+intermediates results, so we index into the tuple with `[1]`. In Haliax we have `haliax.reduce` which is a wrapper
+around `scan` that makes it easier to use and works with the NamedAxes system. Levanter also has a `reduce` function
+that doesn't know about names, if you want to use it with plain Jax.
 
 #### PyTrees
 
-TODO
+Structured computation in Jax is achieved via `PyTree`s, which is mostly just a fancy way of saying that many Jax methods
+recursively apply themselves to nested data structures. By default, this includes lists, tuples, and dicts. When using
+Equinox, Modules are also available as PyTrees and work in a mostly expected way. Jax has methods for flattening and
+unflattening PyTrees, as well as `tree_map`, which applies a function to every leaf in a PyTree. For example:
+
+```python
+import jax
+import jax.numpy as jnp
+
+def foo(a, b): return a @ b
+
+a = jnp.ones((2, 3))
+b = jnp.ones((3, 4))
+foo(a, b) # 2x3 @ 3x4 = 2x4
+
+jax.tree_util.tree_map(foo, [a] * 5, [b] * 5) # [2x3 @ 3x4] * 5
+```
+
+Many methods in Jax are PyTree-aware, though the numpy-like API is usually not. Many methods (though for some
+reason not `tree_map`) can operate on "PyTree prefixes", where the first argument is a PyTree and the rest are
+prefixes of that PyTree, meaning they have the same structure up to some depth. This is used with `vmap`:
+
+```python
+import jax
+import jax.numpy as jnp
+
+def foo(args):
+    a, b = args
+    return a @ b
+
+foo_vmap = jax.vmap(foo, in_axes=((0, 0), )) # vmap over the first axis for both elements of the tuple
+foo_vmap2 = jax.vmap(foo, in_axes=0) # the same
+
+a = jnp.ones((8, 2, 3))
+b = jnp.ones((8, 3, 4))
+foo_vmap((a, b)) # 8x2x3 @ 8x3x4 = 8x2x4
+foo_vmap2((a, b)) # 8x2x3 @ 8x3x4 = 8x2x4
+
+# don't map the second part of the tuple
+foo_vmap_0 = jax.vmap(foo, in_axes=((0, None),))
+```
+
 
 #### pjit: distributed computation
 
@@ -153,7 +197,42 @@ It's so simple that Copilot wrote all that for me... Thanks Copilot!
 
 ### Haliax: Named Tensors
 
-I took a lot of inspiration from [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor) (and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)) .
+
+Haliax is a library for named tensors in Jax. It wraps Jax's APIs (especially the numpy-like ones, along with
+the core transformations like vmap, pjit, etc) to make them work with named tensors. It also builds on top of
+Equinox, and adapts many of its conventions for filtering etc.
+
+Haliax is still in development, but it's already pretty usable. Here's a simple example:
+
+```python
+import jax
+from jax.random import PRNGKey
+import haliax as hax
+
+Height = hax.Axis('Height', 16)
+Width = hax.Axis('Width', 16)
+Batch = hax.Axis('Batch', 8)
+
+x = hax.random.normal(PRNGKey(0), (Batch, Height, Width))
+
+# sum out an axis
+y = hax.sum(x, Height)
+
+# sum out multiple axes
+z = hax.sum(x, (Height, Width))
+
+# broadcasting happens over named axes
+normalized_x = x / hax.sum(x, Height)
+
+# vmap over named axes. often times you may want to just skip vmap with haliax, because names are preserved etc,
+# but you may still want to use it. I honestly prefer it still, but that's just me.
+def foo(x):
+    return hax.sum(x, Height)
+
+foo_vmap = hax.vmap(foo, axis=Batch)
+```
+
+I took a lot of inspiration from [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor) (and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)).
 
 #### Named Axes in Jax
 Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.XXX
