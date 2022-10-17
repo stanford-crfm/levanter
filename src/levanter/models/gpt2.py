@@ -26,6 +26,9 @@ class Gpt2Config:
     num_layers: int = 12
     num_heads: int = 12
 
+    # how much to scale the embedding dim for the mlp layer
+    mlp_scale: int = 4
+
     initializer_range: float = 0.02
     embed_pdrop: float = 0.1
     resid_pdrop: float = 0.1
@@ -56,6 +59,14 @@ class Gpt2Config:
     @property
     def Layers(self) -> Axis:
         return Axis(name="layers", size=self.num_layers)
+
+    @property
+    def Mlp(self) -> Axis:
+        return Axis(name="mlp", size=self.hidden_dim * 4)
+
+    @property
+    def HeadDim(self) -> Axis:
+        return Axis(name="head", size=self.hidden_dim // self.num_heads)
 
 
 class Gpt2Mlp(eqx.Module):
@@ -104,64 +115,57 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         key,
         causal: bool = True,
     ):
-        self.causal = causal
         self.Heads = Heads
         self.HeadDim = HeadDim
         self.SeqLen = SeqLen
-
         self.Qkv = Axis("qkv", 3)
+
+        k_c, k_proj = jrandom.split(key, 2)
+        # input projection to [(q, k, v), heads, head_dim]
+        self.c_attn = Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
+        # output projection [heads, head_dim] -> [embed]
+        self.c_proj = Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
+        self.dropout = hnn.Dropout(dropout_prob)
+
+        self.causal = causal
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.upcast = upcast
 
-        k_c, k_proj = jrandom.split(key, 2)
-
-        self.c_attn = Linear(Out=(self.Qkv, self.Heads, self.HeadDim), In=InDim, key=k_c)
-        self.c_proj = Linear(Out=InDim, In=(self.Heads, self.HeadDim), key=k_proj)
-        self.dropout = hnn.Dropout(dropout_prob)
-
     @named_call
     def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
-        # hidden_states has shape [seq_len, embed_dim]
-        rng_key = key
-
+        # auto-shard calls ensure that the attention computation is sharded the way we want it to be
         qkv_out = auto_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
-        query, key, value = auto_sharded(qkv_out.unbind(self.Qkv))
+        q, k, v = auto_sharded(qkv_out.unbind(self.Qkv))
 
         # haliax doesn't support unnamed axes or duplicate axes
         KeySeqLen = self.SeqLen.alias("KeySeqLen")
-        key = key.rename({self.SeqLen: KeySeqLen})
-        value = value.rename({self.SeqLen: KeySeqLen})
+        k = k.rename({self.SeqLen: KeySeqLen})
+        v = v.rename({self.SeqLen: KeySeqLen})
 
-        # mistral tweak
+        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+        # do this first to help keep FP values small
         scale = lax.rsqrt(float(self.HeadDim.size))
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
-        # do this first to help keep FP values small
-        query = query * scale
+        q = q * scale
 
         if self.upcast:
-            query = query.astype(jnp.float32)
-            key = key.astype(jnp.float32)
+            q = q.astype(jnp.float32)
+            k = k.astype(jnp.float32)
 
-        attn_weights = hax.dot(self.HeadDim, query, key)
+        # compute attention weights: [batch, heads, seq_len, seq_len]
+        attn_weights = hax.dot(self.HeadDim, q, k)
 
         if self.causal:
             causal_mask = hax.tril(hax.ones((self.SeqLen, KeySeqLen), dtype=jnp.bool_), self.SeqLen, KeySeqLen)
             attn_weights = hax.where(causal_mask, attn_weights, -1e9)
 
-        attn_weights = hnn.softmax(attn_weights, KeySeqLen)  # heads, seqlen, seqlen
-        attn_weights = self.dropout(attn_weights, key=rng_key, inference=inference)
+        attn_weights = hnn.softmax(attn_weights, KeySeqLen).astype(hidden_states.dtype)  # heads, seqlen, key_seqlen
+        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        # ensure that if we upcast attention weights, we downcast the values
-        attn_weights = attn_weights.astype(hidden_states.dtype)
-
-        attn_output = hax.dot(KeySeqLen, attn_weights, value)  # [heads, seq_len, head_dim]
-
+        attn_output = hax.dot(KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
         attn_output = self.c_proj(attn_output)
-
-        assert attn_output.dtype == hidden_states.dtype
-
         return attn_output
 
     def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
@@ -214,16 +218,8 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: hnn.Dropout
 
-    SeqLen: Axis = eqx.static_field()
-    Embed: Axis = eqx.static_field()
-
     def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
-
-        self.Embed = config.Embed
-        self.SeqLen = config.SeqLen
-        Mlp = Axis("mlp", 4 * config.Embed.size)
-        HeadDim = Axis("head", config.Embed.size // config.num_heads)
 
         assert (
             config.Embed.size % config.num_heads == 0
@@ -234,7 +230,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             SeqLen=config.SeqLen,
             InDim=config.Embed,
             Heads=config.Heads,
-            HeadDim=HeadDim,
+            HeadDim=config.HeadDim,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
             causal=True,
@@ -246,7 +242,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
 
         self.mlp = Gpt2Mlp(
             Embed=config.Embed,
-            Intermediate=Mlp,
+            Intermediate=config.Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
         )
@@ -255,17 +251,13 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        residual = hidden_states
-        hidden_states = self.ln_1(hidden_states)
-        attn_output = self.attn(hidden_states, inference=inference, layer_idx=layer_idx, key=k1)
-        dout = self.resid_dropout(attn_output, key=k2, inference=inference)
-        hidden_states = residual + dout
+        attn_output = self.attn(self.ln_1(hidden_states), inference=inference, layer_idx=layer_idx, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        hidden_states = hidden_states + attn_output
 
-        residual = hidden_states
-        hidden_states = self.ln_2(hidden_states)
-        ff_output = self.mlp(hidden_states)
-        dout = self.resid_dropout(ff_output, key=k3, inference=inference)
-        hidden_states = residual + dout
+        ff_output = self.mlp(self.ln_2(hidden_states))
+        ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
+        hidden_states = hidden_states + ff_output
 
         return hidden_states
 
