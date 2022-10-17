@@ -100,7 +100,20 @@ def log_performance_stats(
             return f"{prefix}/{key}"
         return key
 
+    total_tokens = 0.0
+    total_flops = 0.0
+
     def log_performance_stats(step_info: StepInfo):
+        nonlocal total_tokens, total_flops
+
+        # log these totals because it's useful for comparing different seqlens, batch sizes, etc
+        total_tokens += tokens_per_example * batch_size
+        wandb.log({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
+
+        if flops_per_example:
+            total_flops += flops_per_example * batch_size
+            wandb.log({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
+
         if step_info.step_duration != 0.0:
             wandb.log(
                 {
