@@ -12,6 +12,10 @@ model:
 
   gradient_checkpointing: true
 trainer:
+  wandb:
+    project: "levanter"
+    tags: [ "pubmed", "gpt2"]
+
   mp: p=f32,c=bfloat16
   learning_rate: 1E-4
   model_axis_size: 2
