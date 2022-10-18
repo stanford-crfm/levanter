@@ -15,8 +15,8 @@ from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
 from .core import Axis, AxisSpec, NamedArray
-from .jax_utils import filter_eval_shape
-from .util import StringHolderEnum, ensure_tuple, is_jax_array_like, is_named_array
+from .jax_utils import filter_eval_shape, is_jax_array_like
+from .util import StringHolderEnum, ensure_tuple, is_named_array
 
 
 LogicalAxisName = str

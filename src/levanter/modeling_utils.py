@@ -104,7 +104,7 @@ def accumulate_gradients_sharded(
         with jax.named_scope("accumulate grad vmap"), hax.axis_mapping(
             {Microbatch.name: ResourceAxis.DATA}, merge=True
         ):
-            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch, unmapped_argnums=(0, 1))(f, model, *inputs)
+            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch)(f, model, *inputs)
             grads = auto_sharded(grads)
 
     # compute means and shard according to the parameter_axis_mapping

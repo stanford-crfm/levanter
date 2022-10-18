@@ -9,7 +9,8 @@ import jax.numpy as jnp
 import numpy as np
 
 import haliax
-from haliax.util import ensure_tuple, is_jax_array_like
+from haliax.jax_utils import is_jax_array_like
+from haliax.util import ensure_tuple
 
 
 @dataclass(frozen=True)
