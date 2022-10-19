@@ -48,7 +48,7 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
     carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-    ys = jax.tree_util.tree_map(_to_named_scan_result(axis), ys, is_leaf=_is_passive_array)
+    ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
 
     return carry, ys
 
@@ -122,6 +122,9 @@ def vmap(
 
     signature = inspect.signature(fn)
 
+    # this mirrors equinox's filter_vmap, but it's not really documented there so:
+    # we use inspect.signature to align args/kwargs specified in vmap to what actually gets passed in
+    # axis_spec_bound_sig's job is to hold that mapping
     signature_default = signature.replace(
         parameters=[
             p
@@ -131,8 +134,8 @@ def vmap(
         ]
     )
     axis_spec_bound_sig = signature_default.bind_partial(*args, **kwargs)
-    del args, kwargs
     axis_spec_bound_sig.apply_defaults()
+    del args, kwargs
 
     def _index_of_batch_axis(array, default):
         if isinstance(array, NamedArray):
@@ -149,10 +152,12 @@ def vmap(
         actual_bound = signature.bind(*args, **kwargs)
         actual_bound.apply_defaults()
 
+        # now that we have args, we can figure out what the axis spec is for each arg
         padded_spec_args = axis_spec_bound_sig.args + (default,) * (
             len(actual_bound.args) - len(axis_spec_bound_sig.args)
         )
 
+        # want to support padded_spec_args being a tree prefix of the actual args, which this enables
         padded_spec_args = broadcast_prefix(padded_spec_args, actual_bound.args, is_leaf=is_named_array)
 
         arg_axis_specs = jax.tree_util.tree_map(
@@ -170,6 +175,8 @@ def vmap(
             _index_of_batch_axis, actual_bound.kwargs, padded_spec_kwargs, is_leaf=is_named_array
         )
 
+        # now we can actually vmap. We used "pacified" versions of NamedArrays that don't check
+        # invariants, because intermediates creating during tracing won't have the axes right
         arg_axis_specs = jax.tree_util.tree_map(_pacify_named_arrays, arg_axis_specs, is_leaf=is_named_array)
         kwarg_axis_specs = jax.tree_util.tree_map(_pacify_named_arrays, kwarg_axis_specs, is_leaf=is_named_array)
 
@@ -177,6 +184,8 @@ def vmap(
         kwargs = jax.tree_util.tree_map(_pacify_named_arrays, actual_bound.kwargs, is_leaf=is_named_array)
 
         def wrapped_fn(args, kwargs):
+            # the args that come in here are pacified. Their names will still have the batch axis even though the array
+            # itself will already have that one removed. We need to turn them back into NamedArrays by removing the axis
             unchilled_args = jax.tree_util.tree_map(_to_unbatched_named_array(axis), args, is_leaf=_is_passive_array)
             unchilled_kwargs = jax.tree_util.tree_map(
                 _to_unbatched_named_array(axis), kwargs, is_leaf=_is_passive_array
@@ -184,6 +193,7 @@ def vmap(
 
             out = fn(*unchilled_args, **unchilled_kwargs)
 
+            # now we need to pacify the output, which may include NamedArrays, and add the batch axis back at the end
             chilled = jax.tree_util.tree_map(_pacify_named_arrays, out, is_leaf=is_named_array)
             return chilled
 
@@ -196,7 +206,8 @@ def vmap(
             axis_size=axis.size,
             spmd_axis_name=spmd_axis_name,
         )(args, kwargs)
-        result = jax.tree_util.tree_map(_to_named_scan_result(axis), result, is_leaf=_is_passive_array)
+
+        result = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), result, is_leaf=_is_passive_array)
         return result
 
     return wrapped_vmap_fn
@@ -240,7 +251,7 @@ def _is_passive_array(arr):
     return isinstance(arr, _PassiveNamedArray)
 
 
-def _to_named_scan_result(leading_axis):
+def _prepend_named_batch_axis(leading_axis):
     def to_active_named_array(leaf):
         if isinstance(leaf, _PassiveNamedArray):
             return leaf.as_scanned_result(leading_axis)
