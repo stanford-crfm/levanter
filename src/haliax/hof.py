@@ -1,14 +1,16 @@
 import dataclasses
+import inspect
 from functools import wraps
-from typing import Any, Callable, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, Tuple, TypeVar, Union
 
-import equinox
 import jax
 import jax.lax as lax
+from jaxtyping import PyTree
 
 from .core import Axis, NamedArray
+from .jax_utils import broadcast_prefix, is_jax_array_like
 from .partitioning import auto_sharded, physical_axis_name
-from .util import ensure_tuple, is_named_array
+from .util import is_named_array
 
 
 Carry = TypeVar("Carry")
@@ -46,7 +48,7 @@ def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: 
 
     leaves = jax.tree_util.tree_leaves(axis_first_xs)
     carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-    ys = jax.tree_util.tree_map(_to_active_named_array(axis), ys, is_leaf=_is_passive_array)
+    ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
 
     return carry, ys
 
@@ -84,56 +86,128 @@ def reduce(
     return carry
 
 
+ResolvedUnnamedAxisSpec = Union[int, None]
+UnnamedAxisSpec = Union[ResolvedUnnamedAxisSpec, Callable[[Any], ResolvedUnnamedAxisSpec]]
+
+
+def _zero_if_array_else_none(x: Any) -> ResolvedUnnamedAxisSpec:
+    return 0 if is_jax_array_like(x) else None
+
+
 def vmap(
     fn,
     axis: Axis,
-    unmapped_argnums: Union[int, Sequence[int]] = (),
+    *,
+    default: PyTree[UnnamedAxisSpec] = _zero_if_array_else_none,
+    args: PyTree[UnnamedAxisSpec] = (),
+    kwargs: PyTree[UnnamedAxisSpec] = None,
 ):
     """
-    NamedArray aware version of jax.vmap. Normal arrays are mapped over the 0th axis.
-    unmapped_argnums are the argnums of the function that are not batched over the axis.
+    NamedArray aware version of jax.vmap. Normal arrays are mapped according to the specs as in equinox.filter_vmap,
+    except that the output axis is always 0 b/c it's annoying to make anything else work
+
+    Because of NamedArrays, vmap is typically less useful than in vanilla jax, but it is sometimes
+    useful for initializing modules that will be scanned over.
+
+    default: how to handle (unnamed) arrays by default. Should be either an integer or None, or a callable that takes a PyTree leaf
+        and returns an integer or None, or a PyTree prefix of the same. If an integer, the array will be mapped over that axis. If None, the array will not be mapped over.
+    args: optional per-argument overrides for how to handle arrays. Should be a PyTree prefix of the same type as default.
+    kwargs: optional per-keyword-argument overrides for how to handle arrays. Should be a PyTree prefix of the same type as default.
+    out: optional override for how to handle the output. Should be a PyTree prefix of the same type as default. Defaults
+    to 0 if the output is an unnamed array, and the Axis otherwise.
     """
-    unmmapped_argnums = ensure_tuple(unmapped_argnums)
 
-    def _index_of_batch_axis(array):
+    if kwargs is None:
+        kwargs = {}
+
+    signature = inspect.signature(fn)
+
+    # this mirrors equinox's filter_vmap, but it's not really documented there so:
+    # we use inspect.signature to align args/kwargs specified in vmap to what actually gets passed in
+    # axis_spec_bound_sig's job is to hold that mapping
+    signature_default = signature.replace(
+        parameters=[
+            p
+            if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            else p.replace(default=default)
+            for p in signature.parameters.values()
+        ]
+    )
+    axis_spec_bound_sig = signature_default.bind_partial(*args, **kwargs)
+    axis_spec_bound_sig.apply_defaults()
+    del args, kwargs
+
+    def _index_of_batch_axis(array, default):
         if isinstance(array, NamedArray):
-            return array.axes.index(axis)
-        elif equinox.is_array(array):
-            return 0
+            return array._lookup_indices(axis)
+        elif callable(default):
+            return default(array)
         else:
-            return None
+            return default
 
-    # TODO: do fancier things with kwargs and signature and such
-    # TODO: allow other axes to be mapped over
-    # TODO: maybe implement equinox-style filtering vmap
     # TODO: tests to exercise this more
     @wraps(fn)
-    def wrapped_vmap_fn(*args):
+    def wrapped_vmap_fn(*args, **kwargs):
         # TODO: this probably results in a lot of compilation misses. Need to think about it.
-        mapped_axes = []
-        chilled_args = []
+        actual_bound = signature.bind(*args, **kwargs)
+        actual_bound.apply_defaults()
 
-        for i, arg in enumerate(args):
-            if i in unmmapped_argnums:
-                mapped_axes.append(None)
-            else:
-                chilled_arg = jax.tree_util.tree_map(_pacify_named_arrays, arg, is_leaf=is_named_array)
-                chilled_args.append(chilled_arg)
-                mapped_axis = jax.tree_util.tree_map(_index_of_batch_axis, chilled_arg, is_leaf=_is_passive_array)
-                mapped_axes.append(mapped_axis)
+        # now that we have args, we can figure out what the axis spec is for each arg
+        padded_spec_args = axis_spec_bound_sig.args + (default,) * (
+            len(actual_bound.args) - len(axis_spec_bound_sig.args)
+        )
 
-        def wrapped_fn(*args):
-            unchilled_args = jax.tree_util.tree_map(_to_active_named_array(axis), args, is_leaf=is_named_array)
-            r = fn(*unchilled_args)
-            chilled = jax.tree_util.tree_map(_pacify_named_arrays, r, is_leaf=is_named_array)
+        # want to support padded_spec_args being a tree prefix of the actual args, which this enables
+        padded_spec_args = broadcast_prefix(padded_spec_args, actual_bound.args, is_leaf=is_named_array)
+
+        arg_axis_specs = jax.tree_util.tree_map(
+            _index_of_batch_axis, actual_bound.args, padded_spec_args, is_leaf=is_named_array
+        )
+
+        padded_spec_kwargs = {
+            **axis_spec_bound_sig.kwargs,
+            **{k: default for k in actual_bound.kwargs.keys() - axis_spec_bound_sig.kwargs.keys()},
+        }
+
+        padded_spec_kwargs = broadcast_prefix(padded_spec_kwargs, actual_bound.kwargs)
+
+        kwarg_axis_specs = jax.tree_util.tree_map(
+            _index_of_batch_axis, actual_bound.kwargs, padded_spec_kwargs, is_leaf=is_named_array
+        )
+
+        # now we can actually vmap. We used "pacified" versions of NamedArrays that don't check
+        # invariants, because intermediates creating during tracing won't have the axes right
+        arg_axis_specs = jax.tree_util.tree_map(_pacify_named_arrays, arg_axis_specs, is_leaf=is_named_array)
+        kwarg_axis_specs = jax.tree_util.tree_map(_pacify_named_arrays, kwarg_axis_specs, is_leaf=is_named_array)
+
+        args = jax.tree_util.tree_map(_pacify_named_arrays, actual_bound.args, is_leaf=is_named_array)
+        kwargs = jax.tree_util.tree_map(_pacify_named_arrays, actual_bound.kwargs, is_leaf=is_named_array)
+
+        def wrapped_fn(args, kwargs):
+            # the args that come in here are pacified. Their names will still have the batch axis even though the array
+            # itself will already have that one removed. We need to turn them back into NamedArrays by removing the axis
+            unchilled_args = jax.tree_util.tree_map(_to_unbatched_named_array(axis), args, is_leaf=_is_passive_array)
+            unchilled_kwargs = jax.tree_util.tree_map(
+                _to_unbatched_named_array(axis), kwargs, is_leaf=_is_passive_array
+            )
+
+            out = fn(*unchilled_args, **unchilled_kwargs)
+
+            # now we need to pacify the output, which may include NamedArrays, and add the batch axis back at the end
+            chilled = jax.tree_util.tree_map(_pacify_named_arrays, out, is_leaf=is_named_array)
             return chilled
 
         spmd_axis_name = physical_axis_name(axis)
 
         result = jax.vmap(
-            wrapped_fn, in_axes=mapped_axes, out_axes=0, axis_size=axis.size, spmd_axis_name=spmd_axis_name
-        )(*args)
-        result = jax.tree_util.tree_map(_to_active_named_array(axis), result, is_leaf=_is_passive_array)
+            wrapped_fn,
+            in_axes=(arg_axis_specs, kwarg_axis_specs),
+            out_axes=0,
+            axis_size=axis.size,
+            spmd_axis_name=spmd_axis_name,
+        )(args, kwargs)
+
+        result = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), result, is_leaf=_is_passive_array)
         return result
 
     return wrapped_vmap_fn
@@ -157,6 +231,13 @@ class _PassiveNamedArray:
     def as_scanned_result(self, scan_axis: Axis):
         return NamedArray(self.array, (scan_axis,) + self.main_axes)
 
+    def strip_axis(self, axis: Axis):
+        index = self.main_axes.index(axis)
+        return NamedArray(self.array, self.main_axes[:index] + self.main_axes[index + 1 :])
+
+    def to_named_array(self):
+        return NamedArray(self.array, self.main_axes)
+
     def tree_flatten(self) -> Any:
         return ((self.array,), self.main_axes)
 
@@ -170,7 +251,7 @@ def _is_passive_array(arr):
     return isinstance(arr, _PassiveNamedArray)
 
 
-def _to_active_named_array(leading_axis):
+def _prepend_named_batch_axis(leading_axis):
     def to_active_named_array(leaf):
         if isinstance(leaf, _PassiveNamedArray):
             return leaf.as_scanned_result(leading_axis)
@@ -178,6 +259,19 @@ def _to_active_named_array(leading_axis):
             return leaf
 
     return to_active_named_array
+
+
+def _to_unbatched_named_array(axis_to_strip: Axis):
+    def to_unbatched_named_array(leaf):
+        if isinstance(leaf, _PassiveNamedArray):
+            if axis_to_strip in leaf.main_axes:
+                return leaf.strip_axis(axis_to_strip)
+            else:
+                return leaf.to_named_array()
+        else:
+            return leaf
+
+    return to_unbatched_named_array
 
 
 def _pacify_named_arrays(leaf):

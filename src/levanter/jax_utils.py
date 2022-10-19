@@ -13,8 +13,7 @@ from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
-from haliax.jax_utils import shaped_rng_split
-from haliax.util import is_jax_array_like
+from haliax.jax_utils import is_jax_array_like, shaped_rng_split
 
 
 def jnp_to_python(a: jnp.ndarray):

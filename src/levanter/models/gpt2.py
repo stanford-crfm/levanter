@@ -12,6 +12,7 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
+from haliax.jax_utils import shaped_rng_split
 from haliax.nn.linear import Linear
 from haliax.partitioning import auto_sharded
 from haliax.util import named_call
@@ -283,9 +284,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         super().__init__()
         self.config = config
 
-        self.blocks = hax.vmap(lambda key: Gpt2Block(config, key=key), self.Layers)(
-            haliax.jax_utils.shaped_rng_split(key, config.num_layers),
-        )
+        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
