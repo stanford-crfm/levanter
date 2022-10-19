@@ -1,5 +1,5 @@
 import functools as ft
-from typing import Callable, Optional, Sequence, Union
+from typing import Any, Callable, List, Optional, Sequence, Union
 
 import equinox as eqx
 import jax
@@ -8,8 +8,6 @@ from chex import PRNGKey
 from equinox.compile_utils import Static
 from jax import numpy as jnp
 from jax import random as jrandom
-
-from haliax.util import is_jax_array_like
 
 
 def shaped_rng_split(key, split_shape: Union[int, Sequence[int]] = 2) -> jrandom.KeyArray:
@@ -53,3 +51,19 @@ def filter_eval_shape(fun: Callable, *args, **kwargs):
     dynamic, static = eqx.partition((args, kwargs), is_jax_array_like)
     dynamic_out, static_out = jax.eval_shape(ft.partial(_fn, static), dynamic)
     return eqx.combine(dynamic_out, static_out.value)
+
+
+def is_jax_array_like(x):
+    return hasattr(x, "shape") and hasattr(x, "dtype")
+
+
+# adapted from jax but exposed so i can use it
+def broadcast_prefix(prefix_tree: Any, full_tree: Any, is_leaf: Optional[Callable[[Any], bool]] = None) -> List[Any]:
+    """Broadcast a prefix tree to match the structure of a full tree."""
+    result = []
+    num_leaves = lambda t: jax.tree_util.tree_structure(t).num_leaves  # noqa: E731
+    add_leaves = lambda x, subtree: result.extend([x] * num_leaves(subtree))  # noqa: E731
+    jax.tree_util.tree_map(add_leaves, prefix_tree, full_tree, is_leaf=is_leaf)
+    full_structure = jax.tree_util.tree_structure(full_tree)
+
+    return jax.tree_util.tree_unflatten(full_structure, result)

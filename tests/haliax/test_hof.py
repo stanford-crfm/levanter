@@ -53,7 +53,7 @@ def test_reduce():
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
 
 
-def test_vmap():
+def test_vmap_unmapped_args():
     Batch = Axis("Batch", 10)
     Width = Axis("Width", 3)
     Depth = Axis("Depth", 4)
@@ -69,3 +69,56 @@ def test_vmap():
 
     assert jnp.all(jnp.equal(selected.array, expected_jax))
     assert selected.axes == expected_names
+
+
+def test_vmap_mapped_args():
+    Batch = Axis("Batch", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hax.random.uniform(PRNGKey(0), (Batch, Width, Depth))
+
+    def vmap_fun(x):
+        return x.sum(Width)
+
+    selected = hax.vmap(vmap_fun, Batch)(named1)
+
+    expected_jax = jnp.array([named1.sum(Width).array for _ in range(Batch.size)])
+    expected_names = (Batch, Depth)
+
+    assert jnp.all(jnp.equal(selected.array, expected_jax))
+    assert selected.axes == expected_names
+
+
+def test_vmap_mapped_kwarg():
+    Batch = Axis("Batch", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hax.random.uniform(PRNGKey(0), (Batch, Width, Depth))
+
+    def vmap_fun(x):
+        return x.sum(Width)
+
+    selected = hax.vmap(vmap_fun, Batch)(x=named1)
+
+    expected_jax = jnp.array([named1.sum(Width).array for _ in range(Batch.size)])
+    expected_names = (Batch, Depth)
+
+    assert jnp.all(jnp.equal(selected.array, expected_jax))
+    assert selected.axes == expected_names
+
+
+def test_vmap_static_args():
+    Batch = Axis("Batch", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hax.random.uniform(PRNGKey(0), (Batch, Width, Depth))
+
+    def vmap_fun(x, y):
+        return x.sum(Width) if y else x
+
+    selected = hax.vmap(vmap_fun, Batch)(named1, True)
+
+    expected = hax.sum(named1, Width)
+
+    assert jnp.all(jnp.equal(selected.array, expected.array))
+    assert selected.axes == expected.axes
