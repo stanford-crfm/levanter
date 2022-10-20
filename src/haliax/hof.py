@@ -101,8 +101,6 @@ def reduce(
     As with scan, this function is curried: it takes the function, axis, and configuration arguments first, and
     then the initial carry and then any arguments to scan over as a separate curried function call.
 
-    That is, reduce(f, axis)(init, xs) is equivalent to jax.lax.reduce(f, init, xs)
-
     Args:
         :param fn: function to reduce over
         :param axis: axis to reduce over
