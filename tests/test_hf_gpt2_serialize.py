@@ -2,8 +2,9 @@ import tempfile
 
 import equinox
 import jax
+import jax.numpy as jnp
+import jax.random as jrandom
 import numpy as onp
-import optax
 import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
@@ -11,8 +12,8 @@ from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
 import haliax as hax
-
 from levanter.config import TrainerConfig
+from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2LMHeadModel
 
 
@@ -55,15 +56,15 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
 
     model = load_hf_gpt2_checkpoint(model_id, revision=revision)
 
-    input = _rand_input(PRNGKey(0), config.n_positions, config.vocab_size)
+    input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
 
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
-    torch_out = torch_model(torch.from_numpy(onp.array(input)).to(torch.int32).unsqueeze(0))
+    torch_out = torch_model(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     def compute(input):
-        return hax.nn.softmax(model(input, inference=True, key=None), axis=model.Vocab).array
+        return hax.nn.softmax(model(input, inference=True, key=None), axis=model.Vocab)
 
     compute = jax.jit(compute)
     jax_out = compute(input)
@@ -76,7 +77,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
         torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir, config=config)
         torch_model2.eval()
 
-        torch_out2 = torch_model2(torch.from_numpy(onp.array(input)).to(torch.int32).unsqueeze(0))
+        torch_out2 = torch_model2(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert onp.isclose(torch_out2, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
@@ -102,23 +103,27 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 
     model = load_hf_gpt2_checkpoint(model_id, revision=revision)
 
-    input = _rand_input(PRNGKey(0), config.n_positions, config.vocab_size)
+    input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
 
     def torch_loss(model, input_ids) -> torch.Tensor:
         return model(input_ids, labels=input_ids)[0]
 
-    torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input)).to(torch.int64).unsqueeze(0))
+    torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
+
+    # don't want to compute the mask w.r.t. the final token
+    loss_mask = hax.nn.one_hot(-1, model.SeqLen, dtype=jnp.float32)
+    loss_mask = 1 - loss_mask  # one everywhere except the last token
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, inference=True)
-        token_loss = jnp.mean(
-            optax.softmax_cross_entropy(
-                pred_y[:-1],
-                jax.nn.one_hot(input_ids[1:], num_classes=model.vocab_size),
-            )
-        )
 
-        return token_loss
+        # need to roll the target tokens back by one so that each token is predicting the next token
+        target_y = hax.roll(input_ids, -1, model.SeqLen)
+        target_y = hax.nn.one_hot(target_y, model.Vocab, dtype=pred_y.dtype)
+
+        token_loss = hax.mean(cross_entropy_loss(pred_y, model.Vocab, target_y), where=loss_mask)
+
+        return token_loss.array
 
     jax_compute_grad = jax.value_and_grad(compute_loss)
     jax_loss, jax_grad = jax_compute_grad(model, input)

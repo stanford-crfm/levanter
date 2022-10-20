@@ -141,6 +141,7 @@ def main(config: TrainGpt2Config):
 
             # need to roll the target tokens back by one so that each token is predicting the next token
             target_y = haliax.roll(input_ids, -1, SeqLen)
+            target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
             loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
             loss = hax.mean(loss, where=loss_mask)
