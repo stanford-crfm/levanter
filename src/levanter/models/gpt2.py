@@ -89,8 +89,8 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(TorchSerializationMixin, eqx.Module):
-    c_attn: Linear
-    c_proj: Linear
+    c_attn: Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
+    c_proj: Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
 
     causal: bool = eqx.static_field()
@@ -99,6 +99,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     Heads: Axis = eqx.static_field()
     Qkv: Axis = eqx.static_field()
 
+    # Mistral stability tweaks
     scale_by_inverse_layer_idx: bool = eqx.static_field()
     upcast: bool = eqx.static_field()
 
@@ -121,9 +122,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.Qkv = Axis("qkv", 3)
 
         k_c, k_proj = jrandom.split(key, 2)
-        # input projection to [(q, k, v), heads, head_dim]
         self.c_attn = Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        # output projection [heads, head_dim] -> [embed]
         self.c_proj = Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
         self.dropout = hnn.Dropout(dropout_prob)
 
