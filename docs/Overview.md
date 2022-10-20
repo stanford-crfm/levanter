@@ -205,9 +205,8 @@ Equinox, and adapts many of its conventions for filtering etc.
 Haliax is still in development, but it's already pretty usable. Here's a simple example:
 
 ```python
-import jax
 from jax.random import PRNGKey
-import haliax as hax
+import haliax as hax # this alias amuses me
 
 Height = hax.Axis('Height', 16)
 Width = hax.Axis('Width', 16)
@@ -232,19 +231,174 @@ def foo(x):
 foo_vmap = hax.vmap(foo, axis=Batch)
 ```
 
-I took a lot of inspiration from [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor) (and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)).
+#### Why Named Arrays?
+
+I get really confused when reading tensor code that uses axes like `0`, `1`, `2`, etc. It's not clear what
+those axes are, and it's especially unclear when you have multiple tensors with different shapes. I've also been
+bitten by implicit broadcasting way too many times.
+
+So I found [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor)
+(and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)) to be very convincing. Named arrays are a way to make this code more readable, and
+more robust.
+
+Named Arrays will also make it easier to write partitioned models: jax's `pjit` operator works over "meshes" of devices,
+and you partition your parameters and computation along array axes across the mesh. Named arrays make it easier to map
+semantically meaningful axes to the mesh axes. (See below for more on this.)
 
 #### Named Axes in Jax
-Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.XXX
+Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
+I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
+and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
+of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated,
+and it makes it harder to play with different partitioning strategies.
+
 
 ## GPT-2 Implementation
 
 You can skip this part if you're familiar with the basics of how Transformers are implemented. You might want to skim at
 least the attention section to see how Haliax is used.
 
-## Training
+The whole implementation is [here](https://www.github.com/stanford-crfm/levanter/blob/main/levanter/models/gpt2.py), and
+I'll walk through the more interesting bits. (If you look at the whole thing, I caution you to skip over the torch
+serialization compatibility parts because they're messy and not that interesting for our purposes here.)
 
-### Memory Use
+XXX this comes across as even more defensive than I intended
+If you want, you can compare it with Andrei Karpathy's [mingpt implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py)
+. Ours is a bit longer (excluding the torch serialization parts!) for a few reasons:
+* Boilerplate from declaring fields for modules
+* More type annotations
+* Tricks to improve stability from the [Mistral project](https://crfm.stanford.edu/2021/08/26/mistral.html#eureka/)
+
+
+### Attention
+Let's jump right into the attention module, starting with the preamble
+
+```python
+import haliax as hax
+from haliax import Axis, NamedArray
+import equinox as eqx
+import haliax.nn as hnn
+
+class Gpt2Attention(eqx.Module):
+    c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
+    c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
+    dropout: hnn.Dropout
+
+    causal: bool = eqx.static_field()
+    SeqLen: Axis = eqx.static_field()
+    HeadDim: Axis = eqx.static_field()
+    Heads: Axis = eqx.static_field()
+    Qkv: Axis = eqx.static_field()
+
+    # Mistral stability tweaks
+    scale_by_inverse_layer_idx: bool = eqx.static_field()
+    upcast: bool = eqx.static_field()
+```
+
+The `static_field` decorator is a way to declare fields that are static, and don't change during training. (They're also
+not parameters, so they don't get updated during training.) `causal` means that this is a causal attention layer, which
+means that the queries can only attend to the past.
+
+Here's the `__init__` method. It's just initializing the parameters and setting the static fields, but it illustrates
+some Jax/Haliax idioms.
+
+```python
+    def __init__(
+        self,
+        SeqLen: Axis,
+        InDim: Axis,
+        Heads: Axis,
+        HeadDim: Axis,
+        dropout_prob: float,
+        scale_by_inverse_layer_idx: bool,
+        upcast: bool,
+        *,
+        key,
+        causal: bool = True,
+    ):
+        self.Heads = Heads
+        self.HeadDim = HeadDim
+        self.SeqLen = SeqLen
+        self.Qkv = Axis("qkv", 3)
+        self.KeySeqLen = SeqLen.alias("key_" + SeqLen.name)
+
+        k_c, k_proj = jrandom.split(key, 2)  # splitting random keys is how you get different random numbers from different calls
+        # Haliax's Linear allows you to specify multiple input and output axes, and it will do the right thing
+        # I find this clearer than the reshape heavy code you usually see
+        self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
+        self.dropout = hnn.Dropout(dropout_prob)
+
+        self.causal = causal
+        self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
+        self.upcast = upcast
+```
+
+The basic flow of multi-headed attention in a standard transformer is:
+1. For each position, project the input embedding into `Heads` heads, each of which with a query, key, and value vector of dim `HeadDim`. This yields three tensors of shape `[SeqLen, Heads, HeadDim]`.
+2. Compute the attention scores for each `(head, position_in_query, position_in_key)`.  This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
+3. Normalize the attention scores to get the attention weights. This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
+4. Compute the attention output for each `(head, position)` by summing up the value vectors, weighting them by the attention weights. This yields a tensor of shape `[SeqLen, Heads, HeadDim]`.
+5. Project the attention output back to the embedding dimension. This yields a tensor of shape `[SeqLen, Embed]`.
+
+Let's see how this looks in Haliax:
+
+```python
+def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
+    # 1. Project the input to [seqlen, heads, head_dim]
+    qkv_out = self.c_attn(hidden_states)
+    q, k, v = qkv_out.unbind(self.Qkv)
+
+    # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
+    k = k.rename({self.SeqLen: self.KeySeqLen})
+    v = v.rename({self.SeqLen: self.KeySeqLen})
+
+    # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+    scale = jax.lax.rsqrt(float(self.HeadDim.size))
+    if self.scale_by_inverse_layer_idx:
+        scale /= layer_idx + 1.0
+
+    # do this first to help keep FP values small. Papers usually show this after the dot product.
+    q = q * scale
+
+    # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+    if self.upcast:
+        q = q.astype(jnp.float32)
+        k = k.astype(jnp.float32)
+
+    # 2. compute attention scores [batch, heads, seq_len, key_seq_len]
+    attn_scores = hax.dot(self.HeadDim, q, k)
+
+    if self.causal:
+        causal_mask = hax.tril(hax.ones((self.SeqLen, self.KeySeqLen), dtype=bool), self.SeqLen, self.KeySeqLen)
+        attn_scores = hax.where(causal_mask, attn_scores, -1e9)
+
+    # 3. normalize attention scores to "attention weights"
+    attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
+    attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+
+    # 4. compute attention output by summing up the values weighted by the attention scores
+    attn_output = hax.dot(self.KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+
+    # 5. project the attention output back to the original input dimension
+    attn_output = self.c_proj(attn_output)
+    return attn_output
+```
+
+XXX More Layers?
+
+## First cut at training: simple data parallel training via `pmap`
+
+## Mixed Precision Training via `jmp`
+
+## Model Partitioning via `pjit` (and Data parallel revisited)
+
+## ZeRO: Parameter Partitioning
+
+
+
+
+## Memory Use
 
 Training a TPU
 
