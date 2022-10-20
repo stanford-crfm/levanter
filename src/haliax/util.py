@@ -2,6 +2,8 @@ from typing import Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 
+from haliax.jax_utils import is_jax_array_like
+
 
 T = TypeVar("T")
 
@@ -55,3 +57,7 @@ def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
                 name = f.__qualname__
 
         return jax.named_scope(name)(f)
+
+
+def is_jax_or_hax_array_like(x):
+    return is_jax_array_like(x) or is_named_array(x)

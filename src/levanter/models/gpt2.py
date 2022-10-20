@@ -289,29 +289,16 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray, inference=True, *, key) -> NamedArray:
-        def do_block(hidden_states: NamedArray, block_layer_idx_key) -> NamedArray:
-            block, layer_idx = block_layer_idx_key[0], block_layer_idx_key[1]
-            if len(block_layer_idx_key) > 2:
-                block_key = block_layer_idx_key[2]
-            else:
-                block_key = (
-                    None  # key is none when we are in inference mode, and there's no way to scan over None keys
-                )
-            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=block_key)
+        def do_block(hidden_states, block, layer_idx, key):
+            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
             do_block = jax.checkpoint(do_block)
 
-        if key is None:
-            hidden_states = hax.reduce(
-                do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size))
-            )
-        else:
-            keys = haliax.jax_utils.maybe_rng_split(key, self.Layers.size)
-            hidden_states = hax.reduce(
-                do_block, self.Layers, hidden_states, (self.blocks, jnp.arange(self.Layers.size), keys)
-            )
-
+        keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        hidden_states = hax.reduce(do_block, self.Layers)(  # type: ignore
+            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
+        )
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states

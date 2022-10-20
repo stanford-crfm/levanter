@@ -3,14 +3,16 @@ import inspect
 from functools import wraps
 from typing import Any, Callable, Tuple, TypeVar, Union
 
+import equinox as eqx
 import jax
 import jax.lax as lax
+from equinox.custom_types import BoolAxisSpec
 from jaxtyping import PyTree
 
 from .core import Axis, NamedArray
-from .jax_utils import broadcast_prefix, is_jax_array_like
+from .jax_utils import broadcast_prefix, combine, is_jax_array_like
 from .partitioning import auto_sharded, physical_axis_name
-from .util import is_named_array
+from .util import is_jax_or_hax_array_like, is_named_array
 
 
 Carry = TypeVar("Carry")
@@ -18,72 +20,105 @@ X = TypeVar("X")
 Y = TypeVar("Y")
 
 
-def scan(f: Callable[[Carry, X], Tuple[Carry, Y]], axis: Axis, init: Carry, xs: X, reverse=False, unroll=1):
+def scan(
+    f: Callable[[Carry, X], Tuple[Carry, Y]],
+    axis: Axis,
+    *,
+    reverse=False,
+    unroll=1,
+    is_scanned: BoolAxisSpec = is_jax_or_hax_array_like,
+):
     """
-    Scan over a named axis. Arrays that are not part of a named axis will have their 0th dim scanned over
+    Scan over a named axis. Arrays that are not part of a NamedArray will have their 0th dim scanned over
+
+    Unlike jax.lax.scan, this function is curried: it takes the function, axis, and configuration arguments first, and
+    then the initial carry and then any arguments to scan over as a separate curried function call.
+
+    That is, scan(f, axis)(init, xs) is equivalent to jax.lax.scan(f, init, xs)
+
+    Args:
+        :param f: function to scan over
+        :param axis: axis to scan over
+        :param reverse: if True, scan in reverse
+        :param unroll: unroll the loop by this amount
+        :param is_scanned: a function that takes a leaf of the tree and returns True if it should be scanned over,
+                    False otherwise. Behaves similarly to the `default` argument in filter_jit
     """
 
-    # This implementation is a bit tricky.
-    # First we have to hoist the axis we're scanning over to the front of the array, because that's what scan expects.
-    # Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
-    # We have to be careful that we don't try to create NamedArrays that have the shape of the scanned result
-    # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
-    # invariants until we're ready to create the result.
+    def scanned_f(init, *args, **kwargs):
+        # This implementation is a bit tricky.
 
-    axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), xs, is_leaf=is_named_array)
+        # first we want to partition the arguments into scanned and unscanned
+        # unscanned arguments are just passed through, essentially captured as part of a lambda
+        # scanned arguments are passed through the scan, which means we need to hoist the axis to the front
+        xs = (args, kwargs)
+        scanned_xs, unscanned_xs = eqx.partition(xs, is_scanned, is_leaf=is_named_array)
 
-    # now get a template of an element of "X"
-    x_elem = jax.tree_util.tree_map(_select_0th(axis), axis_first_xs, is_leaf=is_named_array)
-    x_elem_structure = jax.tree_util.tree_structure(x_elem)
+        # Next we have to hoist the axis we're scanning over to the front of the array, because that's what scan
+        # expects. Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
+        # We have to be careful that we don't try to create NamedArrays that have the shape of the scanned result
+        # but don't yet have the scanned axis as ones of `axes`, so we use _ScannedArrayResult that doesn't check
+        # invariants until we're ready to create the result.
+        axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), scanned_xs, is_leaf=is_named_array)
 
-    # now we can fold over the axis
-    @wraps(f)
-    def wrapped_fn(carry, x):
-        x = jax.tree_util.tree_unflatten(x_elem_structure, x)
-        x = auto_sharded(x)
-        carry, y = f(carry, x)
-        y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
-        y = auto_sharded(y)
-        return carry, y
+        # now get a template of an element of "X"
+        x_elem = jax.tree_util.tree_map(_select_0th(axis), axis_first_xs, is_leaf=is_named_array)
+        x_elem_structure = jax.tree_util.tree_structure(x_elem)
 
-    leaves = jax.tree_util.tree_leaves(axis_first_xs)
-    carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-    ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
+        # now we can fold over the axis
+        @wraps(f)
+        def wrapped_fn(carry, scanned_x_leaves):
+            scanned_x = jax.tree_util.tree_unflatten(x_elem_structure, scanned_x_leaves)
+            # this part is the most delicate: combining the scanned x with the unscanned x
+            scanned_x = combine(scanned_x, unscanned_xs, is_leaf=is_named_array)
+            scanned_x = auto_sharded(scanned_x)
+            args, kwargs = scanned_x
+            carry, y = f(carry, *args, **kwargs)
+            y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
+            y = auto_sharded(y)
+            return carry, y
 
-    return carry, ys
+        leaves = jax.tree_util.tree_leaves(axis_first_xs)
+        carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
+        ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
+
+        return carry, ys
+
+    return scanned_f
 
 
 def reduce(
-    fn: Callable[[Carry, X], Carry], axis: Axis, init: Carry, xs: X, reverse: bool = False, unroll: int = 1
-) -> Carry:
+    fn: Callable[[Carry, X], Carry],
+    axis: Axis,
+    *,
+    reverse: bool = False,
+    unroll: int = 1,
+    is_scanned: BoolAxisSpec = is_jax_or_hax_array_like,
+) -> Callable[[Carry, PyTree], Carry]:
     """
-    Slightly simpler implementation of scan that folds over the first axis of the array, not returning intermediates.
+    Slightly simpler implementation of scan that folds over the named axis of the array, not returning intermediates.
 
-    If reverse is True, the fold is actually a fold_right
+    As with scan, this function is curried: it takes the function, axis, and configuration arguments first, and
+    then the initial carry and then any arguments to scan over as a separate curried function call.
+
+    Args:
+        :param fn: function to reduce over
+        :param axis: axis to reduce over
+        :param reverse: if True, reduce in reverse
+        :param unroll: unroll the loop by this amount
+        :param is_scanned: a function that takes a leaf of the tree and returns True if it should be scanned over,
+                    False otherwise. Behaves similarly to the `default` argument in filter_jit
     """
-    if axis.size == 0:
-        return init
 
-    # This implementation is a bit tricky.
-    # First we have to hoist the axis we're scanning over to the front of the array.
-    # Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
-    axis_first_xs = jax.tree_util.tree_map(_ensure_first(axis), xs, is_leaf=is_named_array)
+    def scan_compatible_fn(carry, *args, **kwargs):
+        return fn(carry, *args, **kwargs), None
 
-    # now get a template for where we fold over the axis in question
-    x_elem = jax.tree_util.tree_map(_select_0th(axis), axis_first_xs, is_leaf=is_named_array)
-    x_elem_structure = jax.tree_util.tree_structure(x_elem)
+    scan_preconfig = scan(scan_compatible_fn, axis, reverse=reverse, unroll=unroll, is_scanned=is_scanned)
 
-    # now we can fold over the axis
-    @wraps(fn)
-    def wrapped_fn(carry, x):
-        x = jax.tree_util.tree_unflatten(x_elem_structure, x)
-        x = auto_sharded(x)
-        return fn(carry, x), None
+    def scanned_f(init, *args, **kwargs):
+        return scan_preconfig(init, *args, **kwargs)[0]
 
-    leaves = jax.tree_util.tree_leaves(axis_first_xs)
-    carry, _ = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-
-    return carry
+    return scanned_f
 
 
 ResolvedUnnamedAxisSpec = Union[int, None]

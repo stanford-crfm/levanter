@@ -8,6 +8,7 @@ from chex import PRNGKey
 from equinox.compile_utils import Static
 from jax import numpy as jnp
 from jax import random as jrandom
+from jaxtyping import PyTree
 
 
 def shaped_rng_split(key, split_shape: Union[int, Sequence[int]] = 2) -> jrandom.KeyArray:
@@ -40,6 +41,7 @@ def filter_eval_shape(fun: Callable, *args, **kwargs):
     """As `jax.eval_shape`, but allows any Python object as inputs and outputs, including
     GlobalDeviceArrays (which equinox.filter_eval_shape does not support).
     """
+
     # TODO: file a bug
 
     def _fn(_static, _dynamic):
@@ -67,3 +69,33 @@ def broadcast_prefix(prefix_tree: Any, full_tree: Any, is_leaf: Optional[Callabl
     full_structure = jax.tree_util.tree_structure(full_tree)
 
     return jax.tree_util.tree_unflatten(full_structure, result)
+
+
+def _is_none(x):
+    return x is None
+
+
+def _combine(*args):
+    for arg in args:
+        if arg is not None:
+            return arg
+    return None
+
+
+def combine(*pytrees: PyTree, is_leaf=None) -> PyTree:
+    """Generalization of eqx.combine to support custom is_leaf functions
+
+    **Returns:**
+
+    A PyTree with the same structure as its inputs. Each leaf will be the first
+    non-`None` leaf found in the corresponding leaves of `pytrees` as they are
+    iterated over.
+    """
+
+    if is_leaf is None:
+        is_leaf = _is_none
+    else:
+        _orig_is_leaf = is_leaf
+        is_leaf = lambda x: _is_none(x) or _orig_is_leaf(x)  # noqa: E731
+
+    return jax.tree_util.tree_map(_combine, *pytrees, is_leaf=is_leaf)
