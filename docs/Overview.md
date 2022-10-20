@@ -21,19 +21,7 @@
 
 I'm not going to go into great depth on Jax basics, because you can check out the [official Jax tutorial](https://jax.readthedocs.io/en/latest/jax-101/index.html) . But to summarize, Jax is basically a stateless, jit-optimizing version of numpy with automatic differentiation and GPU/TPU support built in. It's more than that, but those are the key features in my opinion. I will do a quick refresher on a few concepts.
 
-#### PRNG
-Randomness in Jax is carefully controlled: the "state" of a random number generator (called a `PRNGKey` in Jax) has to be passed into every invocation of an RNG or a function that calls an RNG. This adds a lot of ceremony but ensures that your code is always reproducible *and* that it
-can be JIT-compiled. That looks like this:
 
-```python
-import jax.random as jrandom
-
-key = jrandom.PRNGKey(0)
-k1, k2 = jrandom.split(key, 2)
-
-jrandom.normal(k1, (3, 4)) # 3x4 array of random numbers
-jrandom.normal(k2, (3, 4)) # 3x4 array of different random numbers
-```
 
 #### vmap: Automatically adding batch axes
 `vmap` is the "auto-batching" operator for Jax. It automatically vectorizes a computation so that it is applied to all sub-arrays for some new leading axis:
@@ -125,6 +113,19 @@ foo_vmap2((a, b)) # 8x2x3 @ 8x3x4 = 8x2x4
 foo_vmap_0 = jax.vmap(foo, in_axes=((0, None),))
 ```
 
+#### PRNG
+Randomness in Jax is carefully controlled: the "state" of a random number generator (called a `PRNGKey` in Jax) has to be passed into every invocation of an RNG or a function that calls an RNG. This adds a lot of ceremony but ensures that your code is always reproducible *and* that it
+can be JIT-compiled. That looks like this:
+
+```python
+import jax.random as jrandom
+
+key = jrandom.PRNGKey(0)
+k1, k2 = jrandom.split(key, 2)
+
+jrandom.normal(k1, (3, 4)) # 3x4 array of random numbers
+jrandom.normal(k2, (3, 4)) # 3x4 array of different random numbers
+```
 
 #### pjit: distributed computation
 
