@@ -123,7 +123,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 
         token_loss = hax.mean(cross_entropy_loss(pred_y, model.Vocab, target_y), where=loss_mask)
 
-        return token_loss.array
+        return token_loss.scalar()
 
     jax_compute_grad = jax.value_and_grad(compute_loss)
     jax_loss, jax_grad = jax_compute_grad(model, input)

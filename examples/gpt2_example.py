@@ -150,7 +150,7 @@ def main(config: TrainGpt2Config):
                 logz_mse = hax.mean((log_normalizers**2))
                 loss += config.log_z_regularization * logz_mse
 
-            return loss.array
+            return loss.scalar()
 
         # mean_loss: this computes the mean loss over a batch of examples
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):

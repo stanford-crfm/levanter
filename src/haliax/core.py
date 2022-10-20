@@ -87,6 +87,21 @@ class NamedArray:
     def item(self):
         return self.array.item()
 
+    def scalar(self) -> jnp.ndarray:
+        """
+        Returns a scalar array corresponding to the value of this NamedArray.
+        Raises an error if the NamedArray is not scalar.
+
+        We sometimes use this to convert a NamedArray to a scalar for returning a loss or similar. Losses
+        have to be jnp.ndarrays, not NamedArrays, so we need to convert them. item doesn't work inside jitted
+        functions because it returns a python scalar.
+
+        You could just call array, but that's not as clear and doesn't assert.
+        """
+        if self.array.ndim != 0:
+            raise ValueError(f"Expected scalar, got {self.array.ndim}-dimensional array")
+        return self.array
+
     # shape = property(lambda self: self.array.shape)
     dtype = property(lambda self: self.array.dtype)
     ndim = property(lambda self: self.array.ndim)
