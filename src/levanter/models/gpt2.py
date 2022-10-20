@@ -4,7 +4,6 @@ from typing import Callable, Dict, List, Optional, cast
 
 import equinox as eqx
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
 
@@ -13,7 +12,6 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
-from haliax.nn.linear import Linear
 from haliax.partitioning import auto_sharded
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
@@ -71,13 +69,13 @@ class Gpt2Config:
 
 class Gpt2Mlp(eqx.Module):
     act: Callable = eqx.static_field()
-    c_fc: Linear
-    c_proj: Linear
+    c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
+    c_proj: hnn.Linear  # projection from Intermediate to Embed
 
     def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = Linear(Out=Intermediate, In=Embed, key=k_fc)
-        self.c_proj = Linear(Out=Embed, In=Intermediate, key=k_proj)
+        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc)
+        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj)
         self.act = ACT2FN[activation_fn]  # type: ignore
 
     @named_call
@@ -89,8 +87,8 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(TorchSerializationMixin, eqx.Module):
-    c_attn: Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
-    c_proj: Linear  # output projection from [heads, head_dim] -> [embed]
+    c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
+    c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
 
     causal: bool = eqx.static_field()
@@ -98,6 +96,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     HeadDim: Axis = eqx.static_field()
     Heads: Axis = eqx.static_field()
     Qkv: Axis = eqx.static_field()
+    KeySeqLen: Axis = eqx.static_field()
 
     # Mistral stability tweaks
     scale_by_inverse_layer_idx: bool = eqx.static_field()
@@ -120,10 +119,11 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.HeadDim = HeadDim
         self.SeqLen = SeqLen
         self.Qkv = Axis("qkv", 3)
+        self.KeySeqLen = SeqLen.alias("key_" + SeqLen.name)
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        self.c_proj = Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
+        self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.causal = causal
@@ -133,37 +133,37 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
         # auto-shard calls ensure that the attention computation is sharded the way we want it to be
-        qkv_out = auto_sharded(self.c_attn(hidden_states))  # [seq_len, 3, heads, head_dim]
+        qkv_out = auto_sharded(self.c_attn(hidden_states))
         q, k, v = auto_sharded(qkv_out.unbind(self.Qkv))
 
-        # haliax doesn't support unnamed axes or duplicate axes
-        KeySeqLen = self.SeqLen.alias("KeySeqLen")
-        k = k.rename({self.SeqLen: KeySeqLen})
-        v = v.rename({self.SeqLen: KeySeqLen})
+        # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
+        k = k.rename({self.SeqLen: self.KeySeqLen})
+        v = v.rename({self.SeqLen: self.KeySeqLen})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        # do this first to help keep FP values small
-        scale = lax.rsqrt(float(self.HeadDim.size))
+        scale = jax.lax.rsqrt(float(self.HeadDim.size))
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
+        # do this first to help keep FP values small
         q = q * scale
 
+        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
         if self.upcast:
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        # compute attention weights: [batch, heads, seq_len, seq_len]
-        attn_weights = hax.dot(self.HeadDim, q, k)
+        attn_scores = hax.dot(self.HeadDim, q, k)
 
         if self.causal:
-            causal_mask = hax.tril(hax.ones((self.SeqLen, KeySeqLen), dtype=jnp.bool_), self.SeqLen, KeySeqLen)
-            attn_weights = hax.where(causal_mask, attn_weights, -1e9)
+            causal_mask = hax.tril(hax.ones((self.SeqLen, self.KeySeqLen), dtype=bool), self.SeqLen, self.KeySeqLen)
+            attn_scores = hax.where(causal_mask, attn_scores, -1e9)
 
-        attn_weights = hnn.softmax(attn_weights, KeySeqLen).astype(hidden_states.dtype)  # heads, seqlen, key_seqlen
+        attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        attn_output = hax.dot(KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = hax.dot(self.KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+
         attn_output = self.c_proj(attn_output)
         return attn_output
 
