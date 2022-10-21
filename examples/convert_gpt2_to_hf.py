@@ -12,6 +12,7 @@ from huggingface_hub import Repository
 from jaxtyping import PyTree
 from transformers import AutoTokenizer, GPT2Tokenizer
 
+import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
@@ -43,10 +44,9 @@ class ConvertGpt2Config:
 
 @pyrallis.wrap()
 def main(config: ConvertGpt2Config):
+    logger.setLevel(logging.INFO)
     tokenizer: GPT2Tokenizer = config.the_tokenizer
 
-    # huggingface hub urls look like github urls:
-    # load our checkpoint
     key = jax.random.PRNGKey(0)
 
     vocab_size = len(tokenizer)
@@ -58,8 +58,16 @@ def main(config: ConvertGpt2Config):
         if config.old_style_model:
             model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
         else:
-            # the new style deserialization is, i believe, less picky about shape mismatches
-            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+            with hax.shape_checks(False):
+                model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+
+            def patch_vocab(array):
+                if is_named_array(array):
+                    return patch_vocab_size(array.array, array)
+                else:
+                    return array
+
+            model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
 
         if config.hf_checkpoint is not None:
             repo: Repository = Repository(
@@ -91,17 +99,7 @@ def deserialize_checkpoint_and_patch_vocab_dim(
             if isinstance(x, NamedArray):
                 inner = default_deserialise_filter_spec(f, x.array)
 
-                # for partitioning reasons we frequently round the vocab size, but we need to patch it back
-                # to the original size for the HF checkpoint to work
-                if any(ax.name == "vocab" for ax in x.axes):
-                    index_of_vocab = next(i for i, ax in enumerate(x.axes) if ax.name == "vocab")
-                    desired_vocab_size = x.axes[index_of_vocab].size
-                    vocab_size = inner.shape[index_of_vocab]
-                    if vocab_size != desired_vocab_size:
-                        logger.info(
-                            f"Patching vocab size from {vocab_size} back to {desired_vocab_size} for HF checkpoint"
-                        )
-                        inner = jnp.take(inner, jnp.arange(desired_vocab_size), axis=index_of_vocab)
+                inner = patch_vocab_size(inner, x)
 
                 return NamedArray(inner, x.axes)
             else:
@@ -111,6 +109,19 @@ def deserialize_checkpoint_and_patch_vocab_dim(
         out = jax.tree_util.tree_map(deserialize_spec, like, is_leaf=is_named_array)
     jax.tree_util.tree_map(_assert_same, out, like)
     return out
+
+
+def patch_vocab_size(inner: jnp.ndarray, like: NamedArray):
+    # for partitioning reasons we frequently round the vocab size, but we need to patch it back
+    # to the original size for the HF checkpoint to work
+    if any(ax.name == "vocab" for ax in like.axes):
+        index_of_vocab = next(i for i, ax in enumerate(like.axes) if ax.name == "vocab")
+        desired_vocab_size = like.axes[index_of_vocab].size
+        vocab_size = inner.shape[index_of_vocab]
+        if vocab_size != desired_vocab_size:
+            logger.info(f"Patching vocab size from {vocab_size} back to {desired_vocab_size} for HF checkpoint")
+            inner = jnp.take(inner, jnp.arange(desired_vocab_size), axis=index_of_vocab)
+    return inner
 
 
 if __name__ == "__main__":
