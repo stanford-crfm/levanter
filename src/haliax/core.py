@@ -1,3 +1,4 @@
+import contextlib
 import functools as ft
 from dataclasses import dataclass
 from math import prod
@@ -27,6 +28,30 @@ AxisSpec = Union[Axis, Sequence[Axis]]
 Scalar = Union[float, int]
 NamedNumeric = Union[Scalar, "NamedArray"]
 
+_ENABLE_SHAPE_CHECKS = True
+
+
+@contextlib.contextmanager
+def shape_checks(enabled):
+    """
+    Sometimes we end up in situations where an array that jax makes is passed into the NamedArray constructor that
+    doesn't conform to the shape we expect. This shows up in particular when we are using jax.vmap or jax.scan,
+    and we sometimes have weird situations with deserialization
+
+    Yields the old value because we sometimes want to nest this
+    """
+    global _ENABLE_SHAPE_CHECKS
+    old = _ENABLE_SHAPE_CHECKS
+    _ENABLE_SHAPE_CHECKS = enabled
+    try:
+        yield old
+    finally:
+        _ENABLE_SHAPE_CHECKS = old
+
+
+def are_shape_checks_enabled():
+    return _ENABLE_SHAPE_CHECKS
+
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -47,6 +72,12 @@ class NamedArray:
         if len(set(a.name for a in self.axes)) != len(self.axes):
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
 
+        if are_shape_checks_enabled():
+            self.ensure_shape_matches_axes()
+
+    def ensure_shape_matches_axes(self):
+        """This is typically called automatically, but sometimes we need to call it manually if
+        are_shape_checks_enabled() is False"""
         if is_jax_array_like(self.array):
             s = jnp.shape(self.array)
             if s != tuple(a.size for a in self.axes):
@@ -800,4 +831,6 @@ __all__ = [
     "broadcast_to",
     "broadcast_axis",
     "broadcast_arrays",
+    "shape_checks",
+    "are_shape_checks_enabled",
 ]

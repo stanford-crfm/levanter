@@ -8,6 +8,7 @@ from .core import (
     Axis,
     AxisSpec,
     NamedArray,
+    are_shape_checks_enabled,
     broadcast_axis,
     broadcast_to,
     concat_axis_specs,
@@ -16,6 +17,7 @@ from .core import (
     named,
     rearrange,
     rename,
+    shape_checks,
     split,
     take,
     unbind,
@@ -345,4 +347,6 @@ __all__ = [
     "true_divide",
     "auto_sharded",
     "axis_mapping",
+    "shape_checks",
+    "are_shape_checks_enabled",
 ]
