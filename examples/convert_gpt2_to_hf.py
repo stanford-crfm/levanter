@@ -17,6 +17,7 @@ from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
 from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ class ConvertGpt2Config:
     output_dir: str
     hf_checkpoint: Optional[str] = None  # if specified, attempt to upload this checkpoint to the hf hub
     hf_revision: Optional[str] = None  # if specified, use this branch name when uploading a checkpoint
+
+    old_style_model: bool = False  # if True, use the old-style model serialization format (equinox-native
 
     model: Gpt2Config = Gpt2Config()
 
@@ -51,7 +54,12 @@ def main(config: ConvertGpt2Config):
 
     with jax.default_device(jax.devices("cpu")[0]):
         model = Gpt2LMHeadModel(Vocab, config.model, key=key)
-        model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
+
+        if config.old_style_model:
+            model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
+        else:
+            # the new style deserialization is, i believe, less picky about shape mismatches
+            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
         if config.hf_checkpoint is not None:
             repo: Repository = Repository(
