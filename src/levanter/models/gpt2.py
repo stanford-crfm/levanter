@@ -12,10 +12,9 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import shaped_rng_split
+from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.linear import Linear
 from haliax.partitioning import auto_sharded
-from haliax.util import named_call
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
 

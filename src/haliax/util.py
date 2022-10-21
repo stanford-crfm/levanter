@@ -1,6 +1,4 @@
-from typing import Optional, Sequence, Tuple, TypeVar, Union
-
-import jax
+from typing import Sequence, Tuple, TypeVar, Union
 
 from haliax.jax_utils import is_jax_array_like
 
@@ -36,27 +34,6 @@ class StringHolderEnum(type):
     # and the ability to easily convert to another iterable
     def __iter__(cls):
         yield from cls.members
-
-
-def _UNSPECIFIED():
-    raise ValueError("unspecified")
-
-
-def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
-    if f is _UNSPECIFIED:
-        return lambda f: named_call(f, name)  # type: ignore
-    else:
-        if name is None:
-            name = f.__name__
-            if name == "__call__":
-                if hasattr(f, "__self__"):
-                    name = f.__self__.__class__.__name__  # type: ignore
-                else:
-                    name = f.__qualname__.rsplit(".", maxsplit=1)[0]  # type: ignore
-            else:
-                name = f.__qualname__
-
-        return jax.named_scope(name)(f)
 
 
 def is_jax_or_hax_array_like(x):

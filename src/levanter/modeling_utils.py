@@ -9,8 +9,8 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
+from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
-from haliax.util import named_call
 from levanter.jax_utils import reduce
 
 

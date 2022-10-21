@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array
 
-from haliax.util import named_call
+from haliax.jax_utils import named_call
 
 
 class Dropout(eqx.Module):

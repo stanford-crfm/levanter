@@ -99,3 +99,24 @@ def combine(*pytrees: PyTree, is_leaf=None) -> PyTree:
         is_leaf = lambda x: _is_none(x) or _orig_is_leaf(x)  # noqa: E731
 
     return jax.tree_util.tree_map(_combine, *pytrees, is_leaf=is_leaf)
+
+
+def _UNSPECIFIED():
+    raise ValueError("unspecified")
+
+
+def named_call(f=_UNSPECIFIED, name: Optional[str] = None):
+    if f is _UNSPECIFIED:
+        return lambda f: named_call(f, name)  # type: ignore
+    else:
+        if name is None:
+            name = f.__name__
+            if name == "__call__":
+                if hasattr(f, "__self__"):
+                    name = f.__self__.__class__.__name__  # type: ignore
+                else:
+                    name = f.__qualname__.rsplit(".", maxsplit=1)[0]  # type: ignore
+            else:
+                name = f.__qualname__
+
+        return jax.named_scope(name)(f)
