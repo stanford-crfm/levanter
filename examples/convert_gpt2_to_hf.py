@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import pyrallis
 from equinox import default_deserialise_filter_spec
+from huggingface_hub import Repository
 from jaxtyping import PyTree
 from transformers import AutoTokenizer, GPT2Tokenizer
 
@@ -23,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ConvertGpt2Config:
-    checkpoint_path: Optional[str] = None
-    hf_checkpoint: Optional[str] = "hf_out"
+    checkpoint_path: str
+    output_dir: str
+    hf_checkpoint: Optional[str] = None  # if specified, attempt to upload this checkpoint to the hf hub
+    hf_revision: Optional[str] = None  # if specified, use this branch name when uploading a checkpoint
+
     model: Gpt2Config = Gpt2Config()
 
     tokenizer: str = "gpt2"
@@ -38,18 +42,30 @@ class ConvertGpt2Config:
 def main(config: ConvertGpt2Config):
     tokenizer: GPT2Tokenizer = config.the_tokenizer
 
-    # first load our checkpoint
+    # huggingface hub urls look like github urls:
+    # load our checkpoint
     key = jax.random.PRNGKey(0)
 
     vocab_size = len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
-    if config.checkpoint_path is not None:
+    with jax.default_device(jax.devices("cpu")[0]):
         model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+        model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
 
-        with jax.default_device(jax.devices("cpu")[0]):
-            model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
-            save_hf_gpt2_checkpoint(config.hf_checkpoint, model)
+        if config.hf_checkpoint is not None:
+            repo: Repository = Repository(
+                config.output_dir, clone_from=config.hf_checkpoint, use_auth_token=False, skip_lfs_files=True
+            )
+            commit_and_upload_manager = repo.commit("convert to hf checkpoint", branch=config.hf_revision)
+            with commit_and_upload_manager:
+                # commit_and_upload_manager will automatically upload the checkpoint to the hub
+                # it also cd's into the repo, so we can just save the checkpoint to the current directory
+                save_hf_gpt2_checkpoint(".", model)
+                tokenizer.save_pretrained(".")
+        else:
+            save_hf_gpt2_checkpoint(config.output_dir, model)
+            tokenizer.save_pretrained(config.output_dir)
 
 
 def deserialize_checkpoint_and_patch_vocab_dim(
