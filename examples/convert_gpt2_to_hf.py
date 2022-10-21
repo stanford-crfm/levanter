@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, GPT2Tokenizer
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
-from levanter.compat.torch_checkpoints import save_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 

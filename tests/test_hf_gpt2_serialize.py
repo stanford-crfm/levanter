@@ -42,7 +42,7 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
 
-    from levanter.compat.torch_checkpoints import (
+    from levanter.compat.hf_checkpoints import (
         load_hf_gpt2_checkpoint,
         load_hf_model_checkpoint,
         save_hf_gpt2_checkpoint,
@@ -93,7 +93,7 @@ def test_hf_gradient():
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
 
-    from levanter.compat.torch_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint
+    from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint
 
     config, data = load_hf_model_checkpoint(model_id, revision=revision)
     config = HfGpt2Config.from_dict(config)
