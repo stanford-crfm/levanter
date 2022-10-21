@@ -97,7 +97,7 @@ TPU VM instance. This is because the TPU VM instance sets different UID/GID for 
 you need to make sure that the permissions are set correctly. These periodically get messed up. A umask would probably
 fix this. (TODO!)
 
-### Git permissions issues
+### (CRFM) Git permissions issues
 
 Git doesn't like doing operations in a directory that is owned by root or that has too funky of permissions. If you get a git error, you probably need to
 add a safe directory on your workers:
