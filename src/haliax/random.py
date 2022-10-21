@@ -9,9 +9,10 @@ import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
 from haliax.core import Axis, NamedArray
-from haliax.util import ensure_tuple, named_call
+from haliax.util import ensure_tuple
 
-from .partitioning import pspec_for_axis, auto_sharded, physical_axis_size
+from .jax_utils import named_call
+from .partitioning import auto_sharded, physical_axis_size, pspec_for_axis
 
 
 def _wrap_random_function(func):
@@ -49,7 +50,9 @@ def _wrap_random_function(func):
             # what we do is we take the biggest axis that is sharded and split on it, ties going to the first axis
             pspec = pspec_for_axis(orig_shape)
             if pspec:
-                biggest_axis, biggest_physical = max(zip(orig_shape, pspec), key=lambda x: (physical_axis_size(x[0]) or 0) if x[1] else 0)
+                biggest_axis, biggest_physical = max(
+                    zip(orig_shape, pspec), key=lambda x: (physical_axis_size(x[0]) or 0) if x[1] else 0
+                )
             else:
                 biggest_axis = biggest_physical = None
 
@@ -63,11 +66,11 @@ def _wrap_random_function(func):
                     return func(key, *sig.args[1:], **sig.kwargs)
 
                 out = jax.vmap(fn, in_axes=(0,), out_axes=index_of_biggest_axis)(keys)
-                return NamedArray(out, orig_shape)
+                return auto_sharded(NamedArray(out, orig_shape))
             else:
                 sig.arguments["shape"] = shape
                 out = func(**sig.arguments)
-                return NamedArray(out, orig_shape)
+                return auto_sharded(NamedArray(out, orig_shape))
         else:
             return func(**sig.arguments)
 
