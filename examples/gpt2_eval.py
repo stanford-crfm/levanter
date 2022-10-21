@@ -22,7 +22,7 @@ from haliax.partitioning import (
 )
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.torch_checkpoints import load_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
@@ -50,12 +50,11 @@ def main(config: EvalGpt2Config):
     # first load our checkpoint
     key = jax.random.PRNGKey(0)
 
-    with config.trainer.device_mesh, axis_mapping(config.trainer.axis_mapping):
+    with config.trainer.device_mesh, axis_mapping(config.trainer.axis_resources):
         eval_dataset = ShardedIndexedDataset(
             config.data.build_or_load_document_cache("validation"),
             config.trainer.eval_mesh_info,
             config.model.seq_len,
-            microbatched=False,
         )
 
         vocab_size = len(tokenizer)
