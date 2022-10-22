@@ -87,7 +87,7 @@ def scan(
     return scanned_f
 
 
-def reduce(
+def fold(
     fn: Callable[[Carry, X], Carry],
     axis: Axis,
     *,
@@ -343,4 +343,4 @@ def _ensure_first(axis):
     return ensure_first
 
 
-__all__ = ["scan", "reduce", "vmap"]
+__all__ = ["scan", "fold", "vmap"]

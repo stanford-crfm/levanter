@@ -65,7 +65,7 @@ def test_reduce():
 
     acc = hax.zeros((Height, Width))
 
-    total = hax.reduce(fold_fun, Depth)(acc, named1)
+    total = hax.fold(fold_fun, Depth)(acc, named1)
 
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
 
@@ -83,7 +83,7 @@ def test_reduce_static_args():
 
     acc = hax.zeros((Height, Width))
 
-    total = hax.reduce(fold_fun, Depth)(acc, named1, True, static2=False)
+    total = hax.fold(fold_fun, Depth)(acc, named1, True, static2=False)
 
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
 
