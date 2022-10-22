@@ -10,7 +10,7 @@ from ..core import AxisSpec, NamedArray
 class LayerNorm(eqx.Module):
     r"""
     Normalises the input along the specified axis (or axes), using the mean and variance of the
-    input along that axis. This is equivalent to the following code:
+    input along that axis.
     """
     axis: AxisSpec = eqx.static_field()
     eps: float = eqx.static_field()
