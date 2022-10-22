@@ -1,4 +1,5 @@
-### Tasks
+class PartitionSpec:
+pass### Tasks
 ##todo
 - [ ] write an overview doc for levanter
 - [ ] get data and loss in Haliax
@@ -234,6 +235,9 @@ def foo(x):
 foo_vmap = hax.vmap(foo, axis=Batch)
 ```
 
+By convention, we capitalize the names of axes. This is because it makes it easier to visually distinguish them.
+
+
 #### Why Named Arrays?
 
 I get really confused when reading tensor code that uses axes like `0`, `1`, `2`, etc. It's not clear what
@@ -241,8 +245,8 @@ those axes are, and it's especially unclear when you have multiple tensors with 
 bitten by implicit broadcasting way too many times.
 
 So I found [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor)
-(and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)) to be very convincing. Named arrays are a way to make this code more readable, and
-more robust.
+(and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)) to be very convincing. Named arrays are a way to make this code
+more readable, and more robust.
 
 Named Arrays will also make it easier to write partitioned models: jax's `pjit` operator works over "meshes" of devices,
 and you partition your parameters and computation along array axes across the mesh. Named arrays make it easier to map
@@ -261,13 +265,14 @@ and it makes it harder to play with different partitioning strategies.
 You can skip this part if you're familiar with the basics of how Transformers are implemented. You might want to skim at
 least the attention section to see how Haliax is used.
 
-The whole implementation is [here](https://www.github.com/stanford-crfm/levanter/blob/main/levanter/models/gpt2.py), and
-I'll walk through the more interesting bits. (If you look at the whole thing, I caution you to skip over the torch
-serialization compatibility parts because they're messy and not that interesting for our purposes here.)
+The whole implementation is [here](https://www.github.com/stanford-crfm/levanter/blob/main/levanter/models/gpt2.py),
+(If you look at the whole thing, I caution you to skip over the torch serialization compatibility parts because they're
+messy and not that interesting for our purposes here.) I'll walk through the more interesting bits. In terms of basic
+structure and grouping of classes it's pretty similar to standard PyTorch implementations.
 
 XXX this comes across as even more defensive than I intended
 If you want, you can compare it with Andrei Karpathy's [mingpt implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py)
-. Ours is a bit longer (excluding the torch serialization parts!) for a few reasons:
+. Ours is a bit longer (even excluding the torch serialization parts) for a few reasons:
 * Boilerplate from declaring fields for modules
 * More type annotations
 * Tricks to improve stability from the [Mistral project](https://crfm.stanford.edu/2021/08/26/mistral.html#eureka/)
@@ -388,16 +393,317 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     return attn_output
 ```
 
-XXX More Layers?
+If you're not used to the `tril`-as-a-mask trick, it's a way to create a causal mask so that the attention scores
+for a query can only attend to the past. The `tril` function creates a lower triangular matrix. It's equivalent to:
+```python
+causal_mask = jnp.zeros(seq_len, key_seq_len)
+for i in range(seq_len):
+    for j in range(key_seq_len):
+        if j >= i:
+            mask[i, j] = 1
+```
+
+### The MLP
+
+The MLP is not terribly interesting. It's just a linear layer followed by a GELU activation, followed by another linear layer.
+
+```python
+class Gpt2Mlp(eqx.Module):
+    act: Callable = eqx.static_field()
+    c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
+    c_proj: hnn.Linear  # projection from Intermediate to Embed
+
+    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key):
+        k_fc, k_proj = jrandom.split(key, 2)
+        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc)
+        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj)
+        self.act = ACT2FN[activation_fn]  # type: ignore
+
+    def __call__(self, hidden_states: NamedArray):
+        hidden_states = self.c_fc(hidden_states)
+        hidden_states = jax.tree_util.tree_map(self.act, hidden_states)
+        hidden_states = self.c_proj(hidden_states)
+        return hidden_states
+```
+
+### The Block
+
+The block is the basic unit of the transformer. It's just a multi-headed attention layer, followed by a layer norm, followed by an MLP, followed by another layer norm.
+
+```python
+class Gpt2Block(TorchSerializationMixin, eqx.Module):
+    ln_1: hnn.LayerNorm
+    attn: Gpt2Attention
+    ln_2: hnn.LayerNorm
+    mlp: Gpt2Mlp
+    resid_dropout: hnn.Dropout
+
+    def __init__(self, config: Gpt2Config, *, key):
+        # skipping this because it's boring
+        ...
+
+    def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
+        k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
+
+        attn_output = self.attn(self.ln_1(hidden_states), inference=inference, layer_idx=layer_idx, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        hidden_states = hidden_states + attn_output
+
+        ff_output = self.mlp(self.ln_2(hidden_states))
+        ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
+        hidden_states = hidden_states + ff_output
+
+        return hidden_states
+```
+
+Probably the least understandable thing here is the `maybe_rng_split` function. It's a helper function that
+splits the key if it's a JAX PRNG key, and returns a list of None if it's `None`. This is because the `key` argument
+is optional, and if it's not provided, we don't want to split the key. This is useful for inference time when we
+don't use dropout.
+
+### The Transformer
+
+The transformer conceptually is just a stack of these blocks (plus a final layer norm). In Jax, we can use `jax.vmap` to
+create a vectorized block stack, and then use `jax.lax.scan` to apply the blocks in sequence. We use Haliax named
+variants of these functions: `hax.vmap` and `hax.fold`. (Jax doesn't have `fold` per se, but instead uses `scan` for both.
+Haliax also has a `hax.scan` function that's equivalent to `jax.lax.scan`.)
+
+```python
+
+This can be a bit hard to understand, so let's break it down. First, we create a vectorized block stack:
+```python
+class Gpt2Transformer(eqx.Module):
+    config: Gpt2Config = eqx.static_field()
+    blocks: Gpt2Block
+    ln_f: hnn.LayerNorm
+
+    @property
+    def Layers(self) -> Axis:
+        return self.config.Layers
+
+    def __init__(self, config: Gpt2Config, *, key):
+        super().__init__()
+        self.config = config
+
+        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
+        self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+```
+
+Recall that `vmap` inserts a new axis into the function. So, `hax.vmap(Gpt2Block)` creates a function that takes
+a "batch" of keys (meaning a key array with a leading axis for the number of layers) and returns a "batch" of blocks
+(meaning a single Block object whose arrays have a leading axis for the number of layers).
+
+Next, we create a function that applies the blocks in sequence:
+
+```python
+    def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
+        def do_block(hidden_states, block, layer_idx, key):
+            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=key)
+
+        keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        hidden_states = hax.fold(do_block, axis=self.Layers)(  # type: ignore
+            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
+        )
+        hidden_states = self.ln_f(hidden_states)
+
+        return hidden_states
+```
+
+If you're not used to functional programming, this might be a bit hard to understand. The `fold` function is
+equivalent to a `for` loop. It takes a function `do_block` and applies it to each element of the `self.blocks` array,
+accumulating the result. The `axis` argument tells it which axis to iterate over. This invocation is equivalent to the
+following Python:
+
+```python
+hidden_states = hidden_states
+for layer_idx, block in enumerate(self.blocks):
+    key = keys[layer_idx] if keys is not None else None
+    hidden_states = do_block(hidden_states, block, layer_idx, key)
+```
+
+The reason to use fold/scan in Jax is that it makes compilation much faster, and it also works with non-constant
+lengths. We're mostly using it for compilation speed. Eventually we'll add support for fancy gradient checkpointing
+strategies to Haliax `fold` and `scan`.
 
 ## First cut at training: simple data parallel training via `pmap`
 
-## Mixed Precision Training via `jmp`
+XXX TODO:
 
-## Model Partitioning via `pjit` (and Data parallel revisited)
+## Reducing memory usage
+
+When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
+and its kin, this is another two copies of the parameters. If you store your parameters in FP32, you need at a minimum
+16 * `num_params` bytes of memory, without including the memory needed for activations. (For LLMs, the data for a batch
+is typically trivial in comparison.) If you don't use ZeRO (XXX cite) or some other technique, you'll need to store all
+of these on every TPU/GPU. It's generally recommended to store all of these (maybe not the gradients) in FP32 for training.
+
+While we'll get to ZeRO/FSDP in a bit, in the meantime we can use mixed precision training to reduce the memory footprint
+of the model.
+
+A single v3 or v4 TPU core has 16GB of memory. This means that, for a 345M parameter model, we've already committed
+to using 5.5GB of memory for the parameters and optimizer states alone. This is plenty of space, but if we go to
+a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
+can be nontrivial.
+
+### Gradient Checkpointing
+
+
+
+### Mixed Precision Training via `jmp`
+
+
+## Model and Activation Partitioning via `pjit` (and data parallelism revisited)
+
+Activation partitioning is a technique that allows you to split up the activations of a model across multiple devices.
+Typically, this is accompanied by model partitioning, which splits up the parameters of the model across multiple devices.
+(This is distinct from ZeRO, which also splits up the model parameters and associated states. We'll cover the difference
+later.)
+
+Jax has a principle that computation follows data: if you want to do a distributed matrix multiplication, you can split
+your matrix up across multiple devices, do the appropriate local matrix multiplications, and then aggregate the results.
+As an example, if I have a 1024x512 matrix and I want to do a distributed matrix multiply by a hidden state vector of
+dimension 512, I can split the matrix up into 4 256x512 matrices, do 4 local matrix multiplies each against the vector,
+and then sum up the resulting 1024 vectors.
+
+This is the principle behind `pjit`, except it's all done automatically under the hood. `pjit` will let us write our model
+code as if it were running on a single device, but then we specify how we want our parameters and data to be partitioned
+across devices, and `pjit` and the [XLA SPMD partitioner](https://arxiv.org/pdf/2105.04663.pdf) will do the rest.
+
+### Device Meshes
+
+Currently in Jax, the primary abstraction for partitioning data across a device is a "device mesh", which is
+basically just an N-dimensional array of devices. Typically, we use 2-dimensional meshes, and the two axes of the
+mesh are labeled "data" and "model". The "data" axis is the one that we'll use for data parallelism, and the "model"
+axis is the one we'll use for model parallelism.
+
+Given a device mesh, the way to partition a device in Jax is to specify a `PartitionSpec`, which is a namedtuple
+of mesh axis names (or `None`) that is the same length as the shape of the array. For example, if we have a 2x2
+device mesh, we can partition a 4x4 array across the mesh by specifying a `PartitionSpec` of `("data", "model")`.
+If you have an array with more dimensions than that, you can specify `None` for the extra dimensions. For example,
+if you have a 2x2 device mesh and you want to partition a 4x4x4 array across the mesh, you can specify a
+`PartitionSpec` of `("data", "model", None)`. Axes that are `None` will be replicated across the mesh.
+(One can also partition an array along multiple axes by specifying
+a tuple of axis names, but we won't cover that here.)
+
+### Jax `pjit`
+
+Now at long last, we can get to `pjit`. `pjit` is a function that takes a function and a `PartitionSpec` for each
+input (or None to indicate that the input should be fully replicated across the mesh) and for each output,
+and returns a function that runs the function after partitioning the data across the mesh (if they need to be).
+
+Here's an example:
+```python
+from jax.experimental.pjit import pjit
+from jax.experimental.pjit import PartitionSpec
+import jax
+import jax.numpy as jnp
+import numpy as onp
+
+def matmul(x, y):
+    return x @ y
+
+x = jnp.ones((512, 128))
+y = jnp.ones((128, 1))
+
+pjit_matmul = pjit(matmul,
+                   in_axis_resources=(PartitionSpec("model", None), None),
+                   out_axis_resources=PartitionSpec("model"))
+
+# assume we have 8 devices, e.g. a v3-8 TPU node
+devices = onp.array(jax.devices()).reshape((4, 2))
+mesh = Mesh(devices, ("model", "data"))
+
+with mesh:
+    print(pjit_matmul(x, y))
+```
+
+
+This will divide the 512x128 matrix `x` into 4 128x128 matrices, with each submatrix replicated across the 2 devices
+in the "data" axis. 'y' will be fully replicated across the mesh. The matrix multiply will be done locally on each
+device, and the results will continue to be partitioned across the mesh. The final result will be a 512x1 vector,
+which is partitioned across the "model" axis, so the 128x1 vectors will be replicated across the 2 devices in the
+"data" axis.
+
+Now consider an alternative sharding strategy, where we shard the 512x128 matrix on the second axis instead of the
+first:
+```python
+pjit_matmul = pjit(matmul,
+                   in_axis_resources=(PartitionSpec(None, "model"), PartitionSpec("model", None)),
+                   out_axis_resources=PartitionSpec(None))
+
+with mesh:
+    print(pjit_matmul(x, y))
+```
+
+This will divide the 512x128 matrix `x` into 4 512x32 matrices, with each submatrix replicated across the 2 devices
+in the "data" axis. `y` will also be partitioned across the "model" axis, so each device will have a 32x1 vector.
+The matrix multiply will be done locally on each device, and then *summed* across the mesh. The final result will still
+be a 512x1 vector, which is fully replicated across the mesh.
+
+Just to drive the point home: you can change a computation from "fan-in" to "fan-out" by changing the partitioning.
+This is a really powerful property of `pjit` and the XLA SPMD partitioner.
+
+### Haliax `named_pjit`
+
+`pjit` is great, but it can be a bit of a pain to use when you have a lot of inputs and outputs. For example, if you
+have a complex nested model hierarchy (e.g. our GPT-2) it can be a bit painful to specify the partitioning for each
+parameter.
+
+This is where named axes come in. With Haliax, you can specify a "physical" (i.e. mesh) axis name for each
+named axis in your model. Then, you just call `named_pjit` with the name of the function you want to partition, and
+the `dict` containing those mappings. That's it! Here's that same example from above, but using named axes:
+```python
+import haliax as hax
+from haliax.partitioning import named_pjit
+
+In = hax.Axis("In", 512)
+Out = hax.Axis("Out", 128)
+
+Batch = hax.Axis("Batch", 1)
+
+def matmul(x, y):
+    return x.dot(In, y)
+
+x = hax.ones((In, Out))
+y = hax.ones((Out, Batch))
+
+# assume we have 8 devices, e.g. a v3-8 TPU node
+devices = onp.array(jax.devices()).reshape((4, 2))
+mesh = Mesh(devices, ("model", "data"))
+
+pjit_matmul = named_pjit(matmul, axis_resources={"In": "model"})
+
+with mesh:
+    print(pjit_matmul(x, y))
+```
+
+And you're done! If you want to have different partitioning for inputs and outputs, you can specify those separately:
+
+```python
+pjit_matmul = named_pjit(matmul,
+                         in_axis_resources={"In": "model"},
+                         out_axis_resources={"Out": "model"})
+```
+
+### Model-Partitioned GPT-2 Training
+
+Now that we've covered the basics of `pjit` and our named variant, let's see how we can use it to train a model-parallel
+GPT-2 model. XXX
+
 
 ## ZeRO: Parameter Partitioning
 
+ZeRO (XXX link) is short for ZEro-Redundancy Optimizer, and it's a set of techniques for optimizing large-scale training
+by partitioning model parameters, gradient accumulation buffers, and optimizer states across multiple devices, so that no
+device has to hold these in memory. FSDP (short for Fully Sharded Data Parallel) is a close cousin
+
+In GPU-land, it's more common to rely on parameter partitioning to reduce memory usage. This is because current top line
+GPUs have much more memory than single TPU cores, and so it's easier to fit a larger model on a single GPU.
+
+TPUs also claim to have much more interconnect bandwidth than GPUs, so it's
+XXX this is a claim I have heard but not seen benchmarked. This from nvidia indicates hopper is 900GB/s all-reduce
+while https://cloud.google.com/tpu/docs/system-architecture-tpu-vm claims 340TB/s (sic). I can't tell if this is apples to apples, but surely it's not.
+https://rd.yyrcd.com/2022-03-22-NVIDIA%20Hopper%20Architecture%20In-Depth%20%7C%20NVIDIA%20Technical%20Blog.pdf
 
 
 
