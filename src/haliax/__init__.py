@@ -23,7 +23,7 @@ from .core import (
     unbind,
     unflatten_axis,
 )
-from .hof import reduce, scan, vmap
+from .hof import fold, scan, vmap
 from .ops import trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
@@ -304,7 +304,7 @@ __all__ = [
     "cumproduct",
     "sort",
     "scan",
-    "reduce",
+    "fold",
     "vmap",
     "trace",
     "where",

@@ -278,7 +278,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, inference=True, *, key) -> NamedArray:
+    def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
         def do_block(hidden_states, block, layer_idx, key):
             return block(hidden_states, inference=inference, layer_idx=layer_idx, key=key)
 
@@ -286,7 +286,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             do_block = jax.checkpoint(do_block)
 
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = hax.reduce(do_block, self.Layers)(  # type: ignore
+        hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
             hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
         )
         hidden_states = self.ln_f(hidden_states)
