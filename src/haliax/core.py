@@ -186,9 +186,6 @@ class NamedArray:
     def cumsum(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
         return haliax.cumsum(self, axis=axis, dtype=dtype)
 
-    # def diagonal(self, offset=0, axis1: int = 0, axis2: int = 1) -> Any:
-    #     ...
-
     def dot(self, axis: AxisSpec, b, *, precision=None) -> "NamedArray":
         return dot(axis, self, b, precision=precision)
 
@@ -223,10 +220,6 @@ class NamedArray:
     ) -> "NamedArray":
         return haliax.min(self, axis=axis, initial=initial, where=where)
 
-    # TODO
-    # def nonzero(self, *, size=None, fill_value=None) -> Any:
-    #     ...
-
     def prod(
         self,
         axis: Optional[AxisSpec] = None,
@@ -260,9 +253,6 @@ class NamedArray:
 
     def round(self, decimals=0) -> "NamedArray":
         return haliax.round(self, decimals=decimals)
-
-    # def searchsorted(self, v, side='left', sorter=None) -> Any:
-    #     ...
 
     def sort(self, axis: Axis, kind="quicksort") -> Any:
         return haliax.sort(self, axis=axis, kind=kind)
