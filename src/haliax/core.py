@@ -3,7 +3,7 @@ import functools as ft
 from dataclasses import dataclass
 from math import prod
 from types import EllipsisType
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast, overload
 
 import jax
 import jax.numpy as jnp
@@ -164,10 +164,10 @@ class NamedArray:
     def astype(self, dtype) -> "NamedArray":
         return NamedArray(self.array.astype(dtype), self.axes)
 
-    # TODO
-    # def clip(self, a_min=None, a_max=None) -> Any:
-    #     ...
+    def clip(self, a_min=None, a_max=None) -> Any:
+        return haliax.clip(self, a_min=a_min, a_max=a_max)
 
+    # TODO
     # def compress(self, condition, axis: Optional[int] = None) -> Any:
     #     ...
 
@@ -767,11 +767,33 @@ def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...], ensure_order: bool = Tru
     return a
 
 
+@overload
 def broadcast_arrays(
-    *arrays: NamedArray,
+    *arrays: NamedArray, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[NamedArray, ...]:
+    ...
+
+
+@overload
+def broadcast_arrays(
+    *arrays: NamedNumeric, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[NamedNumeric, ...]:
+    ...
+
+
+def broadcast_arrays(
+    *arrays: NamedNumeric,
     require_subset: bool = True,
     ensure_order: bool = True,
-) -> Tuple[NamedArray, ...]:
+) -> Tuple[NamedNumeric, ...]:
+    return broadcast_arrays_and_return_axes(*arrays, require_subset=require_subset, ensure_order=ensure_order)[0]
+
+
+def broadcast_arrays_and_return_axes(
+    *arrays: NamedNumeric,
+    require_subset: bool = True,
+    ensure_order: bool = True,
+) -> Tuple[Tuple[NamedNumeric, ...], Tuple[Axis, ...]]:
     """
     Broadcasts a sequence of arrays to a common set of axes.
 
@@ -789,17 +811,22 @@ def broadcast_arrays(
         axes may not be moved.
     """
     if len(arrays) == 0:
-        return ()
+        return ((), ())
 
     # sort the arrays by size, so that we use the biggest ones to broadcast the others
     # need to hold on to the order so we can return the arrays in the same order
-    size_order = sorted(range(len(arrays)), key=lambda i: arrays[i].size, reverse=True)
-    all_axes = [arrays[i].axes for i in size_order]
+    actual_arrays = [x for x in arrays if isinstance(x, NamedArray)]
+    size_order = sorted(range(len(actual_arrays)), key=lambda i: actual_arrays[i].size, reverse=True)
+    all_axes = [actual_arrays[i].axes for i in size_order]
     full_axes = ft.reduce(lambda a, b: _broadcast_axes(a, b, require_subset) if a is not None else None, all_axes)  # type: ignore
     if full_axes is None:
         raise ValueError(f"Cannot broadcast arrays {arrays}: no subset relationship")
 
-    return tuple(broadcast_to(a, full_axes, ensure_order=ensure_order) for a in arrays)
+    arrays = tuple(
+        broadcast_to(a, full_axes, ensure_order=ensure_order) if isinstance(a, NamedArray) else a for a in arrays
+    )
+
+    return arrays, full_axes
 
 
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
@@ -834,3 +861,9 @@ __all__ = [
     "shape_checks",
     "are_shape_checks_enabled",
 ]
+
+
+def raw_array_or_scalar(x: NamedNumeric):
+    if isinstance(x, NamedArray):
+        return x.array
+    return x
