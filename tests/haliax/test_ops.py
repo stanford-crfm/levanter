@@ -111,6 +111,38 @@ def test_where():
         _ = hax.where(named5 > named6, named5, named6)
 
 
+def test_clip():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
+    named2 = hax.clip(named1, 0.3, 0.7)
+    assert jnp.all(jnp.isclose(named2.array, jnp.clip(named1.array, 0.3, 0.7)))
+
+    named2_reorder = named2.rearrange((Width, Height, Depth))
+    named3 = hax.clip(named2_reorder, 0.3, 0.7)
+    named3 = named3.rearrange((Height, Width, Depth))
+    assert jnp.all(jnp.isclose(named3.array, jnp.clip(named2.array, 0.3, 0.7)))
+
+    # now some interesting broadcasting
+    lower = hax.full((Height, Width), 0.3)
+    upper = hax.full((Width, Depth), 0.7)
+    named4 = hax.clip(named1, lower, upper)
+    named4 = named4.rearrange((Height, Width, Depth))
+
+    assert jnp.all(
+        jnp.isclose(
+            named4.array,
+            jnp.clip(
+                named1.array,
+                lower.array.reshape((Height.size, Width.size, 1)),
+                upper.array.reshape((1, Width.size, Depth.size)),
+            ),
+        )
+    )
+
+
 def test_tril_triu():
     Height = Axis("Height", 10)
     Width = Axis("Width", 3)

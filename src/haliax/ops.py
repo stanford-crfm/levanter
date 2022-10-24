@@ -3,7 +3,14 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-from .core import Axis, NamedArray, NamedNumeric, broadcast_arrays
+from .core import (
+    Axis,
+    NamedArray,
+    NamedNumeric,
+    broadcast_arrays,
+    broadcast_arrays_and_return_axes,
+    raw_array_or_scalar,
+)
 
 
 def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> NamedArray:
@@ -42,11 +49,25 @@ def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric
     if jnp.isscalar(x):
         x = NamedArray(jnp.broadcast_to(x, condition.array.shape), condition.axes)
 
+    assert isinstance(x, NamedArray)
+
     if jnp.isscalar(y):
         y = NamedArray(jnp.broadcast_to(y, condition.array.shape), condition.axes)
 
+    assert isinstance(y, NamedArray)
+
     condition, x, y = broadcast_arrays(condition, x, y)  # type: ignore
     return NamedArray(jnp.where(condition.array, x.array, y.array), condition.axes)
+
+
+def clip(array: NamedNumeric, a_min: NamedNumeric, a_max: NamedNumeric) -> NamedArray:
+    """Like jnp.clip, but with named axes. This version currently only accepts the three argument form."""
+    (array, a_min, a_max), axes = broadcast_arrays_and_return_axes(array, a_min, a_max)
+    array = raw_array_or_scalar(array)
+    a_min = raw_array_or_scalar(a_min)
+    a_max = raw_array_or_scalar(a_max)
+
+    return NamedArray(jnp.clip(array, a_min, a_max), axes)
 
 
 def tril(array: NamedArray, axis1: Axis, axis2: Axis, k=0) -> NamedArray:

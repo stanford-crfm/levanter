@@ -24,7 +24,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import fold, scan, vmap
-from .ops import trace, tril, triu, where
+from .ops import clip, trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
@@ -308,6 +308,7 @@ __all__ = [
     "vmap",
     "trace",
     "where",
+    "clip",
     "tril",
     "triu",
     "add",
