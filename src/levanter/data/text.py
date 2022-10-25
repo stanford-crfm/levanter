@@ -49,11 +49,11 @@ class TokenSeqDataset:
         self.seq_len = seq_len
         self.stride = stride
 
-    def shard(self, process_id: int, num_processes: int) -> "TokenSeqDataset":
+    def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return TokenSeqDataset(self.doc_cache.shard(process_id, num_processes), self.seq_len, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
     def __iter__(self) -> Iterator[BatchEncoding]:
         for doc in self.doc_cache:
