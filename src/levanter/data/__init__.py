@@ -9,6 +9,7 @@ import datasets
 import fsspec
 from transformers import AutoTokenizer
 
+from levanter.data.dataset import Dataset, ShuffleDataset
 from levanter.data.text import TokenizedDocumentCache, tokenize_batch
 from levanter.data.utils import batched
 
@@ -88,4 +89,11 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, self.enforce_eos)
 
 
-__all__ = ["LMDatasetConfig", "CachedLMDatasetConfig", "batched"]
+__all__ = [
+    "LMDatasetConfig",
+    "CachedLMDatasetConfig",
+    "batched",
+    "Dataset",
+    "ShuffleDataset",
+    "TokenizedDocumentCache",
+]
