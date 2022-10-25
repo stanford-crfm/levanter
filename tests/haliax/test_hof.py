@@ -59,13 +59,9 @@ def test_reduce():
     Depth = Axis("Depth", 4)
     named1 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
 
-    def fold_fun(acc, x):
-        # TODO: implement binary ops!
-        return NamedArray(acc.array + x.rearrange(acc.axes).array, acc.axes)
-
     acc = hax.zeros((Height, Width))
 
-    total = hax.fold(fold_fun, Depth)(acc, named1)
+    total = hax.fold(lambda x, y: x + y, Depth)(acc, named1)
 
     assert jnp.all(jnp.isclose(total.rearrange(acc.axes).array, jnp.sum(named1.array, axis=2)))
 
