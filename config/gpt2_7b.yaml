@@ -14,6 +14,10 @@ model:
   attn_pdrop: 0.0
   resid_pdrop: 0.0
 trainer:
+  wandb:
+    project: "levanter"
+    tags: ["openwebtext", "gpt2"]
+
   mp: p=f32,c=bfloat16
   learning_rate: 1.2E-4
   weight_decay: 0.1
