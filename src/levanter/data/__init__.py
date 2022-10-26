@@ -7,11 +7,41 @@ from typing import List, Optional
 import braceexpand
 import datasets
 import fsspec
+import numpy
 from transformers import AutoTokenizer
 
 from levanter.data.dataset import Dataset, ShuffleDataset
 from levanter.data.text import TokenizedDocumentCache, tokenize_batch
 from levanter.data.utils import batched
+
+
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        super().__init__(**kwargs)
+        self._vocab_size = vocab_size
+        self._eos = self._vocab_size - 1
+        self._eos_token = str(self._eos)
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    @property
+    def eos_token(self) -> str:
+        return self._eos_token
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
+
+    def _tokenize(self, text, **kwargs):
+        tokens = numpy.fromstring(text, dtype=int, sep=" ")
+        return tokens
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)
 
 
 @dataclass
@@ -31,7 +61,10 @@ class LMDatasetConfig:
 
     @cached_property
     def the_tokenizer(self):
-        return AutoTokenizer.from_pretrained(self.tokenizer)
+        if self.tokenizer == "passthrough":
+            return PassthroughTokenizer(34026)  # hard-coding the vocab size for now
+        else:
+            return AutoTokenizer.from_pretrained(self.tokenizer)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
