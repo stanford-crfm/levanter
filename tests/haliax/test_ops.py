@@ -3,7 +3,7 @@ import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax import Axis
+from haliax import Axis, NamedArray
 
 
 def test_trace():
@@ -76,7 +76,25 @@ def test_add_scalar():
     assert jnp.all(jnp.isclose(named3.array, named1.array + 1.0))
 
 
-# TODO: tests for other ops
+def test_add_no_overlap():
+    Height = Axis("Height", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    named1: NamedArray = hax.random.uniform(PRNGKey(0), (Height))
+    named2 = hax.random.uniform(PRNGKey(1), (Width, Depth))
+
+    with pytest.raises(ValueError):
+        _ = named1 + named2
+
+    named3 = named1.broadcast_to((Height, Width, Depth)) + named2
+
+    assert jnp.all(
+        jnp.isclose(named3.array, named1.array.reshape((-1, 1, 1)) + named2.array.reshape((1,) + named2.array.shape))
+    )
+
+
+# TODO: tests for other ops:
 
 
 def test_where():

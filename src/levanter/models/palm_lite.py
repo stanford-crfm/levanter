@@ -41,7 +41,6 @@ def get_alibi_slopes(heads):
 
     if log2(heads).is_integer():
         return get_slopes_power_of_2(heads)
-
     closest_power_of_2 = 2 ** floor(log2(heads))
     return (
         get_slopes_power_of_2(closest_power_of_2)
