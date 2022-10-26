@@ -30,6 +30,10 @@ class PassthroughTokenizer(PreTrainedTokenizer):
     def eos_token(self) -> str:
         return self._eos_token
 
+    @property
+    def eos_token_id(self) -> Optional[int]:
+        return self._eos
+
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
         return ()
 
