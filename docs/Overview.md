@@ -1,5 +1,4 @@
-class PartitionSpec:
-pass### Tasks
+### Tasks
 ##todo
 - [ ] write an overview doc for levanter
 - [ ] get data and loss in Haliax
