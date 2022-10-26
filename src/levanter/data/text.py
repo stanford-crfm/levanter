@@ -263,7 +263,10 @@ def build_cache(
 
 def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
     if enforce_eos:
-        tokens = tokenizer([t + tokenizer.eos_token for t in texts], return_attention_mask=False)
+        eos_doc = tokenizer(tokenizer.eos_token)
+        tokens = tokenizer([t for t in texts], return_attention_mask=False)
+        for k, v in tokens.items():
+            tokens[k] = [t + eos_doc[k] for t in v]
         assert all(t[-1] == tokenizer.eos_token_id for t in tokens["input_ids"])
         return tokens
     else:
