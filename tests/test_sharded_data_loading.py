@@ -11,11 +11,11 @@ from utils import skip_if_not_enough_devices
 
 from haliax.partitioning import ResourceAxis
 from levanter.data.sharded import ShardedIndexedDataset
-from levanter.data.text import TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 from levanter.mesh import MeshInfo
 
 
-def _small_dataset(seq_len=128):
+def _small_dataset(seq_len=128) -> TokenSeqDataset:
     def token_iter():
         for i in range(200):
             yield BatchEncoding(
@@ -24,12 +24,14 @@ def _small_dataset(seq_len=128):
                 }
             )
 
-    return TokenizedDocumentCache.build_or_load(
+    cache = TokenizedDocumentCache.build_or_load(
         token_iter(),
         cache_dir=f"test_cache/{seq_len}",
         num_shards=128,
         flatten_docs=True,
     )
+
+    return TokenSeqDataset(cache, seq_len)
 
 
 @skip_if_not_enough_devices(2)
@@ -46,7 +48,7 @@ def test_sharded_data_loading_model_axis_2():
         mesh_info = MeshInfo(mesh, batch_size=len(devices) // 2, per_device_parallelism=1)
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = ShardedIndexedDataset(cache, mesh_info, seq_len)
+        dataset = ShardedIndexedDataset(cache, mesh_info)
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
@@ -80,7 +82,7 @@ def test_sharded_data_loading_model_axis_1():
         mesh_info = MeshInfo(mesh, batch_size=len(devices), per_device_parallelism=1)
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = ShardedIndexedDataset(cache, mesh_info, seq_len)
+        dataset = ShardedIndexedDataset(cache, mesh_info)
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
@@ -104,7 +106,7 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
             seq_len = 128
             cache = _small_dataset(seq_len)
             dataset = ShardedIndexedDataset(
-                cache, mesh_info, seq_len, override_process_data_pos=process_index, override_process_data_groups=2
+                cache, mesh_info, override_process_data_pos=process_index, override_process_data_groups=2
             )
             datasets.append(dataset)
 

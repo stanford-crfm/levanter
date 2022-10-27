@@ -26,6 +26,7 @@ from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
+from levanter.data.text import TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
 
@@ -51,10 +52,10 @@ def main(config: EvalGpt2Config):
     key = jax.random.PRNGKey(0)
 
     with config.trainer.device_mesh, axis_mapping(config.trainer.axis_resources):
+        eval_cache = (config.data.build_or_load_document_cache("validation"),)
         eval_dataset = ShardedIndexedDataset(
-            config.data.build_or_load_document_cache("validation"),
+            TokenSeqDataset(eval_cache, config.model.seq_len),
             config.trainer.eval_mesh_info,
-            config.model.seq_len,
         )
 
         vocab_size = len(tokenizer)

@@ -15,6 +15,7 @@ from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
+from levanter.data.text import TokenSeqDataset
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
@@ -55,15 +56,13 @@ def main(config: TrainGpt2Config):
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(
-        config.data.build_or_load_document_cache("train"),
+        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.train_mesh_info,
-        config.model.seq_len,
     )
 
     eval_dataset = ShardedIndexedDataset(
-        config.data.build_or_load_document_cache("validation"),
+        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.eval_mesh_info,
-        config.model.seq_len,
     )
 
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
