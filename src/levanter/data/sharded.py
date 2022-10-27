@@ -2,14 +2,16 @@ import itertools
 from math import prod
 from typing import Iterator, Optional, Sequence, Tuple, TypeVar
 
+import jax
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
-from jax.interpreters.pxla import PartitionSpec
+from jax.interpreters.pxla import Mesh, PartitionSpec
 from transformers import BatchEncoding
 
+import levanter.mesh
+from haliax.partitioning import ResourceAxis
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
-from levanter.mesh import MeshInfo
 
 
 In = TypeVar("In")
@@ -44,17 +46,20 @@ class ShardedIndexedDataset(Dataset[GlobalDeviceArray]):
     def __init__(
         self,
         token_dataset: ShardableDataset[BatchEncoding],
-        mesh_info: MeshInfo,
+        mesh: Mesh,
+        batch_size: int,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
     ):
-        self.mesh_info = mesh_info
-        process_data_pos = override_process_data_pos or self.mesh_info.process_mesh_position[0]
-        num_data_process_groups = override_process_data_groups or self.mesh_info.process_mesh_size[0]
+        self.mesh = mesh
+        self.batch_size = batch_size
+
+        process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
+        num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
 
         if not override_process_data_groups:
-            assert num_data_process_groups <= self.mesh_info.process_count
+            assert num_data_process_groups <= jax.process_count()
 
         self.token_dataset = token_dataset.shard(process_data_pos, num_data_process_groups)
 
@@ -98,15 +103,15 @@ class ShardedIndexedDataset(Dataset[GlobalDeviceArray]):
         while True:
             yield GlobalDeviceArray.from_batched_callback(
                 batch_shape,
-                self.mesh_info.mesh,
+                self.mesh,
                 pspec,
                 callback,
             )
 
     @property
     def partition_spec(self):
-        return PartitionSpec(self.mesh_info.data_axis_name, None)
+        return PartitionSpec(ResourceAxis.DATA, None)
 
     @property
     def batch_shape(self):
-        return (self.mesh_info.batch_size, self.token_dataset.seq_len)
+        return (self.batch_size, self.token_dataset.seq_len)
