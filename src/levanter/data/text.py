@@ -7,7 +7,7 @@
 # In general, an IndexedDataset is a directory of parquet files plus a metadata file called the ledger.
 # The ledger is a json file with the following structure:
 # {
-#   "files": { "file_name": <name>, "num_tokens": <num_tokens>},
+#   "files": [{ "file_name": <name>, "num_tokens": <num_tokens>}],
 # }
 # We don't currently use the num_tokens field, but it's useful for sanity checking.
 # The ledger is written last, so we can always check to see if we were interrupted.
@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 from transformers import BatchEncoding
 
+from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
 
 
@@ -39,12 +40,12 @@ overwatch = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset:
+class TokenSeqDataset(ShardableDataset[BatchEncoding]):
     """
-    A dataset that yields sequences of tokens from a TokenizedDocumentCache.
+    A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
     """
 
-    def __init__(self, doc_cache, seq_len: int, stride: Optional[int]):
+    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self.stride = stride
@@ -84,7 +85,27 @@ def _load_ledger(cache_dir):
         raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
 
-class TokenizedDocumentCache:
+class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
+    """
+    Represents a tokenized document cache, which is a directory of parquet files with a ledger file.
+
+    The difference between this class and the TokenSeqDataset is that this class yields entire documents,
+    while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
+
+    The ledger file is a json file with the following structure:
+    {
+        "files": [
+            {"name": <name>, "num_tokens": <num_tokens>},
+            ...
+        ]
+    }
+
+    The num_tokens field is not currently used, but it's useful for sanity checking.
+
+    The parquet files are a columnar format, which means that we can grab token slices from multiple docs as a single
+    operation, which makes concatenation much faster (and means we don't need to cache slices).
+    """
+
     def __init__(self, cache_dir, cache_files, flatten_docs):
         self.cache_dir = cache_dir
         self.cache_files = cache_files
@@ -93,7 +114,7 @@ class TokenizedDocumentCache:
     def __iter__(self):
         for cache_file in self.cache_files:
             full_path = os.path.join(self.cache_dir, cache_file)
-            for entry in read_cache_file(full_path, self.flatten_docs):
+            for entry in _read_cache_file(full_path, self.flatten_docs):
                 yield entry
 
     @staticmethod
@@ -124,7 +145,7 @@ class TokenizedDocumentCache:
         return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
 
 
-def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
+def _read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
     """Reads the cache files produced by cache_and_group and yields tokenized sequences.
     If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
     then the documents returned are actually concatenated documents, where the number is the number of documents
@@ -146,6 +167,7 @@ def read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
 
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
+    """Converts a document to an arrow-compatible record batch."""
     # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
     def _as_array(x):
         if isinstance(x, np.ndarray) and x.ndim > 1:

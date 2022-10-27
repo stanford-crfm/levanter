@@ -10,7 +10,13 @@ T = TypeVar("T", covariant=True)
 
 class Dataset(Iterable[T], ABC):
     @abstractmethod
-    def shard(self, shard_id: int, num_shards: int) -> "Dataset[T]":
+    def __iter__(self) -> Iterator[T]:
+        raise NotImplementedError
+
+
+class ShardableDataset(Dataset[T], ABC):
+    @abstractmethod
+    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[T]":
         raise NotImplementedError
 
     @abstractmethod
@@ -18,7 +24,7 @@ class Dataset(Iterable[T], ABC):
         raise NotImplementedError
 
 
-class ShuffleDataset(Dataset[T]):
+class ShuffleDataset(ShardableDataset[T]):
     def __init__(self, dataset: Dataset[T], key: PRNGKey, buffer_size: int):
         self.dataset = dataset
         self.buffer_size = buffer_size
@@ -26,7 +32,7 @@ class ShuffleDataset(Dataset[T]):
 
     def shard(self, shard_id: int, num_shards: int) -> "ShuffleDataset":
         key = jrandom.fold_in(self.key, shard_id)
-        return ShuffleDataset(self.dataset.shard(shard_id, num_shards), key, self.buffer_size)
+        return ShuffleDataset(self.dataset.shard(shard_id, num_shards), key, self.buffer_size)  # type: ignore
 
     def __iter__(self) -> Iterator[T]:
         inner = iter(self.dataset)
