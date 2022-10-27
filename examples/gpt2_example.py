@@ -50,20 +50,23 @@ def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+
+    Batch = Axis("batch", config.trainer.train_batch_size)
+    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
+
     dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
-        config.trainer.train_batch_size,
+        Batch,
     )
 
     eval_dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
-        config.trainer.eval_batch_size,
+        EvalBatch,
     )
 
     # some axes we use outside the model proper
-    # Batch = Axis("batch", config.trainer.train_batch_size)
     SeqLen = config.model.SeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute

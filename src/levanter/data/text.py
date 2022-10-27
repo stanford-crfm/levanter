@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence
+from typing import Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
@@ -26,11 +26,13 @@ import fsspec
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from jaxtyping import PyTree
 from tqdm import tqdm
 from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
+from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
 overwatch = logging.getLogger("levanter.data.text")
@@ -64,6 +66,10 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
         for doc in self.doc_cache:
             for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride):
                 yield encoded_slice["input_ids"]
+
+    @property
+    def item_shape(self) -> PyTree:
+        return ShapeSpec((self.seq_len,), dtype=np.int32)
 
     @staticmethod
     def build_or_load(
@@ -124,6 +130,13 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
 
     @staticmethod
     def load(cache_dir, flatten_docs=True):
+        """
+        Load a TokenizedDocumentCache from a directory.
+        :param cache_dir:
+        :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
+        concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
+        :return:
+        """
         ledger = _load_ledger(cache_dir)
         return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
 
@@ -148,6 +161,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             return self
 
         return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return {
+            "input_ids": ShapeSpec((None,), dtype=np.int32),
+        }
 
 
 def _read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:

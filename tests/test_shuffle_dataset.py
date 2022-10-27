@@ -10,11 +10,11 @@ class RangeDataset(Dataset[int]):
         self.start = start
         self.end = end
 
-    def shard(self, shard_id: int, num_shards: int) -> "RangeDataset":
-        raise NotImplementedError
-
     def __iter__(self) -> Iterator[int]:
         yield from range(self.start, self.end)
+
+    def item_shape(self):
+        raise NotImplementedError
 
 
 def test_shuffle_dataset():

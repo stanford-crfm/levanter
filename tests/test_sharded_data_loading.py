@@ -9,6 +9,7 @@ from jax.experimental.maps import Mesh
 from transformers import BatchEncoding
 from utils import skip_if_not_enough_devices
 
+from haliax import Axis
 from haliax.partitioning import ResourceAxis
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
@@ -46,7 +47,8 @@ def test_sharded_data_loading_model_axis_2():
 
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = GlobalBatchDataset(cache, mesh, batch_size=len(devices))
+        Batch = Axis("batch", len(devices))
+        dataset = GlobalBatchDataset(cache, mesh, Batch)
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
@@ -80,11 +82,12 @@ def test_sharded_data_loading_model_axis_1():
 
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = GlobalBatchDataset(cache, mesh, batch_size=len(devices))
+        Batch = Axis("batch", len(devices))
+        dataset = GlobalBatchDataset(cache, mesh, Batch)
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape
+            assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
             check_batch_shard_consistency(batch, mesh)
 
@@ -102,10 +105,11 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
         for process_index in range(2):
             seq_len = 128
             cache = _small_dataset(seq_len)
+            Batch = Axis("batch", len(devices))
             dataset = GlobalBatchDataset(
                 cache,
                 mesh,
-                batch_size=len(devices),
+                Batch=Batch,
                 override_process_data_pos=process_index,
                 override_process_data_groups=2,
             )
