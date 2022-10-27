@@ -21,7 +21,6 @@ from pyrallis import field
 import levanter.logging
 from haliax.partitioning import ResourceAxis
 from levanter import jax_utils
-from levanter.mesh import MeshInfo
 
 
 logger = logging.getLogger(__name__)
@@ -166,9 +165,9 @@ class TrainerConfig:
 
     # Config related to batch sizes
     train_batch_size: int = 512
-    per_device_train_batch_size: int = -1
+    per_device_parallelism: int = -1
 
-    per_device_eval_batch_size: int = -1
+    per_device_eval_parallelism: int = -1
 
     # Config related to duration
     num_train_steps: int = 400_000
@@ -218,17 +217,9 @@ class TrainerConfig:
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
 
-    @cached_property
-    def train_mesh_info(self):
-        return MeshInfo(self.device_mesh, self.train_batch_size, self.per_device_train_batch_size)
-
-    @cached_property
-    def eval_mesh_info(self):
-        return MeshInfo(
-            self.device_mesh,
-            self.per_device_eval_batch_size * self.data_axis_size,
-            self.per_device_eval_batch_size,
-        )
+    @property
+    def eval_batch_size(self):
+        return self.per_device_eval_parallelism * self.data_axis_size
 
     @property
     def data_axis_size(self):
@@ -306,18 +297,18 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
-        if self.per_device_train_batch_size == -1:
-            self.per_device_train_batch_size = self.train_batch_size // jax.device_count()
+        if self.per_device_parallelism == -1:
+            self.per_device_parallelism = self.train_batch_size // jax.device_count()
 
-        # validate size of per_device_train_batch_size
-        if self.train_batch_size % (self.per_device_train_batch_size * self.data_axis_size) != 0:
+        # validate size of per_device_parallelism
+        if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
             raise ValueError(
-                f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_train_batch_size *"
-                f" data_axis_size ({self.per_device_train_batch_size}, {self.data_axis_size})"
+                f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_parallelism *"
+                f" data_axis_size ({self.per_device_parallelism}, {self.data_axis_size})"
             )
 
-        if self.per_device_eval_batch_size == -1:
-            self.per_device_eval_batch_size = self.per_device_train_batch_size
+        if self.per_device_eval_parallelism == -1:
+            self.per_device_eval_parallelism = self.per_device_parallelism
 
 
 def register_codecs():

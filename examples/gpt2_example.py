@@ -57,12 +57,14 @@ def main(config: TrainGpt2Config):
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
-        config.trainer.train_mesh_info,
+        config.trainer.device_mesh,
+        config.trainer.train_batch_size,
     )
 
     eval_dataset = ShardedIndexedDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.eval_mesh_info,
+        config.trainer.device_mesh,
+        config.trainer.eval_batch_size,
     )
 
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
@@ -220,8 +222,6 @@ def main(config: TrainGpt2Config):
             resume_step = 0
 
         # training loop
-        mesh_info = config.trainer.train_mesh_info
-
         def train_step(model, opt_state, input_ids, keys):
             model_inf = mp.cast_to_compute(model)
 
@@ -230,8 +230,8 @@ def main(config: TrainGpt2Config):
                 model_inf,
                 input_ids,
                 keys,
-                data_axis_size=mesh_info.data_axis_size,
-                per_device_parallelism=mesh_info.per_device_parallelism,
+                data_axis_size=config.trainer.data_axis_size,
+                per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=config.trainer.axis_resources,
                 parameter_axis_mapping=parameter_axis_mapping,
             )

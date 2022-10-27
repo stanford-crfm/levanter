@@ -52,10 +52,11 @@ def main(config: EvalGpt2Config):
     key = jax.random.PRNGKey(0)
 
     with config.trainer.device_mesh, axis_mapping(config.trainer.axis_resources):
-        eval_cache = (config.data.build_or_load_document_cache("validation"),)
+        eval_cache = config.data.build_or_load_document_cache("validation")
         eval_dataset = ShardedIndexedDataset(
             TokenSeqDataset(eval_cache, config.model.seq_len),
-            config.trainer.eval_mesh_info,
+            config.trainer.device_mesh,
+            config.trainer.eval_batch_size,
         )
 
         vocab_size = len(tokenizer)

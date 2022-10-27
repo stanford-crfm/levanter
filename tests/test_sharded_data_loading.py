@@ -12,7 +12,6 @@ from utils import skip_if_not_enough_devices
 from haliax.partitioning import ResourceAxis
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
-from levanter.mesh import MeshInfo
 
 
 def _small_dataset(seq_len=128) -> TokenSeqDataset:
@@ -45,23 +44,23 @@ def test_sharded_data_loading_model_axis_2():
     )
     with mesh:
 
-        mesh_info = MeshInfo(mesh, batch_size=len(devices) // 2, per_device_parallelism=1)
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = ShardedIndexedDataset(cache, mesh_info)
+        dataset = ShardedIndexedDataset(cache, mesh, batch_size=len(devices))
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.batch_shape
             shard_i: Shard
-            check_batch_shard_consistency(batch, mesh_info)
+            check_batch_shard_consistency(batch, mesh)
 
 
-def check_batch_shard_consistency(batch, mesh_info):
+def check_batch_shard_consistency(batch, mesh):
+    model_axis_size = mesh.devices.shape[1]
     for i, shard_i in enumerate(batch.global_shards):
-        data_axis_pos_i = shard_i.device.id // mesh_info.model_axis_size
+        data_axis_pos_i = shard_i.device.id // model_axis_size
         for j, shard_j in enumerate(batch.global_shards):
-            data_axis_pos_j = shard_j.device.id // mesh_info.model_axis_size
+            data_axis_pos_j = shard_j.device.id // model_axis_size
             if shard_i.data is not None and shard_j.data is not None:
                 if data_axis_pos_i == data_axis_pos_j:
                     assert np.all(shard_i.data == shard_j.data)
@@ -79,16 +78,15 @@ def test_sharded_data_loading_model_axis_1():
     )
     with mesh:
 
-        mesh_info = MeshInfo(mesh, batch_size=len(devices), per_device_parallelism=1)
         seq_len = 128
         cache = _small_dataset(seq_len)
-        dataset = ShardedIndexedDataset(cache, mesh_info)
+        dataset = ShardedIndexedDataset(cache, mesh, batch_size=len(devices))
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.batch_shape
             shard_i: Shard
-            check_batch_shard_consistency(batch, mesh_info)
+            check_batch_shard_consistency(batch, mesh)
 
 
 def test_sharded_data_loading_model_axis_1_override_process_indices():
@@ -101,12 +99,15 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
     )
     with mesh:
         datasets = []
-        mesh_info = MeshInfo(mesh, batch_size=len(devices), per_device_parallelism=1)
         for process_index in range(2):
             seq_len = 128
             cache = _small_dataset(seq_len)
             dataset = ShardedIndexedDataset(
-                cache, mesh_info, override_process_data_pos=process_index, override_process_data_groups=2
+                cache,
+                mesh,
+                batch_size=len(devices),
+                override_process_data_pos=process_index,
+                override_process_data_groups=2,
             )
             datasets.append(dataset)
 
@@ -116,5 +117,5 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
             assert b1.shape == b2.shape
             assert jnp.all(b1._value != b2._value)
             shard_i: Shard
-            check_batch_shard_consistency(b1, mesh_info)
-            check_batch_shard_consistency(b2, mesh_info)
+            check_batch_shard_consistency(b1, mesh)
+            check_batch_shard_consistency(b2, mesh)
