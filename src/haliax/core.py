@@ -598,7 +598,9 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     # arrays = jnp.rollaxis(array.array, axis=axis_index, start=0)
     # instead we just loop over the axes pulling one out at a time
     arrays = [jnp.take(array.array, i, axis=axis_index) for i in range(axis.size)]
-    return [NamedArray(a, new_axes) for a in arrays]
+    from haliax.partitioning import auto_sharded
+
+    return [auto_sharded(NamedArray(a, new_axes)) for a in arrays]
 
 
 def rename(array: NamedArray, renames: Mapping[Axis, Axis]) -> NamedArray:
