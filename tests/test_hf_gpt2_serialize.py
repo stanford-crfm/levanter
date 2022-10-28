@@ -67,7 +67,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
         return hax.nn.softmax(model(input, inference=True, key=None), axis=model.Vocab)
 
     compute = jax.jit(compute)
-    jax_out = compute(input)
+    jax_out = compute(input).array
     assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
