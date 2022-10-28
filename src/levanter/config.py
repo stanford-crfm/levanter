@@ -120,6 +120,10 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
+        wandb.summary["num_devices"] = jax.device_count()
+        wandb.summary["num_hosts"] = jax.process_count()
+        wandb.summary["backend"] = jax.default_backend()
+
     @staticmethod
     def _infer_experiment_git_root() -> Optional[str]:
         # sniff out the main directory (since we typically don't run from the root of the repo)
