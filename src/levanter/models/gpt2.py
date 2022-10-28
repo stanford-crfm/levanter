@@ -12,7 +12,6 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
-from haliax.partitioning import auto_sharded
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
 
@@ -132,9 +131,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
-        # auto-shard calls ensure that the attention computation is sharded the way we want it to be
-        qkv_out = auto_sharded(self.c_attn(hidden_states))
-        q, k, v = auto_sharded(qkv_out.unbind(self.Qkv))
+        qkv_out = self.c_attn(hidden_states)
+        q, k, v = qkv_out.unbind(self.Qkv)
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({self.SeqLen: self.KeySeqLen})
