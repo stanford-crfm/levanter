@@ -25,7 +25,7 @@ trainer:
 
   axis_resources:
     batch: "data"
-    vocab: "model"
+    vocab: "model" # [vocab, embed] -> sharded by vocab across the model axis
     mlp: "model"
     heads: "model"
   # ZERO-3

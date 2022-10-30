@@ -17,6 +17,7 @@ from .core import (
     named,
     rearrange,
     rename,
+    roll,
     shape_checks,
     split,
     take,
@@ -24,7 +25,7 @@ from .core import (
     unflatten_axis,
 )
 from .hof import fold, scan, vmap
-from .ops import clip, trace, tril, triu, where
+from .ops import isclose, clip, trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
@@ -142,8 +143,8 @@ trunc = wrap_elemwise_unary(jnp.trunc)
 all = wrap_reduction_call(jnp.all)
 amax = wrap_reduction_call(jnp.amax)
 any = wrap_reduction_call(jnp.any)
-argmax = wrap_reduction_call(jnp.argmax, single_axis_only=True)
-argmin = wrap_reduction_call(jnp.argmin, single_axis_only=True)
+argmax = wrap_reduction_call(jnp.argmax, single_axis_only=True, supports_where=False)
+argmin = wrap_reduction_call(jnp.argmin, single_axis_only=True, supports_where=False)
 max = wrap_reduction_call(jnp.max)
 mean = wrap_reduction_call(jnp.mean)
 min = wrap_reduction_call(jnp.min)
@@ -208,6 +209,7 @@ __all__ = [
     "broadcast_axis",
     "named",
     "dot",
+    "roll",
     "split",
     "flatten_axes",
     "take",
@@ -350,4 +352,5 @@ __all__ = [
     "axis_mapping",
     "shape_checks",
     "are_shape_checks_enabled",
+    "isclose",
 ]

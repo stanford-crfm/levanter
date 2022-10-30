@@ -1,9 +1,12 @@
 import functools
+from typing import Union
 
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from ..core import Axis, NamedArray
+import haliax
+
+from ..core import Axis, AxisSpec, NamedArray
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
@@ -29,8 +32,9 @@ selu = wrap_elemwise_unary(jnn.selu)
 gelu = wrap_elemwise_unary(jnn.gelu)
 # TODO: glu = wrap_elemwise_unary(jnn.gelu)
 
-logsumexp = wrap_reduction_call(jnn.logsumexp, False)
+logsumexp = wrap_reduction_call(jnn.logsumexp, False, supports_where=False)
 
+# TODO: support where in softmax, etc
 softmax = wrap_axiswise_call(jnn.softmax, False)
 # TODO: standardize has optional "mean" and "variance" arguments we need to support
 # standardize = wrap_normalization_call(jnn.standardize, False)
@@ -38,9 +42,16 @@ log_softmax = wrap_axiswise_call(jnn.log_softmax, False)
 
 
 @functools.wraps(jnn.one_hot)
-def one_hot(x: NamedArray, class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
-    array = jnn.one_hot(x.array, num_classes=class_axis.size, dtype=dtype)
-    return NamedArray(array, x.axes + (class_axis,))
+def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) -> NamedArray:
+    if isinstance(x, NamedArray):
+        array = jnn.one_hot(x.array, num_classes=class_axis.size, dtype=dtype)
+        return NamedArray(array, x.axes + (class_axis,))
+    else:
+        assert isinstance(x, int)
+        assert class_axis.size > x and x >= -class_axis.size
+
+        array = jnp.zeros(class_axis.size).at[x].set(1)
+        return haliax.named(array, class_axis)
 
 
 __all__ = [

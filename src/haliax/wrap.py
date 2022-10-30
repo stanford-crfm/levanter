@@ -21,19 +21,27 @@ def wrap_elemwise_unary(f):
     return wrapper
 
 
-def wrap_reduction_call(fn, single_axis_only: bool = False):
+def wrap_reduction_call(fn, single_axis_only: bool = False, supports_where: bool = True):
     @functools.wraps(fn)
-    def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
-        if kwargs.get("where", None) is not None:
-            raise ValueError("where is not supported yet for NamedArray")
+    def wrapper(a, axis: Optional[AxisSpec] = None, where: NamedArray = None, **kwargs):
+        kwargs = dict(kwargs)
+        if where is not None and not supports_where:
+            raise ValueError(f"where is not supported by {fn.__name__}")
+
         if kwargs.get("out", None) is not None:
             raise ValueError("out is not supported yet for NamedArray")
         if kwargs.get("keepdims", False):
             raise ValueError("keepdims is not supported for NamedArray")
 
         def reduce_one_leaf(a):
-            nonlocal axis
+            nonlocal axis, where
             if isinstance(a, NamedArray):
+                if where is not None:
+                    if not isinstance(where, NamedArray):
+                        raise TypeError("where must be a NamedArray if a is a NamedArray")
+                    where = broadcast_to(where, a.axes)
+                    kwargs["where"] = where.array
+
                 if axis is None:
                     result = fn(a.array, axis=None, **kwargs)
                     if jnp.isscalar(result):
@@ -56,6 +64,8 @@ def wrap_reduction_call(fn, single_axis_only: bool = False):
                         return result
                     return NamedArray(result, tuple(new_axes))
             else:
+                if where is not None:
+                    kwargs["where"] = where
                 return fn(a, axis=axis, **kwargs)
 
         return jax.tree_util.tree_map(reduce_one_leaf, a, is_leaf=lambda x: isinstance(x, NamedArray))
