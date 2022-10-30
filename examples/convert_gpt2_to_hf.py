@@ -35,7 +35,11 @@ class ConvertGpt2Config:
 
     model: Gpt2Config = Gpt2Config()
 
+    save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
+
     tokenizer: str = "gpt2"
+
+    override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config
 
     @cached_property
     def the_tokenizer(self):
@@ -49,7 +53,7 @@ def main(config: ConvertGpt2Config):
 
     key = jax.random.PRNGKey(0)
 
-    vocab_size = len(tokenizer)
+    vocab_size = config.override_vocab_size or len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
@@ -78,10 +82,12 @@ def main(config: ConvertGpt2Config):
                 # commit_and_upload_manager will automatically upload the checkpoint to the hub
                 # it also cd's into the repo, so we can just save the checkpoint to the current directory
                 save_hf_gpt2_checkpoint(".", model)
-                tokenizer.save_pretrained(".")
+                if config.save_tokenizer:
+                    tokenizer.save_pretrained(".")
         else:
             save_hf_gpt2_checkpoint(config.output_dir, model)
-            tokenizer.save_pretrained(config.output_dir)
+            if config.save_tokenizer:
+                tokenizer.save_pretrained(config.output_dir)
 
 
 def deserialize_checkpoint_and_patch_vocab_dim(
