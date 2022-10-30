@@ -179,7 +179,7 @@ def main(config: TrainGpt2Config):
             n = 0
 
             for batch in eval_dataloader():
-                loss += simplify_gdas(compute_loss_pjit(model_inf, batch))
+                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
             if n > 0:
