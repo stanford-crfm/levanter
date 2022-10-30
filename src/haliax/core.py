@@ -1,5 +1,6 @@
 import contextlib
 import functools as ft
+import typing
 from dataclasses import dataclass
 from math import prod
 from types import EllipsisType
@@ -83,8 +84,23 @@ class NamedArray:
             if s != tuple(a.size for a in self.axes):
                 raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
 
-    def __array__(self):
-        return self.array.__array__()
+    def item(self):
+        return self.array.item()
+
+    def scalar(self) -> jnp.ndarray:
+        """
+        Returns a scalar array corresponding to the value of this NamedArray.
+        Raises an error if the NamedArray is not scalar.
+
+        We sometimes use this to convert a NamedArray to a scalar for returning a loss or similar. Losses
+        have to be jnp.ndarrays, not NamedArrays, so we need to convert them. item doesn't work inside jitted
+        functions because it returns a python scalar.
+
+        You could just call array, but that's not as clear and doesn't assert.
+        """
+        if self.array.ndim != 0:
+            raise ValueError(f"Expected scalar, got {self.array.ndim}-dimensional array")
+        return self.array
 
     # shape = property(lambda self: self.array.shape)
     dtype = property(lambda self: self.array.dtype)
@@ -100,7 +116,15 @@ class NamedArray:
         assert len(tree) == 1
         return cls(tree[0], axes=aux)
 
-    def _lookup_indices(self, axis: AxisSpec):
+    @typing.overload
+    def _lookup_indices(self, axis: Axis) -> Optional[int]:
+        ...
+
+    @typing.overload
+    def _lookup_indices(self, axis: Sequence[Axis]) -> Tuple[Optional[int], ...]:
+        ...
+
+    def _lookup_indices(self, axis: AxisSpec) -> Union[Optional[int], Tuple[Optional[int], ...]]:
         """
         For a single axis, returns an int corresponding to the index of the axis.
         For multiple axes, returns a tuple of ints corresponding to the indices of the axes.
@@ -603,6 +627,16 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     return [auto_sharded(NamedArray(a, new_axes)) for a in arrays]
 
 
+def roll(array: NamedArray, shift: Union[int, Tuple[int, ...]], axis: AxisSpec) -> NamedArray:
+    """
+    Roll an array along an axis or axes. Analogous to np.roll
+    """
+    axis_indices = array._lookup_indices(axis)
+    if axis_indices is None:
+        raise ValueError(f"axis {axis} not found in {array}")
+    return NamedArray(jnp.roll(array.array, shift, axis_indices), array.axes)
+
+
 def rename(array: NamedArray, renames: Mapping[Axis, Axis]) -> NamedArray:
     for old, new in renames.items():
         if old.size != new.size:
@@ -846,6 +880,7 @@ __all__ = [
     "flatten_axes",
     "unflatten_axis",
     "unbind",
+    "roll",
     "_broadcast_order",
     "broadcast_to",
     "broadcast_axis",

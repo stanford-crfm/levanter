@@ -439,17 +439,16 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
-    def __call__(self, input_ids, *, inference, key):
+    def __call__(self, input_ids: NamedArray, *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        named_input_ids = hax.named(input_ids, self.SeqLen)
-        hidden_states = self.embeddings.embed(named_input_ids, inference=inference, key=k_embed)
+        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
         hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
 
-        return lm_logits.rearrange((self.SeqLen, self.Vocab)).array
+        return lm_logits
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}

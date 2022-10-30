@@ -9,6 +9,8 @@ import jax
 import jmp
 from equinox import filter_vmap
 
+import haliax as hax
+import haliax.random
 from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
@@ -67,6 +69,10 @@ def main(config: TrainGpt2Config):
         config.trainer.eval_batch_size,
     )
 
+    # some axes we use outside the model proper
+    # Batch = Axis("batch", config.trainer.train_batch_size)
+    SeqLen = config.model.SeqLen
+
     with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
@@ -123,23 +129,28 @@ def main(config: TrainGpt2Config):
             out_axis_resources=config.trainer.axis_resources,
         )
 
+        # don't want to compute the mask w.r.t. the final token
+        loss_mask = hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)
+        loss_mask = 1 - loss_mask  # one everywhere except the last token
+
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+            input_ids = hax.named(input_ids, SeqLen)
             pred_y = model(input_ids, inference=inference, key=key)
             pred_y = mp.cast_to_output(pred_y)
 
-            # TODO: would prefer to do this in haliax name land, but it's not clear how to do that
-            # could add a where mask which is pretty normal
-            pred_y = pred_y[:-1]
-            labels = jax.nn.one_hot(input_ids[1:], Vocab.size)
+            # need to roll the target tokens back by one so that each token is predicting the next token
+            target_y = haliax.roll(input_ids, -1, SeqLen)
+            target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
-            loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, labels)
+            loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+            loss = hax.mean(loss, where=loss_mask)
 
             if not inference and config.log_z_regularization > 0:
-                logz_mse = jnp.mean((log_normalizers**2))
+                logz_mse = hax.mean((log_normalizers**2))
                 loss += config.log_z_regularization * logz_mse
 
-            return loss
+            return loss.scalar()
 
         # mean_loss: this computes the mean loss over a batch of examples
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
@@ -168,7 +179,7 @@ def main(config: TrainGpt2Config):
             n = 0
 
             for batch in eval_dataloader():
-                loss += simplify_gdas(compute_loss_pjit(model_inf, batch))
+                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
             if n > 0:
