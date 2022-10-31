@@ -544,11 +544,36 @@ to using 5.5GB of memory for the parameters and optimizer states alone. This is 
 a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
 can be nontrivial.
 
+### Mixed Precision Training via `jmp`
+
+A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
+states) in full precision, but only use half precision (bf16) for the activations. This reduces the memory footprint of the
+model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
+significant win, and it's easy to do with Jax and a library called `jmp`.
+
+We could just do everything in bf16, but there's been lots of reports that, even when stable, keeping everything in bf16
+can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a ~.15 nat
+loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
+parameters in fp32, and use bf16 for the activations.
+
+[`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
+that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
+has methods for convert an array or pytree of arrays to the appropriate dtype, and for converting back to each
+of these semantic dtypes.
+
+```python
+import jmp
+policy = jmp.get_policy("compute=bf16,parameter=f32,output=f32")
+
+policy.cast_to_compute(my_model)  # Convert x to bf16
+```
+
+To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
+param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
+
 ### Gradient Checkpointing
 
 
-
-### Mixed Precision Training via `jmp`
 
 
 ## Model and Activation Partitioning via `pjit` (and data parallelism revisited)
@@ -706,24 +731,12 @@ https://rd.yyrcd.com/2022-03-22-NVIDIA%20Hopper%20Architecture%20In-Depth%20%7C%
 
 
 
-## Memory Use
 
-Training a TPU
-
-TPUs have 16GB each
-
-
-### Gradient Accumulation
-
-## jmp: Mixed Precision
-## Distributed Data Loading
-
-### ZeRO: Parameter Partitioning
 
 
 ## Random Gotchas
 ### Pjit's SPMD partitioner gets confused
-Sometimes Jax doesn't shard things the way you want, and this can lead to either huge slow downs or huge memory consumption. Jax's `with_sharding_constraint` or haliax's `auto_shard` is your friend here. Sometimes a little `with_sharding_constraint` makes things worse, but more makes it better.
+Sometimes Jax doesn't shard things the way you want, and this can lead to either huge slow downs or huge memory consumption. Jax's `with_sharding_constraint` or haliax's `auto_sharded` is your friend here.
 
 ### Randomness isn't shardable
 Unfortunately, random number generation in Jax is sequential: there's no way to "fast-forward" the RNG. Let's say I want to generate a 4096 x 8192 matrix that is sharded along the first axis across 4 nodes. Then, I might want to write something like this:
