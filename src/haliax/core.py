@@ -544,7 +544,7 @@ def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[Named
 # e.g. we'd like something like rearrange(array, (..., new_axis), merge_axes={new_axis: (old_axis1, old_axis2)})
 # or rearrange(array, (new_axis1, ..., new_axis2), split_axes={old_axis: (new_axis1, new_axis2)})
 # or even rearrange(array, (x, ..., b, a), map_axes={old_axis: (a, b), x: (old1, old2)})
-def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
+def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]) -> NamedArray:
     """
     Rearrange an array so that its underlying storage conforms to axes.
     axes may include up to 1 ellipsis, indicating that the remaining axes should be
@@ -764,7 +764,7 @@ def _broadcast_axes(
 
 
 def broadcast_to(
-    a: NamedArray, axes: AxisSpec, ensure_order: bool = True, enforce_no_extra_axes: bool = True
+    a: NamedOrNumeric, axes: AxisSpec, ensure_order: bool = True, enforce_no_extra_axes: bool = True
 ) -> NamedArray:
     """
     Broadcasts a so that it has the given axes.
@@ -773,8 +773,12 @@ def broadcast_to(
 
     If enforce_no_extra_axes is True and the array has axes that are not in axes, then a ValueError is raised.
     """
-
     axes = ensure_tuple(axes)
+
+    if not isinstance(a, NamedArray):
+        a = named(jnp.asarray(a), ())
+
+    assert isinstance(a, NamedArray)  # mypy gets confused
 
     if a.axes == axes:
         return a
@@ -795,7 +799,7 @@ def broadcast_to(
     if ensure_order:
         a = rearrange(a, axes + extra_axes)
 
-    return a
+    return typing.cast(NamedArray, a)
 
 
 @overload
