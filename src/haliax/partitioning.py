@@ -293,16 +293,16 @@ def _cached_filter_eval_shape(fun, *args, **kwargs):
     return _eval_shape_cache[key]
 
 
-def physical_axis_name(axis: Axis) -> Optional[PhysicalAxis]:
-    """Get the physical axis name for a logical axis from the global mapping. Returns none if the axis is not mapped."""
-    mapping = _mapping_holder.thread_data.resource_mapping
+def physical_axis_name(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxis]:
+    """Get the physical axis name for a logical axis from the mapping. Returns none if the axis is not mapped."""
+    mapping = mapping or _mapping_holder.thread_data.resource_mapping
     if mapping is None:
         return None
     else:
-        return mapping.get(axis.name, None)
+        return mapping.get(axis.name, None)  # type: ignore
 
 
-def physical_axis_size(axis: Axis) -> Optional[int]:
+def physical_axis_size(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Optional[int]:
     """Get the physical axis size for a logical axis. This is the product of the size of all physical axes
     that this logical axis is mapped to."""
     # TODO: shouldn't be accessing this internal api, but...
@@ -313,7 +313,7 @@ def physical_axis_size(axis: Axis) -> Optional[int]:
     except AttributeError:
         raise ValueError("No resource mapping found")
 
-    name: Union[None, str, Sequence[str]] = physical_axis_name(axis)
+    name: Union[None, str, Sequence[str]] = physical_axis_name(axis, mapping)
     if name is None:
         return None
     elif isinstance(name, str):
@@ -328,9 +328,9 @@ def pspec_for_axis(axis: AxisSpec) -> PartitionSpec:
     return PartitionSpec(*(physical_axis_name(a) for a in axis))
 
 
-def round_axis_for_partitioning(axis: Axis) -> Axis:
+def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Axis:
     """Round an axis so that it's divisible by the size of the partition it's on"""
-    size = physical_axis_size(axis)
+    size = physical_axis_size(axis, mapping)
     if size is None:
         return axis
     else:

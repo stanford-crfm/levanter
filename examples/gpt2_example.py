@@ -73,7 +73,12 @@ def main(config: TrainGpt2Config):
     # Batch = Axis("batch", config.trainer.train_batch_size)
     SeqLen = config.model.SeqLen
 
-    with config.trainer.device_mesh as mesh, axis_mapping(config.trainer.axis_resources):
+    # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
+    # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    with config.trainer.device_mesh as mesh:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -83,7 +88,7 @@ def main(config: TrainGpt2Config):
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
         vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
@@ -94,12 +99,6 @@ def main(config: TrainGpt2Config):
         # I like to think of these as "semantic" dtypes: compute is the dtype we do most of our math in, parameter is
         # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
         mp: jmp.Policy = config.trainer.mp
-
-        # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
-        # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
-        # TODO: move this into TrainerConfig
-        parameter_axis_mapping = dict(**config.trainer.axis_resources)
-        parameter_axis_mapping.update(config.trainer.parameter_axis_resources)
 
         # initialize the model
         # This function
@@ -126,7 +125,7 @@ def main(config: TrainGpt2Config):
         prepare_model_for_compute = named_pjit(
             mp.cast_to_compute,
             in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=config.trainer.axis_resources,
+            out_axis_resources=compute_axis_mapping,
         )
 
         # don't want to compute the mask w.r.t. the final token
@@ -243,11 +242,11 @@ def main(config: TrainGpt2Config):
                 keys,
                 data_axis_size=config.trainer.data_axis_size,
                 per_device_parallelism=config.trainer.per_device_parallelism,
-                compute_axis_mapping=config.trainer.axis_resources,
+                compute_axis_mapping=compute_axis_mapping,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
 
-            with jax.named_scope("optimizer"), axis_mapping(config.trainer.parameter_axis_resources, merge=True):
+            with jax.named_scope("optimizer"), axis_mapping(parameter_axis_mapping):
                 # distribute gradients across the mesh and apply them
                 updates, opt_state = optimizer.update(grads, opt_state, params=model)
                 model = eqx.apply_updates(model, updates)
@@ -257,6 +256,7 @@ def main(config: TrainGpt2Config):
         # donate the model and the opt_state so they can used for outputs
         train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
 
+        # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
