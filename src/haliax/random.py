@@ -115,7 +115,7 @@ def logistic(key, shape: AxisSpec, dtype=jnp.float_):
 
 
 @named_call
-def truncated_normal(key, lower: NamedOrNumeric, upper: NamedOrNumeric, shape: AxisSpec, dtype=jnp.float_):
+def truncated_normal(key, shape: AxisSpec, lower: NamedOrNumeric, upper: NamedOrNumeric, dtype=jnp.float_):
     shape = ensure_tuple(shape)
     lower = broadcast_to(lower, shape).array
     upper = broadcast_to(upper, shape).array
@@ -193,53 +193,43 @@ def generate_sharded(fn, axis: Optional[Axis] = None):
     return wrapped_fn
 
 
-def ball(key, shape: AxisSpec, d: int, p: float = 2.0, dtype=jnp.float_):
+@named_call
+def ball(key, shape: AxisSpec, D: Axis, p: float = 2.0, dtype=jnp.float_):
     shape = ensure_tuple(shape)
     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-    jax_array = jrandom.ball(key=key, shape=jax_shape, d=d, p=p, dtype=dtype)
-    return auto_sharded(NamedArray(jax_array, shape))
+    jax_array = jrandom.ball(key=key, shape=jax_shape, d=D.size, p=p, dtype=dtype)
+    return auto_sharded(NamedArray(jax_array, shape + (D,)))
 
 
-# TODO: categorical
-# def categorical(key, logits: NamedArray, axis: Axis, shape: Optional[AxisSpec] = None):
-#     # TODO: this one is tricky. need to test carefully
-#     if shape is not None:
-#         logits = logits.broadcast_axis(shape)
-#     else:
-#         shape = logits.axes
-#         # TODO: add delete_axis
-#         index_of_axis = shape.index(axis)
-#         shape = shape[:index_of_axis] + shape[index_of_axis + 1 :]
-#
-#     axis_index = logits._lookup_indices(axis)
-#
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-#
-#     return auto_sharded(NamedArray(jrandom.categorical(key, logits.array, axis_index, jax_shape), shape))
+@named_call
+def choice(key, a: NamedArray, axis: Axis, shape: AxisSpec, replace: bool = True, p: Optional[NamedArray] = None):
+    """
+    Selects random elements from an array along the given axis. If p is provided, the elements are selected
+    with probability proportional to their weights and it must be a 1-d array with its only axis being the axis.
+    shape and a.axes must not overlap except that axis may be repeated in both.
 
+    :return: Array with shape `shape` + (`a.axes` - `axis`)
+    """
 
-def choice(key, a: NamedArray, shape: AxisSpec, replace: bool = True, p: Optional[NamedArray] = None):
+    index = a._lookup_indices(axis)
+    assert index is not None, f"axis {axis} not in a"
+
     shape = ensure_tuple(shape)
     if p is not None:
-        p = p.broadcast_axis(shape)
-    a = a.broadcast_axis(shape)
+        assert p.axes == (axis,), f"p must have axis {axis} or be None"
+
     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-    jax_array = jrandom.choice(key, a.array, jax_shape, replace=replace, p=p.array if p is not None else None)
-    return auto_sharded(NamedArray(jax_array, shape))
+
+    jax_array = jrandom.choice(
+        key, a.array, jax_shape, replace=replace, p=p.array if p is not None else None, axis=index
+    )
+
+    expected_shape = shape + tuple(a.axes[:index] + a.axes[index + 1 :])
+
+    return auto_sharded(NamedArray(jax_array, expected_shape))
 
 
-# TODO: dirichlet
-#     A random array with the specified dtype and shape given by
-#     ``shape + (alpha.shape[-1],)`` if ``shape`` is not None, or else
-#     ``alpha.shape``.
-# def dirichlet(key, alpha: NamedArray, shape: Optional[AxisSpec] = None):
-#     if shape is not None:
-#         alpha = alpha.broadcast_axis(shape)
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape) if shape is not None else None
-#     jax_array = jrandom.dirichlet(key, alpha.array, jax_shape)
-#     return auto_sharded(NamedArray(jax_array, alpha.axes))
-
-
+@named_call
 def gumbel(key, shape: AxisSpec, dtype=jnp.float_):
     shape = ensure_tuple(shape)
     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
@@ -247,35 +237,14 @@ def gumbel(key, shape: AxisSpec, dtype=jnp.float_):
     return auto_sharded(NamedArray(jax_array, shape))
 
 
-# def loggamma(key, a: NamedOrNumeric, shape: AxisSpec, dtype=jnp.float_):
-#     shape = ensure_tuple(shape)
-#     a = broadcast_to(a, shape)
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-#     jax_array = jrandom.loggamma(key, a, jax_shape, dtype=dtype)
-#     return auto_sharded(NamedArray(jax_array, shape))
-
-
-def orthogonal(key, n: int, shape: AxisSpec, dtype=jnp.float_):
-    shape = ensure_tuple(shape)
-    jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-    jax_array = jrandom.orthogonal(key, n, jax_shape, dtype=dtype)
-    return auto_sharded(NamedArray(jax_array, shape))
-
-
-# def pareto(key, b: NamedOrNumeric, shape: AxisSpec, dtype=jnp.float_):
-#     shape = ensure_tuple(shape)
-#     b = broadcast_to(b, shape)
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-#     jax_array = jrandom.pareto(key, b, jax_shape, dtype=dtype)
-#     return auto_sharded(NamedArray(jax_array, shape))
-
-
+@named_call
 def permutation(key, x: NamedArray, axis: Axis, independent: bool = False):
     axis_index = x._lookup_indices(axis)
     jax_array = jrandom.permutation(key, x.array, axis_index, independent=independent)
     return auto_sharded(NamedArray(jax_array, x.axes))
 
 
+@named_call
 def rademacher(key, shape: AxisSpec, dtype=jnp.float_):
     shape = ensure_tuple(shape)
     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
@@ -283,43 +252,28 @@ def rademacher(key, shape: AxisSpec, dtype=jnp.float_):
     return auto_sharded(NamedArray(jax_array, shape))
 
 
-# def t(key, df: NamedOrNumeric, shape: AxisSpec, dtype=jnp.float_):
-#     shape = ensure_tuple(shape)
-#     df = broadcast_to(df, shape)
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-#     jax_array = jrandom.t(key, df, jax_shape, dtype=dtype)
-#     return auto_sharded(NamedArray(jax_array, shape))
-
-
-# def weibull_min(key, scale: NamedOrNumeric, concentration: NamedOrNumeric, shape: AxisSpec, dtype=jnp.float_):
-#     shape = ensure_tuple(shape)
-#     scale = broadcast_to(scale, shape)
-#     concentration = broadcast_to(concentration, shape)
-#     jax_shape = tuple(axis.size if isinstance(axis, Axis) else axis for axis in shape)
-#     jax_array = jrandom.weibull_min(key, scale, concentration, jax_shape, dtype=dtype)
-#     return auto_sharded(NamedArray(jax_array, shape))
-
-
 __all__ = [
     "generate_sharded",
     "uniform",
     "normal",
+    "ball",
     "bernoulli",
-    "poisson",
-    "permutation",
+    "beta",
+    "cauchy",
     "choice",
-    "laplace",
     "exponential",
     "gamma",
-    # "pareto",
-    "beta",
-    # "dirichlet",
     "gumbel",
-    # "loggamma",
+    "laplace",
+    "logistic",
+    "permutation",
+    "poisson",
     "rademacher",
+    "truncated_normal"
+    # "categorical",
+    # "dirichlet",
+    # "loggamma",
+    # "pareto",
     # "t",
     # "weibull_min",
-    "orthogonal",
-    # "categorical",
-    "ball",
 ]

@@ -106,6 +106,9 @@ class NamedArray:
         assert len(tree) == 1
         return cls(tree[0], axes=aux)
 
+    def has_axis(self, axis: AxisSpec) -> bool:
+        return self._lookup_indices(axis) is not None
+
     @typing.overload
     def _lookup_indices(self, axis: Axis) -> Optional[int]:
         ...
