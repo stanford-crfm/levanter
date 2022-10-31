@@ -19,7 +19,7 @@ from jax.experimental.maps import Mesh
 from pyrallis import field
 
 import levanter.logging
-from haliax.partitioning import ResourceAxis
+from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter import jax_utils
 
 
@@ -230,6 +230,18 @@ class TrainerConfig:
         """size of the data parallel/batch parallel axis."""
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
+
+    @property
+    def compute_axis_mapping(self) -> ResourceMapping:
+        return self.axis_resources
+
+    @property
+    def parameter_axis_mapping(self) -> ResourceMapping:
+        mapping = dict(self.axis_resources)
+        if self.parameter_axis_resources:
+            mapping.update(self.parameter_axis_resources)
+
+        return mapping
 
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
