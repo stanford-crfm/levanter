@@ -124,8 +124,7 @@ def main(config: TrainGpt2Config):
         )
 
         # don't want to compute the mask w.r.t. the final token
-        loss_mask = hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)
-        loss_mask = 1 - loss_mask  # one everywhere except the last token
+        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
