@@ -1,8 +1,10 @@
 # Various Pyrallis configs
 import dataclasses
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import cached_property
 from pathlib import Path
 from typing import List, Mapping, Optional, Union
@@ -21,6 +23,7 @@ from pyrallis import field
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter import jax_utils
+from levanter.checkpoint import Checkpointer, CheckpointInterval
 
 
 logger = logging.getLogger(__name__)
@@ -151,6 +154,39 @@ class WandbConfig:
 
 
 @dataclass
+class CheckpointerConfig:
+    base_path: str = "checkpoints/"
+    save_interval: timedelta = timedelta(hours=6)
+    # TODO: I'd like to write this, but it's not supported by pyrallis
+    # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
+    keep: List[dict] = field(
+        default_factory=lambda: [dict(every=1000)]
+    )  # list of dicts with two keys: every and until
+
+    def create(self, run_name) -> Checkpointer:
+        keeps = [CheckpointInterval(**k) for k in self.keep]
+        return Checkpointer(
+            path=f"{self.base_path}/{run_name}",
+            save_interval=self.save_interval,
+            keep=keeps,
+        )
+
+    def __post_init__(self):
+        self.base_path = os.path.expanduser(self.base_path)
+
+        # validate the checkpoint intervals.
+        # we want to make sure that the intervals are monotonic. only the last one can be None
+        prev_interval = None
+        for interval in self.keep:
+            if prev_interval is not None:
+                assert prev_interval.until is not None, "Only the last checkpoint interval can be None"
+                assert (
+                    interval.until is None or interval.until > prev_interval.until
+                ), "Checkpoint intervals must be monotonic"
+            prev_interval = interval
+
+
+@dataclass
 class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
@@ -158,7 +194,6 @@ class TrainerConfig:
     wandb: WandbConfig = WandbConfig()
     log_dir: Path = Path("logs/")
     run_base_dir: furl = furl("runs/")
-    checkpoint_dir: furl = furl("checkpoints/")
 
     # config related to partitioning
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
@@ -177,7 +212,7 @@ class TrainerConfig:
     num_train_steps: int = 400_000
     steps_per_eval: int = 1_000
 
-    steps_per_save: int = 20_000
+    checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
     load_checkpoint_path: Optional[furl] = None
 
@@ -204,10 +239,6 @@ class TrainerConfig:
     @property
     def run_dir(self) -> furl:
         return self.run_base_dir / self.run_name
-
-    @property
-    def checkpoint_path(self) -> furl:
-        return self.checkpoint_dir / self.run_name
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
@@ -347,6 +378,35 @@ def register_codecs():
 
     pyrallis.decode.register(jmp.Policy, lambda policy_str: jmp.get_policy(policy_str))
     pyrallis.encode.register(jmp.Policy, policy_encode)
+
+    def parse_timedelta(td_str):
+        import pytimeparse
+
+        return timedelta(seconds=pytimeparse.parse(td_str))
+
+    def encode_timedelta(td: timedelta):
+        out = ""
+        if td.days:
+            out += f"{td.days}d"
+        seconds: float = td.seconds
+        if seconds > 3600:
+            hours = seconds // 3600
+            seconds -= hours * 3600
+            out += f"{hours}h"
+        if seconds > 60:
+            minutes = seconds // 60
+            seconds -= minutes * 60
+            out += f"{minutes}m"
+
+        if td.microseconds:
+            seconds += td.microseconds / 1e6
+
+        if seconds:
+            out += f"{seconds}s"
+        return out
+
+    pyrallis.decode.register(timedelta, parse_timedelta)
+    pyrallis.encode.register(timedelta, encode_timedelta)
 
 
 register_codecs()

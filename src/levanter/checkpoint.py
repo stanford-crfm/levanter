@@ -1,8 +1,10 @@
+import dataclasses
+import datetime
 import json
 import logging
 import pathlib
-from datetime import datetime
-from typing import Any, Callable, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Optional, Sequence, Union
 
 import fsspec
 import jax
@@ -15,6 +17,99 @@ from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorsto
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CheckpointInterval:
+    every: int  # how often to checkpoint
+    until: Optional[int] = None  # until what step to save checkpoints with this policy, None means forever
+
+
+class Checkpointer:
+    """A checkpointer class that saves checkpoints with two different, but overlapping policies: time and step."""
+
+    path: str
+    save_interval: datetime.timedelta
+    keep: Sequence[CheckpointInterval] = dataclasses.field(default_factory=lambda: [CheckpointInterval(every=1000)])
+
+    _last_temporary_checkpoint: Optional[str] = None
+
+    def __init__(self, path: str, save_interval: datetime.timedelta, keep: Sequence[CheckpointInterval]):
+        self.path = path
+        self.save_interval = save_interval
+        self.keep = keep
+        self._keep_stack = list(keep)
+        self._last_save_time = datetime.datetime.now()
+        self._last_save_step = 0
+        self._last_temporary_checkpoint = None
+
+    def load_checkpoint(self, model, training_state, path: Optional[str] = None, *, discover_latest: bool = True):
+        if path is None:
+            path = self.path
+        return load_checkpoint(model, training_state, path, discover_latest=discover_latest)
+
+    def load_model(self, model, path: Optional[str] = None, *, discover_latest: bool = True):
+        if path is None:
+            path = self.path
+        return load_checkpoint(model, None, path, discover_latest=discover_latest)
+
+    def __call__(self, info, force: bool = False):
+        self.on_step(info)
+
+    def on_step(self, info, force: bool = False):
+        if info.step == 0:
+            self._last_save_time = datetime.datetime.now()
+            return  # never save checkpoint at step 0
+
+        while self._keep_stack and self._keep_stack[0].until is not None and self._keep_stack[0].until < info.step:
+            self._keep_stack.pop(0)
+
+        # two reasons we can save: time or step
+        # they have different behaviors:
+        # * if we save by time, we save the latest checkpoint and delete the previous one
+        # * if we save by step, we save the latest checkpoint and keep the previous one
+        should_save = force
+        next_checkpoint_is_permanent = False
+
+        if self._keep_stack and info.step % self._keep_stack[0].every == 0:
+            should_save = True
+            next_checkpoint_is_permanent = True
+        elif datetime.datetime.now() - self._last_save_time > self.save_interval:
+            should_save = True
+            next_checkpoint_is_permanent = False
+
+        if should_save:
+            last_checkpoint = self._last_temporary_checkpoint
+            destination = f"step-{info.step}"
+
+            self.save_checkpoint(info, destination)
+
+            if not next_checkpoint_is_permanent:
+                self._last_temporary_checkpoint = destination
+            else:
+                self._last_temporary_checkpoint = None
+
+            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
+            # so that we can delete it properly if we recover
+            if last_checkpoint is not None:
+                self._rm_checkpoint(last_checkpoint)
+
+    def _rm_checkpoint(self, checkpoint):
+        fs = fsspec.get_fs_token_paths(self.path)[0]
+        # have to strip protocol from path because fsspec filesystems don't like them
+        fs.rm(f"{furl(self.path).path}/{checkpoint}", recursive=True)
+
+    def save_checkpoint(self, info, destination):
+        path = furl(f"{self.path}/{destination}")
+        logger.info(f"Saving checkpoint at step {info.step} to {path}")
+        save_checkpoint(
+            model=info.model,
+            training_state=(info.opt_state, info.next_key),
+            step=info.step,
+            checkpoint_path=str(path),
+        )
+        self._last_save_step = info.step
+        self._last_save_time = datetime.datetime.now()
 
 
 def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_ok=False):
@@ -39,7 +134,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_
 
     metadata = {
         "step": step,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.datetime.now().isoformat(),
     }
 
     if jax.process_index() == 0:
@@ -98,7 +193,7 @@ def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
 
     def checkpoint_timestamp(ckpt_dir):
         metadata = json.load(fs.open(f"{ckpt_dir}/metadata.json"))
-        return datetime.fromisoformat(metadata["timestamp"])
+        return datetime.datetime.fromisoformat(metadata["timestamp"])
 
     if len(ckpt_dirs) > 0:
         out = max(ckpt_dirs, key=checkpoint_timestamp)
