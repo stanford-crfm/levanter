@@ -1,39 +1,34 @@
 import itertools
 import logging
-from collections import Counter
 from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
+import jax.profiler
+import jax.random as jrandom
 import jmp
+import pyrallis
 from equinox import filter_vmap
+from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
+import wandb
 from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
+from levanter.checkpoint import load_checkpoint
+from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenSeqDataset
-from levanter.logging import capture_time, log_time_to_wandb
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-
-
-print(Counter([type(dev) for dev in jax.devices()]))
-import jax.numpy as jnp
-import jax.profiler
-import jax.random as jrandom
-import pyrallis
-from transformers import GPT2Tokenizer
-
-import wandb
-from levanter.checkpoint import load_checkpoint
-from levanter.config import TrainerConfig
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
+from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 
