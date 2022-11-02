@@ -15,7 +15,6 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
-import pytimeparse
 from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
@@ -25,6 +24,7 @@ import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter import jax_utils
 from levanter.checkpoint import Checkpointer, CheckpointInterval
+from levanter.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
@@ -379,32 +379,6 @@ def register_codecs():
 
     pyrallis.decode.register(jmp.Policy, lambda policy_str: jmp.get_policy(policy_str))
     pyrallis.encode.register(jmp.Policy, policy_encode)
-
-    def parse_timedelta(td_str):
-        return timedelta(seconds=pytimeparse.parse(td_str))
-
-    def encode_timedelta(td: timedelta):
-        out = ""
-        if td.days:
-            out += f"{td.days}d"
-        seconds: float = td.seconds
-        if seconds > 3600:
-            hours = seconds // 3600
-            seconds -= hours * 3600
-            out += f"{hours}h"
-        if seconds > 60:
-            minutes = seconds // 60
-            seconds -= minutes * 60
-            out += f"{minutes}m"
-
-        if td.microseconds:
-            seconds += td.microseconds / 1e6
-
-        if seconds:
-            out += f"{seconds}s"
-
-        assert parse_timedelta(out) == td
-        return out
 
     pyrallis.decode.register(timedelta, parse_timedelta)
     pyrallis.encode.register(timedelta, encode_timedelta)
