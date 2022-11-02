@@ -26,22 +26,49 @@ class CheckpointInterval:
 
 
 class Checkpointer:
-    """A checkpointer class that saves checkpoints with two different, but overlapping policies: time and step."""
+    """
+    A checkpointer class that saves checkpoints with two different, but overlapping policies: time and step.
+
+    Note that this class is stateful: it keeps track of the last time a checkpoint was saved, and the last step
+    a checkpoint was saved at.
+    """
 
     base_path: str
-    save_interval: datetime.timedelta  # we save at least this frequently
-    keep: Sequence[CheckpointInterval] = dataclasses.field(default_factory=lambda: [CheckpointInterval(every=1000)])
+    save_interval: Optional[datetime.timedelta]  # we save at least this frequently
+    step_policies: Sequence[CheckpointInterval] = dataclasses.field(
+        default_factory=lambda: [CheckpointInterval(every=1000)]
+    )
 
     _last_temporary_checkpoint: Optional[str] = None
 
-    def __init__(self, base_path: str, save_interval: datetime.timedelta, keep: Sequence[CheckpointInterval]):
+    def __init__(
+        self,
+        base_path: str,
+        save_interval: Optional[datetime.timedelta],
+        step_policies: Sequence[CheckpointInterval],
+        dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
+    ):
+        """dt_now_injection is used for testing"""
         self.base_path = base_path
         self.save_interval = save_interval
-        self.keep = keep
-        self._keep_stack = list(keep)
-        self._last_save_time = datetime.datetime.now()
+        self.step_policies = list(step_policies)
+        self._dt_now_injection = dt_now_injection or datetime.datetime.now
+        self._last_save_time = self._dt_now_injection()
         self._last_save_step = 0
         self._last_temporary_checkpoint = None
+
+        # ensure that the step_policies are sorted. We could sort, but instead we'll just insist that they are sorted
+        # since it's probably a typo if they aren't
+        for i in range(1, len(step_policies)):
+            # factor these out so mypy can figure it out
+            prev_until = step_policies[i - 1].until
+            until = step_policies[i].until
+            if prev_until is None:
+                raise ValueError("Only the last step policy can have an 'until' value of None")
+            if until is None:
+                continue
+            if prev_until >= until:
+                raise ValueError("Step policies must be sorted by 'until' value")
 
     def load_checkpoint(self, model, training_state, path: Optional[str] = None, *, discover_latest: bool = True):
         if path is None:
@@ -54,12 +81,12 @@ class Checkpointer:
         return load_checkpoint(model, None, path, discover_latest=discover_latest)
 
     def on_step(self, info, force: bool = False):
-        if info.step == 0:
-            self._last_save_time = datetime.datetime.now()
-            return  # never save checkpoint at step 0
+        step = info.step
 
-        while self._keep_stack and self._keep_stack[0].until is not None and self._keep_stack[0].until < info.step:
-            self._keep_stack.pop(0)
+        if step == 0:
+            self._last_save_time = self._dt_now_injection()
+            if not force:
+                return  # don't save checkpoint at step 0 unless forced
 
         # two reasons we can save: time or step
         # they have different behaviors:
@@ -68,16 +95,17 @@ class Checkpointer:
         should_save = force
         next_checkpoint_is_permanent = False
 
-        if self._keep_stack and info.step % self._keep_stack[0].every == 0:
+        current_every = self._get_current_step_save_interval(step)
+        if current_every is not None and step % current_every == 0:
             should_save = True
             next_checkpoint_is_permanent = True
-        elif datetime.datetime.now() - self._last_save_time > self.save_interval:
+        elif self.save_interval and self._dt_now_injection() - self._last_save_time >= self.save_interval:
             should_save = True
             next_checkpoint_is_permanent = False
 
         if should_save:
             last_checkpoint = self._last_temporary_checkpoint
-            destination = f"step-{info.step}"
+            destination = f"step-{step}"
 
             self.save_checkpoint(info, destination)
 
@@ -90,6 +118,14 @@ class Checkpointer:
             # so that we can delete it properly if we recover
             if last_checkpoint is not None:
                 self._rm_checkpoint(last_checkpoint)
+
+    def _get_current_step_save_interval(self, step):
+        # binary search for the correct interval
+        # we assume that the intervals are sorted by until
+        current_policy = next(filter(lambda p: p.until is None or p.until >= step, self.step_policies), None)
+        if current_policy is None:
+            return None
+        return current_policy.every
 
     def _rm_checkpoint(self, checkpoint):
         fs = fsspec.get_fs_token_paths(self.base_path)[0]
@@ -106,7 +142,7 @@ class Checkpointer:
             checkpoint_path=str(path),
         )
         self._last_save_step = info.step
-        self._last_save_time = datetime.datetime.now()
+        self._last_save_time = self._dt_now_injection()
 
 
 def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_ok=False):
@@ -129,18 +165,21 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path, *, exist_
     if training_state is not None:
         tree_serialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
 
-    metadata = {
-        "step": step,
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
-
-    if jax.process_index() == 0:
-        with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
-            json.dump(metadata, json_out)
+    save_metadata(checkpoint_path, fs, step)
 
     logger.info(f"Saved checkpoint for step {step}")
 
     return checkpoint_path
+
+
+def save_metadata(checkpoint_path, fs, step):
+    metadata = {
+        "step": step,
+        "timestamp": datetime.datetime.now().isoformat(),
+    }
+    if jax.process_index() == 0:
+        with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
+            json.dump(metadata, json_out)
 
 
 def load_checkpoint(model, training_state, checkpoint_path, *, discover_latest=True):
@@ -163,8 +202,7 @@ def load_checkpoint(model, training_state, checkpoint_path, *, discover_latest=T
         return None
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
-    with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
-        metadata = json.load(metadata_in)
+    metadata = load_metadata(checkpoint_path, fs)
 
     model = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
 
@@ -174,6 +212,15 @@ def load_checkpoint(model, training_state, checkpoint_path, *, discover_latest=T
         training_state = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
 
     return model, training_state, metadata["step"]
+
+
+def load_metadata(checkpoint_path, fs=None):
+    if fs is None:
+        fs: AbstractFileSystem
+        fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
+    with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
+        metadata = json.load(metadata_in)
+    return metadata
 
 
 def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:

@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, TypeVar
 
-import equinox as eqx
 from chex import PRNGKey
+from jaxtyping import PyTree
 
 
 S = TypeVar("S")  # State
@@ -14,7 +14,7 @@ T = TypeVar("T")
 @dataclass
 class StepInfo:
     step: int
-    model: eqx.Module
+    model: PyTree
     opt_state: Any
     loss: float
     next_key: PRNGKey
