@@ -53,7 +53,7 @@ class Checkpointer:
             path = self.base_path
         return load_checkpoint(model, None, path, discover_latest=discover_latest)
 
-    def on_step(self, info, force: bool = True):
+    def on_step(self, info, force: bool = False):
         if info.step == 0:
             self._last_save_time = datetime.datetime.now()
             return  # never save checkpoint at step 0
