@@ -190,7 +190,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
-        engine.add_hook(checkpointer, every=1)  # checkpointer manages its own frequency
+        engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
         # data loader
         iter_data = iter(dataset)
@@ -274,7 +274,7 @@ def main(config: TrainGpt2Config):
         )
 
         evaluate_step(last_step)
-        checkpointer(last_step, force=True)
+        checkpointer.on_step(last_step, force=True)
 
 
 if __name__ == "__main__":

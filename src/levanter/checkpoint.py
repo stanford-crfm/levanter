@@ -19,7 +19,7 @@ from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorsto
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckpointInterval:
     every: int  # how often to checkpoint
     until: Optional[int] = None  # until what step to save checkpoints with this policy, None means forever
@@ -28,14 +28,14 @@ class CheckpointInterval:
 class Checkpointer:
     """A checkpointer class that saves checkpoints with two different, but overlapping policies: time and step."""
 
-    path: str
-    save_interval: datetime.timedelta
+    base_path: str
+    save_interval: datetime.timedelta  # we save at least this frequently
     keep: Sequence[CheckpointInterval] = dataclasses.field(default_factory=lambda: [CheckpointInterval(every=1000)])
 
     _last_temporary_checkpoint: Optional[str] = None
 
-    def __init__(self, path: str, save_interval: datetime.timedelta, keep: Sequence[CheckpointInterval]):
-        self.path = path
+    def __init__(self, base_path: str, save_interval: datetime.timedelta, keep: Sequence[CheckpointInterval]):
+        self.base_path = base_path
         self.save_interval = save_interval
         self.keep = keep
         self._keep_stack = list(keep)
@@ -45,18 +45,15 @@ class Checkpointer:
 
     def load_checkpoint(self, model, training_state, path: Optional[str] = None, *, discover_latest: bool = True):
         if path is None:
-            path = self.path
+            path = self.base_path
         return load_checkpoint(model, training_state, path, discover_latest=discover_latest)
 
     def load_model(self, model, path: Optional[str] = None, *, discover_latest: bool = True):
         if path is None:
-            path = self.path
+            path = self.base_path
         return load_checkpoint(model, None, path, discover_latest=discover_latest)
 
-    def __call__(self, info, force: bool = False):
-        self.on_step(info)
-
-    def on_step(self, info, force: bool = False):
+    def on_step(self, info, force: bool = True):
         if info.step == 0:
             self._last_save_time = datetime.datetime.now()
             return  # never save checkpoint at step 0
@@ -95,12 +92,12 @@ class Checkpointer:
                 self._rm_checkpoint(last_checkpoint)
 
     def _rm_checkpoint(self, checkpoint):
-        fs = fsspec.get_fs_token_paths(self.path)[0]
+        fs = fsspec.get_fs_token_paths(self.base_path)[0]
         # have to strip protocol from path because fsspec filesystems don't like them
-        fs.rm(f"{furl(self.path).path}/{checkpoint}", recursive=True)
+        fs.rm(f"{furl(self.base_path).path}/{checkpoint}", recursive=True)
 
     def save_checkpoint(self, info, destination):
-        path = furl(f"{self.path}/{destination}")
+        path = furl(f"{self.base_path}/{destination}")
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
         save_checkpoint(
             model=info.model,

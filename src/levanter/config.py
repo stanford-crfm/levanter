@@ -15,6 +15,7 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
+import pytimeparse
 from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
@@ -166,7 +167,7 @@ class CheckpointerConfig:
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            path=f"{self.base_path}/{run_name}",
+            base_path=f"{self.base_path}/{run_name}",
             save_interval=self.save_interval,
             keep=keeps,
         )
@@ -179,9 +180,9 @@ class CheckpointerConfig:
         prev_interval = None
         for interval in self.keep:
             if prev_interval is not None:
-                assert prev_interval.until is not None, "Only the last checkpoint interval can be None"
+                assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
                 assert (
-                    interval.until is None or interval.until > prev_interval.until
+                    interval["until"] is None or interval["until"] > prev_interval["until"]
                 ), "Checkpoint intervals must be monotonic"
             prev_interval = interval
 
@@ -380,8 +381,6 @@ def register_codecs():
     pyrallis.encode.register(jmp.Policy, policy_encode)
 
     def parse_timedelta(td_str):
-        import pytimeparse
-
         return timedelta(seconds=pytimeparse.parse(td_str))
 
     def encode_timedelta(td: timedelta):
@@ -403,6 +402,8 @@ def register_codecs():
 
         if seconds:
             out += f"{seconds}s"
+
+        assert parse_timedelta(out) == td
         return out
 
     pyrallis.decode.register(timedelta, parse_timedelta)
