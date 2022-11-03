@@ -1,6 +1,7 @@
 import math
 from typing import List, Optional
 
+import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
@@ -136,13 +137,26 @@ def dropout_mask(Heads: Axis, QSeqLen: Axis, KSeqLen: Axis, dropout_rate: float,
     return hrandom.bernoulli(key, shape=(Heads, QSeqLen, KSeqLen), p=1 - dropout_rate)
 
 
-def fcm_mask(KSeqLen: Axis, dropout_prob: float, *, key: PRNGKey) -> NamedArray:
+def fcm_mask(KSeqLen: Axis, mask_ratio: float, sample_ratio: bool = True, *, key: PRNGKey) -> NamedArray:
     """
     Forgetful Context Masking a la https://arxiv.org/abs/2210.13432. Randomly drops out positions from the key sequence.
     You're always allowed to attend to the 0th position. (They say BOS token, but we don't always start with bos)
+
+    :param KSeqLen: Axis of key sequence length
+    :param mask_ratio: Ratio of positions to mask
+    :param sample_ratio: If True, sample the mask ratio between 0 and the provided mask ratio
     """
-    base: NamedArray = hrandom.bernoulli(key, shape=(KSeqLen,), p=1 - dropout_prob)
-    return base | haliax.nn.one_hot(0, KSeqLen, dtype=base.dtype)  # always allow 0th position
+    zeroth_on = haliax.nn.one_hot(0, KSeqLen, dtype=jnp.bool_)  # always allow 0th position
+    if mask_ratio == 0:
+        return jnp.ones((KSeqLen.size,), dtype=jnp.bool_)
+    elif mask_ratio == 1:
+        return zeroth_on
+    else:
+        if sample_ratio:
+            key, subkey = jax.random.split(key)
+            mask_ratio = jax.random.uniform(subkey, shape=(), minval=0, maxval=mask_ratio)
+        base: NamedArray = hrandom.bernoulli(key, shape=(KSeqLen,), p=1 - mask_ratio)
+        return base | zeroth_on
 
 
 def _get_alibi_slopes(heads: int) -> List[float]:

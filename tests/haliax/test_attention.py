@@ -26,7 +26,7 @@ def test_alibi_attention_bias():
 def test_fcm_attention_mask():
     KeySeqLen = hax.Axis("KeySeqLen", 20)
 
-    mask = fcm_mask(KeySeqLen, dropout_prob=0.6, key=PRNGKey(0))
+    mask = fcm_mask(KeySeqLen, mask_ratio=0.6, sample_ratio=False, key=PRNGKey(0))
 
     assert mask.axes == (KeySeqLen,)
     assert mask.array[0].item() == 1
