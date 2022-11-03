@@ -5,8 +5,6 @@ import haliax.random as random
 from haliax import nn as nn
 
 from .core import (
-    Axis,
-    AxisSpec,
     NamedArray,
     are_shape_checks_enabled,
     broadcast_axis,
@@ -25,8 +23,9 @@ from .core import (
     unflatten_axis,
 )
 from .hof import fold, scan, vmap
-from .ops import isclose, clip, trace, tril, triu, where
+from .ops import clip, isclose, trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping
+from .types import Axis, AxisSpec
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 

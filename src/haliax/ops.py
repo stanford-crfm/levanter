@@ -3,14 +3,8 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-from .core import (
-    Axis,
-    NamedArray,
-    NamedNumeric,
-    broadcast_arrays,
-    broadcast_arrays_and_return_axes,
-    raw_array_or_scalar,
-)
+from .core import NamedArray, NamedNumeric, broadcast_arrays, broadcast_arrays_and_return_axes, raw_array_or_scalar
+from .types import Axis
 
 
 def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> NamedArray:

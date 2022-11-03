@@ -14,8 +14,9 @@ from jax.experimental.pjit import FROM_GDA, pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
-from .core import Axis, AxisSpec, NamedArray
+from .core import NamedArray
 from .jax_utils import filter_eval_shape, is_jax_array_like
+from .types import Axis, AxisSpec
 from .util import StringHolderEnum, ensure_tuple, is_named_array
 
 

@@ -207,7 +207,7 @@ Haliax is still in development, but it's already pretty usable. Here's a simple 
 
 ```python
 from jax.random import PRNGKey
-import haliax as hax # this alias amuses me
+import haliax as hax  # this alias amuses me
 
 Height = hax.Axis('Height', 16)
 Width = hax.Axis('Width', 16)
@@ -224,10 +224,12 @@ z = hax.sum(x, (Height, Width))
 # broadcasting happens over named axes
 normalized_x = x / hax.sum(x, Height)
 
+
 # vmap over named axes. often times you may want to just skip vmap with haliax, because names are preserved etc,
 # but you may still want to use it. I honestly prefer it still, but that's just me.
 def foo(x):
     return hax.sum(x, Height)
+
 
 foo_vmap = hax.vmap(foo, axis=Batch)
 ```
@@ -463,6 +465,7 @@ Haliax actually automatically does this under the hood along the biggest partiti
 
 ```python
 import haliax as hax
+
 Hidden = hax.Axis("Hidden", 4096)
 Mlp = hax.Axis("Mlp", 8192)
 
