@@ -4,7 +4,8 @@ import equinox as eqx
 import jax
 
 import haliax
-from haliax.core import AxisSpec, NamedArray
+from haliax.core import NamedArray
+from haliax.types import AxisSpec
 from haliax.util import ensure_tuple
 
 

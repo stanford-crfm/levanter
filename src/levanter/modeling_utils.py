@@ -9,8 +9,8 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax.jax_utils import named_call
 from haliax import Axis, NamedArray
+from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
 from levanter.jax_utils import reduce
 
@@ -100,7 +100,7 @@ def accumulate_gradients_sharded(
 
             inputs = jax.tree_util.tree_map(_reshape, inputs)
 
-        Microbatch = hax.Axis("microbatch", microbatch_size)
+        Microbatch = Axis("microbatch", microbatch_size)
 
         with jax.named_scope("accumulate grad vmap"), hax.axis_mapping(
             {Microbatch.name: ResourceAxis.DATA}, merge=True

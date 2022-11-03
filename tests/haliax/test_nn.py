@@ -19,7 +19,7 @@ def _compare_eqx_and_haliax(hax_mod: eqx.Module, eqx_mod: eqx.Module):
 
 
 def test_layer_norm():
-    H = hax.Axis("H", 10)
+    H = Axis("H", 10)
     hax_ln = hax.nn.LayerNorm(H)
     eqx_ln = eqx.nn.LayerNorm(shape=(H.size,))
 
@@ -30,7 +30,7 @@ def test_layer_norm():
 
 
 def test_dropout():
-    H = hax.Axis("H", 10)
+    H = Axis("H", 10)
     key = jrandom.PRNGKey(0)
     hax_dropout = hax.nn.Dropout(0.5)
     eqx_dropout = eqx.nn.Dropout(0.5)
