@@ -16,7 +16,7 @@ from haliax.types import PrecisionLike
 
 
 def dot_product_attention_weights(
-    HeadDim: Axis,
+    Head: Axis,
     KSeqLen: AxisSpec,
     query: NamedArray,
     key: NamedArray,
@@ -29,7 +29,7 @@ def dot_product_attention_weights(
     NamedArray version of dot product attention. Computes the logits for the attention weights. Note that the
     "SeqLen" axis in query must be distinct from the "SeqLen" axis in key.
 
-    :param HeadDim: Axis of head dimension
+    :param Head: Axis of head dimension
     :param KSeqLen: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
     :param query: NamedArray of shape (QSeqLen, HeadDim)
     :param key: NamedArray of shape (KSeqLen, HeadDim)
@@ -42,13 +42,13 @@ def dot_product_attention_weights(
     import haliax.nn as hnn
 
     orig_dtype = query.dtype
-    query = query / jnp.sqrt(HeadDim.size)
+    query = query / jnp.sqrt(Head.size)
 
     if attention_dtype is not None:
         query = query.astype(attention_dtype)
         key = key.astype(attention_dtype)
 
-    weights = haliax.dot(HeadDim, query, key, precision=precision)
+    weights = haliax.dot(Head, query, key, precision=precision)
 
     if bias is not None:
         weights = weights + bias
@@ -133,7 +133,7 @@ def causal_mask(QSeqLen: Axis, KSeqLen: Axis) -> NamedArray:
 
 
 def dropout_mask(Heads: Axis, QSeqLen: Axis, KSeqLen: Axis, dropout_rate: float, *, key: PRNGKey) -> NamedArray:
-    return hrandom.bernoulli(key, (Heads, QSeqLen, KSeqLen), 1 - dropout_rate)
+    return hrandom.bernoulli(key, shape=(Heads, QSeqLen, KSeqLen), p=1 - dropout_rate)
 
 
 def fcm_mask(KSeqLen: Axis, dropout_prob: float, *, key: PRNGKey) -> NamedArray:
@@ -141,7 +141,7 @@ def fcm_mask(KSeqLen: Axis, dropout_prob: float, *, key: PRNGKey) -> NamedArray:
     Forgetful Context Masking a la https://arxiv.org/abs/2210.13432. Randomly drops out positions from the key sequence.
     You're always allowed to attend to the 0th position. (They say BOS token, but we don't always start with bos)
     """
-    base: NamedArray = hrandom.bernoulli(key, (KSeqLen,), 1 - dropout_prob)
+    base: NamedArray = hrandom.bernoulli(key, shape=(KSeqLen,), p=1 - dropout_prob)
     return base | haliax.nn.one_hot(0, KSeqLen, dtype=base.dtype)  # always allow 0th position
 
 

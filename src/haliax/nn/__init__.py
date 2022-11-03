@@ -51,7 +51,7 @@ def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) ->
         assert isinstance(x, int)
         assert class_axis.size > x >= -class_axis.size
 
-        array = jnp.zeros(class_axis.size).at[x].set(1)
+        array = jnp.zeros(class_axis.size, dtype=dtype).at[x].set(1)
         return haliax.named(array, class_axis)
 
 
