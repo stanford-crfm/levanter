@@ -7,7 +7,6 @@ import jax.numpy as jnp
 from tqdm import tqdm
 
 import wandb
-from levanter.checkpoint import save_checkpoint
 from levanter.config import WandbConfig
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.modeling_utils import RunningMean
@@ -15,23 +14,6 @@ from levanter.trainer_hooks import StepInfo
 
 
 logger = logging.getLogger(__name__)
-
-
-def save_model(run_dir, prepare_fn=None):
-    if not prepare_fn:
-        prepare_fn = lambda x: x  # noqa F731
-
-    def save(info: StepInfo):
-        if info.step != 0:
-            save_checkpoint(
-                model=prepare_fn(info.model),
-                training_state=((prepare_fn(info.opt_state)), info.next_key),
-                step=info.step,
-                checkpoint_path=f"{run_dir}/step-{info.step}",
-            )
-
-    return save
-
 
 M = TypeVar("M")
 X = TypeVar("X")

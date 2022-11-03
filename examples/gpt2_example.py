@@ -18,9 +18,7 @@ import haliax.random
 import wandb
 from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
-from levanter import callbacks
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
-from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
@@ -190,9 +188,9 @@ def main(config: TrainGpt2Config):
         engine.add_hook(log_to_wandb, every=1)
         engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
-        save = callbacks.save_model(config.trainer.checkpoint_path)
-        engine.add_hook(save, every=config.trainer.steps_per_save)
         engine.add_hook(wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
+        engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
         # data loader
         iter_data = iter(dataset)
@@ -200,12 +198,14 @@ def main(config: TrainGpt2Config):
         # load the last checkpoint and resume if we want
         resume_step = None
         if config.trainer.load_last_checkpoint:
+            # TODO: this won't work past CPU ram size, but that's fine for now
             with jax.default_device(jax.devices("cpu")[0]):
-                checkpoint = load_checkpoint(
+                checkpoint = checkpointer.load_checkpoint(
                     model,
                     (opt_state, training_key),
-                    config.trainer.load_checkpoint_path or config.trainer.checkpoint_path,
+                    config.trainer.load_checkpoint_path,
                 )
+
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
                 assert training_key.shape == jrandom.PRNGKey(0).shape
@@ -274,7 +274,7 @@ def main(config: TrainGpt2Config):
         )
 
         evaluate_step(last_step)
-        save(last_step)
+        checkpointer.on_step(last_step, force=True)
 
 
 if __name__ == "__main__":
