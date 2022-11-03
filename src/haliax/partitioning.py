@@ -200,11 +200,11 @@ def named_pjit(
             "mapping vis axis_mapping"
         )
 
-    dynamic_fun, static_fun_leaves, static_fun_def = hashable_partition(fn, is_jax_array_like)
+    dynamic_fun, static_fun = hashable_partition(fn, is_jax_array_like)
 
     @functools.wraps(fn)
     def f(*args, **kwargs):
-        dynamic_argspec, static_argspec, static_arg_def = hashable_partition((args, kwargs), is_jax_array_like)
+        dynamic_argspec, static_argspec = hashable_partition((args, kwargs), is_jax_array_like)
         dynamic = (dynamic_fun, dynamic_argspec)
 
         if donate_args is not None or donate_kwargs is not None:
@@ -215,12 +215,7 @@ def named_pjit(
             dynamic_donated = jax.tree_util.tree_map(lambda _: None, dynamic)
             dynamic_reserved = dynamic
 
-        static = (
-            static_fun_def,
-            static_fun_leaves,
-            static_arg_def,
-            static_argspec,
-        )
+        static = (static_fun, static_argspec)
 
         output_shape = _cached_filter_eval_shape(fn, *args, **kwargs)
         in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
@@ -256,16 +251,10 @@ def _named_pjit_cache(fun_names, **jitkwargs):
     def fun_wrapped(dynamic_donated, dynamic_reserved, static):
         dynamic = eqx.combine(dynamic_donated, dynamic_reserved)
         dynamic_fun, dynamic_spec = dynamic
+        static_fun, static_spec = static
 
-        (
-            static_fun_treedef,
-            static_fun_leaves,
-            static_spec_treedef,
-            static_spec_leaves,
-        ) = static
-
-        fun = hashable_combine(dynamic_fun, static_fun_leaves, static_fun_treedef)
-        args, kwargs = hashable_combine(dynamic_spec, static_spec_leaves, static_spec_treedef)
+        fun = hashable_combine(dynamic_fun, static_fun)
+        args, kwargs = hashable_combine(dynamic_spec, static_spec)
         out = fun(*args, **kwargs)
         return out
 
@@ -284,13 +273,11 @@ def _cached_filter_eval_shape(fun, *args, **kwargs):
     eval_shape is surprisingly expensive, so we cache it. We use this for named_pjit for evaluating resource partitions
     of the output.
     """
-    dynamic, static, treedef = hashable_partition((fun, args, kwargs), is_jax_array_like)
-    key = (static, treedef)
+    dynamic, static = hashable_partition((fun, args, kwargs), is_jax_array_like)
+    if static not in _eval_shape_cache:
+        _eval_shape_cache[static] = filter_eval_shape(fun, *args, **kwargs)
 
-    if key not in _eval_shape_cache:
-        _eval_shape_cache[key] = filter_eval_shape(fun, *args, **kwargs)
-
-    return _eval_shape_cache[key]
+    return _eval_shape_cache[static]
 
 
 def physical_axis_name(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxis]:
