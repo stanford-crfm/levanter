@@ -4,7 +4,8 @@ import equinox as eqx
 
 import haliax as hax
 
-from ..core import AxisSpec, NamedArray
+from ..core import NamedArray
+from ..types import AxisSpec
 
 
 class LayerNorm(eqx.Module):

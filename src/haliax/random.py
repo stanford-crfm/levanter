@@ -8,11 +8,12 @@ import jax
 import jax.random as jrandom
 
 # TODO: handle broadcasting of array args to random functions (e.g. minval and maxval for uniform)
-from haliax.core import Axis, NamedArray
+from haliax.core import NamedArray
 from haliax.util import ensure_tuple
 
 from .jax_utils import named_call
 from .partitioning import auto_sharded, physical_axis_size, pspec_for_axis
+from .types import Axis
 
 
 def _wrap_random_function(func):

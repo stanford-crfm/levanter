@@ -6,7 +6,8 @@ import jax.numpy as jnp
 
 import haliax
 
-from ..core import Axis, AxisSpec, NamedArray
+from ..core import NamedArray
+from ..types import Axis, AxisSpec
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear

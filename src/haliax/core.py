@@ -14,19 +14,9 @@ import haliax
 from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
 
-
-@dataclass(frozen=True)
-class Axis:
-    name: str
-    size: int
-
-    def alias(self, new_name: str):
-        return Axis(new_name, self.size)
+from .types import Axis, AxisSpec, PrecisionLike, Scalar
 
 
-AxisSpec = Union[Axis, Sequence[Axis]]
-
-Scalar = Union[float, int]
 NamedNumeric = Union[Scalar, "NamedArray"]
 
 _ENABLE_SHAPE_CHECKS = True
@@ -210,7 +200,7 @@ class NamedArray:
     def cumsum(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
         return haliax.cumsum(self, axis=axis, dtype=dtype)
 
-    def dot(self, axis: AxisSpec, b, *, precision=None) -> "NamedArray":
+    def dot(self, axis: AxisSpec, b, *, precision: PrecisionLike = None) -> "NamedArray":
         return dot(axis, self, b, precision=precision)
 
     @property
@@ -492,7 +482,7 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
     return NamedArray(new_array, new_axes)
 
 
-def dot(axis: AxisSpec, *arrays: NamedArray, precision=None) -> NamedArray:
+def dot(axis: AxisSpec, *arrays: NamedArray, precision: PrecisionLike = None) -> NamedArray:
     """Returns the tensor product of two NamedArrays. The axes `axis` are contracted over,
     and any other axes that are shared between the arrays are batched over. Non-contracted Axes in one
     that are not in the other are preserved.
@@ -868,8 +858,6 @@ def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
 
 
 __all__ = [
-    "Axis",
-    "AxisSpec",
     "NamedArray",
     "concat_axis_specs",
     "dot",

@@ -4,8 +4,10 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 
-from haliax.core import AxisSpec, NamedArray, _broadcast_order, broadcast_to
+from haliax.core import NamedArray, _broadcast_order, broadcast_to
 from haliax.util import ensure_tuple
+
+from .types import AxisSpec
 
 
 def wrap_elemwise_unary(f):
