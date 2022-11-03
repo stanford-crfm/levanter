@@ -98,9 +98,6 @@ class NamedArray:
     size = property(lambda self: self.array.size)
     nbytes = property(lambda self: self.array.nbytes)
 
-    def item(self):
-        return self.array.item()
-
     def tree_flatten(self) -> Any:
         return ((self.array,), self.axes)
 

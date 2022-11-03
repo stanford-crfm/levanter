@@ -7,26 +7,37 @@ from jax.random import PRNGKey
 import haliax
 import haliax.random as hrandom
 from haliax import Axis, AxisSpec, NamedArray
+from haliax.types import PrecisionLike
+
+
+# With attention we usually distinguish between the mask and the bias, though the former is just a special case of the
+# latter. In practice, the mask is a boolean array that is applied after the softmax, while the bias is a float array
+# that is applied before the softmax.
 
 
 def dot_product_attention_weights(
     HeadDim: Axis,
-    KeySeqLen: AxisSpec,
+    KSeqLen: AxisSpec,
     query: NamedArray,
     key: NamedArray,
+    mask: Optional[NamedArray] = None,
     bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
 ) -> NamedArray:
     """
-    NamedArray version of dot product attention. Computes the logits for the attention weights.
+    NamedArray version of dot product attention. Computes the logits for the attention weights. Note that the
+    "SeqLen" axis in query must be distinct from the "SeqLen" axis in key.
 
     :param HeadDim: Axis of head dimension
-    :param KeySeqLen: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
-    :param query: NamedArray of shape (SeqLen, HeadDim)
-    :param key: NamedArray of shape (KeySeqLen, HeadDim)
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, SeqLen, KeySeqLen)
+    :param KSeqLen: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
+    :param query: NamedArray of shape (QSeqLen, HeadDim)
+    :param key: NamedArray of shape (KSeqLen, HeadDim)
+    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean, applied after softmax.
+    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float, applied before softmax.
     :param attention_dtype: Optional dtype to use for attention
-    :return: NamedArray of shape (SeqLen, KeySeqLen)
+    :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
+    :return: NamedArray of shape (QSeqLen, KSeqLen)
     """
     import haliax.nn as hnn
 
@@ -37,57 +48,101 @@ def dot_product_attention_weights(
         query = query.astype(attention_dtype)
         key = key.astype(attention_dtype)
 
-    weights = haliax.dot(HeadDim, query, key)
+    weights = haliax.dot(HeadDim, query, key, precision=precision)
 
     if bias is not None:
         weights = weights + bias
 
-    weights = hnn.softmax(weights, axis=KeySeqLen)
+    weights = hnn.softmax(weights, axis=KSeqLen)
+
+    if mask is not None:
+        weights = weights * mask
 
     return weights.astype(orig_dtype)
 
 
 def dot_product_attention(
-    SeqLen: Axis,
-    KeySeqLen: Axis,
+    QSeqLen: Axis,
+    KSeqLen: Axis,
     HeadDim: Axis,
     query: NamedArray,
     key: NamedArray,
     value: NamedArray,
+    mask: Optional[NamedArray] = None,
     bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
 ) -> NamedArray:
     """
     NamedArray version of dot product attention
 
-    :param SeqLen: Axis of sequence length
-    :param KeySeqLen: Axis of key sequence length
+    :param QSeqLen: Axis of sequence length
+    :param KSeqLen: Axis of key sequence length
     :param HeadDim: Axis of head dimension
-    :param query: NamedArray of shape (SeqLen, HeadDim)
-    :param key: NamedArray of shape (KeySeqLen, HeadDim)
-    :param value: NamedArray of shape (KeySeqLen, HeadDim)
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, SeqLen, KeySeqLen)
+    :param query: NamedArray of shape (QSeqLen, HeadDim)
+    :param key: NamedArray of shape (KSeqLen, HeadDim)
+    :param value: NamedArray of shape (KSeqLen, HeadDim)
+    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean, applied after softmax.
+    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float, applied before softmax.
     :param attention_dtype: Optional dtype to use for attention
-    :return: NamedArray of shape (SeqLen, HeadDim)
+    :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
+    :return: NamedArray of shape (QSeqLen, HeadDim)
     """
 
     # rename key/value length axis if it's the same as the query length axis
-    if KeySeqLen == SeqLen:
-        KeySeqLen = SeqLen.alias(KeySeqLen.name + "_key")
-        key = key.rename({KeySeqLen: SeqLen})
-        value = value.rename({KeySeqLen: SeqLen})
+    if KSeqLen == QSeqLen:
+        KSeqLen = QSeqLen.alias(KSeqLen.name + "_key")
+        key = key.rename({KSeqLen: QSeqLen})
+        value = value.rename({KSeqLen: QSeqLen})
 
-    weights = dot_product_attention_weights(HeadDim, KeySeqLen, query, key, bias, attention_dtype)
+    weights = dot_product_attention_weights(HeadDim, KSeqLen, query, key, mask, bias, attention_dtype, precision)
 
-    return haliax.dot(KeySeqLen, weights, value)
-
-
-def dropout_mask(SeqLen: Axis, KeySeqLen: Axis, dropout_rate: float, *, key: PRNGKey) -> NamedArray:
-    return hrandom.bernoulli(key, (SeqLen, KeySeqLen), 1 - dropout_rate)
+    return haliax.dot(KSeqLen, weights, value)
 
 
 def mask_to_bias(mask: NamedArray, mask_value: float = -1e9) -> NamedArray:
     return mask * mask_value
+
+
+def and_masks(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
+    if mask1 is None:
+        return mask2
+    if mask2 is None:
+        return mask1
+    return mask1 & mask2
+
+
+def or_masks(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
+    if mask1 is None:
+        return mask2
+    if mask2 is None:
+        return mask1
+    return mask1 | mask2
+
+
+def causal_mask(QSeqLen: Axis, KSeqLen: Axis) -> NamedArray:
+    """
+    Creates a causal mask for attention.
+
+    :param QSeqLen: Axis of query sequence length
+    :param KSeqLen: Axis of key sequence length
+    :return: NamedArray of shape (QSeqLen, KSeqLen)
+    """
+    # copilot wrote this and i'm just blown away
+    return haliax.arange(QSeqLen).broadcast_axis(KSeqLen) >= haliax.arange(KSeqLen).broadcast_axis(QSeqLen)
+
+
+def dropout_mask(Heads: Axis, QSeqLen: Axis, KSeqLen: Axis, dropout_rate: float, *, key: PRNGKey) -> NamedArray:
+    return hrandom.bernoulli(key, (Heads, QSeqLen, KSeqLen), 1 - dropout_rate)
+
+
+def fcm_mask(KSeqLen: Axis, dropout_prob: float, *, key: PRNGKey) -> NamedArray:
+    """
+    Forgetful Context Masking a la https://arxiv.org/abs/2210.13432. Randomly drops out positions from the key sequence.
+    You're always allowed to attend to the 0th position. (They say BOS token, but we don't always start with bos)
+    """
+    base: NamedArray = hrandom.bernoulli(key, (KSeqLen,), 1 - dropout_prob)
+    return base | haliax.nn.one_hot(0, KSeqLen, dtype=base.dtype)  # always allow 0th position
 
 
 def _get_alibi_slopes(heads: int) -> List[float]:
@@ -112,7 +167,7 @@ def alibi_attention_bias(SeqLen: Axis, Heads: Axis) -> NamedArray:
 
     :param SeqLen: Axis of sequence length
     :param Heads: Axis of heads
-    :return: NamedArray of shape (Heads, SeqLen)
+    :return: NamedArray of shape (Heads, QSeqLen)
     """
     slopes = haliax.named(jnp.array(_get_alibi_slopes(Heads.size)), Heads)
     positions = haliax.arange(SeqLen).broadcast_axis(Heads)
