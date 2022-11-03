@@ -1,15 +1,15 @@
-equinox
-transformers
+equinox~=0.9.0
+transformers>=4.22.0
 optax
 wandb
 pyrallis
 pyarrow
 zstandard
-datasets
-gcsfs
+datasets~=2.6.0
+gcsfs==2022.10.0
 braceexpand
 git+https://github.com/deepmind/jmp#260e5ba01f46b10c579a61393e6c7e546aeae93e
-fsspec==2022.7.1 # pin this to make gcsfs happy
+fsspec==2022.10.0 # pin this to make gcsfs happy
 furl
 tensorstore
 pytimeparse
