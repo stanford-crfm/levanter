@@ -7,8 +7,8 @@ from jax.random import PRNGKey
 
 import haliax
 import haliax.random as hrandom
-from haliax import Axis, AxisSpec, NamedArray
-from haliax.types import PrecisionLike
+from haliax.core import NamedArray
+from haliax.types import Axis, AxisSpec, PrecisionLike
 
 
 # With attention we usually distinguish between the mask and the bias, though the former is just a special case of the
@@ -105,7 +105,7 @@ def mask_to_bias(mask: NamedArray, mask_value: float = -1e9) -> NamedArray:
     return mask * mask_value
 
 
-def and_masks(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
+def combine_masks_and(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
     if mask1 is None:
         return mask2
     if mask2 is None:
@@ -113,7 +113,7 @@ def and_masks(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optio
     return mask1 & mask2
 
 
-def or_masks(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
+def combine_masks_or(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
     if mask1 is None:
         return mask2
     if mask2 is None:
@@ -137,25 +137,25 @@ def dropout_mask(Heads: Axis, QSeqLen: Axis, KSeqLen: Axis, dropout_rate: float,
     return hrandom.bernoulli(key, shape=(Heads, QSeqLen, KSeqLen), p=1 - dropout_rate)
 
 
-def fcm_mask(KSeqLen: Axis, mask_ratio: float, sample_ratio: bool = True, *, key: PRNGKey) -> NamedArray:
+def fcm_mask(KSeqLen: Axis, mask_prob: float, sample_prob: bool = True, *, key: PRNGKey) -> NamedArray:
     """
     Forgetful Context Masking a la https://arxiv.org/abs/2210.13432. Randomly drops out positions from the key sequence.
     You're always allowed to attend to the 0th position. (They say BOS token, but we don't always start with bos)
 
     :param KSeqLen: Axis of key sequence length
-    :param mask_ratio: Ratio of positions to mask
-    :param sample_ratio: If True, sample the mask ratio between 0 and the provided mask ratio
+    :param mask_prob: Probability a position to mask
+    :param sample_prob: If True, sample the prob between 0 and the provided prob (this is what the paper does)
     """
     zeroth_on = haliax.nn.one_hot(0, KSeqLen, dtype=jnp.bool_)  # always allow 0th position
-    if mask_ratio == 0:
+    if mask_prob == 0:
         return jnp.ones((KSeqLen.size,), dtype=jnp.bool_)
-    elif mask_ratio == 1:
+    elif mask_prob == 1:
         return zeroth_on
     else:
-        if sample_ratio:
+        if sample_prob:
             key, subkey = jax.random.split(key)
-            mask_ratio = jax.random.uniform(subkey, shape=(), minval=0, maxval=mask_ratio)
-        base: NamedArray = hrandom.bernoulli(key, shape=(KSeqLen,), p=1 - mask_ratio)
+            mask_prob = jax.random.uniform(subkey, shape=(), minval=0, maxval=mask_prob)
+        base: NamedArray = hrandom.bernoulli(key, shape=(KSeqLen,), p=1 - mask_prob)
         return base | zeroth_on
 
 

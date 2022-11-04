@@ -5,9 +5,10 @@ import jax.nn as jnn
 import jax.numpy as jnp
 
 import haliax
+import haliax.nn.attention as attention
 
 from ..core import NamedArray
-from ..types import Axis, AxisSpec
+from ..types import Axis
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
@@ -56,6 +57,7 @@ def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) ->
 
 
 __all__ = [
+    "attention",
     "relu",
     "relu6",
     "sigmoid",

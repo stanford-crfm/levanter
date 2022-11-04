@@ -30,6 +30,7 @@ class Gpt2Config:
     embed_pdrop: float = 0.1
     resid_pdrop: float = 0.1
     attn_pdrop: float = 0.1
+    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
@@ -90,7 +91,6 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
 
-    causal: bool = eqx.static_field()
     SeqLen: Axis = eqx.static_field()
     HeadDim: Axis = eqx.static_field()
     Heads: Axis = eqx.static_field()
@@ -104,7 +104,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
     def __init__(
         self,
         SeqLen: Axis,
-        InDim: Axis,
+        KeySeqLen: Axis,
+        Embed: Axis,
         Heads: Axis,
         HeadDim: Axis,
         dropout_prob: float,
@@ -112,25 +113,25 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         upcast: bool,
         *,
         key,
-        causal: bool = True,
     ):
         self.Heads = Heads
         self.HeadDim = HeadDim
         self.SeqLen = SeqLen
         self.Qkv = Axis("qkv", 3)
-        self.KeySeqLen = SeqLen.alias("key_" + SeqLen.name)
+        self.KeySeqLen = KeySeqLen
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
+        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj)
         self.dropout = hnn.Dropout(dropout_prob)
 
-        self.causal = causal
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.upcast = upcast
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True, *, key):
+    def __call__(
+        self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key
+    ):
         qkv_out = self.c_attn(hidden_states)
         q, k, v = qkv_out.unbind(self.Qkv)
 
@@ -153,9 +154,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
 
         attn_scores = hax.dot(self.HeadDim, q, k)
 
-        if self.causal:
-            causal_mask = hax.tril(hax.ones((self.SeqLen, self.KeySeqLen), dtype=bool), self.SeqLen, self.KeySeqLen)
-            attn_scores = hax.where(causal_mask, attn_scores, -1e9)
+        if mask is not None:
+            attn_scores = hax.where(mask, attn_scores, -1e9)
 
         attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
@@ -215,7 +215,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: hnn.Dropout
 
-    def __init__(self, config: Gpt2Config, *, key):
+    def __init__(self, config: Gpt2Config, KeySeqLen: Axis, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         assert (
@@ -225,12 +225,12 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
             SeqLen=config.SeqLen,
-            InDim=config.Embed,
+            KeySeqLen=KeySeqLen,
+            Embed=config.Embed,
             Heads=config.Heads,
             HeadDim=config.HeadDim,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
-            causal=True,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
             upcast=config.upcast_attn,
         )
@@ -245,10 +245,10 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, inference, layer_idx, *, key):
+    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], inference, layer_idx, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        attn_output = self.attn(self.ln_1(hidden_states), inference=inference, layer_idx=layer_idx, key=k1)
+        attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = hidden_states + attn_output
 
@@ -264,6 +264,8 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     blocks: Gpt2Block
     ln_f: hnn.LayerNorm
 
+    KeySeqLen: Axis = eqx.static_field()
+
     @property
     def Layers(self) -> Axis:
         return self.config.Layers
@@ -272,13 +274,20 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         super().__init__()
         self.config = config
 
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
+        self.KeySeqLen = config.SeqLen.alias(f"{config.SeqLen.name}_key")
+
+        self.blocks = hax.vmap(Gpt2Block, self.Layers)(
+            config, self.KeySeqLen, key=shaped_rng_split(key, config.num_layers)
+        )
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
+        key, fcm_key = haliax.jax_utils.maybe_rng_split(key)
+        mask = self._make_attention_mask(inference, fcm_key)
+
         def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=key)
+            return block(hidden_states, mask, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
             do_block = jax.checkpoint(do_block)
@@ -290,6 +299,15 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
+
+    def _make_attention_mask(self, inference, fcm_key):
+        causal_mask = hax.nn.attention.causal_mask(self.config.SeqLen, self.KeySeqLen)
+
+        # forgetful causal masking
+        if not inference and self.config.fcm_prob > 0:
+            fcm_mask = hax.nn.attention.fcm_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
+            causal_mask = causal_mask & fcm_mask
+        return causal_mask
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
