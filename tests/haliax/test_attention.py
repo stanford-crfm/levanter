@@ -1,7 +1,7 @@
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weights, fcm_mask
+from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weights, forgetful_causal_mask
 
 
 def test_alibi_attention_bias():
@@ -9,7 +9,7 @@ def test_alibi_attention_bias():
     NumHeads = hax.Axis("NumHeads", 1)
     Hid = hax.Axis("Hid", 8)
 
-    bias = alibi_attention_bias(KeySeqLen, NumHeads)
+    bias = alibi_attention_bias(NumHeads, KeySeqLen)
 
     query = hax.ones((NumHeads, Hid))
     key = hax.ones((KeySeqLen, NumHeads, Hid))
@@ -26,7 +26,7 @@ def test_alibi_attention_bias():
 def test_fcm_attention_mask():
     KeySeqLen = hax.Axis("KeySeqLen", 20)
 
-    mask = fcm_mask(KeySeqLen, mask_prob=0.6, sample_prob=False, key=PRNGKey(0))
+    mask = forgetful_causal_mask(KeySeqLen, mask_prob=0.6, sample_prob=False, key=PRNGKey(0))
 
     assert mask.axes == (KeySeqLen,)
     assert mask.array[0].item() == 1

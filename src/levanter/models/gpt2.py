@@ -305,7 +305,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
         # forgetful causal masking
         if not inference and self.config.fcm_prob > 0:
-            fcm_mask = hax.nn.attention.fcm_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
+            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
             causal_mask = causal_mask & fcm_mask
         return causal_mask
 

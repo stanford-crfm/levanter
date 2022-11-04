@@ -15,6 +15,9 @@ from haliax.types import Axis, AxisSpec, PrecisionLike
 # latter. In practice, the mask is a boolean array that is applied after the softmax, while the bias is a float array
 # that is applied before the softmax.
 
+# because we use named axis we can be fairly loose about the shape of masks and biases: want to have a different
+# mask for each head? fine. want to broadcast across the key sequence length? fine. etc etc
+
 
 def dot_product_attention_weights(
     Head: Axis,
@@ -40,6 +43,7 @@ def dot_product_attention_weights(
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
     :return: NamedArray of shape (QSeqLen, KSeqLen)
     """
+    # cf https://github.com/google/flax/blob/509bf97ea272e130d932920f45307ac98947d994/flax/linen/attention.py#L40
     import haliax.nn as hnn
 
     orig_dtype = query.dtype
@@ -75,7 +79,7 @@ def dot_product_attention(
     precision: PrecisionLike = None,
 ) -> NamedArray:
     """
-    NamedArray version of dot product attention
+    NamedArray version of dot product attention. This can be multi-headed or not.
 
     :param QSeqLen: Axis of sequence length
     :param KSeqLen: Axis of key sequence length
@@ -89,6 +93,7 @@ def dot_product_attention(
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
     :return: NamedArray of shape (QSeqLen, HeadDim)
     """
+    # cf https://github.com/google/flax/blob/509bf97ea272e130d932920f45307ac98947d994/flax/linen/attention.py#L125
 
     # rename key/value length axis if it's the same as the query length axis
     if KSeqLen == QSeqLen:
@@ -133,13 +138,18 @@ def causal_mask(QSeqLen: Axis, KSeqLen: Axis) -> NamedArray:
     return haliax.arange(QSeqLen).broadcast_axis(KSeqLen) >= haliax.arange(KSeqLen).broadcast_axis(QSeqLen)
 
 
-def dropout_mask(Heads: Axis, QSeqLen: Axis, KSeqLen: Axis, dropout_rate: float, *, key: PRNGKey) -> NamedArray:
-    return hrandom.bernoulli(key, shape=(Heads, QSeqLen, KSeqLen), p=1 - dropout_rate)
+def dropout_mask(axes: AxisSpec, dropout_rate: float, *, key: PRNGKey) -> NamedArray:
+    """
+    Really just an alias for haliax.random.bernoulli. You can pass in e.g. Head, QSeqLen and KSeqLen
+    """
+    return hrandom.bernoulli(key, shape=axes, p=1 - dropout_rate)
 
 
-def fcm_mask(KSeqLen: Axis, mask_prob: float, sample_prob: bool = True, *, key: PRNGKey) -> NamedArray:
+def forgetful_causal_mask(KSeqLen: Axis, mask_prob: float, sample_prob: bool = True, *, key: PRNGKey) -> NamedArray:
     """
     Forgetful Context Masking a la https://arxiv.org/abs/2210.13432. Randomly drops out positions from the key sequence.
+    Reportedly better than normal attention dropout. Almost certainly faster.
+
     You're always allowed to attend to the 0th position. (They say BOS token, but we don't always start with bos)
 
     :param KSeqLen: Axis of key sequence length
@@ -160,7 +170,7 @@ def fcm_mask(KSeqLen: Axis, mask_prob: float, sample_prob: bool = True, *, key: 
 
 
 def _get_alibi_slopes(heads: int) -> List[float]:
-    # cf https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
+    # from https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
     def get_slopes_power_of_2(n: int):
         start = 2 ** (-(2 ** -(math.log2(n) - 3)))
         ratio = start
@@ -175,7 +185,7 @@ def _get_alibi_slopes(heads: int) -> List[float]:
     )
 
 
-def alibi_attention_bias(SeqLen: Axis, Heads: Axis) -> NamedArray:
+def alibi_attention_bias(Heads: Axis, SeqLen: Axis) -> NamedArray:
     """
     Creates an attention bias for alibi attention.
 
