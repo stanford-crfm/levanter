@@ -112,32 +112,32 @@ def test_normal():
 
 
 def test_bernoulli():
-    check_gen_is_equal(lambda k, s: jax.random.bernoulli(k, 0.5, s), lambda k, s: hax.random.bernoulli(k, 0.5, s))
+    check_gen_is_equal(lambda k, s: jax.random.bernoulli(k, 0.5, s), lambda k, s: hax.random.bernoulli(k, s, 0.5))
     # check broadcasting
     prob = hax.arange(Width, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.bernoulli(k, prob.array.reshape(1, -1), s),
-        lambda k, s: hax.random.bernoulli(k, prob, s),
+        lambda k, s: hax.random.bernoulli(k, s, prob),
     )
     prob = hax.arange(Height, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.bernoulli(k, prob.array.reshape(-1, 1), s),
-        lambda k, s: hax.random.bernoulli(k, prob, s),
+        lambda k, s: hax.random.bernoulli(k, s, prob),
     )
 
 
 def test_poisson():
-    check_gen_is_equal(lambda k, s: jax.random.poisson(k, 0.5, s), lambda k, s: hax.random.poisson(k, 0.5, s))
+    check_gen_is_equal(lambda k, s: jax.random.poisson(k, 0.5, s), lambda k, s: hax.random.poisson(k, s, 0.5))
     # check broadcasting
     lam = hax.arange(Width, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.poisson(k, lam.array.reshape(1, -1), s),
-        lambda k, s: hax.random.poisson(k, lam, s),
+        lambda k, s: hax.random.poisson(k, s, lam),
     )
     lam = hax.arange(Height, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.poisson(k, lam.array.reshape(-1, 1), s),
-        lambda k, s: hax.random.poisson(k, lam, s),
+        lambda k, s: hax.random.poisson(k, s, lam),
     )
 
 
@@ -150,17 +150,17 @@ def test_exponential():
 
 
 def test_gamma():
-    check_gen_is_equal(lambda k, s: jax.random.gamma(k, 0.5, s), lambda k, s: hax.random.gamma(k, 0.5, s))
+    check_gen_is_equal(lambda k, s: jax.random.gamma(k, 0.5, s), lambda k, s: hax.random.gamma(k, s, 0.5))
     # check broadcasting
     alpha = hax.arange(Width, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.gamma(k, alpha.array.reshape(1, -1), s),
-        lambda k, s: hax.random.gamma(k, alpha, s),
+        lambda k, s: hax.random.gamma(k, s, alpha),
     )
     alpha = hax.arange(Height, step=0.1)
     check_gen_is_equal(
         lambda k, s: jax.random.gamma(k, alpha.array.reshape(-1, 1), s),
-        lambda k, s: hax.random.gamma(k, alpha, s),
+        lambda k, s: hax.random.gamma(k, s, alpha),
     )
 
 
@@ -169,19 +169,19 @@ def test_gumbel():
 
 
 def test_beta():
-    check_gen_is_equal(lambda k, s: jax.random.beta(k, 0.6, 0.5, s), lambda k, s: hax.random.beta(k, 0.6, 0.5, s))
+    check_gen_is_equal(lambda k, s: jax.random.beta(k, 0.6, 0.5, s), lambda k, s: hax.random.beta(k, s, 0.6, 0.5))
     # check broadcasting
     alpha = hax.arange(Width, step=0.1, start=0.01)
     beta = hax.arange(Width, step=0.1, start=0.01)
     check_gen_is_equal(
         lambda k, s: jax.random.beta(k, alpha.array.reshape(1, -1), beta.array.reshape(1, -1), s),
-        lambda k, s: hax.random.beta(k, alpha, beta, s),
+        lambda k, s: hax.random.beta(k, s, alpha, beta),
     )
     alpha = hax.arange(Height, step=0.1, start=0.01)
     beta = hax.arange(Height, step=0.1, start=0.01)
     check_gen_is_equal(
         lambda k, s: jax.random.beta(k, alpha.array.reshape(-1, 1), beta.array.reshape(-1, 1), s),
-        lambda k, s: hax.random.beta(k, alpha, beta, s),
+        lambda k, s: hax.random.beta(k, s, alpha, beta),
     )
 
 
@@ -228,13 +228,26 @@ def test_truncated_normal():
 def test_choice():
     digits = hax.arange(Digit)
     check_gen_is_equal(
-        lambda k, s: jax.random.choice(k, digits.array, shape=s), lambda k, s: hax.random.choice(k, digits, Digit, s)
+        lambda k, s: jax.random.choice(k, digits.array, shape=s), lambda k, s: hax.random.choice(k, s, digits, Digit)
     )
 
     weights = hax.arange(Digit, step=0.1, start=0.01)
     check_gen_is_equal(
         lambda k, s: jax.random.choice(k, digits.array, shape=s, p=weights.array),
-        lambda k, s: hax.random.choice(k, digits, Digit, s, p=weights),
+        lambda k, s: hax.random.choice(k, s, digits, Digit, p=weights),
+    )
+
+
+def test_categorical():
+    digits = hax.arange(Digit)
+    check_gen_is_equal(
+        lambda k, s: jax.random.choice(k, digits.array, shape=s), lambda k, s: hax.random.choice(k, s, digits, Digit)
+    )
+
+    weights = hax.arange(Digit, step=0.1, start=0.01)
+    check_gen_is_equal(
+        lambda k, s: jax.random.choice(k, digits.array, shape=s, p=weights.array),
+        lambda k, s: hax.random.choice(k, s, digits, Digit, p=weights),
     )
 
 
@@ -250,3 +263,38 @@ def test_permutation():
     jax_perm = jax.random.permutation(jax.random.PRNGKey(0), data.array, 0)
 
     assert jnp.all(hax_perm.array == jax_perm)
+
+
+def test_t():
+    param = hax.arange(Width, start=0.1)
+    check_gen_is_equal(lambda k, s: jax.random.t(k, param.array, shape=s), lambda k, s: hax.random.t(k, s, param))
+
+    check_gen_is_equal(lambda k, s: jax.random.t(k, 0.5, shape=s), lambda k, s: hax.random.t(k, s, 0.5))
+
+
+def test_weibull_min():
+    scale = hax.arange(Width, start=0.1)
+    concentration = hax.arange(Height, start=0.1)
+
+    check_gen_is_equal(
+        lambda k, s: jax.random.weibull_min(
+            k, scale.array.reshape(1, -1), concentration.array.reshape(-1, 1), shape=s
+        ),
+        lambda k, s: hax.random.weibull_min(k, s, scale, concentration),
+    )
+
+
+def test_pareto():
+    b = hax.arange(Width, start=0.1)
+
+    check_gen_is_equal(
+        lambda k, s: jax.random.pareto(k, b.array.reshape(1, -1), shape=s), lambda k, s: hax.random.pareto(k, s, b)
+    )
+
+
+def test_loggamma():
+    a = hax.arange(Width, start=0.1)
+
+    check_gen_is_equal(
+        lambda k, s: jax.random.loggamma(k, a.array.reshape(1, -1), shape=s), lambda k, s: hax.random.loggamma(k, s, a)
+    )

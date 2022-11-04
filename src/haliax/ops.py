@@ -3,7 +3,7 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-from .core import NamedArray, NamedOrNumeric, broadcast_arrays, broadcast_arrays_and_return_axes, raw_array_or_scalar
+from .core import NamedArray, NamedOrNumeric, broadcast_arrays, broadcast_arrays_and_return_axes
 from .types import Axis
 
 
@@ -85,6 +85,12 @@ def isclose(a: NamedArray, b: NamedArray, rtol=1e-05, atol=1e-08, equal_nan=Fals
     a, b = broadcast_arrays(a, b)
     # TODO: numpy supports an array atol and rtol, but we don't yet
     return NamedArray(jnp.isclose(a.array, b.array, rtol=rtol, atol=atol, equal_nan=equal_nan), a.axes)
+
+
+def raw_array_or_scalar(x: NamedOrNumeric):
+    if isinstance(x, NamedArray):
+        return x.array
+    return x
 
 
 __all__ = ["trace", "where", "tril", "triu", "isclose"]

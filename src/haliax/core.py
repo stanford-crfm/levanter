@@ -897,9 +897,3 @@ __all__ = [
     "shape_checks",
     "are_shape_checks_enabled",
 ]
-
-
-def raw_array_or_scalar(x: NamedOrNumeric):
-    if isinstance(x, NamedArray):
-        return x.array
-    return x
