@@ -723,7 +723,7 @@ def _broadcast_order(a: NamedArray, b: NamedArray, require_subset: bool = True) 
         # maybe just add a context manager to allow it?
         raise ValueError(
             f"Cannot broadcast {a} and {b}: no subset relationship. "
-            "If you want to broadcast anyway, use the  function to explicitly add axes"
+            "If you want to broadcast anyway, use the broadcast_axis function to explicitly add axes"
         )
     return broadcasted
 
