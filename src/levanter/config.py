@@ -169,7 +169,7 @@ class CheckpointerConfig:
         return Checkpointer(
             base_path=f"{self.base_path}/{run_name}",
             save_interval=self.save_interval,
-            keep=keeps,
+            step_policies=keeps,
         )
 
     def __post_init__(self):
