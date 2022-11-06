@@ -51,11 +51,11 @@ class LMDatasetConfig:
                 raise ValueError(f"Unknown split {split}")
 
             urls = [url for pat in urls for url in braceexpand.braceexpand(pat)]
-            files = fsspec.open_files(urls, "rb", compression="infer")
+            files = fsspec.open_files(urls, "r", compression="infer")
             for file in files:
                 with file as f:
                     for line in f.readlines():
-                        text = json.loads(line.decode("utf-8"))[self.text_key]
+                        text = json.loads(line)[self.text_key]
                         if self.enforce_eos:
                             text += self.the_tokenizer.eos_token
                         yield text
