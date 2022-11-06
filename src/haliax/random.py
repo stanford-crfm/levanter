@@ -228,22 +228,35 @@ def choice(key, shape: AxisSpec, a: NamedArray, axis: Axis, replace: bool = True
     return auto_sharded(NamedArray(jax_array, expected_shape))
 
 
-# @named_call
-# def categorical(key, shape: AxisSpec, logits: NamedArray, axis: Axis):
-#     shape = ensure_tuple(shape)
-#     logits = broadcast_to(logits, shape)
-#
-#     index = logits._lookup_indices(axis)
-#     assert index is not None, f"axis {axis} not in p"
-#
-#     shape_without_axis = shape[:index] + shape[index + 1 :]
-#
-#
-#     jax_shape = _to_jax_shape(shape)
-#     jax_array = jrandom.categorical(key, logits.array, axis=index, shape=jax_shape)
-#     expected_shape = shape + tuple(logits.axes[:index] + logits.axes[index + 1:])
-#
-#     return auto_sharded(NamedArray(jax_array, expected_shape))
+@named_call
+def categorical(key, shape: AxisSpec, logits: NamedArray, axis: Axis):
+    """Sample random values from categorical distributions.
+
+    Args:
+      key: a PRNG key used as the random key.
+      shape: A tuple of nonnegative integers representing the result shape.
+        Must be broadcast-compatible with logits without the axis
+      logits: Unnormalized log probabilities of the categorical distribution(s) to sample from,
+        so that `softmax(logits, axis)` gives the corresponding probabilities.
+      axis: Axis along which logits belong to the same categorical distribution.
+    Returns:
+      A random array with int dtype and shape given by ``shape``
+    """
+    shape = ensure_tuple(shape)
+
+    # TODO: could alias the axis and rename at end
+    if axis in shape:
+        raise ValueError(f"axis {axis} cannot be in shape {shape}")
+
+    logits = logits.broadcast_axis(shape)
+
+    index = logits._lookup_indices(axis)
+    assert index is not None, f"axis {axis} not in logits"
+
+    jax_shape = _to_jax_shape(shape)
+
+    jax_array = jrandom.categorical(key, logits.array, axis=index, shape=jax_shape)
+    return auto_sharded(NamedArray(jax_array, shape))
 
 
 @named_call

@@ -239,15 +239,38 @@ def test_choice():
 
 
 def test_categorical():
-    digits = hax.arange(Digit)
+    logits = hax.random.uniform(
+        jax.random.PRNGKey(0),
+        (
+            Height,
+            Width,
+            Digit,
+        ),
+    )
     check_gen_is_equal(
-        lambda k, s: jax.random.choice(k, digits.array, shape=s), lambda k, s: hax.random.choice(k, s, digits, Digit)
+        lambda k, s: jax.random.categorical(k, logits.array, shape=s, axis=-1),
+        lambda k, s: hax.random.categorical(k, s, logits, Digit),
     )
 
-    weights = hax.arange(Digit, step=0.1, start=0.01)
+    logits = logits.rearrange((Digit, Height, Width))
     check_gen_is_equal(
-        lambda k, s: jax.random.choice(k, digits.array, shape=s, p=weights.array),
-        lambda k, s: hax.random.choice(k, s, digits, Digit, p=weights),
+        lambda k, s: jax.random.categorical(k, logits.array, shape=s, axis=0),
+        lambda k, s: hax.random.categorical(k, s, logits, Digit),
+    )
+
+    # check broadcasting
+    logits = hax.random.uniform(
+        jax.random.PRNGKey(0),
+        (
+            Height,
+            Digit,
+        ),
+    )
+    # https://github.com/google/jax/issues/13124 broadcasting is wrong with jax categorical
+    raw_logits = jnp.broadcast_to(logits.array.reshape(-1, 1, Digit.size), (Height.size, Width.size, Digit.size))
+    check_gen_is_equal(
+        lambda k, s: jax.random.categorical(k, raw_logits, shape=s, axis=-1),
+        lambda k, s: hax.random.categorical(k, s, logits, Digit),
     )
 
 

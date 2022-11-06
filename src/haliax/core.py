@@ -772,7 +772,7 @@ def broadcast_to(
     """
     Broadcasts a so that it has the given axes.
      If ensure_order is True (default), then the returned array will have the same axes in the same order as the given
-     axes. Otherwise, the axes may not be moved
+     axes. Otherwise, the axes may not be moved if they are already in the array. The axes may not be contiguous however
 
     If enforce_no_extra_axes is True and the array has axes that are not in axes, then a ValueError is raised.
     """
@@ -799,10 +799,24 @@ def broadcast_to(
     a_array = jnp.broadcast_to(a.array, [ax.size for ax in all_axes])
     a = NamedArray(a_array, all_axes)
 
-    if ensure_order:
-        a = rearrange(a, axes + extra_axes)
+    # if the new axes are already in the right order, then we're done
+    if ensure_order and not _is_subsequence(axes, all_axes):
+        a = a.rearrange(axes + extra_axes)
 
     return typing.cast(NamedArray, a)
+
+
+def _is_subsequence(needle, haystack):
+    needle_i = 0
+    haystack_j = 0
+    while needle_i < len(needle) and haystack_j < len(haystack):
+        if needle[needle_i] == haystack[haystack_j]:
+            needle_i += 1
+        haystack_j += 1
+
+    if needle_i < len(needle):
+        return False
+    return True
 
 
 @overload
@@ -870,12 +884,12 @@ def broadcast_arrays_and_return_axes(
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
     """
     Broadcasts a, ensuring that it has all the axes in axis.
-     broadcast_axis is an alias for broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
+     broadcast_axis is an alias for broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=True)
     """
     if isinstance(axis, Axis) and axis in a.axes:
         return a
 
-    return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
+    return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=True)
 
 
 __all__ = [
