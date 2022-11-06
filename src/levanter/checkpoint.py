@@ -45,13 +45,13 @@ class Checkpointer:
 
     def __init__(
         self,
-        base_path: furl,
+        base_path: PathLike,
         save_interval: Optional[datetime.timedelta],
         step_policies: Sequence[CheckpointInterval],
         dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
     ):
         """dt_now_injection is used for testing"""
-        self.base_path = base_path
+        self.base_path = furl(base_path)
         self.save_interval = save_interval
         self.step_policies = list(step_policies)
         self._dt_now_injection = dt_now_injection or datetime.datetime.now
@@ -133,7 +133,7 @@ class Checkpointer:
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
-            fs.rm(str(self.base_path.add(path=checkpoint).path), recursive=True)
+            fs.rm(f"{plain_path}/{checkpoint}", recursive=True)
         # don't let this take down a run
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint")
@@ -151,7 +151,7 @@ class Checkpointer:
         self._last_save_time = self._dt_now_injection()
 
 
-def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike, *, exist_ok=False):
+def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
     """
     Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
     will be saved even if a checkpoint already exists at the given path.
@@ -165,7 +165,9 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
     fs: AbstractFileSystem
-    fs, _ = _get_fs_and_plain_path(checkpoint_path)
+    fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
+    fs.makedirs(plain_path, exist_ok=exist_ok)
+
     tree_serialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
     if training_state is not None:
         tree_serialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
@@ -228,23 +230,33 @@ def load_metadata(checkpoint_path, fs=None):
     return metadata
 
 
-def discover_latest_checkpoint(checkpoint_path) -> Optional[str]:
+def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[furl]:
     """
     Discover the latest checkpoint in a given path.
     """
+    checkpoint_path = furl(checkpoint_path)
     # need to use fsspec for this, as glob.glob doesn't work on gs://
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
-    ckpt_dirs = [d for d in fs.glob(f"{checkpoint_path}/*") if fs.isdir(d)] + [checkpoint_path]
-    ckpt_dirs = [d[:-1] if str(d.path).endswith("/") else d for d in ckpt_dirs]
-    ckpt_dirs = [d for d in ckpt_dirs if fs.exists(f"{d}/metadata.json")]
 
-    def checkpoint_timestamp(ckpt_dir):
+    def make_furl(path):
+        return furl(path).set(scheme=checkpoint_path.scheme)
+
+    def glob(path):
+        return (make_furl(f) for f in fs.glob(str(path)))
+
+    def is_checkpoint_dir(path: furl):
+        return fs.exists(str(path / "metadata.json"))
+
+    ckpt_dirs = [d for d in glob(f"{checkpoint_path}/*") if fs.isdir(str(d))] + [checkpoint_path]
+    ckpt_dirs = [d for d in ckpt_dirs if is_checkpoint_dir(d)]
+
+    def checkpoint_sort_key(ckpt_dir):
         metadata = json.load(fs.open(f"{ckpt_dir}/metadata.json"))
-        return datetime.datetime.fromisoformat(metadata["timestamp"])
+        return (datetime.datetime.fromisoformat(metadata["timestamp"]), metadata["step"])
 
     if len(ckpt_dirs) > 0:
-        out = max(ckpt_dirs, key=checkpoint_timestamp)
+        out = max(ckpt_dirs, key=checkpoint_sort_key)
         logger.info(f"Discovered latest checkpoint from {checkpoint_path} at {out}")
         return out
     else:

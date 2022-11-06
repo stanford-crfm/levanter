@@ -8,10 +8,18 @@ import jax
 import numpy as np
 import optax
 from chex import assert_trees_all_close
+from furl import furl
 from jax import numpy as jnp
 from utils import MLP, arrays_only, assert_trees_not_close
 
-from levanter.checkpoint import Checkpointer, CheckpointInterval, load_checkpoint, load_metadata, save_checkpoint
+from levanter.checkpoint import (
+    Checkpointer,
+    CheckpointInterval,
+    discover_latest_checkpoint,
+    load_checkpoint,
+    load_metadata,
+    save_checkpoint,
+)
 from levanter.trainer_hooks import StepInfo
 
 
@@ -216,3 +224,16 @@ def test_checkpoint_steps():
             jax.tree_util.tree_leaves(arrays_only(state)),
         )
         assert step == 3
+
+
+def test_checkpoint_discovery():
+    with tempfile.TemporaryDirectory() as tempdir:
+        save_checkpoint(model=1, training_state=2, step=10, checkpoint_path=f"{tempdir}/step-10")
+        save_checkpoint(model=3, training_state=4, step=20, checkpoint_path=f"{tempdir}/step-20")
+        save_checkpoint(model=5, training_state=6, step=30, checkpoint_path=f"{tempdir}/step-30")
+
+        latest = discover_latest_checkpoint(tempdir)
+        assert latest == furl(f"{tempdir}/step-30")
+
+        assert discover_latest_checkpoint(furl(f"file://{tempdir}")) == furl(f"file://{tempdir}/step-30")
+        assert discover_latest_checkpoint(furl("file:///tmp/does-not-exist")) is None
