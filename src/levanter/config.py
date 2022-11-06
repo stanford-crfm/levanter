@@ -156,7 +156,7 @@ class WandbConfig:
 
 @dataclass
 class CheckpointerConfig:
-    base_path: str = "checkpoints/"
+    base_path: furl = "checkpoints/"
     save_interval: timedelta = timedelta(hours=6)
     # TODO: I'd like to write this, but it's not supported by pyrallis
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
@@ -167,13 +167,13 @@ class CheckpointerConfig:
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=f"{self.base_path}/{run_name}",
+            base_path=self.base_path / run_name,
             save_interval=self.save_interval,
             step_policies=keeps,
         )
 
     def __post_init__(self):
-        self.base_path = os.path.expanduser(self.base_path)
+        self.base_path = furl(os.path.expanduser(str(self.base_path)))
 
         # validate the checkpoint intervals.
         # we want to make sure that the intervals are monotonic. only the last one can be None
