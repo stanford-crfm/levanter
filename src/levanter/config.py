@@ -166,7 +166,7 @@ class CheckpointerConfig:
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=self.base_path / run_name,
+            base_path=os.path.join(self.base_path, run_name),
             save_interval=self.save_interval,
             step_policies=keeps,
         )
@@ -280,9 +280,8 @@ class TrainerConfig:
         jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
 
     def _initialize_logging(self):
-        log_dir = self.log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(log_dir / f"{self.run_name}.log")
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""
