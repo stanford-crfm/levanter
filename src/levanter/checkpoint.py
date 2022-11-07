@@ -2,6 +2,7 @@ import dataclasses
 import datetime
 import json
 import logging
+import os
 import pathlib
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence, Union
@@ -10,7 +11,6 @@ import fsspec
 import jax
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
-from furl import furl
 from jaxtyping import PyTree
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
@@ -18,7 +18,7 @@ from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorsto
 
 logger = logging.getLogger(__name__)
 
-PathLike = Union[str, furl, pathlib.Path]
+PathLike = Union[str, pathlib.Path]
 
 
 @dataclass(frozen=True)
@@ -35,13 +35,13 @@ class Checkpointer:
     a checkpoint was saved at.
     """
 
-    base_path: furl
+    base_path: str
     save_interval: Optional[datetime.timedelta]  # we save at least this frequently
     step_policies: Sequence[CheckpointInterval] = dataclasses.field(
         default_factory=lambda: [CheckpointInterval(every=1000)]
     )
 
-    _last_temporary_checkpoint: Optional[furl] = None
+    _last_temporary_checkpoint: Optional[str] = None
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class Checkpointer:
         dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
     ):
         """dt_now_injection is used for testing"""
-        self.base_path = furl(base_path)
+        self.base_path = str(base_path)
         self.save_interval = save_interval
         self.step_policies = list(step_policies)
         self._dt_now_injection = dt_now_injection or datetime.datetime.now
@@ -133,13 +133,13 @@ class Checkpointer:
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
-            fs.rm(f"{plain_path}/{checkpoint}", recursive=True)
+            fs.rm(os.path.join(plain_path, checkpoint), recursive=True)
         # don't let this take down a run
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint")
 
-    def save_checkpoint(self, info, destination):
-        path = self.base_path / destination
+    def save_checkpoint(self, info, destination: str):
+        path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
         save_checkpoint(
             model=info.model,
@@ -162,15 +162,16 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
     This method is GlobalDeviceArray-aware, and will save shards in a way that can be restored
     """
+    checkpoint_path = str(checkpoint_path)
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
     fs: AbstractFileSystem
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=exist_ok)
 
-    tree_serialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
+    tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model)
     if training_state is not None:
-        tree_serialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
+        tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "training_state"), training_state)
 
     save_metadata(checkpoint_path, fs, step)
 
@@ -185,7 +186,7 @@ def save_metadata(checkpoint_path, fs, step):
         "timestamp": datetime.datetime.now().isoformat(),
     }
     if jax.process_index() == 0:
-        with fs.open(f"{checkpoint_path}/metadata.json", "w") as json_out:
+        with fs.open(os.path.join(checkpoint_path, "metadata.json"), "w") as json_out:
             json.dump(metadata, json_out)
 
 
@@ -202,21 +203,25 @@ def load_checkpoint(model, training_state, checkpoint_path: PathLike, *, discove
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
 
-    if discover_latest:
-        checkpoint_path = discover_latest_checkpoint(checkpoint_path)
+    checkpoint_path = str(checkpoint_path)
 
-    if checkpoint_path is None:
+    if discover_latest:
+        checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
+
+    if checkpoint_path is None or not fs.exists(checkpoint_path):
         return None
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
 
-    model = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/model", model)
+    model = tree_deserialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model)
 
     if training_state is None:
         training_state = None
     else:
-        training_state = tree_deserialize_leaves_tensorstore(f"{checkpoint_path}/training_state", training_state)
+        training_state = tree_deserialize_leaves_tensorstore(
+            os.path.join(checkpoint_path, "training_state"), training_state
+        )
 
     return model, training_state, metadata["step"]
 
@@ -225,34 +230,28 @@ def load_metadata(checkpoint_path, fs=None):
     if fs is None:
         fs: AbstractFileSystem
         fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
-    with fs.open(f"{checkpoint_path}/metadata.json") as metadata_in:
+    with fs.open(os.path.join(checkpoint_path, "metadata.json")) as metadata_in:
         metadata = json.load(metadata_in)
     return metadata
 
 
-def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[furl]:
+def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
     """
     Discover the latest checkpoint in a given path.
     """
-    checkpoint_path = furl(checkpoint_path)
+    checkpoint_path = str(checkpoint_path)
     # need to use fsspec for this, as glob.glob doesn't work on gs://
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
 
-    def make_furl(path):
-        return furl(path).set(scheme=checkpoint_path.scheme)
+    def is_checkpoint_dir(path: str):
+        return fs.exists(os.path.join(path, "metadata.json"))
 
-    def glob(path):
-        return (make_furl(f) for f in fs.glob(str(path)))
-
-    def is_checkpoint_dir(path: furl):
-        return fs.exists(str(path / "metadata.json"))
-
-    ckpt_dirs = [d for d in glob(f"{checkpoint_path}/*") if fs.isdir(str(d))] + [checkpoint_path]
+    ckpt_dirs = [d for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)] + [checkpoint_path]
     ckpt_dirs = [d for d in ckpt_dirs if is_checkpoint_dir(d)]
 
     def checkpoint_sort_key(ckpt_dir):
-        metadata = json.load(fs.open(f"{ckpt_dir}/metadata.json"))
+        metadata = json.load(fs.open(os.path.join(ckpt_dir, "metadata.json")))
         return (datetime.datetime.fromisoformat(metadata["timestamp"]), metadata["step"])
 
     if len(ckpt_dirs) > 0:

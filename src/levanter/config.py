@@ -15,7 +15,6 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
-from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
 from pyrallis import field
@@ -156,7 +155,7 @@ class WandbConfig:
 
 @dataclass
 class CheckpointerConfig:
-    base_path: furl = "checkpoints/"
+    base_path: str = "checkpoints/"
     save_interval: timedelta = timedelta(hours=6)
     # TODO: I'd like to write this, but it's not supported by pyrallis
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
@@ -173,7 +172,7 @@ class CheckpointerConfig:
         )
 
     def __post_init__(self):
-        self.base_path = furl(os.path.expanduser(str(self.base_path)))
+        self.base_path = os.path.expanduser(self.base_path)
 
         # validate the checkpoint intervals.
         # we want to make sure that the intervals are monotonic. only the last one can be None
@@ -194,7 +193,7 @@ class TrainerConfig:
 
     wandb: WandbConfig = WandbConfig()
     log_dir: Path = Path("logs/")
-    run_base_dir: furl = furl("runs/")
+    run_base_dir: Path = Path("runs/")
 
     # config related to partitioning
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
@@ -215,7 +214,7 @@ class TrainerConfig:
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[furl] = None
+    load_checkpoint_path: Optional[str] = None
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -238,7 +237,7 @@ class TrainerConfig:
         return wandb.run.name or wandb.run.id
 
     @property
-    def run_dir(self) -> furl:
+    def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
 
     def initialize(self, all_config):
@@ -363,8 +362,6 @@ def register_codecs():
     pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
     pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
-    pyrallis.decode.register(furl, furl)
-    pyrallis.encode.register(furl, str)
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):

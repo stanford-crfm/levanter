@@ -8,7 +8,6 @@ import jax
 import numpy as np
 import optax
 from chex import assert_trees_all_close
-from furl import furl
 from jax import numpy as jnp
 from utils import MLP, arrays_only, assert_trees_not_close
 
@@ -233,7 +232,6 @@ def test_checkpoint_discovery():
         save_checkpoint(model=5, training_state=6, step=30, checkpoint_path=f"{tempdir}/step-30")
 
         latest = discover_latest_checkpoint(tempdir)
-        assert latest == furl(f"{tempdir}/step-30")
+        assert latest == f"{tempdir}/step-30"
 
-        assert discover_latest_checkpoint(furl(f"file://{tempdir}")) == furl(f"file://{tempdir}/step-30")
-        assert discover_latest_checkpoint(furl("file:///tmp/does-not-exist")) is None
+        assert discover_latest_checkpoint("file:///tmp/does-not-exist") is None
