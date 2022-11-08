@@ -604,14 +604,39 @@ basically just an N-dimensional array of devices. Typically, we use 2-dimensiona
 mesh are labeled "data" and "model". The "data" axis is the one that we'll use for data parallelism, and the "model"
 axis is the one we'll use for model parallelism.
 
-Given a device mesh, the way to partition a device in Jax is to specify a `PartitionSpec`, which is a namedtuple
-of mesh axis names (or `None`) that is the same length as the shape of the array. For example, if we have a 2x2
-device mesh, we can partition a 4x4 array across the mesh by specifying a `PartitionSpec` of `("data", "model")`.
-If you have an array with more dimensions than that, you can specify `None` for the extra dimensions. For example,
-if you have a 2x2 device mesh and you want to partition a 4x4x4 array across the mesh, you can specify a
-`PartitionSpec` of `("data", "model", None)`. Axes that are `None` will be replicated across the mesh.
-(One can also partition an array along multiple axes by specifying
-a tuple of axis names, but we won't cover that here.)
+As a concrete example, consider the device mesh below, which has 8 devices, arranged in a 2x4 grid. The "data" axis
+is the first axis, and the "model" axis is the second axis.
+
+![Device Mesh](./device_mesh_1.png)
+
+One of the parameters in our model is the weight for the projection from `Embed` to `Mlp` that we used in the MLP,
+whichw we called `c_fc` after the GPT-2 naming convention. It has shape `[Embed, Mlp]`.
+We can partition this parameter across the devices in the mesh by specifying a
+which has shape `[Vocab, Embed]`. Without model partitioning, every device would have a copy of the entire
+parameter matrix, which looks like this:
+
+![Device Mesh with Replicated Parameter](./device_mesh_replicated.png)
+
+With model partitioning, we can shard the parameter matrix. In particular, we're going to shard its `Mlp` axis along the
+mesh's `model` axis, so that every device will have half othe matrix, either the first half of the Mlp axis or the second
+half. This looks like this:
+
+![Device Mesh with Partitioned Parameter](./device_mesh_partitioned.png)
+
+What's more, when we do computations with this parameter, we'll only do the computations on the half of the matrix
+that's on the device. For example, if our input is a matrix of shape `[SeqLen, Embed]`, we'll do a matrix multiply
+with the parameter matrix, which will have shape `[Batch, Mlp]`. We'll only do the matrix multiply on the half of the
+parameter matrix that's on the device. The result is a matrix of shape `[Batch, Mlp]`, which is then also
+partitioned across the `model` axis of the mesh along the `Mlp` axis. If `Batch` is partitioned across the `data`
+axis, then the result will be fully partitioned across the mesh. That is:
+
+![Device Mesh with Partitioned Parameter and Computation](./device_mesh_partitioned_computation.png)
+
+When you project down using the `c_proj` parameter, you end up with a matrix of shape `[Batch, Embed]`, which is
+partitioned only along the `data` axis. i.e.:
+
+![Device Mesh with Partitioned Parameter and Computation](./device_mesh_partitioned_computation_2.png)
+
 
 ### Jax `pjit`
 
@@ -723,17 +748,11 @@ GPT-2 model. XXX
 
 ZeRO (XXX link) is short for ZEro-Redundancy Optimizer, and it's a set of techniques for optimizing large-scale training
 by partitioning model parameters, gradient accumulation buffers, and optimizer states across multiple devices, so that no
-device has to hold these in memory. FSDP (short for Fully Sharded Data Parallel) is a close cousin
+device has to hold these in memory. In PyTorch-land, there are two main implementations of ZeRO: DeepSpeed and Fully
+Sharded Data Parallel (FSDP). These are complex software libraries that have a lot of moving parts.
+With Jax, we'll get most of the benefit in a few lines of code.
 
-In GPU-land, it's more common to rely on parameter partitioning to reduce memory usage. This is because current top line
-GPUs have much more memory than single TPU cores, and so it's easier to fit a larger model on a single GPU.
-
-TPUs also claim to have much more interconnect bandwidth than GPUs, so it's
-XXX this is a claim I have heard but not seen benchmarked. This from nvidia indicates hopper is 900GB/s all-reduce
-while https://cloud.google.com/tpu/docs/system-architecture-tpu-vm claims 340TB/s (sic). I can't tell if this is apples to apples, but surely it's not.
-https://rd.yyrcd.com/2022-03-22-NVIDIA%20Hopper%20Architecture%20In-Depth%20%7C%20NVIDIA%20Technical%20Blog.pdf
-
-
+XXX mesh
 
 
 
