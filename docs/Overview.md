@@ -802,6 +802,9 @@ def make_matrix(key): return jax.random.normal(key, (4096, 8192))
 ```
 **This changes the result from the "naive" version**, but as long as you're consistent, It's fine.
 
+
+XXX when we do Haliax's new partitioning, we should show that
+
 Haliax actually automatically does this under the hood along the biggest partitioned axis:
 
 ```python
