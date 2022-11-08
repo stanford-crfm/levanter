@@ -30,7 +30,8 @@ stateless, jit-optimizing version of numpy with automatic differentiation and di
 more than that, but those are the key features in my opinion. I will do a quick refresher on a few concepts.
 
 #### vmap: Automatically adding batch axes
-`vmap` is the "auto-batching" operator for Jax. It automatically vectorizes a computation so that it is applied to all sub-arrays for some new leading axis:
+`vmap` is the "auto-batching" operator for Jax. It automatically vectorizes a computation so that it is applied to all
+sub-arrays for some new leading axis:
 
 ```python
 import jax
@@ -610,7 +611,7 @@ is the first axis, and the "model" axis is the second axis.
 ![Device Mesh](./device_mesh_1.png)
 
 One of the parameters in our model is the weight for the projection from `Embed` to `Mlp` that we used in the MLP,
-whichw we called `c_fc` after the GPT-2 naming convention. It has shape `[Embed, Mlp]`.
+which we called `c_fc` after the GPT-2 naming convention. It has shape `[Embed, Mlp]`.
 We can partition this parameter across the devices in the mesh by specifying a
 which has shape `[Vocab, Embed]`. Without model partitioning, every device would have a copy of the entire
 parameter matrix, which looks like this:
