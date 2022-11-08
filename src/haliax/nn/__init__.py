@@ -5,9 +5,10 @@ import jax.nn as jnn
 import jax.numpy as jnp
 
 import haliax
+import haliax.nn.attention as attention
 
 from ..core import NamedArray
-from ..types import Axis, AxisSpec
+from ..types import Axis
 from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
@@ -49,13 +50,14 @@ def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) ->
         return NamedArray(array, x.axes + (class_axis,))
     else:
         assert isinstance(x, int)
-        assert class_axis.size > x and x >= -class_axis.size
+        assert class_axis.size > x >= -class_axis.size
 
-        array = jnp.zeros(class_axis.size).at[x].set(1)
+        array = jnp.zeros(class_axis.size, dtype=dtype).at[x].set(1)
         return haliax.named(array, class_axis)
 
 
 __all__ = [
+    "attention",
     "relu",
     "relu6",
     "sigmoid",

@@ -763,22 +763,37 @@ def _broadcast_axes(
     return tuple(x for x in b_axes if x not in a_axes) + a_axes
 
 
-def broadcast_to(a: NamedArray, axes: Tuple[Axis, ...], ensure_order: bool = True) -> NamedArray:
+def broadcast_to(
+    a: NamedArray, axes: AxisSpec, ensure_order: bool = True, enforce_no_extra_axes: bool = True
+) -> NamedArray:
     """
-    Broadcasts a to the given axes. If ensure_order is True (default), then the returned array will have the same axes
-    in the same order as the given axes. Otherwise, the axes may not be moved
+    Broadcasts a so that it has the given axes.
+     If ensure_order is True (default), then the returned array will have the same axes in the same order as the given
+     axes. Otherwise, the axes may not be moved
+
+    If enforce_no_extra_axes is True and the array has axes that are not in axes, then a ValueError is raised.
     """
+
+    axes = ensure_tuple(axes)
+
     if a.axes == axes:
         return a
 
     to_add = tuple(ax for ax in axes if ax not in a.axes)
 
+    all_axes = to_add + a.axes
+
+    if enforce_no_extra_axes and len(all_axes) != len(axes):
+        raise ValueError(f"Cannot broadcast {a} to {axes}: extra axes present")
+
+    extra_axes = tuple(ax for ax in a.axes if ax not in axes)
+
     # broadcast whatever we need to the front and reorder
-    a_array = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + [ax.size for ax in a.axes])
-    a = NamedArray(a_array, to_add + a.axes)
+    a_array = jnp.broadcast_to(a.array, [ax.size for ax in all_axes])
+    a = NamedArray(a_array, all_axes)
 
     if ensure_order:
-        a = rearrange(a, axes)
+        a = rearrange(a, axes + extra_axes)
 
     return a
 
@@ -847,14 +862,13 @@ def broadcast_arrays_and_return_axes(
 
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
     """
-    Broadcasts a, ensuring that it has all the axes in axis
+    Broadcasts a, ensuring that it has all the axes in axis.
+     broadcast_axis is an alias for broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
     """
     if isinstance(axis, Axis) and axis in a.axes:
         return a
 
-    axis = ensure_tuple(axis)
-    new_axes = tuple(ax for ax in axis if ax not in a.axes)
-    return broadcast_to(a, new_axes + a.axes)
+    return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
 
 
 __all__ = [
