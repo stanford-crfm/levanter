@@ -1,27 +1,33 @@
-### Tasks
-##todo
-- [ ] write an overview doc for levanter
-- [ ] get data and loss in Haliax
-
 
 # Levanter
-### Key Ideas
-- Jax: Autodiff
-* Equinox for torch-like goodness
-* Haliax: Global-view Named Axes
-* pjit for sharding
-* Haliax + pjit for easier sharding
-* jmp for mixed precision
-* GlobalDeviceArray for sharded data loading
+
+This is a detailed introduction to the Levanter project, including the motivation, design, and implementation.
+
+## Motivation
+
+Levanter started as an effort to understand how to effectively use TPUs. Google kindly offered us at [Stanford's Center
+for Research on Foundation Models](https://crfm.stanford.edu) access to a significant amount of TPU compute. Stanford
+graduate students, like most graduate students in AI, are big fans of PyTorch. We found that PyTorch on TPUs is still
+in its infancy, while Jax support for TPUs is much more mature. We wanted to understand how to use Jax on TPUs, and
+how to train large foundation models.
+
+Levanter thus has had a pedagogical mission from the beginning: to provide a simple, easy-to-understand, and easy-to-use
+Jax-based framework for training models on TPU clusters (and GPUs!). We hope that this will help others to understand
+how to build large models. One of the challenges we had while building models is that a lot of knowledge of how to train
+large models is either held in confidence within large companies, or not well-documented, or documented via Twitter
+threads and stray comments deep in open source repositories. We hope that Levanter will help to fill this gap.
 
 
 ## Building Blocks
 
+Before we get into the details of Levanter, let's first discuss some of the key building blocks that Levanter is built on.
+
 ### Jax: Autodiff
 
-I'm not going to go into great depth on Jax basics, because you can check out the [official Jax tutorial](https://jax.readthedocs.io/en/latest/jax-101/index.html) . But to summarize, Jax is basically a stateless, jit-optimizing version of numpy with automatic differentiation and GPU/TPU support built in. It's more than that, but those are the key features in my opinion. I will do a quick refresher on a few concepts.
-
-
+I'm not going to go into great depth on Jax basics, because you can check out the
+[official Jax tutorial](https://jax.readthedocs.io/en/latest/jax-101/index.html). But to summarize, Jax is basically a
+stateless, jit-optimizing version of numpy with automatic differentiation and distributed GPU/TPU support built in. It's
+more than that, but those are the key features in my opinion. I will do a quick refresher on a few concepts.
 
 #### vmap: Automatically adding batch axes
 `vmap` is the "auto-batching" operator for Jax. It automatically vectorizes a computation so that it is applied to all sub-arrays for some new leading axis:
