@@ -374,7 +374,7 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     # do this first to help keep FP values small. Papers usually show this after the dot product.
     q = q * scale
 
-    # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+    # mistral tweak: attention scores can overflow float16, or just be too imprecise, so upcast to float32
     if self.upcast:
         q = q.astype(jnp.float32)
         k = k.astype(jnp.float32)
@@ -473,8 +473,6 @@ create a vectorized block stack, and then use `jax.lax.scan` to apply the blocks
 variants of these functions: `hax.vmap` and `hax.fold`. (Jax doesn't have `fold` per se, but instead uses `scan` for both.
 Haliax also has a `hax.scan` function that's equivalent to `jax.lax.scan`.)
 
-```python
-
 This can be a bit hard to understand, so let's break it down. First, we create a vectorized block stack:
 ```python
 class Gpt2Transformer(eqx.Module):
@@ -537,10 +535,10 @@ XXX TODO:
 ## Reducing memory usage
 
 When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
-and its kin, this is another two copies of the parameters. If you store your parameters in FP32, you need at a minimum
+and its kin, this is another two copies of the parameters. If you store your parameters in float32, you need at a minimum
 16 * `num_params` bytes of memory, without including the memory needed for activations. (For LLMs, the data for a batch
 is typically trivial in comparison.) If you don't use ZeRO (XXX cite) or some other technique, you'll need to store all
-of these on every TPU/GPU. It's generally recommended to store all of these (maybe not the gradients) in FP32 for training.
+of these on every TPU/GPU. It's generally recommended to store all of these (maybe not the gradients) in float32 for training.
 
 While we'll get to ZeRO/FSDP in a bit, in the meantime we can use mixed precision training to reduce the memory footprint
 of the model.
@@ -553,14 +551,14 @@ can be nontrivial.
 ### Mixed Precision Training via `jmp`
 
 A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
-states) in full precision, but only use half precision (bf16) for the activations. This reduces the memory footprint of the
+states) in full precision, but only use half precision (bfloat16) for the activations. This reduces the memory footprint of the
 model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
 significant win, and it's easy to do with Jax and a library called `jmp`.
 
-We could just do everything in bf16, but there's been lots of reports that, even when stable, keeping everything in bf16
+We could just do everything in bfloat16, but there's been lots of reports that, even when stable, keeping everything in bfloat16
 can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a ~.15 nat
 loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
-parameters in fp32, and use bf16 for the activations.
+parameters in float32, and use bfloat16 for the activations.
 
 [`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
 that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
@@ -569,9 +567,9 @@ of these semantic dtypes.
 
 ```python
 import jmp
-policy = jmp.get_policy("compute=bf16,parameter=f32,output=f32")
+policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
 
-policy.cast_to_compute(my_model)  # Convert x to bf16
+policy.cast_to_compute(my_model)  # Convert x to bfloat16
 ```
 
 To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
