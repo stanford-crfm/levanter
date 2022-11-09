@@ -198,13 +198,11 @@ def main(config: TrainGpt2Config):
         # load the last checkpoint and resume if we want
         resume_step = None
         if config.trainer.load_last_checkpoint:
-            # TODO: this won't work past CPU ram size, but that's fine for now
-            with jax.default_device(jax.devices("cpu")[0]):
-                checkpoint = checkpointer.load_checkpoint(
-                    model,
-                    (opt_state, training_key),
-                    config.trainer.load_checkpoint_path,
-                )
+            checkpoint = checkpointer.load_checkpoint(
+                model,
+                (opt_state, training_key),
+                config.trainer.load_checkpoint_path,
+            )
 
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
