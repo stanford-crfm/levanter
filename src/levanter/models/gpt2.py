@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, cast
+from typing import Callable, Dict, List, Optional, Union, cast
 
 import equinox as eqx
 import jax
@@ -72,16 +72,18 @@ class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key):
+    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key):
         k_fc, k_proj = jrandom.split(key, 2)
         self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc)
         self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj)
-        self.act = ACT2FN[activation_fn]  # type: ignore
+        if isinstance(activation_fn, str):
+            activation_fn = ACT2FN[activation_fn]
+        self.act = activation_fn  # type: ignore
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
         hidden_states = self.c_fc(hidden_states)
-        hidden_states = jax.tree_util.tree_map(self.act, hidden_states)
+        hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
 
