@@ -3,7 +3,7 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-from .core import NamedArray, NamedNumeric, broadcast_arrays, broadcast_arrays_and_return_axes, raw_array_or_scalar
+from .core import NamedArray, NamedOrNumeric, broadcast_arrays, broadcast_arrays_and_return_axes, raw_array_or_scalar
 from .types import Axis
 
 
@@ -26,7 +26,7 @@ def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> 
     return NamedArray(inner, axes)
 
 
-def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric) -> NamedArray:
+def where(condition: Union[NamedOrNumeric, bool], x: NamedOrNumeric, y: NamedOrNumeric) -> NamedArray:
     """Like jnp.where, but with named axes. This version currently only accepts the three argument form."""
 
     # TODO: support the one argument form
@@ -54,7 +54,7 @@ def where(condition: Union[NamedNumeric, bool], x: NamedNumeric, y: NamedNumeric
     return NamedArray(jnp.where(condition.array, x.array, y.array), condition.axes)
 
 
-def clip(array: NamedNumeric, a_min: NamedNumeric, a_max: NamedNumeric) -> NamedArray:
+def clip(array: NamedOrNumeric, a_min: NamedOrNumeric, a_max: NamedOrNumeric) -> NamedArray:
     """Like jnp.clip, but with named axes. This version currently only accepts the three argument form."""
     (array, a_min, a_max), axes = broadcast_arrays_and_return_axes(array, a_min, a_max)
     array = raw_array_or_scalar(array)
