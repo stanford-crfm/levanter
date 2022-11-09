@@ -17,7 +17,7 @@ from haliax.util import ensure_tuple
 from .types import Axis, AxisSpec, PrecisionLike, Scalar
 
 
-NamedNumeric = Union[Scalar, "NamedArray"]
+NamedOrNumeric = Union[Scalar, "NamedArray"]
 
 _ENABLE_SHAPE_CHECKS = True
 
@@ -807,24 +807,24 @@ def broadcast_arrays(
 
 @overload
 def broadcast_arrays(
-    *arrays: NamedNumeric, require_subset: bool = True, ensure_order: bool = True
-) -> Tuple[NamedNumeric, ...]:
+    *arrays: NamedOrNumeric, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[NamedOrNumeric, ...]:
     ...
 
 
 def broadcast_arrays(
-    *arrays: NamedNumeric,
+    *arrays: NamedOrNumeric,
     require_subset: bool = True,
     ensure_order: bool = True,
-) -> Tuple[NamedNumeric, ...]:
+) -> Tuple[NamedOrNumeric, ...]:
     return broadcast_arrays_and_return_axes(*arrays, require_subset=require_subset, ensure_order=ensure_order)[0]
 
 
 def broadcast_arrays_and_return_axes(
-    *arrays: NamedNumeric,
+    *arrays: NamedOrNumeric,
     require_subset: bool = True,
     ensure_order: bool = True,
-) -> Tuple[Tuple[NamedNumeric, ...], Tuple[Axis, ...]]:
+) -> Tuple[Tuple[NamedOrNumeric, ...], Tuple[Axis, ...]]:
     """
     Broadcasts a sequence of arrays to a common set of axes.
 
@@ -892,7 +892,7 @@ __all__ = [
 ]
 
 
-def raw_array_or_scalar(x: NamedNumeric):
+def raw_array_or_scalar(x: NamedOrNumeric):
     if isinstance(x, NamedArray):
         return x.array
     return x
