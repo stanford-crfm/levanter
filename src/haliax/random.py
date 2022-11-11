@@ -190,7 +190,7 @@ def generate_sharded(fn, axis: Optional[Axis] = None):
 
                 return haliax.vmap(fn, axis=_axis)(*bound.args, **bound.kwargs)
         else:
-            with jax.named_scope("unsharded_generate"):
+            with jax.named_scope(f"generate_sharded({_axis}, no_shard)"):
                 return fn(*args, **kwargs)
 
     return wrapped_fn
