@@ -3,6 +3,7 @@ import functools
 import inspect
 from typing import Optional
 
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
@@ -151,6 +152,7 @@ def generate_sharded(fn, axis: Optional[Axis] = None):
 
     @functools.wraps(fn)
     def wrapped_fn(*args, **kwargs):
+        _axis = axis
         bound = inspect.signature(fn).bind(*args, **kwargs)
         bound.apply_defaults()
         key = bound.arguments["key"]
@@ -162,33 +164,34 @@ def generate_sharded(fn, axis: Optional[Axis] = None):
             # scalar
             return fn(*args, **kwargs)
 
-        if axis is None:
+        if _axis is None:
             pspec = pspec_for_axis(shape)
             if pspec:
-                axis_to_shard, biggest_physical = max(
+                _axis, biggest_physical = max(
                     zip(shape, pspec), key=lambda x: (physical_axis_size(x[0]) or 0) if x[1] else 0
                 )
             else:
-                axis_to_shard = biggest_physical = None
+                _axis = biggest_physical = None
 
-            axis_to_shard = axis_to_shard or shape[0]
+            _axis = _axis or shape[0]
         else:
-            axis_to_shard = axis
             biggest_physical = physical_axis_name(axis)
 
         if _enforce_sharded_generate or biggest_physical:
-            index_of_axis_to_shard = shape.index(axis_to_shard)
-            # remove axis from shape
-            shape = shape[:index_of_axis_to_shard] + shape[index_of_axis_to_shard + 1 :]
+            with jax.named_scope(f"generate_sharded({_axis})"):
+                index_of_axis_to_shard = shape.index(_axis)
+                # remove axis from shape
+                shape_without_axis = shape[:index_of_axis_to_shard] + shape[index_of_axis_to_shard + 1 :]
 
-            keys = jrandom.split(key, axis_to_shard.size)
+                keys = jrandom.split(key, _axis.size)
 
-            bound.arguments["shape"] = shape
-            bound.arguments["key"] = keys
+                bound.arguments["shape"] = shape_without_axis
+                bound.arguments["key"] = keys
 
-            return haliax.vmap(lambda *args, **kwargs: fn(*args, **kwargs), axis=axis)(*bound.args, **bound.kwargs)
+                return haliax.vmap(fn, axis=_axis)(*bound.args, **bound.kwargs)
         else:
-            return fn(*args, **kwargs)
+            with jax.named_scope("unsharded_generate"):
+                return fn(*args, **kwargs)
 
     return wrapped_fn
 
