@@ -157,8 +157,8 @@ def named_pjit(
     resource partitions.
 
     If no resource mapping is provided, this function attempts to use the global resource mapping.
-    If either of in_axis_resources or out_axis_resources is provided, then both must be provided.
-    If axis_resources is provided, then in_axis_resources and out_axis_resources must not be provided.
+    axis_resources will be used for a context-specific resource mapping as well as in_axis_resources and out_axis_resources
+    if they are not provided.
 
     :param fn: The function to be pjit'd
     :param axis_resources: A mapping from logical axis names to physical axis names
@@ -171,11 +171,6 @@ def named_pjit(
     """
     # TODO: support jax.Array
 
-    if in_axis_resources is not None or out_axis_resources is not None:
-        if axis_resources is not None:
-            raise ValueError("Cannot provide both axis_resources and in_axis_resources/out_axis_resources")
-        if in_axis_resources is None or out_axis_resources is None:
-            raise ValueError("Must provide both in_axis_resources and out_axis_resources")
 
     if fn is None:
         return functools.partial(
@@ -188,17 +183,15 @@ def named_pjit(
             **pjit_args,
         )
 
-    if axis_resources is None and in_axis_resources is None:
-        axis_resources = _mapping_holder.thread_data.resource_mapping
+    axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
+    in_axis_resources = in_axis_resources or axis_resources
+    out_axis_resources = out_axis_resources or axis_resources
 
-    if axis_resources is not None:
-        in_axis_resources = axis_resources
-        out_axis_resources = axis_resources
 
-    if in_axis_resources is None or out_axis_resources is None:
+    if axis_resources is None and (in_axis_resources is None or out_axis_resources is None):
         raise ValueError(
-            "Must provide in_axis_resources and out_axis_resources, or axis_resources, or have a global "
-            "mapping vis axis_mapping"
+            "Must provide axis_resources, or in_axis_resources and out_axis_resources,"
+            " or have a global mapping via axis_mapping"
         )
 
     dynamic_fun, static_fun = hashable_partition(fn, is_jax_array_like)
@@ -225,9 +218,9 @@ def named_pjit(
         my_pjit_args = dict(**pjit_args)
         my_pjit_args["in_axis_resources"] = in_resources
         my_pjit_args["out_axis_resources"] = out_resources
-        cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
-
-        return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
+        with axis_mapping(axis_resources or {}):
+            cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
+            return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
 
     return f
 
