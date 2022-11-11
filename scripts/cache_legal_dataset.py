@@ -1,16 +1,76 @@
 import json
-import tempfile
-import os
 
 import datasets
-import huggingface_hub
+import gcsfs
 
-# dataset_weights = {
-#     "joelito/eurlex_resources": 0.2,
-#     "pile-of-law/pile-of-law": 0.55,
-#     "joelito/Multi_Legal_Pile": 0.10,
-#     "joelito/mc4_legal": 0.15,
+
+wiki_langs = [
+    "bg",
+    "cs",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "et",
+    "fi",
+    "fr",
+    "ga",
+    "hr",
+    "hu",
+    "it",
+    "lt",
+    "lv",
+    "mt",
+    "nl",
+    "pl",
+    "pt",
+    "ro",
+    "sk",
+    "sl",
+    "sv",
+]
+
+
+dataset_weights = {
+    "joelito/eurlex_resources": 0.2,
+    "pile-of-law/pile-of-law": 0.35,
+    "joelito/Multi_Legal_Pile": 0.10,
+    "joelito/mc4_legal": 0.15,
+    "olm/wikipedia": 0.2,
+}
+
+# wikipedia will be weighted proportionally to the number of articles in each language
+
+# all_datasets = {
+#     k: datasets.load_dataset(k) for k in dataset_weights.keys() if k != "olm/wikipedia"
 # }
+
+all_datasets = {}
+all_datasets["joelito/eurlex_resources"] = datasets.load_dataset("joelito/eurlex_resources", "all_all", streaming=True)
+all_datasets["pile-of-law/pile-of-law"] = datasets.load_dataset("pile-of-law/pile-of-law", "all", streaming=True)
+all_datasets["joelito/Multi_Legal_Pile"] = datasets.load_dataset("joelito/Multi_Legal_Pile", "all_all", streaming=True)
+# datasets["joelito/mc4_legal"] = datasets.load_dataset("joelito/mc4_legal", "all_all")
+
+
+# wikipedia is special because it's a single dataset with multiple languages
+wiki_datasets = []
+for lang in wiki_langs:
+    wiki_datasets.append(datasets.load_dataset("olm/wikipedia", language=lang, date="20221101"))
+
+all_datasets["olm/wikipedia"] = datasets.concatenate_datasets(wiki_datasets)
+
+# now we need to weight each dataset. we can use datasets interleave
+probabilities = [dataset_weights[k] for k in dataset_weights.keys()]
+# combined = datasets.interleave_datasets(list(all_datasets.values()), seed=41, probabilities=probabilities, stopping_strategy="all_exhausted")
+combined = datasets.concatenate_datasets(list(all_datasets.values()))
+combined = combined.shuffle(seed=42)
+
+fs = gcsfs.GCSFileSystem()
+
+combined.save_to_disk("gs://levanter-data/legal/v1", fs=fs)
+
+
 #
 # # first, determine the urls the datasets use
 # urls = {}
@@ -43,36 +103,10 @@ import huggingface_hub
 
 
 # now wikipedia
-wiki_langs = [
-    "bg",
-    "cs",
-    "da",
-    "de",
-    "el",
-    "en",
-    "es",
-    "et",
-    "fi",
-    "fr",
-    "ga",
-    "hr",
-    "hu",
-    "it",
-    "lt",
-    "lv",
-    "mt",
-    "nl",
-    "pl",
-    "pt",
-    "ro",
-    "sk",
-    "sl",
-    "sv",
-]
+
 
 for lang in wiki_langs:
-    # dataset = datasets.load_dataset("olm/wikipedia", language=lang, date="20221101")
-    dataset = datasets.load_dataset("wiki40b", name=lang, beam_runner="DirectRunner")
+    dataset = datasets.load_dataset("olm/wikipedia", language=lang, date="20221101")
 
     # write a sample
     with open(f"wiki_{lang}_sample.jsonl", "w") as f:
