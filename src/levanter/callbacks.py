@@ -1,8 +1,15 @@
 import copy
 import logging
+import os
+import re
+import subprocess
+import tempfile
+import threading
 import time
 from typing import Callable, Iterator, Optional, TypeVar
 
+import humanfriendly
+import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
@@ -122,3 +129,89 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
         pbar.set_postfix(loss=step.loss)
 
     return update_pbar
+
+
+def log_memory_usage(sample_interval: float = 1.0):
+    """
+    Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.
+    We only log when hooks are invoked, so there's not much point in running this much more frequently than you invoke
+    the hook.
+
+    I think it's a good idea to run this in a separate thread, so that you sample from random points, but I'm not sure.
+    :param sample_interval:
+    :return:
+    """
+
+    directory = "/dev/shm"
+    # macos doesn't have /dev/shm
+    if not os.path.exists(directory):
+        directory = tempfile.gettempdir()
+
+    # a lot of this code is lifted from https://github.com/ayaka14732/jax-sm CC-0
+
+    def inner():
+        import posix
+        import time
+
+        while True:
+            jax.profiler.save_device_memory_profile(f"{directory}/memory.prof.new")
+            posix.rename(f"{directory}/memory.prof.new", f"{directory}/memory.prof")
+            time.sleep(sample_interval)
+
+    thread = threading.Thread(target=inner, daemon=True)
+    thread.start()
+
+    def log_memory_usage(step: StepInfo):
+        output = subprocess.run(
+            args=f"go tool pprof -tags {directory}/memory.prof".split(" "),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.decode("utf-8")
+
+        # output looks like this:
+        #          2.4MB (12.53%): TFRT_CPU_0
+        #          2.4MB (12.50%): TFRT_CPU_1
+        #          2.4MB (12.50%): TFRT_CPU_2
+        #          2.4MB (12.50%): TFRT_CPU_3
+        #          2.4MB (12.50%): TFRT_CPU_4
+        #          2.4MB (12.50%): TFRT_CPU_5
+        #          2.4MB (12.50%): TFRT_CPU_6
+        #          2.4MB (12.50%): TFRT_CPU_7
+        #
+        #  kind: Total 19.5MB
+        #         18.9MB (97.20%): buffer
+        #        558.4kB ( 2.80%): executable
+        per_device, by_kind = output.split("kind: Total ")
+
+        # first, get the total memory usage
+        regex = re.compile(r"^(\d+\.\d+[a-zA-Z]+)")
+        match = regex.search(by_kind)
+        if match:
+            memory_usage = humanfriendly.parse_size(match.group(1))
+            wandb.log({"memory/total": memory_usage / 1e6}, step=step.step)
+
+        # now, get the memory usage per device.
+        # split the output at kind: Total
+        regex = re.compile(r"([\d\.]+[a-zA-Z]+) \(([\d\.]+)%\): ([a-zA-Z0-9_]+)")
+        for match in regex.finditer(per_device):
+            memory_usage = humanfriendly.parse_size(match.group(1))
+            device_name = match.group(3)
+            wandb.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+
+        # now, get the memory usage per kind.
+        # same regex as above
+        for match in regex.finditer(by_kind):
+            memory_usage = match.group(1)
+            memory_usage = humanfriendly.parse_size(memory_usage)
+            wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
+
+    return log_memory_usage
+
+
+# from https://stackoverflow.com/questions/42865724/parse-human-readable-filesizes-into-bytes
+units = {"B": 1, "KB": 2**10, "MB": 2**20, "GB": 2**30, "TB": 2**40}
+
+
+def _parse_size(size):
+    number, unit = [string.strip() for string in size.split()]
+    return int(float(number) * units[unit])
