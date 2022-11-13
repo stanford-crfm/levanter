@@ -130,6 +130,9 @@ class Checkpointer:
         return current_policy.every
 
     def _rm_checkpoint(self, checkpoint):
+        if jax.process_index() != 0:
+            return
+
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
