@@ -250,7 +250,13 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
     def is_checkpoint_dir(path: str):
         return fs.exists(os.path.join(path, "metadata.json"))
 
-    ckpt_dirs = [fs.unstrip_protocol(d) for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)]
+    def maybe_unstrip_protocol(path: str):
+        base_has_protocol = fs._strip_protocol(checkpoint_path) != checkpoint_path
+        if base_has_protocol:
+            return fs.unstrip_protocol(path)
+        return path
+
+    ckpt_dirs = [maybe_unstrip_protocol(d) for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)]
     ckpt_dirs.append(checkpoint_path)
     ckpt_dirs = [d for d in ckpt_dirs if is_checkpoint_dir(d)]
 
