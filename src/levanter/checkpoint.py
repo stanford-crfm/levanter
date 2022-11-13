@@ -250,7 +250,8 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
     def is_checkpoint_dir(path: str):
         return fs.exists(os.path.join(path, "metadata.json"))
 
-    ckpt_dirs = [d for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)] + [checkpoint_path]
+    ckpt_dirs = [fs.unstrip_protocol(d) for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)]
+    ckpt_dirs.append(checkpoint_path)
     ckpt_dirs = [d for d in ckpt_dirs if is_checkpoint_dir(d)]
 
     def checkpoint_sort_key(ckpt_dir):
