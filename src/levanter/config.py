@@ -15,7 +15,6 @@ import jmp
 import numpy as np
 import optax
 import pyrallis
-from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax.experimental.maps import Mesh
 from pyrallis import field
@@ -167,7 +166,7 @@ class CheckpointerConfig:
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=f"{self.base_path}/{run_name}",
+            base_path=os.path.join(self.base_path, run_name),
             save_interval=self.save_interval,
             step_policies=keeps,
         )
@@ -194,7 +193,7 @@ class TrainerConfig:
 
     wandb: WandbConfig = WandbConfig()
     log_dir: Path = Path("logs/")
-    run_base_dir: furl = furl("runs/")
+    run_base_dir: Path = Path("runs/")
 
     # config related to partitioning
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
@@ -215,7 +214,7 @@ class TrainerConfig:
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[furl] = None
+    load_checkpoint_path: Optional[str] = None
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -238,7 +237,7 @@ class TrainerConfig:
         return wandb.run.name or wandb.run.id
 
     @property
-    def run_dir(self) -> furl:
+    def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
 
     def initialize(self, all_config):
@@ -281,9 +280,8 @@ class TrainerConfig:
         jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
 
     def _initialize_logging(self):
-        log_dir = self.log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(log_dir / f"{self.run_name}.log")
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""
@@ -363,8 +361,6 @@ def register_codecs():
     pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
     pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
-    pyrallis.decode.register(furl, furl)
-    pyrallis.encode.register(furl, str)
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):
