@@ -1,14 +1,14 @@
 import functools
 from functools import partial
-from typing import Callable, Tuple, TypeVar
+from typing import Callable, Dict, Tuple, TypeVar
 
 import jax
-import jax.nn as jnn
 import jax.numpy as jnp
 from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
+import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis, ResourceMapping, auto_sharded
@@ -16,16 +16,15 @@ from levanter.jax_utils import reduce
 
 
 def quick_gelu(x):
-    return x * jnn.sigmoid(1.702 * x)
+    return x * hnn.sigmoid(1.702 * x)
 
 
-ACT2FN = {
-    "gelu": partial(jnn.gelu, approximate=False),
-    "relu": jnn.relu,
-    "silu": jnn.silu,
-    "swish": jnn.swish,
-    "gelu_new": partial(jnn.gelu, approximate=True),
-    "gelu_new_remat": jax.remat(partial(jnn.gelu, approximate=True)),
+ACT2FN: Dict[str, Callable] = {
+    "relu": hnn.relu,
+    "silu": hnn.silu,
+    "swish": hnn.swish,
+    "gelu": partial(hnn.gelu, approximate=False),
+    "gelu_new": partial(hnn.gelu, approximate=True),
     "quick_gelu": quick_gelu,
 }
 
