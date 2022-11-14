@@ -1,7 +1,9 @@
 import json
+from typing import List
 
 import datasets
 import gcsfs
+from datasets import DatasetDict
 
 
 wiki_langs = [
@@ -47,10 +49,16 @@ dataset_weights = {
 # }
 
 all_datasets = {}
-all_datasets["joelito/eurlex_resources"] = datasets.load_dataset("joelito/eurlex_resources", "all_all", streaming=True)
-all_datasets["pile-of-law/pile-of-law"] = datasets.load_dataset("pile-of-law/pile-of-law", "all", streaming=True)
-all_datasets["joelito/Multi_Legal_Pile"] = datasets.load_dataset("joelito/Multi_Legal_Pile", "all_all", streaming=True)
-# datasets["joelito/mc4_legal"] = datasets.load_dataset("joelito/mc4_legal", "all_all")
+all_datasets["joelito/eurlex_resources"] = datasets.load_dataset("joelito/eurlex_resources", "all_all")
+all_datasets["pile-of-law/pile-of-law"] = datasets.load_dataset("pile-of-law/pile-of-law", "all")
+all_datasets["joelito/Multi_Legal_Pile"] = datasets.load_dataset("./Multi_Legal_Pile.py", "all_all")
+datasets["joelito/mc4_legal"] = datasets.load_dataset("joelito/mc4_legal", "all_all")
+
+
+def concatenate_dataset_dicts(dataset_dicts: List[DatasetDict]):
+    result = {}
+    for split in dataset_dicts[0].keys():
+        result[split] = datasets.concatenate_datasets([d[split] for d in dataset_dicts])
 
 
 # wikipedia is special because it's a single dataset with multiple languages
@@ -58,12 +66,13 @@ wiki_datasets = []
 for lang in wiki_langs:
     wiki_datasets.append(datasets.load_dataset("olm/wikipedia", language=lang, date="20221101"))
 
-all_datasets["olm/wikipedia"] = datasets.concatenate_datasets(wiki_datasets)
+all_datasets["olm/wikipedia"] = concatenate_dataset_dicts(wiki_datasets)
+
 
 # now we need to weight each dataset. we can use datasets interleave
-probabilities = [dataset_weights[k] for k in dataset_weights.keys()]
+# probabilities = [dataset_weights[k] for k in dataset_weights.keys()]
 # combined = datasets.interleave_datasets(list(all_datasets.values()), seed=41, probabilities=probabilities, stopping_strategy="all_exhausted")
-combined = datasets.concatenate_datasets(list(all_datasets.values()))
+combined = concatenate_dataset_dicts(list(all_datasets.values()))
 combined = combined.shuffle(seed=42)
 
 fs = gcsfs.GCSFileSystem()
