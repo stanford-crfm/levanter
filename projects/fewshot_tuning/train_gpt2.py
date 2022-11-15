@@ -28,6 +28,11 @@ from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
+from .seqio_tasks import do_nothing
+
+
+do_nothing()
+
 
 logger = logging.getLogger(__name__)
 
