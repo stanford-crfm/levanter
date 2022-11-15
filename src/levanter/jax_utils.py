@@ -14,6 +14,7 @@ from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
+from haliax.util import ensure_tuple
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -84,6 +85,8 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
     * individual keys at positions are unique
     * the same key is made for the same position in all devices that have that position
     """
+
+    global_shape = ensure_tuple(global_shape)
 
     # add key shape to global_shape and pad out axes
     orig_global_shape = global_shape
