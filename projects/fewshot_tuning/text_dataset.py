@@ -14,25 +14,17 @@
 
 """Load text datasets for long-range transformer models."""
 
-import os
-import re
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import jax
 import numpy as np
 import seqio
 import tensorflow as tf
 
+from levanter import logging
+
 
 _DEFAULT_DATA_DIRECTORY = None
-
-
-def get_iterator_function(dataset: Optional[tf.data.Dataset]):
-    """Returns a function which gets an iterator over the given dataset."""
-    if dataset is None:
-        return None
-    else:
-        return dataset.as_numpy_iterator
 
 
 def get_loss_mask_tokens(
@@ -99,47 +91,6 @@ def load_text_dataset(
 
     logging.info("Loading text data set %s, split=%s, shape=(%d, %d)", name, split, batch_size, sequence_length)
 
-    if name == "synthetic":
-        ds = synthetic_data_long(split, sequence_length, batch_size)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_short":
-        ds = synthetic_data_short(split, sequence_length, batch_size)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "enwik8":
-        # TODO(delesley): Encapsulate enwik8 into a Task.
-        ds = load_enwik8(split, sequence_length, batch_size, data_dir=_DEFAULT_DATA_DIRECTORY)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_in_context":
-        ds = synthetic_data_in_context(split, sequence_length, batch_size, data_dir=FLAGS.syn_data_dir)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_in_context_long":
-        ds = synthetic_data_in_context_long(split, sequence_length, batch_size, data_dir=FLAGS.syn_data_dir)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_in_context_subseq_no_remap":
-        ds = synthetic_data_in_context_subseq_no_remap(split, sequence_length, batch_size, data_dir=FLAGS.syn_data_dir)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_in_context_subseq_no_const":
-        ds = synthetic_data_in_context_subseq_no_const(split, sequence_length, batch_size, data_dir=FLAGS.syn_data_dir)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name == "synthetic_in_context_subseq_lookup":
-        ds = synthetic_data_in_context_subseq_lookup(split, sequence_length, batch_size, data_dir=FLAGS.syn_data_dir)
-        return (ds, seqio.PassThroughVocabulary(256, 0))
-    elif name.startswith("bigbench:"):
-        task = seqio.get_mixture_or_task(name)
-        vocab = task.output_features["targets"].vocabulary
-        if split == "sample":
-            num_epochs = None
-        elif split == "full":
-            num_epochs = 1
-        else:
-            raise NotImplementedError
-        ds = task.get_dataset(
-            split="all",
-            sequence_length={"loss_mask": sequence_length, "targets": sequence_length},
-            num_epochs=num_epochs,
-        )
-        return (ds.batch(batch_size), vocab)
-
     # Bypass the seqio "feature converter", and get the task directly.
     task = seqio.get_mixture_or_task(name)
     vocab = task.output_features["targets"].vocabulary
@@ -163,8 +114,8 @@ def load_text_dataset(
         split=split,
         use_cached=False,
         shuffle=True,
-        # shuffle_buffer_size=shuffle_buffer_size,
-        seed=None,
+        shuffle_buffer_size=shuffle_buffer_size,
+        seed=42,
         shard_info=shard_info,
         num_epochs=1,
     )
@@ -188,36 +139,6 @@ def load_text_dataset(
         verbose=verbose,
     )
     return (ds, vocab)
-
-
-def rekey_articles(ds: tf.data.Dataset, rekey: Mapping[str, str], keep: Optional[Set[str]] = None) -> tf.data.Dataset:
-    """Rekey the articles in ds.
-
-    Fields in rekey will be renamed, field in keep will be kept, others will
-    be discarded.  E.g., For PG19:
-
-      rekey_article(ds,
-                    rekey={"book_text": "targets"},
-                    keep={"book_title", "book_id"})
-    Args:
-      ds: The dataset to rekey.
-      rekey: Dictionary which contains fields to rename.
-      keep: Set of fields to keep.
-
-    Returns:
-      A rekeyed dataset.
-    """
-
-    def rekey_fn(article):
-        result_dict = {}
-        for (k, v) in article.items():
-            if k in rekey:
-                result_dict[rekey[k]] = v
-            elif k in keep:
-                result_dict[k] = v
-        return result_dict
-
-    return ds.map(rekey_fn)
 
 
 def pretty_print_article(
@@ -269,12 +190,13 @@ def decode_tokens(tokens: Any, vocab: seqio.Vocabulary, max_length: int, max_bat
         tstr = f"{str(type(tokens))} = "
 
     if np.ndim(tokens) == 1:
-        tstr += decode_tokens_1d(tokens, vocab, max_length)
+        tstr += decode_tokens_1d(tokens, vocab, max_length)  # type: ignore
     elif np.ndim(tokens) == 2:
-        jtstr = ",\n    ".join([decode_tokens_1d(s, vocab, max_length) for s in tokens[:max_batch_size]])
+        chunks = [decode_tokens_1d(s, vocab, max_length) for s in tokens[:max_batch_size]]
+        jtstr = ",\n    ".join(chunks)  # type: ignore
         tstr += f"[\n    {jtstr}\n  ]"
     else:
-        tstr = pretty_print_value(tokens, max_length)
+        tstr = pretty_print_value(tokens, max_length, max_batch_size)
     return tstr
 
 
@@ -306,7 +228,7 @@ def decode_tokens_1d(tokens: Any, vocab: Any, max_length: int, raw_string: bool 
             tstr = bytes(tstr.encode("utf-8"))
         else:
             tstr = bytes(tstr)
-    except:
+    except:  # noqa: E722
         if len(tokens) > max_length:
             return str(dtoks) + "..."
         else:
@@ -329,7 +251,7 @@ def bytes_to_tokens(s: str):
     return np.fromiter((char for char in s), count=len(s), dtype=np.int32)
 
 
-def pad_chunk(s: Optional[np.ndarray], sequence_length: int):
+def pad_chunk(s: Optional[np.ndarray], sequence_length: int, pad_token: int):
     """Pad an array s out to the given sequence_length."""
     if s is None:
         return np.zeros(sequence_length, dtype=np.int32)
@@ -339,21 +261,22 @@ def pad_chunk(s: Optional[np.ndarray], sequence_length: int):
     if chunk_len == sequence_length:
         return s
     else:
-        return np.pad(s, (0, sequence_length - chunk_len), mode="constant", constant_values=0)
+        return np.pad(s, (0, sequence_length - chunk_len), mode="constant", constant_values=pad_token)
 
 
 def split_article(
-    tokens: np.ndarray, sequence_length: int, split: str, include_loss_mask: bool
+    tokens: np.ndarray, sequence_length: int, split: str, include_loss_mask: bool, pad_token: int
 ) -> (Iterable[Tuple[np.ndarray, np.ndarray]]):
     """Split an array into segments of length sequence_length."""
     assert np.ndim(tokens) == 1
     if include_loss_mask:
-        loss_mask = loss_mask_from_tokens(tokens, split)
+        loss_mask = loss_mask_from_tokens(tokens, split)  # noqa: F841
 
     for k in range(0, len(tokens), sequence_length):
-        segment = pad_chunk(tokens[k : k + sequence_length], sequence_length)
+        segment = pad_chunk(tokens[k : k + sequence_length], sequence_length, pad_token)
         if include_loss_mask:
-            segment_loss_mask = pad_chunk(loss_mask[k : k + sequence_length], sequence_length).astype(bool)
+            # segment_loss_mask = pad_chunk(loss_mask[k : k + sequence_length], sequence_length, pad_token).astype(bool)
+            raise NotImplementedError("loss_mask is not implemented yet")
         else:
             segment_loss_mask = np.array(True, dtype=bool)  # dummy mask
         yield (segment, segment_loss_mask)
@@ -497,7 +420,7 @@ def _batched_interleave_generator(
                 if readers[i] is not None:
                     try:
                         # Grab the next item from the article.
-                        targets_i, loss_mask_i = next(readers[i])
+                        targets_i, loss_mask_i = next(readers[i])  # type: ignore
                     except StopIteration:
                         # Article has ended; continue the while loop to grab a new one.
                         readers[i] = None
@@ -518,7 +441,7 @@ def _batched_interleave_generator(
                     if dsi is not None:
                         # Start reading the new article.
                         # Continue while loop to grab the first chunk.
-                        readers[i] = dsi
+                        readers[i] = dsi  # type: ignore
                         document_start[i] = True
                         item_epochs[i] = epoch
 
@@ -544,7 +467,7 @@ def _batched_interleave_generator(
             lmask = loss_mask[i] if include_loss_mask else None
             toks = nonzero_tokens(targets[i], lmask)
             if vocab is not None:
-                bchars = decode_tokens_1d(toks, vocab, max_length=len(targets[i]), raw_string=True)
+                bchars = decode_tokens_1d(toks, vocab, max_length=len(targets[i]), raw_string=True)  # type: ignore
                 num_chars[i] = len(bchars)
             else:
                 num_chars[i] = len(toks)
@@ -615,9 +538,14 @@ def split_and_batch(
             raise TypeError("Unusupported sequence type: %s" % str(type(tokens)))
         return split_article(tokens, sequence_length, split=split, include_loss_mask=include_loss_mask)
 
+    if vocab:
+        pad_token = vocab.pad_id
+    else:
+        pad_token = 0
+
     # Handle None values.
     def wrap_pad_chunk(s):
-        return pad_chunk(s, sequence_length)
+        return pad_chunk(s, sequence_length, pad_token)
 
     def wrap_batched_interleave_generator():
         return _batched_interleave_generator(
@@ -642,341 +570,3 @@ def split_and_batch(
 
     cds = tf.data.Dataset.from_generator(wrap_batched_interleave_generator, output_signature=out_sig)
     return cds
-
-
-def merge_articles(article_starts_ends, sequence_length):
-    """Merge consecutive articles if their combined length < sequence_length."""
-    cs = 0
-    ce = 0
-    for (s, e) in article_starts_ends:
-        if ce == 0:
-            ce = s
-        if (e - cs) > sequence_length:
-            if ce > cs:
-                # print("Yield: ", cs, " to ", ce)
-                yield (cs, ce)  # Yield prior merged articles
-            cs = s  # Reset to start of current article
-            ce = e
-        else:
-            ce = e  # Merge article with current set.
-        # print("Article: ", s, " to ", e)
-    if ce > 0:
-        # print("Yield: ", cs, " to ", ce)
-        yield (cs, ce)  # Yield final merged set.
-
-
-def _targets_to_tokens(article):
-    return bytes_to_tokens(article["targets"])
-
-
-def _wrap_text_in_dict(text):
-    return {"targets": text}
-
-
-# ---------------------
-
-
-def load_enwik8(split: str, sequence_length: int, batch_size: int, data_dir: str) -> tf.data.Dataset:
-    """Load the enwik8 dataset, partitioning into articles."""
-
-    if data_dir is None:
-        raise ValueError("Must specify a data directory for enwik8")
-
-    filename = os.path.join(data_dir, "enwik8")
-    filename = os.path.join(filename, "enwik8_" + split)
-
-    # Don't attempt to split the data, just shuffle it differently for
-    # each worker.
-    local_seed = 42 + jax.process_index()
-
-    logging.info("Enwik8: reading %s", filename)
-    with gfile.Open(filename, "r") as f:
-        text_data = f.read()
-
-    logging.info("Enwik8: parsing %s", filename)
-    article_starts = [m.start(0) for m in re.finditer("<page>", text_data)]
-    article_ends = article_starts[1:] + [len(text_data)]
-    logging.info("Enwik8: found %d articles.", len(article_starts))
-
-    merged_se = merge_articles(zip(article_starts, article_ends), sequence_length)
-    articles = [text_data[s:e] for (s, e) in merged_se]
-    num_articles = len(articles)
-    logging.info("Enwik8: merged into %d articles.", num_articles)
-
-    logging.info("Building dataset.")
-    ds = tf.data.Dataset.from_tensor_slices(articles)
-    ds = ds.map(_wrap_text_in_dict)
-    ds = ds.shuffle(num_articles, reshuffle_each_iteration=True, seed=local_seed)
-    if sequence_length == 0:
-        return ds  # Don't split and batch
-
-    return split_and_batch(
-        ds,
-        split=split,
-        extract_fn=_targets_to_tokens,
-        sequence_length=sequence_length,
-        batch_size=batch_size,
-        auto_rewind=True,
-        verbose=False,
-    )
-
-
-# ---------------------
-
-
-def _dataset_to_generator(dataset) -> Iterable[Dict[str, np.ndarray]]:
-    dataset_iter = iter(dataset)
-    epoch = 0
-    while True:
-        try:
-            target, target_mask, input_mask = next(dataset_iter)
-        except StopIteration:
-            epoch += 1
-            dataset_iter = iter(dataset)
-        document_start = True  # At start of each article.
-        item_epochs = epoch  # Epoch of the given item.
-        loss_mask = input_mask
-        vocab = None
-
-        # Decode the tokenized segement back to characters, to count the number
-        # of characters for the bits-per-character computation.
-        lmask = loss_mask
-        toks = nonzero_tokens(target, lmask)
-        if vocab is not None:
-            bchars = decode_tokens_1d(toks, vocab, max_length=len(target), raw_string=True)
-            num_chars = len(bchars)
-        else:
-            num_chars = len(toks)
-        nz_toks = len(toks)
-
-        item = {
-            "targets": target,
-            "start_of_sequence": np.array(document_start),
-            "epoch": item_epochs,
-            "num_chars": num_chars,
-            "nonzero_tokens": nz_toks,
-            "loss_mask": loss_mask,
-        }
-
-        yield item
-
-
-def synthetic_data_in_context(task: str, sequence_length: int, batch_size: int, data_dir, n=1000) -> tf.data.Dataset:
-    ## only for test
-
-    dataset = SynDataset(
-        n=n,
-        data_dir=data_dir,
-        task=task,
-        max_seq_length=sequence_length,
-        # num_context_statements_range = (5,10),
-        max_word_length=1,
-        remap_tokens=32128,
-        on_fly=True,
-    )
-
-    out_sig = {
-        "targets": tf.TensorSpec(shape=(sequence_length), dtype=tf.int32),
-        "start_of_sequence": tf.TensorSpec(shape=(), dtype=tf.bool),
-        "epoch": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "num_chars": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "nonzero_tokens": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "loss_mask": tf.TensorSpec(shape=(sequence_length), dtype=tf.bool),
-    }
-
-    def dataset_to_generator():
-        return _dataset_to_generator(dataset)
-
-    cds = tf.data.Dataset.from_generator(dataset_to_generator, output_signature=out_sig).batch(
-        batch_size, drop_remainder=True
-    )
-    return cds
-
-
-def synthetic_data_in_context_long(
-    task: str, sequence_length: int, batch_size: int, data_dir, n=1000
-) -> tf.data.Dataset:
-    ## only for test
-
-    dataset = SynDataset(
-        n=n,
-        data_dir=data_dir,
-        task=task,
-        max_seq_length=sequence_length,
-        # num_context_statements_range = (5,10),
-        max_word_length=5,
-        remap_tokens=32128,
-        on_fly=True,
-    )
-
-    out_sig = {
-        "targets": tf.TensorSpec(shape=(sequence_length), dtype=tf.int32),
-        "start_of_sequence": tf.TensorSpec(shape=(), dtype=tf.bool),
-        "epoch": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "num_chars": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "nonzero_tokens": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "loss_mask": tf.TensorSpec(shape=(sequence_length), dtype=tf.bool),
-    }
-
-    def dataset_to_generator():
-        return _dataset_to_generator(dataset)
-
-    cds = tf.data.Dataset.from_generator(dataset_to_generator, output_signature=out_sig).batch(
-        batch_size, drop_remainder=True
-    )
-    return cds
-
-
-def synthetic_data_in_context_subseq_no_remap(
-    split: str, sequence_length: int, batch_size: int, data_dir
-) -> tf.data.Dataset:
-    dataset = SynDataset(
-        n=batch_size,
-        data_dir=data_dir,
-        task="subseq",
-        max_seq_length=sequence_length,
-        # num_context_statements_range = (5,10),
-        max_word_length=1,
-        remap_tokens=None,
-        on_fly=True,
-    )
-
-    out_sig = {
-        "targets": tf.TensorSpec(shape=(sequence_length), dtype=tf.int32),
-        "start_of_sequence": tf.TensorSpec(shape=(), dtype=tf.bool),
-        "epoch": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "num_chars": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "nonzero_tokens": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "loss_mask": tf.TensorSpec(shape=(sequence_length), dtype=tf.bool),
-    }
-
-    def dataset_to_generator():
-        return _dataset_to_generator(dataset)
-
-    cds = tf.data.Dataset.from_generator(dataset_to_generator, output_signature=out_sig).batch(
-        batch_size, drop_remainder=True
-    )
-    return cds
-
-
-def synthetic_data_in_context_subseq_no_const(
-    split: str, sequence_length: int, batch_size: int, data_dir
-) -> tf.data.Dataset:
-    dataset = SynDataset(
-        n=batch_size,
-        data_dir=data_dir,
-        task="subseq",
-        max_seq_length=sequence_length,
-        # num_context_statements_range = (5,10),
-        max_word_length=1,
-        max_num_const=0,
-        remap_tokens=None,
-        on_fly=True,
-    )
-
-    out_sig = {
-        "targets": tf.TensorSpec(shape=(sequence_length), dtype=tf.int32),
-        "start_of_sequence": tf.TensorSpec(shape=(), dtype=tf.bool),
-        "epoch": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "num_chars": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "nonzero_tokens": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "loss_mask": tf.TensorSpec(shape=(sequence_length), dtype=tf.bool),
-    }
-
-    def dataset_to_generator():
-        return _dataset_to_generator(dataset)
-
-    cds = tf.data.Dataset.from_generator(dataset_to_generator, output_signature=out_sig).batch(
-        batch_size, drop_remainder=True
-    )
-    return cds
-
-
-def synthetic_data_in_context_subseq_lookup(
-    split: str, sequence_length: int, batch_size: int, data_dir
-) -> tf.data.Dataset:
-    dataset = SynDataset(
-        n=batch_size,
-        data_dir=data_dir,
-        task="subseq_lookup",
-        max_seq_length=sequence_length,
-        # num_context_statements_range = (5,10),
-        max_word_length=1,
-        max_num_const=0,
-        remap_tokens=None,
-        on_fly=True,
-    )
-
-    out_sig = {
-        "targets": tf.TensorSpec(shape=(sequence_length), dtype=tf.int32),
-        "start_of_sequence": tf.TensorSpec(shape=(), dtype=tf.bool),
-        "epoch": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "num_chars": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "nonzero_tokens": tf.TensorSpec(shape=(), dtype=tf.int32),
-        "loss_mask": tf.TensorSpec(shape=(sequence_length), dtype=tf.bool),
-    }
-
-    def dataset_to_generator():
-        return _dataset_to_generator(dataset)
-
-    cds = tf.data.Dataset.from_generator(dataset_to_generator, output_signature=out_sig).batch(
-        batch_size, drop_remainder=True
-    )
-    return cds
-
-
-def synthetic_data_short(
-    split: str, sequence_length: int, batch_size: int, auto_rewind: bool = True
-) -> tf.data.Dataset:
-    """Return a synthetic data set of sequences."""
-
-    strings = [
-        b"The quick brown fox jumped over the lazy dog.",
-        b"Humpty dumpty sat on a wall and had a great fall and went splat.",
-        b"She sells sea shells by the sea shore.",
-        b"Peter piper picked a peck of pickled peppercorns.",
-    ]
-    logging.info("Building synthetic dataset (short).")
-    ds = tf.data.Dataset.from_tensor_slices(strings)
-    ds = ds.map(_wrap_text_in_dict)
-    ds = ds.shuffle(4, reshuffle_each_iteration=True, seed=42)
-    if sequence_length == 0:
-        return ds  # Don't split and batch
-
-    return split_and_batch(
-        ds,
-        split=split,
-        extract_fn=_targets_to_tokens,
-        sequence_length=sequence_length,
-        batch_size=batch_size,
-        auto_rewind=auto_rewind,
-        verbose=False,
-    )
-
-
-def synthetic_data_long(
-    split: str, sequence_length: int, batch_size: int, auto_rewind: bool = True
-) -> tf.data.Dataset:
-    """Returns a synthetic data set with several long articles."""
-    articles = [
-        synthetic_text_data.text1_illiad_book1,
-        synthetic_text_data.text2_huckleberry_finn,
-        synthetic_text_data.text3_call_of_the_wild,
-        synthetic_text_data.text4_the_prince,
-    ]
-    logging.info("Building synthetic dataset (long).")
-    ds = tf.data.Dataset.from_tensor_slices(articles)
-    ds = ds.map(_wrap_text_in_dict)
-    ds = ds.shuffle(4, reshuffle_each_iteration=True, seed=42)
-    if sequence_length == 0:
-        return ds  # Don't split and batch
-
-    return split_and_batch(
-        ds,
-        split=split,
-        extract_fn=_targets_to_tokens,
-        sequence_length=sequence_length,
-        batch_size=batch_size,
-        auto_rewind=auto_rewind,
-        verbose=False,
-    )

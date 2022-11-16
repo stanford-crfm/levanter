@@ -22,7 +22,12 @@ class HfVocabulary(seqio.Vocabulary):
 
     @property
     def pad_id(self) -> int:
-        return self.tokenizer.pad_token_id
+        # GPT-2 doesn't have a pad token, so we use eos if not present
+        id = self.tokenizer.pad_token_id
+        if id is None or id < 0:
+            return self.tokenizer.eos_token_id
+
+        return id
 
     def unk_id(self) -> Optional[int]:
         return self.tokenizer.unk_token_id

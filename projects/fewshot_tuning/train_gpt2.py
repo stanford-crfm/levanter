@@ -29,6 +29,7 @@ from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 from fewshot_tuning.seqio_tasks import do_nothing
+from .text_dataset import split_and_batch
 
 #import tensorflow as tf
 
@@ -71,12 +72,30 @@ def main(config: TrainGpt2Config):
         shard_info=shard_info,
     )
 
+    dataset = split_and_batch(
+        dataset,
+        "train",
+        lambda article: article["targets"],
+        sequence_length=config.model.seq_length,
+        batch_size=config.trainer.batch_size,
+        vocab=task.output_features["targets"].vocabulary,
+    )
+
     eval_dataset = task.get_dataset(
         split="validation",
         sequence_length={"targets": config.model.seq_len},
         shuffle=False,
         seed=0,
         shard_info=shard_info,
+    )
+
+    eval_dataset = split_and_batch(
+        eval_dataset,
+        "validation",
+        lambda article: article["targets"],
+        sequence_length=config.model.seq_length,
+        batch_size=config.trainer.batch_size,
+        vocab=task.output_features["targets"].vocabulary,
     )
 
     # some axes we use outside the model proper
@@ -186,9 +205,8 @@ def main(config: TrainGpt2Config):
             n = 0
 
             for batch in eval_dataloader():
-                item = next(iter_data)
-                batch = item["targets"]
-                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
+                input_ids = batch["targets"].numpy()
+                loss += simplify_gdas(compute_loss_pjit(model_inf, input_ids)).item()
                 n += 1
 
             if n > 0:
@@ -272,9 +290,8 @@ def main(config: TrainGpt2Config):
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
-                    item = next(iter_data)
-                    input_ids = item["targets"]
-                    print(input_ids.shape)
+                    batch = next(iter_data)
+                    input_ids = batch["targets"].numpy()
                     my_key, training_key = jrandom.split(training_key, 2)
                     micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, PartitionSpec("data"))
 
