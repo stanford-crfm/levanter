@@ -28,7 +28,11 @@ from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
-from .seqio_tasks import do_nothing
+from fewshot_tuning.seqio_tasks import do_nothing
+
+#import tensorflow as tf
+
+#tf.enable_eager_execution()
 
 
 do_nothing()
@@ -61,7 +65,7 @@ def main(config: TrainGpt2Config):
 
     dataset = task.get_dataset(
         split="train",
-        sequence_length={"targets": config.model.seq_length},
+        sequence_length={"targets": config.model.seq_len},
         shuffle=True,
         seed=0,
         shard_info=shard_info,
@@ -69,7 +73,7 @@ def main(config: TrainGpt2Config):
 
     eval_dataset = task.get_dataset(
         split="validation",
-        sequence_length={"targets": config.model.seq_length},
+        sequence_length={"targets": config.model.seq_len},
         shuffle=False,
         seed=0,
         shard_info=shard_info,
@@ -182,6 +186,8 @@ def main(config: TrainGpt2Config):
             n = 0
 
             for batch in eval_dataloader():
+                item = next(iter_data)
+                batch = item["targets"]
                 loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
@@ -266,7 +272,9 @@ def main(config: TrainGpt2Config):
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
-                    input_ids = next(iter_data)
+                    item = next(iter_data)
+                    input_ids = item["targets"]
+                    print(input_ids.shape)
                     my_key, training_key = jrandom.split(training_key, 2)
                     micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, PartitionSpec("data"))
 

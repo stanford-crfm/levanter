@@ -602,10 +602,10 @@ def split_and_batch(
     # Tokenize article, compute loss mask, split into multiple chunks.
     # The entire article must fit into memory.
     def wrap_split_article(article):
-        if verbose:
-            logging.info("Reading article: %s", pretty_print_article(article, {}))
-        else:
-            logging.log_every_n_seconds(logging.INFO, "Reading article: %s", 60, pretty_print_article(article, {}))
+        #if verbose:
+        #    logging.info("Reading article: %s", pretty_print_article(article, {}))
+        #else:
+        #    logging.log_every_n_seconds(logging.INFO, "Reading article: %s", 60, pretty_print_article(article, {}))
         tokens = extract_fn(article)
         if isinstance(tokens, str) or isinstance(tokens, bytes):
             tokens = bytes_to_tokens(tokens)

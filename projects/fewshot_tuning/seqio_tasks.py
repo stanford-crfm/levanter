@@ -1,12 +1,12 @@
 import functools
 import gzip
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Union, Tuple
+import json
 
-import jsonlines
+import fsspec
 import numpy as np
 import seqio
 import tensorflow as tf
-import zstandard
 from fewshot_tuning.hf_vocab import HfVocabulary
 from seqio import preprocessors
 from transformers import AutoTokenizer
@@ -291,14 +291,10 @@ class GCJsonDataSource(seqio.DataSource):
     ):
         def gc_lmd_generator(files):
             for file in files:
-                with tf.io.gfile.GFile(file, "rb+") as f:
-                    if file.endswith(".gz"):
-                        f = gzip.GzipFile(fileobj=f)
-                    elif file.endswith(".zst"):
-                        f = zstandard.ZstdDecompressor().stream_reader(f)
-
-                    reader = jsonlines.Reader(f)
-                    for item in reader:
+                # with tf.io.gfile.GFile(file, "rb+") as f:
+                with fsspec.open(file, 'rt', compression='infer') as f:
+                    for line in f:
+                        item = json.loads(line)
                         result = dict()
                         result["targets"] = item["text"]
                         # result['meta'] = item['meta']
@@ -382,7 +378,7 @@ seqio.TaskRegistry.add(
         }
     ),
     preprocessors=[
-        functools.partial(preprocessors.rekey, key_map={"inputs": None, "targets": "text"}),
+        #functools.partial(preprocessors.rekey, key_map={"inputs": None, "targets": "text"}),
         seqio.preprocessors.tokenize,
         # t5.data.preprocessors.concatenate_and_split_to_fixed_length,
     ],
@@ -393,7 +389,7 @@ seqio.TaskRegistry.add(
 
 seqio.TaskRegistry.add(
     "the_filtered_pile",
-    GCJsonDataSource(split_to_filepattern={"train": "gs://n2formal-public-data-netherland/meliad/filtered_pile/*"}),
+    GCJsonDataSource(split_to_filepattern={"train": "gs://levanter-data/filtered_pile/*.json",}),
     preprocessors=[
         seqio.preprocessors.tokenize,
         # t5.data.preprocessors.concatenate_and_split_to_fixed_length,
@@ -408,13 +404,14 @@ seqio.MixtureRegistry.add(
     [("the_pile_gcs", 1), ("the_filtered_pile", 1)],
 )
 
-seqio.get_mixture_or_task("the_pile_gcs_and_filtered").get_dataset(
-    split="train",
-    sequence_length={"targets": 1024},
-    shuffle=True,
-    seed=0,
-    use_cached=False,
-)
+
+#seqio.get_mixture_or_task("the_pile_gcs_and_filtered").get_dataset(
+#    split="train",
+#    sequence_length={"targets": 1024},
+#    shuffle=True,
+#    seed=0,
+#    use_cached=False,
+#)
 
 
 def do_nothing():

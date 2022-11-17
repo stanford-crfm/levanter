@@ -36,14 +36,22 @@ class HfVocabulary(seqio.Vocabulary):
         return len(self.tokenizer)
 
     def __eq__(self, other):
-        return isinstance(other, HFVocabulary) and self.tokenizer == other.tokenizer
+        return isinstance(other, HfVocabulary) and self.tokenizer == other.tokenizer
 
+    @property
     def _base_vocab_size(self) -> int:
         return len(self.tokenizer)
 
     def _encode_tf(self, s: tf.Tensor) -> tf.Tensor:
-        s = s.numpy().decode("utf-8")
-        return self.tokenizer.encode(s, add_special_tokens=False, return_tensors="tf")
+        def do_encode_tf(s: tf.Tensor):
+            s = s.numpy().decode("utf-8")
+            return self.tokenizer.encode(s, add_special_tokens=False, return_tensors="tf")
+
+        try:
+            do_encode_tf(s)
+        except AttributeError:
+            return tf.py_function(func=do_encode_tf, inp=[s], Tout=tf.int32)
+
 
     def _decode_tf(self, ids: tf.Tensor) -> tf.Tensor:
         return self.tokenizer.decode(ids)
