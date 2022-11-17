@@ -513,7 +513,7 @@ Next, we create a function that applies the blocks in sequence:
         return hidden_states
 ```
 
-If you're not used to functional programming, this might be a bit hard to understand. The `fold` function is
+If you're not used to functional programming, this might be a bit hard to follow at first. The `fold` function is
 equivalent to a `for` loop. It takes a function `do_block` and applies it to each element of the `self.blocks` array,
 accumulating the result. The `axis` argument tells it which axis to iterate over. This invocation is equivalent to the
 following Python:
@@ -525,63 +525,102 @@ for layer_idx, block in enumerate(self.blocks):
     hidden_states = do_block(hidden_states, block, layer_idx, key)
 ```
 
-The reason to use fold/scan in Jax is that it makes compilation much faster, and it also works with non-constant
+The reason to use `fold`/`scan` in Jax is that it makes compilation much faster, and it also works with non-constant
 lengths. We're mostly using it for compilation speed. Eventually we'll add support for fancy gradient checkpointing
 strategies to Haliax `fold` and `scan`.
 
-## First cut at training: simple data parallel training via `pmap`
+## Data Parallel Training via `pjit`
 
-XXX TODO:
+With all that, let's go ahead and implement data parallel training. As a reminder, data parallel training is the
+"obvious" way to do distributed training: Jax has a few ways of doing data-parallel distributed training: `pmap`,
+`xmap`, and `pjit`. `pjit` is the most flexible one, and it's what we'll be using. However, `pjit` is also the most complicated.
 
-## Reducing memory usage
+We'll start with the comparatively simple use case of data parallelism, and then graduate up to the more complicated
+case of model (activation) parallelism.
 
-When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
-and its kin, this is another two copies of the parameters. If you store your parameters in float32, you need at a minimum
-16 * `num_params` bytes of memory, without including the memory needed for activations. (For LLMs, the data for a batch
-is typically trivial in comparison.) If you don't use ZeRO (XXX cite) or some other technique, you'll need to store all
-of these on every TPU/GPU. It's generally recommended to store all of these (maybe not the gradients) in float32 for training.
+### Device Meshes for Data Parallelism
 
-While we'll get to ZeRO/FSDP in a bit, in the meantime we can use mixed precision training to reduce the memory footprint
-of the model.
+Currently in Jax, the primary abstraction for partitioning data across a device is a "device mesh", which is
+basically just an N-dimensional array of devices. Typically, we use 2-dimensional meshes, and the two axes of the
+mesh are labeled "data" and "model". The "data" axis is the one that we'll use for data parallelism, and the "model"
+axis is the one we'll use for model parallelism. For now, let's only worry about a one-dimensional mesh, which
+is equivalent to a single list of devices, and we'll name its one axis "data:"
 
-A single v3 or v4 TPU core has 16GB of memory. This means that, for a 345M parameter model, we've already committed
-to using 5.5GB of memory for the parameters and optimizer states alone. This is plenty of space, but if we go to
-a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
-can be nontrivial.
+![One-Dimensional Device Mesh](./device_mesh_1d.png)
 
-### Mixed Precision Training via `jmp`
+XXX
 
-A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
-states) in full precision, but only use half precision (bfloat16) for the activations. This reduces the memory footprint of the
-model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
-significant win, and it's easy to do with Jax and a library called `jmp`.
+To do data parallel training, we basically want to take each batch and split it up along the "data" axis of the mesh.
+For a language model, we can think of each batch as a matrix of shape `(Batch, SeqLen)`. Thus, we want to split
+the batch dimension into `num_devices` chunks:
 
-We could just do everything in bfloat16, but there's been lots of reports that, even when stable, keeping everything in bfloat16
-can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a ~.15 nat
-loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
-parameters in float32, and use bfloat16 for the activations.
+![Same mesh showing "batch" axis partitioned across devices](./data_parallel_mesh.png)
 
-[`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
-that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
-has methods for convert an array or pytree of arrays to the appropriate dtype, and for converting back to each
-of these semantic dtypes.
+Our model, on the hand, is replicated across all devices, with one copy of the model on each device.
+That looks something like:
+
+![Same mesh showing replicated model and data partitioned](./data_parallel_mesh_replicated.png)
+
+When we compute the mean of the gradients and the loss, Jax will automatically average them across the devices, and
+we'll broadcast the averaged gradients to all devices to do parameter updates. This is the same as the "all-reduce"
+operation in PyTorch.
+
+
+### `pjit` for Data Parallelism
+
+The way we do this sharding in Jax is with `pjit`. `pjit` is a function that takes a function and a `PartitionSpec` for each
+input and output and returns a new function that's "partitioned" across the devices in the mesh. The `PartitionSpec` is
+just a fancy tuple, and it tells `pjit` how to map each axis of the inputs and output to the devices in the mesh. You
+can pass in `None` for an axis if you don't want to partition it, and you can pass in None instead of an entire
+`PartitionSpec` if you don't want to partition any axes.
+
+As a simple-ish example, let's do a distributed matrix multiply. We'll suggestively name the variables so you
+can see where this is going:
 
 ```python
-import jmp
-policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
+from jax.experimental.pjit import pjit
+from jax.experimental.pjit import PartitionSpec
+import jax
+import jax.numpy as jnp
+import numpy as onp
 
-policy.cast_to_compute(my_model)  # Convert x to bfloat16
+inputs = jnp.ones((128, 64))  # [batch, seq_len]
+weights = jnp.ones((64, 32))  # [seq_len, hidden]
+
+devices = onp.array(jax.devices())
+mesh = Mesh(devices, ("data",))  # devices, axis names
+
+with mesh:
+    def matmul(weights, inputs):
+        return inputs @ weights
+
+
+    pjit_matmul = pjit(matmul,
+                       in_axis_resources=(None, PartitionSpec("data", None)),
+                       out_axis_resources=PartitionSpec("data", None))
+    print(pjit_matmul(weights, inputs))
 ```
 
-To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
-param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
+This divides up the `inputs` matrix along the "data" axis of the mesh, so that each device gets `128 // num_devices`
+rows. It then computes the matrix multiply on each device for its slice of the data, yielding a slice of the result
+matrix that has shape `(128 // num_devices, 32)`. These slices are implicitly concatenated along the "data" axis
+of the mesh, and the result is a matrix of shape `(128, 32)`. The `PartitionSpec` for the output is the same as
+the input, so the output is also partitioned along the "data" axis.
 
-### Gradient Checkpointing
+If instead we had specified that the output should not be sharded, then Jax would have automatically broadcast
+the result to all devices, and we would have gotten a matrix of shape `(128, 32)`.
+
+### Adding `pjit` to training
+
+Now that we have a basic understanding of how `pjit` works, let's add it to our trainer. We'll start by creating a mesh
+with `num_devices` devices, and then we'll add a `with mesh:` block to our training loop. Inside the `with mesh:`
+block, we'll add a `pjit` call to our `training_step` function, specifying that the `input_ids` and the keys should be
+partitioned along the "data" axis of the mesh, and that the output should not be partitioned. We'll also add a
 
 
+## Model Parallelism with Activation Sharding
 
-
-## Model and Activation Partitioning via `pjit` (and data parallelism revisited)
+XXX Transition
 
 Activation partitioning is a technique that allows you to split up the activations of a model across multiple devices.
 Typically, this is accompanied by model partitioning, which splits up the parameters of the model across multiple devices.
@@ -598,17 +637,14 @@ This is the principle behind `pjit`, except it's all done automatically under th
 code as if it were running on a single device, but then we specify how we want our parameters and data to be partitioned
 across devices, and `pjit` and the [XLA SPMD partitioner](https://arxiv.org/pdf/2105.04663.pdf) will do the rest.
 
-### Device Meshes
+### Device Meshes for Model Parallelism
 
-Currently in Jax, the primary abstraction for partitioning data across a device is a "device mesh", which is
-basically just an N-dimensional array of devices. Typically, we use 2-dimensional meshes, and the two axes of the
-mesh are labeled "data" and "model". The "data" axis is the one that we'll use for data parallelism, and the "model"
-axis is the one we'll use for model parallelism.
+So far, we've only had device meshes with a single axis. Now, let's add a second axis, and call it "model":
+
+![Device Mesh](./device_mesh_2d.png)
 
 As a concrete example, consider the device mesh below, which has 8 devices, arranged in a 2x4 grid. The "data" axis
 is the first axis, and the "model" axis is the second axis.
-
-![Device Mesh](./device_mesh_1.png)
 
 One of the parameters in our model is the weight for the projection from `Embed` to `Mlp` that we used in the MLP,
 which we called `c_fc` after the GPT-2 naming convention. It has shape `[Embed, Mlp]`.
@@ -639,7 +675,9 @@ partitioned only along the `data` axis. i.e.:
 ![Device Mesh with Partitioned Parameter and Computation](./device_mesh_partitioned_computation_2.png)
 
 
-### Jax `pjit`
+
+### `pjit` for Activation Sharding
+
 
 Now at long last, we can get to `pjit`. `pjit` is a function that takes a function and a `PartitionSpec` for each
 input (or None to indicate that the input should be fully replicated across the mesh) and for each output,
@@ -671,31 +709,6 @@ with mesh:
     print(pjit_matmul(x, y))
 ```
 
-
-This will divide the 512x128 matrix `x` into 4 128x128 matrices, with each submatrix replicated across the 2 devices
-in the "data" axis. 'y' will be fully replicated across the mesh. The matrix multiply will be done locally on each
-device, and the results will continue to be partitioned across the mesh. The final result will be a 512x1 vector,
-which is partitioned across the "model" axis, so the 128x1 vectors will be replicated across the 2 devices in the
-"data" axis.
-
-Now consider an alternative sharding strategy, where we shard the 512x128 matrix on the second axis instead of the
-first:
-```python
-pjit_matmul = pjit(matmul,
-                   in_axis_resources=(PartitionSpec(None, "model"), PartitionSpec("model", None)),
-                   out_axis_resources=PartitionSpec(None))
-
-with mesh:
-    print(pjit_matmul(x, y))
-```
-
-This will divide the 512x128 matrix `x` into 4 512x32 matrices, with each submatrix replicated across the 2 devices
-in the "data" axis. `y` will also be partitioned across the "model" axis, so each device will have a 32x1 vector.
-The matrix multiply will be done locally on each device, and then *summed* across the mesh. The final result will still
-be a 512x1 vector, which is fully replicated across the mesh.
-
-Just to drive the point home: you can change a computation from "fan-in" to "fan-out" by changing the partitioning.
-This is a really powerful property of `pjit` and the XLA SPMD partitioner.
 
 ### Haliax `named_pjit`
 
@@ -745,22 +758,79 @@ Now that we've covered the basics of `pjit` and our named variant, let's see how
 GPT-2 model. XXX
 
 
-## ZeRO: Parameter Partitioning
+## Reducing Memory Usage
 
-ZeRO (XXX link) is short for ZEro-Redundancy Optimizer, and it's a set of techniques for optimizing large-scale training
+When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
+and its kin, the optimizer state is another two copies of the parameters. If you store your parameters in float32, you
+need at a minimum `16 * num_params` bytes of memory, without including the memory needed for activations. (For LLMs, the
+data for a batch is typically trivial in comparison.) If you don't use ZeRO (XXX cite) or some other technique, you'll
+need to store all of these on every TPU/GPU. (It's generally recommended to store all of these (maybe not the gradients)
+in float32 for training.)
+
+While we'll get to ZeRO/FSDP in a bit, in the meantime we can use mixed precision training to reduce the memory footprint
+of the model.
+
+A single v3 or v4 TPU core has 16GB of memory. This means that, for a 345M parameter model, we've already committed
+to using 5.5GB of memory for the parameters and optimizer states alone. This is plenty of space, but if we go to
+a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
+can be nontrivial.
+
+### Mixed Precision Training via `jmp`
+
+A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
+states) in full precision, but only use half precision (bfloat16) for the activations. This reduces the memory footprint of the
+model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
+significant win, and it's easy to do with Jax and a library called `jmp`.
+
+We could just do everything in bfloat16, but there's been lots of reports that, even when stable, keeping everything in bfloat16
+can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a ~.15 nat
+loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
+parameters and optimizer states in float32, and use bfloat16 for the activations.
+
+[`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
+that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
+has methods for convert an array or pytree of arrays to the appropriate dtype, and for converting back to each
+of these semantic dtypes.
+
+```python
+import jmp
+policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
+
+policy.cast_to_compute(my_model)  # Convert x to bfloat16
+```
+
+To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
+param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
+
+Here's what that looks like:
+```python
+
+
+XXX
+```
+
+
+
+### ZeRO: Parameter Partitioning
+
+ZeRO (XXX link) (short for ZEro-Redundancy Optimizer) is a set of techniques for optimizing large-scale training
 by partitioning model parameters, gradient accumulation buffers, and optimizer states across multiple devices, so that no
-device has to hold these in memory. In PyTorch-land, there are two main implementations of ZeRO: DeepSpeed and Fully
-Sharded Data Parallel (FSDP). These are complex software libraries that have a lot of moving parts.
-With Jax, we'll get most of the benefit in a few lines of code.
+device has any overlap with any other device in terms of what parameters it stores.
+
+In PyTorch-land, there are two main implementations of ZeRO: DeepSpeed and Fully Sharded Data Parallel (FSDP). These are
+complex software libraries that have a lot of moving parts. With Jax, we'll get most of the benefit in a few lines of code.
 
 XXX mesh
 
+### Other Techniques
+#### Gradient Checkpointing
 
+#### Argument Donation
 
 
 ## Random Gotchas
 ### Pjit's SPMD partitioner gets confused
-Sometimes Jax doesn't shard things the way you want, and this can lead to either huge slow downs or huge memory consumption. Jax's `with_sharding_constraint` or haliax's `auto_sharded` is your friend here.
+Sometimes Jax doesn't shard things the way you want, and this can lead to either huge slow downs or huge memory consumption. Jax's `with_sharding_constraint` or Haliax's `auto_sharded` is your friend here.
 
 ### Randomness isn't shardable
 Unfortunately, random number generation in Jax is sequential: there's no way to "fast-forward" the RNG. Let's say I want to generate a 4096 x 8192 matrix that is sharded along the first axis across 4 nodes. Then, I might want to write something like this:
@@ -790,7 +860,7 @@ my_shard = whole_matrix[4096/4 * 1: 4096/4 * 2, :]
 # etc.
 ```
 
-This is pretty expensive and, more importantly, ends up using a whole lot of precisous TPU RAM, to the extent that I've had models that should fit in RAM run out of memory during initialization.
+This is pretty expensive and, more importantly, ends up using a whole lot of precious TPU RAM, to the extent that I've had models that should fit in RAM run out of memory during initialization.
 
 A somewhat ugly way to work around this is to use the "split" property of  something a bit less attractive like:
 ```python
