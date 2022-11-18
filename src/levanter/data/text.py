@@ -44,7 +44,7 @@ overwatch = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset(ShardableDataset[BatchEncoding]):
+class TokenSeqDataset(ShardableDataset[Sequence[int]]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
     """
@@ -60,9 +60,10 @@ class TokenSeqDataset(ShardableDataset[BatchEncoding]):
         """
         return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
-    def __iter__(self) -> Iterator[BatchEncoding]:
+    def __iter__(self) -> Iterator[Sequence[int]]:
         for doc in self.doc_cache:
-            yield from concatenate_and_group_texts(doc, self.seq_len, self.stride)
+            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride):
+                yield encoded_slice["input_ids"]
 
     @staticmethod
     def build_or_load(
