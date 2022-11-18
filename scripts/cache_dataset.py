@@ -1,6 +1,6 @@
 import pyrallis
 
-from levanter.data import CachedLMDatasetConfig
+from levanter.data.text import CachedLMDatasetConfig
 
 
 @pyrallis.wrap()

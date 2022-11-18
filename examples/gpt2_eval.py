@@ -24,9 +24,8 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data import CachedLMDatasetConfig
 from levanter.data.sharded import ShardedIndexedDataset
-from levanter.data.text import TokenSeqDataset
+from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
 
