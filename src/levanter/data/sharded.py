@@ -5,7 +5,6 @@ import jax
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import Mesh, PartitionSpec
-from transformers import BatchEncoding
 
 import levanter.mesh
 from haliax.partitioning import ResourceAxis
@@ -46,7 +45,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
     def __init__(
         self,
-        local_dataset: ShardableDataset[BatchEncoding],
+        local_dataset: ShardableDataset[Sequence[int]],
         mesh: Mesh,
         batch_size: int,
         *,
@@ -98,7 +97,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
                 if begin_ends_for_index not in data_for_slice:
                     data_for_slice[begin_ends_for_index] = np.stack(
-                        list([ex["input_ids"] for ex in itertools.islice(it, num_examples)])
+                        list([ex for ex in itertools.islice(it, num_examples)])
                     )
                 out.append(data_for_slice[begin_ends_for_index])
 
