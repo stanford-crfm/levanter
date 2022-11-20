@@ -138,6 +138,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         self.token_counts = token_counts
         self.total_tokens = sum(token_counts)
 
+    def __len__(self):
+        if self.flatten_docs:
+            sum([len(self._load_arrow_table(path).to_batches()) for path in self.cache_files])
+        else:
+            return sum([self._load_arrow_table(path).num_rows for path in self.cache_files])
+
     def __iter__(self):
         for cache_file in self.cache_files:
             for entry in self._read_cache_file(cache_file):
