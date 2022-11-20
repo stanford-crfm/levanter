@@ -16,6 +16,9 @@ class RangeDataset(Dataset[int]):
     def __iter__(self) -> Iterator[int]:
         yield from range(self.start, self.end)
 
+    def __len__(self) -> int:
+        return self.end - self.start
+
 
 def test_shuffle_dataset():
     dataset = RangeDataset(0, 100)
