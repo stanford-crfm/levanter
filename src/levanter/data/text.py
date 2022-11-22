@@ -37,8 +37,7 @@ overwatch = logging.getLogger("levanter.data.text")
 
 # TASKS:
 # TODO: figure out directory structure for caching multiple sources
-# TODO: if we're super careful we can compute the number of samples (for a given batch size and stride) in advance
-#       if we do that, we can implement a Map-style dataset, which is somewhat preferable when not streaming
+# TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
