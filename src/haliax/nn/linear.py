@@ -21,7 +21,7 @@ class Linear(eqx.Module):
 
     def __init__(self, In: AxisSpec, Out: AxisSpec, *, key, include_bias=True):
         joint_spec = hax.concat_axis_specs(In, Out)
-        self.weight = hax.random.normal(key, joint_spec) * 0.02
+        self.weight = hax.random.generate_sharded(hax.random.normal)(key, joint_spec) * 0.02
         self.bias = hax.zeros(Out) if include_bias else None
 
         self.In = In

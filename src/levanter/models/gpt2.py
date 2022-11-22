@@ -16,6 +16,9 @@ from levanter.compat.torch_serialization import StateDict, TorchSerializationMix
 from levanter.modeling_utils import ACT2FN
 
 
+sharded_normal = hax.random.generate_sharded(hax.random.normal)
+
+
 @dataclass(frozen=True)
 class Gpt2Config:
     seq_len: int = 512
@@ -398,14 +401,14 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         self.SeqLen = SeqLen
         self.Embed = Embed
 
-        self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
+        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
+        self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
         else:
-            self.token_out_embeddings = hax.random.normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
+            self.token_out_embeddings = sharded_normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
 
     @named_call
     def embed(self, input_ids, inference, *, key):
