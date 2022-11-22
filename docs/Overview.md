@@ -17,7 +17,6 @@ how to build large models. One of the challenges we had while building models is
 large models is either held in confidence within large companies, or not well-documented, or documented via Twitter
 threads and stray comments deep in open source repositories. We hope that Levanter will help to fill this gap.
 
-
 ## Building Blocks
 
 Before we get into the details of Levanter, let's first discuss some of the key building blocks that Levanter is built on.
@@ -204,7 +203,6 @@ def update(model, opt_state, x, y):
 It's so simple that Copilot wrote all that for me... Thanks Copilot!
 
 ### Haliax: Named Tensors
-
 
 Haliax is a library for named tensors in Jax. It wraps Jax's APIs (especially the numpy-like ones, along with
 the core transformations like vmap, pjit, etc) to make them work with named tensors. It also builds on top of
@@ -547,15 +545,15 @@ case of model (activation) parallelism.
 
 Currently in Jax, the primary abstraction for partitioning data across a device is a "device mesh", which is
 basically just an N-dimensional array of devices. Typically, we use 2-dimensional meshes, and the two axes of the
-mesh are labeled "data" and "model". The "data" axis is the one that we'll use for data parallelism, and the "model"
+mesh are labeled `data` and `model`. The `data` axis is the one that we'll use for data parallelism, and the `model`
 axis is the one we'll use for model parallelism. For now, let's only worry about a one-dimensional mesh, which
-is equivalent to a single list of devices, and we'll name its one axis "data:"
+is equivalent to a single list of devices, and we'll name its one axis `data`:
 
 ![One-Dimensional Device Mesh](./device_mesh_1d.png)
 
 XXX
 
-To do data parallel training, we basically want to take each batch and split it up along the "data" axis of the mesh.
+To do data parallel training, we basically want to take each batch and split it up along the `data` axis of the mesh.
 For a language model, we can think of each batch as a matrix of shape `(Batch, SeqLen)`. Thus, we want to split
 the batch dimension into `num_devices` chunks:
 
@@ -606,11 +604,11 @@ with mesh:
     print(pjit_matmul(weights, inputs))
 ```
 
-This divides up the `inputs` matrix along the "data" axis of the mesh, so that each device gets `128 // num_devices`
+This divides up the `inputs` matrix along the `data` axis of the mesh, so that each device gets `128 // num_devices`
 rows. It then computes the matrix multiply on each device for its slice of the data, yielding a slice of the result
-matrix that has shape `(128 // num_devices, 32)`. These slices are implicitly concatenated along the "data" axis
+matrix that has shape `(128 // num_devices, 32)`. These slices are implicitly concatenated along the `data` axis
 of the mesh, and the result is a matrix of shape `(128, 32)`. The `PartitionSpec` for the output is the same as
-the input, so the output is also partitioned along the "data" axis.
+the input, so the output is also partitioned along the `data` axis.
 
 If instead we had specified that the output should not be sharded, then Jax would have automatically broadcast
 the result to all devices, and we would have gotten a matrix of shape `(128, 32)`.
@@ -620,7 +618,7 @@ the result to all devices, and we would have gotten a matrix of shape `(128, 32)
 Now that we have a basic understanding of how `pjit` works, let's add it to our trainer. We'll start by creating a mesh
 with `num_devices` devices, and then we'll add a `with mesh:` block to our training loop. Inside the `with mesh:`
 block, we'll add a `pjit` call to our `training_step` function, specifying that the `input_ids` and the keys should be
-partitioned along the "data" axis of the mesh, and that the output should not be partitioned. We'll also add a
+partitioned along the `data` axis of the mesh, and that the output should not be partitioned. We'll also add a
 
 
 ## Model Parallelism with Activation Sharding
@@ -648,7 +646,7 @@ So far, we've only had device meshes with a single axis. Now, let's add a second
 
 ![Device Mesh](./device_mesh_2d.png)
 
-As a concrete example, consider the device mesh below, which has 8 devices, arranged in a 2x4 grid. The "data" axis
+As a concrete example, consider the device mesh below, which has 8 devices, arranged in a 2x4 grid. The `data` axis
 is the first axis, and the "model" axis is the second axis.
 
 One of the parameters in our model is the weight for the projection from `Embed` to `Mlp` that we used in the MLP,
