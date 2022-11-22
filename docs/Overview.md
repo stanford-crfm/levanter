@@ -258,6 +258,11 @@ Named Arrays will also make it easier to write partitioned models: jax's `pjit` 
 and you partition your parameters and computation along array axes across the mesh. Named arrays make it easier to map
 semantically meaningful axes to the mesh axes. (See below for more on this.)
 
+*If you don't want to use NamedArrays for your operations, that's totally fine.* You can still get the benefits of
+easier, more semantic-y partitioning if you use NamedArrays as the fields in your Modules, but you can just use `my_array.array`
+and access the underlying array and use it like normal.
+
+
 #### Named Axes in Jax
 Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
