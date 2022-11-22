@@ -67,7 +67,7 @@ class Dropout(eqx.Module):
                     shape_to_generate = tuple(ax for ax in x.axes if ax not in axes)
 
                 q = 1 - self.pdrop
-                mask = haliax.random.bernoulli(key, q, shape_to_generate)
+                mask = haliax.random.bernoulli(key, shape_to_generate, q)
                 q = x.dtype.type(q)
 
                 out = haliax.where(mask, x / q, 0)

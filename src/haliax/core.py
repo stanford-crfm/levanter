@@ -106,6 +106,9 @@ class NamedArray:
         assert len(tree) == 1
         return cls(tree[0], axes=aux)
 
+    def has_axis(self, axis: AxisSpec) -> bool:
+        return self._lookup_indices(axis) is not None
+
     @typing.overload
     def _lookup_indices(self, axis: Axis) -> Optional[int]:
         ...
@@ -544,7 +547,7 @@ def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[Named
 # e.g. we'd like something like rearrange(array, (..., new_axis), merge_axes={new_axis: (old_axis1, old_axis2)})
 # or rearrange(array, (new_axis1, ..., new_axis2), split_axes={old_axis: (new_axis1, new_axis2)})
 # or even rearrange(array, (x, ..., b, a), map_axes={old_axis: (a, b), x: (old1, old2)})
-def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]):
+def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]) -> NamedArray:
     """
     Rearrange an array so that its underlying storage conforms to axes.
     axes may include up to 1 ellipsis, indicating that the remaining axes should be
@@ -764,17 +767,21 @@ def _broadcast_axes(
 
 
 def broadcast_to(
-    a: NamedArray, axes: AxisSpec, ensure_order: bool = True, enforce_no_extra_axes: bool = True
+    a: NamedOrNumeric, axes: AxisSpec, ensure_order: bool = True, enforce_no_extra_axes: bool = True
 ) -> NamedArray:
     """
     Broadcasts a so that it has the given axes.
      If ensure_order is True (default), then the returned array will have the same axes in the same order as the given
-     axes. Otherwise, the axes may not be moved
+     axes. Otherwise, the axes may not be moved if they are already in the array. The axes may not be contiguous however
 
     If enforce_no_extra_axes is True and the array has axes that are not in axes, then a ValueError is raised.
     """
-
     axes = ensure_tuple(axes)
+
+    if not isinstance(a, NamedArray):
+        a = named(jnp.asarray(a), ())
+
+    assert isinstance(a, NamedArray)  # mypy gets confused
 
     if a.axes == axes:
         return a
@@ -792,10 +799,24 @@ def broadcast_to(
     a_array = jnp.broadcast_to(a.array, [ax.size for ax in all_axes])
     a = NamedArray(a_array, all_axes)
 
-    if ensure_order:
-        a = rearrange(a, axes + extra_axes)
+    # if the new axes are already in the right order, then we're done
+    if ensure_order and not _is_subsequence(axes, all_axes):
+        a = a.rearrange(axes + extra_axes)
 
-    return a
+    return typing.cast(NamedArray, a)
+
+
+def _is_subsequence(needle, haystack):
+    needle_i = 0
+    haystack_j = 0
+    while needle_i < len(needle) and haystack_j < len(haystack):
+        if needle[needle_i] == haystack[haystack_j]:
+            needle_i += 1
+        haystack_j += 1
+
+    if needle_i < len(needle):
+        return False
+    return True
 
 
 @overload
@@ -863,12 +884,12 @@ def broadcast_arrays_and_return_axes(
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
     """
     Broadcasts a, ensuring that it has all the axes in axis.
-     broadcast_axis is an alias for broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
+     broadcast_axis is an alias for broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=True)
     """
     if isinstance(axis, Axis) and axis in a.axes:
         return a
 
-    return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=False)
+    return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=True)
 
 
 __all__ = [
@@ -890,9 +911,3 @@ __all__ = [
     "shape_checks",
     "are_shape_checks_enabled",
 ]
-
-
-def raw_array_or_scalar(x: NamedOrNumeric):
-    if isinstance(x, NamedArray):
-        return x.array
-    return x
