@@ -206,8 +206,7 @@ def main(config: TrainGpt2Config):
             loss = 0.0
             n = 0
 
-            for batch in eval_dataloader():
-                input_ids = batch["targets"].numpy()
+            for input_ids in eval_dataloader():
                 loss += simplify_gdas(compute_loss_pjit(model_inf, input_ids)).item()
                 n += 1
 
