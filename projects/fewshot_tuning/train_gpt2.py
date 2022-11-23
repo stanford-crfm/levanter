@@ -29,7 +29,7 @@ from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 
 from fewshot_tuning.seqio_tasks import do_nothing
-from .text_dataset import split_and_batch
+from fewshot_tuning.text_dataset import split_and_batch
 
 #import tensorflow as tf
 
@@ -76,8 +76,8 @@ def main(config: TrainGpt2Config):
         dataset,
         "train",
         lambda article: article["targets"],
-        sequence_length=config.model.seq_length,
-        batch_size=config.trainer.batch_size,
+        sequence_length=config.model.seq_len,
+        batch_size=config.trainer.train_batch_size,
         vocab=task.output_features["targets"].vocabulary,
     )
 
@@ -93,8 +93,8 @@ def main(config: TrainGpt2Config):
         eval_dataset,
         "validation",
         lambda article: article["targets"],
-        sequence_length=config.model.seq_length,
-        batch_size=config.trainer.batch_size,
+        sequence_length=config.model.seq_len,
+        batch_size=config.trainer.eval_batch_size,
         vocab=task.output_features["targets"].vocabulary,
     )
 

@@ -50,7 +50,9 @@ class HfVocabulary(seqio.Vocabulary):
     def _encode_tf(self, s: tf.Tensor) -> tf.Tensor:
         def do_encode_tf(s: tf.Tensor):
             s = s.numpy().decode("utf-8")
-            return self.tokenizer.encode(s, add_special_tokens=False, return_tensors="tf")
+            toks = self.tokenizer.encode(s, add_special_tokens=False, return_tensors="tf")
+            assert len(toks.shape) == 2
+            return tf.cast(toks[0], tf.int32)
 
         try:
             do_encode_tf(s)

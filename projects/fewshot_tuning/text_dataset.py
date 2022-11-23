@@ -268,7 +268,7 @@ def split_article(
     tokens: np.ndarray, sequence_length: int, split: str, include_loss_mask: bool, pad_token: int
 ) -> (Iterable[Tuple[np.ndarray, np.ndarray]]):
     """Split an array into segments of length sequence_length."""
-    assert np.ndim(tokens) == 1
+    assert np.ndim(tokens) == 1, tokens.shape
     if include_loss_mask:
         loss_mask = loss_mask_from_tokens(tokens, split)  # noqa: F841
 
@@ -522,6 +522,11 @@ def split_and_batch(
       }
     """
 
+    if vocab:
+        pad_token = vocab.pad_id
+    else:
+        pad_token = 0
+
     # Tokenize article, compute loss mask, split into multiple chunks.
     # The entire article must fit into memory.
     def wrap_split_article(article):
@@ -536,12 +541,8 @@ def split_and_batch(
             tokens = tokens.astype(np.int32)
         else:
             raise TypeError("Unusupported sequence type: %s" % str(type(tokens)))
-        return split_article(tokens, sequence_length, split=split, include_loss_mask=include_loss_mask)
+        return split_article(tokens, sequence_length, split=split, include_loss_mask=include_loss_mask, pad_token=pad_token)
 
-    if vocab:
-        pad_token = vocab.pad_id
-    else:
-        pad_token = 0
 
     # Handle None values.
     def wrap_pad_chunk(s):
