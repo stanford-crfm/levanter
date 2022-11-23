@@ -1,3 +1,4 @@
+import dataclasses
 import itertools
 import logging
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ import jax.random as jrandom
 import jmp
 import pyrallis
 from equinox import filter_vmap
-from jax.interpreters.pxla import PartitionSpec
+from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
@@ -21,7 +22,6 @@ from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partiti
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.config import TrainerConfig
 from levanter.data import CachedLMDatasetConfig
-from levanter.data.dataset import ShardableDataset
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainGpt2Config:
+    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 
@@ -67,35 +68,23 @@ class AlternatingDataset(ShardableDataset):
         return AlternatingDataset([d.shard(shard_id, num_shards) for d in self.datasets])
 
 
-main_data_config = CachedLMDatasetConfig(
-    cache_dir="gs://levanter-data/tokenized/pile", tokenizer="EleutherAI/gpt-neox-20b"
-)
-
-extra_data_config = CachedLMDatasetConfig(
-    cache_dir="gs://levanter-data/tokenized/pile_filtered", tokenizer="EleutherAI/gpt-neox-20b"
-)
-
-
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
-    tokenizer = main_data_config.the_tokenizer
 
-    vocab_size = tokenizer.vocab_size
+    extra_data_config = dataclasses.replace(config.data, cache_dir="gs://levanter-data/tokenized/pile_filtered")
 
-    train_dataset = TokenSeqDataset(main_data_config.build_or_load_document_cache("train"), config.model.seq_len)
-    extra_dataset = TokenSeqDataset(extra_data_config.build_or_load_document_cache("train"), config.model.seq_len)
-
-    train_dataset = AlternatingDataset([train_dataset, extra_dataset])
+    # extra_dataset = TokenSeqDataset(extra_data_config.build_or_load_document_cache("train"), config.model.seq_len)
+    # train_dataset = AlternatingDataset([train_dataset, extra_dataset])
 
     dataset = ShardedIndexedDataset(
-        train_dataset,
+        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
         config.trainer.train_batch_size,
     )
 
     eval_dataset = ShardedIndexedDataset(
-        TokenSeqDataset(main_data_config.build_or_load_document_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         config.trainer.eval_batch_size,
     )
@@ -118,6 +107,7 @@ def main(config: TrainGpt2Config):
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
+        vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
@@ -206,8 +196,8 @@ def main(config: TrainGpt2Config):
             loss = 0.0
             n = 0
 
-            for input_ids in eval_dataloader():
-                loss += simplify_gdas(compute_loss_pjit(model_inf, input_ids)).item()
+            for batch in eval_dataloader():
+                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
             if n > 0:
@@ -235,13 +225,11 @@ def main(config: TrainGpt2Config):
         # load the last checkpoint and resume if we want
         resume_step = None
         if config.trainer.load_last_checkpoint:
-            # TODO: this won't work past CPU ram size, but that's fine for now
-            with jax.default_device(jax.devices("cpu")[0]):
-                checkpoint = checkpointer.load_checkpoint(
-                    model,
-                    (opt_state, training_key),
-                    config.trainer.load_checkpoint_path,
-                )
+            checkpoint = checkpointer.load_checkpoint(
+                model,
+                (opt_state, training_key),
+                config.trainer.load_checkpoint_path,
+            )
 
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
@@ -293,7 +281,7 @@ def main(config: TrainGpt2Config):
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
-                    micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, PartitionSpec("data"))
+                    micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, dataset.partition_spec[:-1])
 
                 step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, micro_keys))
                 step_loss = jnp.mean(step_loss).item()
