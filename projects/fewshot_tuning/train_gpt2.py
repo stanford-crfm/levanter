@@ -10,10 +10,9 @@ import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
-import seqio
 from equinox import filter_vmap
+from fewshot_tuning.seqio_tasks import do_nothing
 from jax.interpreters.pxla import PartitionSpec
-from seqio import ShardInfo
 
 import haliax as hax
 import haliax.random
@@ -22,18 +21,14 @@ from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.config import TrainerConfig
+from levanter.data import CachedLMDatasetConfig, Dataset
+from levanter.data.sharded import ShardedIndexedDataset
+from levanter.data.text import TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
-
-from fewshot_tuning.seqio_tasks import do_nothing
-from fewshot_tuning.text_dataset import split_and_batch
-
-#import tensorflow as tf
-
-#tf.enable_eager_execution()
 
 
 do_nothing()
@@ -49,53 +44,60 @@ logger = logging.getLogger(__name__)
 class TrainGpt2Config:
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
-    seqio_task: str = "the_pile_gcs_and_filtered"
 
     log_z_regularization: float = 0.0
+
+
+class AlternatingDataset(Dataset):
+    def __init__(self, datasets):
+        self.datasets = datasets
+
+    def __iter__(self):
+        iters = [iter(d) for d in self.datasets]
+        while True:
+            for i in range(len(iters)):
+                try:
+                    yield next(iters[i])
+                except StopIteration:
+                    iters[i] = iter(self.datasets[i])
+                    yield next(iters[i])
+
+    @property
+    def seq_len(self):
+        return self.datasets[0].seq_len
+
+
+main_data_config = CachedLMDatasetConfig(
+    cache_dir="gs://levanter-data/tokenized/pile", tokenizer="EleutherAI/gpt-neox-20b"
+)
+
+extra_data_config = CachedLMDatasetConfig(
+    cache_dir="gs://levanter-data/tokenized/pile_filtered", tokenizer="EleutherAI/gpt-neox-20b"
+)
 
 
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    tokenizer = main_data_config.the_tokenizer
 
-    task = seqio.get_mixture_or_task(config.seqio_task)
-    # figure out vocab size from seqio task def
-    vocab_size = task.output_features["targets"].vocabulary.vocab_size
+    vocab_size = tokenizer.vocab_size
 
-    shard_info = ShardInfo(jax.process_index(), jax.process_count())
+    train_dataset = TokenSeqDataset(main_data_config.build_or_load_document_cache("train"), config.model.seq_len)
+    extra_dataset = TokenSeqDataset(extra_data_config.build_or_load_document_cache("train"), config.model.seq_len)
 
-    dataset = task.get_dataset(
-        split="train",
-        sequence_length={"targets": config.model.seq_len},
-        shuffle=True,
-        seed=0,
-        shard_info=shard_info,
+    train_dataset = AlternatingDataset([train_dataset, extra_dataset])
+
+    dataset = ShardedIndexedDataset(
+        train_dataset,
+        config.trainer.device_mesh,
+        config.trainer.train_batch_size,
     )
 
-    dataset = split_and_batch(
-        dataset,
-        "train",
-        lambda article: article["targets"],
-        sequence_length=config.model.seq_len,
-        batch_size=config.trainer.train_batch_size,
-        vocab=task.output_features["targets"].vocabulary,
-    )
-
-    eval_dataset = task.get_dataset(
-        split="validation",
-        sequence_length={"targets": config.model.seq_len},
-        shuffle=False,
-        seed=0,
-        shard_info=shard_info,
-    )
-
-    eval_dataset = split_and_batch(
-        eval_dataset,
-        "validation",
-        lambda article: article["targets"],
-        sequence_length=config.model.seq_len,
-        batch_size=config.trainer.eval_batch_size,
-        vocab=task.output_features["targets"].vocabulary,
+    eval_dataset = ShardedIndexedDataset(
+        TokenSeqDataset(main_data_config.build_or_load_document_cache("validation"), config.model.seq_len),
+        config.trainer.device_mesh,
+        config.trainer.eval_batch_size,
     )
 
     # some axes we use outside the model proper
