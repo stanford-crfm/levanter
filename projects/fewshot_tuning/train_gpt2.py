@@ -11,7 +11,6 @@ import jax.random as jrandom
 import jmp
 import pyrallis
 from equinox import filter_vmap
-from fewshot_tuning.seqio_tasks import do_nothing
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
@@ -29,9 +28,6 @@ from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
-
-
-do_nothing()
 
 
 logger = logging.getLogger(__name__)
