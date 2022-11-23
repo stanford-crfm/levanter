@@ -249,7 +249,7 @@ those axes are, and it's especially unclear when you have multiple tensors with 
 bitten by implicit broadcasting way too many times.
 
 So I found [Alexander Rush](https://rush-nlp.com/)'s [Tensor Considered Harmful](http://nlp.seas.harvard.edu/NamedTensor)
-(and [Part 2](http://nlp.seas.harvard.edu/NamedTensor)) to be very convincing. Named arrays are a way to make this code
+(and [Part 2](http://nlp.seas.harvard.edu/NamedTensor2)) to be very convincing. Named arrays are a way to make this code
 more readable, and more robust.
 
 Named Arrays will also make it easier to write partitioned models: jax's `pjit` operator works over "meshes" of devices,
@@ -268,6 +268,14 @@ and 2) ultimately `xmap` can be confusing because you write non-named code for p
 of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated,
 and it makes it harder to play with different partitioning strategies.
 
+
+#### Named Tensors Elsewhere
+
+Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh), and I think
+I basically reimplemented it in Jax without really meaning to.
+
+PyTorch has [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're purely for documentation purposes
+as far as I'm aware, and don't help with model partitioning.
 
 ## GPT-2 Implementation
 
@@ -832,7 +840,30 @@ device has any overlap with any other device in terms of what parameters it stor
 In PyTorch-land, there are two main implementations of ZeRO: DeepSpeed and Fully Sharded Data Parallel (FSDP). These are
 complex software libraries that have a lot of moving parts. With Jax, we'll get most of the benefit in a few lines of code.
 
-XXX mesh
+To get started, let's talk about what ZeRO does. Conceptually, ZeRO assigns each device a slice of the model. The device
+holds the parameters, optimizer states, and gradient accumulation buffers for that slice. When computing gradients,
+each device has to receive the parameters for the entire model (but just in time), compute the forward and backward
+pass, and then scatter the gradients to the relevant devices. Afterwards, each device will update its slice of the
+parameters, and then the next batch can be processed.
+
+So we basically have two ways we need to partition the model: once for "compute" and once for "parameters." "Compute"
+is how we've been doing things so far: sharding our model and activations along the `model` axis. For "parameters,"
+we want our model to be fully sharded. To do that, we need to partition our model along the `data` axis too. Luckily,
+we have one `Axis` that consistently shows up in nearly all of our parameters: `Embed`. So what we're going to do is
+partition the `Embed` axis along the `data` axis of our device mesh. This will give us a fully sharded model, modulo a few
+bias terms.
+
+Schematically, that looks something like this:
+
+
+
+We use device meshes and `named_pjit` to partition, so let's see how we can do that.
+
+
+
+fully sharded (i.e. each device holds a slice of
+the parameters), and once for "inference" (i.e. each device gets the parameters it needs to compute its part
+of forward and backward)
 
 ### Other Techniques
 #### Gradient Checkpointing
