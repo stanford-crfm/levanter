@@ -20,7 +20,8 @@ from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.config import TrainerConfig
-from levanter.data import CachedLMDatasetConfig, Dataset
+from levanter.data import CachedLMDatasetConfig
+from levanter.data.dataset import ShardableDataset
 from levanter.data.sharded import ShardedIndexedDataset
 from levanter.data.text import TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
@@ -44,7 +45,7 @@ class TrainGpt2Config:
     log_z_regularization: float = 0.0
 
 
-class AlternatingDataset(Dataset):
+class AlternatingDataset(ShardableDataset):
     def __init__(self, datasets):
         self.datasets = datasets
 
@@ -61,6 +62,9 @@ class AlternatingDataset(Dataset):
     @property
     def seq_len(self):
         return self.datasets[0].seq_len
+
+    def shard(self, shard_id: int, num_shards: int):
+        return AlternatingDataset([d.shard(shard_id, num_shards) for d in self.datasets])
 
 
 main_data_config = CachedLMDatasetConfig(
