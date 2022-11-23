@@ -292,8 +292,7 @@ def main(config: TrainGpt2Config):
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
-                    batch = next(iter_data)
-                    input_ids = batch["targets"].numpy()
+                    input_ids = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
                     micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, PartitionSpec("data"))
 
