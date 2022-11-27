@@ -9,6 +9,7 @@ from haliax import nn as nn
 from .core import (
     NamedArray,
     are_shape_checks_enabled,
+    broadcast_arrays,
     broadcast_axis,
     broadcast_to,
     concat_axis_specs,
