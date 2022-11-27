@@ -846,24 +846,45 @@ def broadcast_arrays(
 
 @overload
 def broadcast_arrays(
-    *arrays: NamedOrNumeric, require_subset: bool = True, ensure_order: bool = True
-) -> Tuple[NamedOrNumeric, ...]:
+    *arrays: Optional[NamedOrNumeric], require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[Optional[NamedOrNumeric], ...]:
     ...
 
 
 def broadcast_arrays(
-    *arrays: NamedOrNumeric,
+    *arrays: Optional[NamedOrNumeric],
     require_subset: bool = True,
     ensure_order: bool = True,
-) -> Tuple[NamedOrNumeric, ...]:
+) -> Tuple[Optional[NamedOrNumeric], ...]:
     return broadcast_arrays_and_return_axes(*arrays, require_subset=require_subset, ensure_order=ensure_order)[0]
 
 
+@overload
 def broadcast_arrays_and_return_axes(
-    *arrays: NamedOrNumeric,
+    *arrays: NamedArray, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[Tuple[NamedArray, ...], Tuple[Axis, ...]]:
+    ...
+
+
+@overload
+def broadcast_arrays_and_return_axes(
+    *arrays: NamedOrNumeric, require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[Tuple[NamedOrNumeric, ...], Tuple[Axis, ...]]:
+    ...
+
+
+@overload
+def broadcast_arrays_and_return_axes(
+    *arrays: Optional[NamedOrNumeric], require_subset: bool = True, ensure_order: bool = True
+) -> Tuple[Tuple[Optional[NamedOrNumeric], ...], Tuple[Axis, ...]]:
+    ...
+
+
+def broadcast_arrays_and_return_axes(
+    *arrays: Optional[NamedOrNumeric],
     require_subset: bool = True,
     ensure_order: bool = True,
-) -> Tuple[Tuple[NamedOrNumeric, ...], Tuple[Axis, ...]]:
+) -> Tuple[Tuple[Optional[NamedOrNumeric], ...], Tuple[Axis, ...]]:
     """
     Broadcasts a sequence of arrays to a common set of axes.
 

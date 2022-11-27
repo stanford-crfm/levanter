@@ -1,5 +1,5 @@
 import functools
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import jax.nn as jnn
 import jax.numpy as jnp
@@ -9,8 +9,8 @@ import haliax as hax
 import haliax.nn.attention as attention
 
 from ..core import NamedArray
-from ..types import Axis
-from ..wrap import wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
+from ..types import Axis, AxisSpec
+from ..wrap import unwrap_namedarrays, wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
 from .normalization import LayerNorm
@@ -44,9 +44,25 @@ logsumexp = wrap_reduction_call(jnn.logsumexp, False, supports_where=False)
 
 # TODO: support where in softmax, etc
 softmax = wrap_axiswise_call(jnn.softmax, False)
-# TODO: standardize has optional "mean" and "variance" arguments we need to support
-# standardize = wrap_normalization_call(jnn.standardize, False)
 log_softmax = wrap_axiswise_call(jnn.log_softmax, False)
+
+
+def standardize(
+    x: NamedArray,
+    axis: AxisSpec,
+    *,
+    mean: Optional[NamedArray] = None,
+    variance: Optional[NamedArray] = None,
+    epsilon: float = 1e-5,
+    where: Optional[NamedArray] = None,
+) -> NamedArray:
+    """Analogous to `jax.nn.standardize`, but with support for NamedArrays."""
+    x, mean, variance, where = haliax.broadcast_arrays(x, mean, variance, where)  # type: ignore
+    raw_x, mean, variance, where = unwrap_namedarrays(x, mean, variance, where)
+    axis_indices = x._lookup_indices(axis)
+
+    plain = jnn.standardize(raw_x, axis_indices, mean=mean, variance=variance, epsilon=epsilon, where=where)
+    return NamedArray(plain, x.axes)
 
 
 @functools.wraps(jnn.one_hot)
