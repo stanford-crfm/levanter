@@ -134,4 +134,14 @@ def wrap_elemwise_binary(op):
     return binop
 
 
-__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call", "wrap_elemwise_binary"]
+def unwrap_namedarrays(*a):
+    return tuple(x.array if isinstance(x, NamedArray) else x for x in a)
+
+
+__all__ = [
+    "wrap_elemwise_unary",
+    "wrap_reduction_call",
+    "wrap_axiswise_call",
+    "wrap_elemwise_binary",
+    "unwrap_namedarrays",
+]
