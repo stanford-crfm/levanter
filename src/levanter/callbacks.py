@@ -131,7 +131,7 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
     return update_pbar
 
 
-def log_memory_usage(sample_interval: float = 1.0):
+def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool = False):
     """
     Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.
     We only log when hooks are invoked, so there's not much point in running this much more frequently than you invoke
@@ -147,7 +147,7 @@ def log_memory_usage(sample_interval: float = 1.0):
     if not os.path.exists(directory):
         directory = tempfile.gettempdir()
 
-    # a lot of this code is lifted from https://github.com/ayaka14732/jax-sm CC-0
+    # a lot of this code is lifted from https://github.com/ayaka14732/jax-smi CC-0
 
     def inner():
         import posix
@@ -181,6 +181,9 @@ def log_memory_usage(sample_interval: float = 1.0):
         #  kind: Total 19.5MB
         #         18.9MB (97.20%): buffer
         #        558.4kB ( 2.80%): executable
+
+        # gpus look like this:
+        #          1.0MB ( 0.00%): gpu:0
         per_device, by_kind = output.split("kind: Total ")
 
         # first, get the total memory usage
@@ -190,13 +193,14 @@ def log_memory_usage(sample_interval: float = 1.0):
             memory_usage = humanfriendly.parse_size(match.group(1))
             wandb.log({"memory/total": memory_usage / 1e6}, step=step.step)
 
-        # now, get the memory usage per device.
-        # split the output at kind: Total
-        regex = re.compile(r"([\d\.]+[a-zA-Z]+) \(([\d\.]+)%\): ([a-zA-Z0-9_]+)")
-        for match in regex.finditer(per_device):
-            memory_usage = humanfriendly.parse_size(match.group(1))
-            device_name = match.group(3)
-            wandb.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+        if log_individual_devices:
+            # now, get the memory usage per device.
+            # split the output at kind: Total
+            regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
+            for match in regex.finditer(per_device):
+                memory_usage = humanfriendly.parse_size(match.group(1))
+                device_name = match.group(3)
+                wandb.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
 
         # now, get the memory usage per kind.
         # same regex as above
@@ -206,12 +210,3 @@ def log_memory_usage(sample_interval: float = 1.0):
             wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
-
-
-# from https://stackoverflow.com/questions/42865724/parse-human-readable-filesizes-into-bytes
-units = {"B": 1, "KB": 2**10, "MB": 2**20, "GB": 2**30, "TB": 2**40}
-
-
-def _parse_size(size):
-    number, unit = [string.strip() for string in size.split()]
-    return int(float(number) * units[unit])

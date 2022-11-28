@@ -251,6 +251,8 @@ def main(config: TrainGpt2Config):
         # donate the model and the opt_state so they can used for outputs
         train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
 
+        jax.profiler.start_trace("/scr-ssd/dlwh/jax-trace", create_perfetto_link=True)
+
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
