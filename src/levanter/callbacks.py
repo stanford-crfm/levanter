@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 from typing import Callable, Iterator, Optional, TypeVar
 
 import humanfriendly
@@ -147,6 +148,8 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     if not os.path.exists(directory):
         directory = tempfile.gettempdir()
 
+    tempfile_name = os.path.join(directory, f"memory_usage_{os.getpid()}.prof")
+
     # a lot of this code is lifted from https://github.com/ayaka14732/jax-smi CC-0
 
     def inner():
@@ -154,19 +157,25 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
         import time
 
         while True:
-            jax.profiler.save_device_memory_profile(f"{directory}/memory.prof.new")
-            posix.rename(f"{directory}/memory.prof.new", f"{directory}/memory.prof")
+            jax.profiler.save_device_memory_profile(f"{tempfile_name}.new")
+            posix.rename(f"{tempfile_name}.new", tempfile_name)
             time.sleep(sample_interval)
 
     thread = threading.Thread(target=inner, daemon=True)
     thread.start()
 
     def log_memory_usage(step: StepInfo):
-        output = subprocess.run(
-            args=f"go tool pprof -tags {directory}/memory.prof".split(" "),
+        process = subprocess.run(
+            args=f"go tool pprof -tags {tempfile_name}".split(" "),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-        ).stdout.decode("utf-8")
+        )
+
+        if process.returncode != 0:
+            warnings.warn("failed to run pprof. Is go installed?")
+            return
+
+        output = process.stdout.decode("utf-8")
 
         # output looks like this:
         #          2.4MB (12.53%): TFRT_CPU_0
@@ -193,10 +202,12 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             memory_usage = humanfriendly.parse_size(match.group(1))
             wandb.log({"memory/total": memory_usage / 1e6}, step=step.step)
 
+        # this works for the "kind" and the individual devices
+        regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
+
         if log_individual_devices:
             # now, get the memory usage per device.
             # split the output at kind: Total
-            regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
             for match in regex.finditer(per_device):
                 memory_usage = humanfriendly.parse_size(match.group(1))
                 device_name = match.group(3)
