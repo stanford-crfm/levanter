@@ -9,6 +9,7 @@ from jax.experimental.maps import Mesh
 from transformers import BatchEncoding
 from utils import skip_if_not_enough_devices
 
+import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
 from levanter.data.sharded import GlobalBatchDataset
@@ -43,7 +44,7 @@ def test_sharded_data_loading_model_axis_2():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh:
+    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
 
         seq_len = 128
         cache = _small_dataset(seq_len)
@@ -52,7 +53,7 @@ def test_sharded_data_loading_model_axis_2():
 
         batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape
+            assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
             check_batch_shard_consistency(batch, mesh)
 
@@ -64,10 +65,11 @@ def check_batch_shard_consistency(batch, mesh):
         for j, shard_j in enumerate(batch.global_shards):
             data_axis_pos_j = shard_j.device.id // model_axis_size
             if shard_i.data is not None and shard_j.data is not None:
+                moved = jax.device_put(shard_j.data, shard_i.device)
                 if data_axis_pos_i == data_axis_pos_j:
-                    assert np.all(shard_i.data == shard_j.data)
+                    assert np.all(shard_i.data == moved)
                 else:
-                    assert not np.all(shard_i.data == shard_j.data)
+                    assert not np.all(shard_i.data == moved)
 
 
 def test_sharded_data_loading_model_axis_1():
@@ -78,7 +80,7 @@ def test_sharded_data_loading_model_axis_1():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh:
+    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
 
         seq_len = 128
         cache = _small_dataset(seq_len)
@@ -100,7 +102,7 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh:
+    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         datasets = []
         for process_index in range(2):
             seq_len = 128

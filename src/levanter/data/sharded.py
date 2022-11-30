@@ -1,18 +1,18 @@
 import itertools
-from typing import Iterator, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import Mesh, PartitionSpec
-from jaxtyping import PyTree
+from jaxtyping import Array, PyTree
 
+import haliax as hax
 import levanter.mesh
-from haliax import Axis
-from haliax.partitioning import ResourceAxis
+from haliax.util import is_named_array
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
-from levanter.shapes import NamedShapeSpec, ShapeSpec
+from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 
 
 In = TypeVar("In")
@@ -50,7 +50,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         self,
         local_dataset: ShardableDataset[Sequence[int]],
         mesh: Mesh,
-        Batch: Axis,
+        Batch: hax.Axis,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
@@ -68,51 +68,72 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
     def __iter__(self) -> Iterator[GlobalDeviceArray]:
         # TODO: support not infinite iterators
-        def loop_gen():
+        def gen_one_item():
             while True:
                 for ex in self.local_dataset:
                     yield ex
 
-        it = loop_gen()
-
-        item_shape = self.item_shape.shape
-        pspec = self.partition_spec
-
-        assert len(item_shape) == len(pspec)
-
-        # This callback takes a sequence of slices indicating a grid of the data to load, and returns the data
-        # We're mostly going to ignore the slices, because we're streaming the data
-        # We get one slice per device: the slices will be identical if the data is replicated
-        # TODO: we may want to just directly index into the tokenized dataset somehow. This seems a bit more fragile
-
-        def callback(indices: Sequence[_TensorSliceIndex]):
-            out = []
-
-            # because more than one device can get the same data, we need to make sure we only load it once since we're
-            # streaming. This is the cache
-            data_for_slice = {}
-
-            for tslice_index in indices:
-                begin_ends_for_index = self._get_begin_end_for_slice(item_shape, tslice_index)
-                slice_sizes = [s[1] - s[0] for s in begin_ends_for_index]
-
-                num_examples = slice_sizes[0]
-
-                if begin_ends_for_index not in data_for_slice:
-                    data_for_slice[begin_ends_for_index] = np.stack(
-                        list([ex for ex in itertools.islice(it, num_examples)])
-                    )
-                out.append(data_for_slice[begin_ends_for_index])
-
-            return out
+        one_item_generator = gen_one_item()
 
         while True:
-            yield GlobalDeviceArray.from_batched_callback(
-                item_shape,
-                self.mesh,
-                pspec,
-                callback,
-            )
+            # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
+            # the relevant data for each process.
+            # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
+            # To make a batch we just want to add a leading dimension to each leaf array by stacking.
+            # That is, we have (conceptually) a List[PyTree[Array]] and we want to produce a PyTree[List[Array]]
+            # The difference is that we want to do this in a way that only loads the relevant data for each process
+            # So it's more that we have a LocalBatch[PyTree[Array]] and we want to produce a PyTree[GlobalBatch[Array]]
+            local_batch_leaves: Dict[Tuple[int, int], List[Array]] = {}  # batch indices -> list of items
+            batch_tree_structure = None
+
+            def get_local_batch(begin: int, end: int) -> List[Array]:
+                nonlocal batch_tree_structure
+
+                key = (begin, end)
+                if key in local_batch_leaves:
+                    return local_batch_leaves[key]
+
+                num_examples_for_this_device = end - begin
+                individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
+
+                local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+                batch_leaves, _batch_structure = jax.tree_util.tree_flatten(local_batch, is_leaf=is_named_array)
+
+                if batch_tree_structure is None:
+                    batch_tree_structure = _batch_structure
+
+                local_batch_leaves[key] = batch_leaves
+
+                return batch_leaves
+
+            shape_leaves = jax.tree_util.tree_leaves(self.item_shape)
+
+            # Callback passed to GlobalDeviceArray.from_callback to get the data for each device
+            def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
+                batch_slice = indices[0]
+                begin, end, _ = batch_slice.indices(self.Batch.size)
+                local_batch = get_local_batch(begin, end)
+                return local_batch[leaf_index][indices[1:]]
+
+            # TODO: with a bit more fanciness, we can avoid needing the item_shape
+            gda_leaves = [
+                GlobalDeviceArray.from_callback(
+                    to_raw_shape(shape),
+                    self.mesh,
+                    self._pspec_for(shape),
+                    lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                )
+                for leaf_index, shape in enumerate(shape_leaves)
+            ]
+            gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
+            yield gda_tree
+
+    def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
+        if isinstance(shape_spec, ShapeSpec):  # type: ignore
+            batch_name = hax.partitioning.physical_axis_name(self.Batch)
+            return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
+        else:
+            return hax.partitioning.pspec_for_axis(shape_spec.shape)  # type: ignore
 
     @staticmethod
     def _get_begin_end_for_slice(tensor_shape, tslice_index) -> Tuple[Tuple[int, int], ...]:
@@ -122,10 +143,6 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         )
         assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
         return tuple(s[0:2] for s in my_indices)
-
-    @property
-    def partition_spec(self):
-        return PartitionSpec(ResourceAxis.DATA, None)
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
@@ -138,3 +155,13 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
                 return ShapeSpec((self.Batch.size,) + shape, shape_spec.dtype)
 
         return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape)
+
+    def _stack_leaves_unchecked(self, *leaves):
+        assert len(leaves) <= self.Batch.size
+        assert self.Batch.size % len(leaves) == 0
+
+        if is_named_array(leaves[0]):
+            with hax.shape_checks(False):  # because we're building parts of the array on each device
+                return hax.stack(self.Batch, leaves)
+        else:
+            return np.stack(leaves)
