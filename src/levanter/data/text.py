@@ -323,7 +323,7 @@ def concatenate_and_group_texts(
     Returns:
         An iterator of tokenized texts, one at a time.
     """
-    concatenated = BatchEncoding(data={k: list(chain(*v)) for k, v in encoding.items()})
+    concatenated = BatchEncoding(data={k: np.array(list(chain(*v))) for k, v in encoding.items()})
     total_length = len(concatenated.input_ids)
     stride = stride or seq_len
 
