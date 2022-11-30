@@ -1,4 +1,3 @@
-import itertools
 import logging
 from dataclasses import dataclass
 from functools import partial
@@ -28,6 +27,7 @@ from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
+from py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -160,11 +160,7 @@ def main(config: TrainGpt2Config):
             axis_resources=config.trainer.axis_resources,
         )
 
-        # Set up evaluation: dataloader, loop
-        def eval_dataloader():
-            # TODO: only do one pass
-            yield from itertools.islice(eval_dataset, 50)
-
+        # Set up evaluation
         def evaluate_step(info: StepInfo):
             model_inf = prepare_model_for_compute(info.model)
 
@@ -172,7 +168,7 @@ def main(config: TrainGpt2Config):
             loss = 0.0
             n = 0
 
-            for batch in eval_dataloader():
+            for batch in eval_dataset:
                 loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
@@ -196,7 +192,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
         # data loader
-        iter_data = iter(dataset)
+        iter_data = non_caching_cycle(dataset)
 
         # load the last checkpoint and resume if we want
         resume_step = None

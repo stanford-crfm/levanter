@@ -1,9 +1,12 @@
 import itertools
+from functools import cached_property
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
+from jax.experimental.multihost_utils import process_allgather
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
@@ -67,15 +70,9 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[GlobalDeviceArray]:
-        # TODO: support not infinite iterators
-        def gen_one_item():
-            while True:
-                for ex in self.local_dataset:
-                    yield ex
+        one_item_generator = iter(self.local_dataset)
 
-        one_item_generator = gen_one_item()
-
-        while True:
+        for _ in range(self._global_min_length):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -83,6 +80,8 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
             # That is, we have (conceptually) a List[PyTree[Array]] and we want to produce a PyTree[List[Array]]
             # The difference is that we want to do this in a way that only loads the relevant data for each process
             # So it's more that we have a LocalBatch[PyTree[Array]] and we want to produce a PyTree[GlobalBatch[Array]]
+            # because more than one device can get the same data, we need to make sure we only load it once since we're
+            # streaming. This is the cache
             local_batch_leaves: Dict[Tuple[int, int], List[Array]] = {}  # batch indices -> list of items
             batch_tree_structure = None
 
@@ -136,15 +135,6 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape)  # type: ignore
 
-    @staticmethod
-    def _get_begin_end_for_slice(tensor_shape, tslice_index) -> Tuple[Tuple[int, int], ...]:
-        # begin, end, step
-        my_indices: Tuple[Tuple[int, int, int], ...] = tuple(
-            s.indices(axis_size) for axis_size, s in zip(tensor_shape, tslice_index)
-        )
-        assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
-        return tuple(s[0:2] for s in my_indices)
-
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
@@ -156,6 +146,21 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
                 return ShapeSpec((self.Batch.size,) + shape, shape_spec.dtype)
 
         return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape)
+
+    def __len__(self):
+        return self._global_min_length
+
+    @property
+    def batch_size(self) -> int:
+        return self.Batch.size
+
+    @cached_property
+    def _global_min_length(self):
+        # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
+        # length is the min over the shards, so we have to communicate the min via jax
+        local_len = len(self.local_dataset) // self.batch_size
+        all_lengths = process_allgather(jnp.array(local_len), jax.process_count())
+        return int(jnp.min(all_lengths))
 
     def _stack_leaves_unchecked(self, *leaves):
         assert len(leaves) <= self.Batch.size

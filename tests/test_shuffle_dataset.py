@@ -16,6 +16,9 @@ class RangeDataset(Dataset[int]):
     def item_shape(self):
         raise NotImplementedError
 
+    def __len__(self) -> int:
+        return self.end - self.start
+
 
 def test_shuffle_dataset():
     dataset = RangeDataset(0, 100)
