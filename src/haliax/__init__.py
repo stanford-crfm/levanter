@@ -78,7 +78,6 @@ def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
 
 def stack(axis: Axis, arrays: Sequence[NamedArray]) -> NamedArray:
     """Version of jnp.stack that returns a NamedArray"""
-    assert len(arrays) == axis.size
     if len(arrays) == 0:
         return zeros(axis)
     arrays = [a.rearrange(arrays[0].axes) for a in arrays]
