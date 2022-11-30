@@ -58,8 +58,10 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
         mapping.update(kwargs)
 
     _mapping_holder.thread_data.resource_mapping = mapping
-    yield
-    _mapping_holder.thread_data.resource_mapping = old_mapping
+    try:
+        yield
+    finally:
+        _mapping_holder.thread_data.resource_mapping = old_mapping
 
 
 T = TypeVar("T", bound=PyTree)
