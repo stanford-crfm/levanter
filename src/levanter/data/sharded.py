@@ -97,7 +97,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
                 individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
 
                 local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
-                batch_leaves, _batch_structure = jax.tree_util.tree_flatten(local_batch, is_leaf=is_named_array)
+                batch_leaves, _batch_structure = jax.tree_util.tree_flatten(local_batch)
 
                 if batch_tree_structure is None:
                     batch_tree_structure = _batch_structure
@@ -113,7 +113,8 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
                 batch_slice = indices[0]
                 begin, end, _ = batch_slice.indices(self.Batch.size)
                 local_batch = get_local_batch(begin, end)
-                return local_batch[leaf_index][indices[1:]]
+                leaf = local_batch[leaf_index]
+                return leaf[(..., *indices[1:])]
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
