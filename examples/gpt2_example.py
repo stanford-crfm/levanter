@@ -1,5 +1,7 @@
-import logging
 import itertools
+import logging
+from dataclasses import dataclass
+from functools import partial
 
 import equinox as eqx
 import jax
@@ -8,14 +10,12 @@ import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
-from dataclasses import dataclass
 from equinox import filter_vmap
-from functools import partial
 from transformers import GPT2Tokenizer
-import wandb
 
 import haliax as hax
 import haliax.random
+import wandb
 from haliax import Axis
 from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter import callbacks

@@ -1,8 +1,8 @@
 # Various Pyrallis configs
+import dataclasses
 import logging
 import os
 import tempfile
-import dataclasses
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import List, Mapping, Optional, Union
 
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
 import optax
 import pyrallis
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
-from jax._src.clusters import SlurmCluster, TpuCluster, ClusterEnv
+from jax._src.clusters import SlurmCluster, TpuCluster
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
@@ -53,7 +52,6 @@ class WandbConfig:
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
     def init(self, hparams=None, **extra_hparams):
-        print("wandb init")
         import wandb
 
         if hparams is None:
@@ -196,9 +194,12 @@ class DistributedConfig:
     local_device_ids: Optional[Union[int, List[int]]] = None
 
     def _is_distributed(self):
-        print(ClusterEnv.auto_detect_unset_distributed_params(self.coordinator_address, self.num_processes, self.process_id, self.local_device_ids))
-        if (self.coordinator_address is not None) or (self.num_processes is not None) \
-               or (self.process_id is not None) or (self.local_device_ids is not None):
+        if (
+            (self.coordinator_address is not None)
+            or (self.num_processes is not None)
+            or (self.process_id is not None)
+            or (self.local_device_ids is not None)
+        ):
             return True
 
         # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
@@ -208,8 +209,11 @@ class DistributedConfig:
 
     def initialize(self):
         if self._is_distributed():
-            jax.distributed.initialize(self.coordinator_address, self.num_processes,
-                                       self.process_id, self.local_device_ids)
+            device_ids = self.local_device_ids
+            if device_ids is None and levanter.distributed.LevanterSlurmCluster.is_env_present():
+                device_ids = levanter.distributed.LevanterSlurmCluster.get_local_device_ids_for_process()
+
+            jax.distributed.initialize(self.coordinator_address, self.num_processes, self.process_id, device_ids)
             print(jax.devices())
             print(len(jax.devices()))
             print(jax.process_count())
@@ -368,7 +372,6 @@ class TrainerConfig:
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate(self):
-        print("_validate")
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
