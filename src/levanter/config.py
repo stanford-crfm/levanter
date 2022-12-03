@@ -1,8 +1,8 @@
 # Various Pyrallis configs
-import dataclasses
 import logging
 import os
 import tempfile
+import dataclasses
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
@@ -16,6 +16,7 @@ import numpy as np
 import optax
 import pyrallis
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+from jax._src.clusters import SlurmCluster, TpuCluster, ClusterEnv
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
@@ -52,6 +53,7 @@ class WandbConfig:
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
     def init(self, hparams=None, **extra_hparams):
+        print("wandb init")
         import wandb
 
         if hparams is None:
@@ -186,6 +188,33 @@ class CheckpointerConfig:
             prev_interval = interval
 
 
+@dataclass(frozen=True)
+class DistributedConfig:
+    coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
+    num_processes: Optional[int] = None
+    process_id: Optional[int] = None
+    local_device_ids: Optional[Union[int, List[int]]] = None
+
+    def _is_distributed(self):
+        print(ClusterEnv.auto_detect_unset_distributed_params(self.coordinator_address, self.num_processes, self.process_id, self.local_device_ids))
+        if (self.coordinator_address is not None) or (self.num_processes is not None) \
+               or (self.process_id is not None) or (self.local_device_ids is not None):
+            return True
+
+        # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
+        # since it depends on the jax internals, but it's the best we can do
+        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+            return True
+
+    def initialize(self):
+        if self._is_distributed():
+            jax.distributed.initialize(self.coordinator_address, self.num_processes,
+                                       self.process_id, self.local_device_ids)
+            print(jax.devices())
+            print(len(jax.devices()))
+            print(jax.process_count())
+
+
 @dataclass
 class TrainerConfig:
     seed: int = 0
@@ -230,6 +259,8 @@ class TrainerConfig:
     use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
     use_gda: bool = True  # whether or not to use GlobalDeviceArrays for pjitted models.
 
+    distributed: DistributedConfig = DistributedConfig()
+
     @property
     def run_name(self) -> str:
         import wandb
@@ -242,12 +273,15 @@ class TrainerConfig:
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
+        self.distributed.initialize()
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
+        self._validate()
 
     @cached_property
     def device_mesh(self) -> Mesh:
+        print("device mesh")
         devices = jax.devices()
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
@@ -259,6 +293,8 @@ class TrainerConfig:
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
+        print("data axis size")
+
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 
@@ -330,8 +366,9 @@ class TrainerConfig:
                 schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
         return schedule
 
-    # post init
-    def __post_init__(self):
+    # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
+    def _validate(self):
+        print("_validate")
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
@@ -358,9 +395,9 @@ class TrainerConfig:
 
 
 def register_codecs():
-    pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
-    pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
-    pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
+    # pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
+    # pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
+    # pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):

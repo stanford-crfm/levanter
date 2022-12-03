@@ -1,12 +1,11 @@
 import itertools
-from math import prod
-from typing import Iterator, Optional, Sequence, Tuple, TypeVar
-
 import jax
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import Mesh, PartitionSpec
+from math import prod
 from transformers import BatchEncoding
+from typing import Iterator, Optional, Sequence, Tuple, TypeVar
 
 import levanter.mesh
 from haliax.partitioning import ResourceAxis
