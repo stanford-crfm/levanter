@@ -11,18 +11,18 @@ import jax.random as jrandom
 import jmp
 import pyrallis
 from equinox import filter_vmap
+from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_axis_for_partitioning
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.config import TrainerConfig
-from levanter.data import CachedLMDatasetConfig
-from levanter.data.sharded import ShardedIndexedDataset
-from levanter.data.text import TokenSeqDataset
+from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
@@ -50,13 +50,13 @@ def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
-    dataset = ShardedIndexedDataset(
+    dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
         config.trainer.train_batch_size,
     )
 
-    eval_dataset = ShardedIndexedDataset(
+    eval_dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         config.trainer.eval_batch_size,
@@ -254,9 +254,11 @@ def main(config: TrainGpt2Config):
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
-                    micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, dataset.partition_spec[:-1])
+                    example_keys = global_key_array(
+                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
+                    )
 
-                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, micro_keys))
+                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, example_keys))
                 step_loss = jnp.mean(step_loss).item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
