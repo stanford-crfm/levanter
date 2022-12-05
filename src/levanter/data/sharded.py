@@ -135,6 +135,15 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape)  # type: ignore
 
+    @staticmethod
+    def _get_begin_end_for_slice(tensor_shape, tslice_index) -> Tuple[Tuple[int, int], ...]:
+        # begin, end, step
+        my_indices: Tuple[Tuple[int, int, int], ...] = tuple(
+            s.indices(axis_size) for axis_size, s in zip(tensor_shape, tslice_index)
+        )
+        assert all(s[2] == 1 for s in my_indices)  # ensure step is 1
+        return tuple(s[0:2] for s in my_indices)
+
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
