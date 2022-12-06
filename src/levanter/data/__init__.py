@@ -8,7 +8,7 @@ import braceexpand
 import datasets
 import fsspec
 import numpy
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from levanter.data.dataset import Dataset, ShuffleDataset
 from levanter.data.text import TokenizedDocumentCache, tokenize_batch
