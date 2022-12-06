@@ -48,6 +48,7 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = ShardedIndexedDataset(

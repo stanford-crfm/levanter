@@ -1,7 +1,8 @@
 ```bash
 # 3.11 is too new for tensorstore
-conda create --name levanter -c nvidia -c conda-forge jax  cuda-toolkit python=3.10
+conda create --name levanter -c "nvidia/label/cuda-11.5.2" cuda-toolkit python~=3.10
 conda activate levanter
+pip install "jax[cuda11_cudnn82]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 pip install -r requirements.txt
 ```
 

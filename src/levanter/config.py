@@ -24,6 +24,7 @@ from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter import jax_utils
 from levanter.checkpoint import Checkpointer, CheckpointInterval
 from levanter.datetime_utils import encode_timedelta, parse_timedelta
+from levanter.distributed import LevanterSlurmCluster
 
 
 logger = logging.getLogger(__name__)
@@ -106,9 +107,10 @@ class WandbConfig:
                 id=r.id,
                 group=r.group,
             )
-            metadata_to_share = jax_utils.multihost_broadcast_obj(
+            metadata_to_share = jax_utils.multihost_broadcast_sync(
                 metadata_to_share, is_source=jax.process_index() == 0
             )
+
             if jax.process_index() != 0:
                 assert r.mode == "disabled"
                 for k, v in metadata_to_share.items():
@@ -210,13 +212,19 @@ class DistributedConfig:
     def initialize(self):
         if self._is_distributed():
             device_ids = self.local_device_ids
-            if device_ids is None and levanter.distributed.LevanterSlurmCluster.is_env_present():
-                device_ids = levanter.distributed.LevanterSlurmCluster.get_local_device_ids_for_process()
+            coordinator_address = self.coordinator_address
 
-            jax.distributed.initialize(self.coordinator_address, self.num_processes, self.process_id, device_ids)
-            print(jax.devices())
-            print(len(jax.devices()))
-            print(jax.process_count())
+
+            if LevanterSlurmCluster.is_env_present():
+                if device_ids is None:
+                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
+
+                if coordinator_address is None:
+                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+
+            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
+            logger.info(f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
+                        f", coordinator_address={coordinator_address}, process_id={self.process_id}")
 
 
 @dataclass
@@ -276,6 +284,7 @@ class TrainerConfig:
         return self.run_base_dir / self.run_name
 
     def initialize(self, all_config):
+        import sys
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
         self._initialize_jax_config()

@@ -1,5 +1,6 @@
 import functools as ft
 from pathlib import Path
+import pickle
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
 import equinox as eqx
@@ -124,12 +125,43 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
+
+
+def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
+    """
+    Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
+    process_index 0 is the source.
+    """
+    _LEV_KEY = "LEVANTER_MULTIHOST_BROADCAST_SYNC"
+    if is_source is None:
+        is_source = jax.process_index() == 0
+
+    import jax._src.distributed as distributed
+    from jaxlib.xla_extension import DistributedRuntimeClient
+
+    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+
+    if client is None:
+        raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
+
+    if is_source:
+        pickled = pickle.dumps(obj, 0).decode("ascii")  # 0 is pickle protocol. 0 only uses ascii, and we need utf-8...
+        client.key_value_set(_LEV_KEY, pickled)
+
+    client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
+
+    if not is_source:
+        pickled = bytes(client.blocking_key_value_get(_LEV_KEY, timeout_in_ms=20_000), "ascii")
+        obj = pickle.loads(pickled)
+
+    return obj
+
+
 def multihost_broadcast_obj(obj, is_source: Optional[bool] = None):
     """Very hacky way to broadcast an arbitrary pickleable object from the given host to all hosts.
     This is useful for broadcasting things like wandb run id names. This is very slow, but it's only
     used for initialization so it's not a big deal."""
     # TODO: see if we can access underlying jax communication mechanism to do this more efficiently
-    import pickle
 
     if is_source is None:
         is_source = jax.process_index() == 0
@@ -176,6 +208,8 @@ def multihost_broadcast_obj(obj, is_source: Optional[bool] = None):
         # depickle:
         obj = pickle.loads(pickled)
 
+    import sys
+    sys.exit(0)
     return obj
 
 

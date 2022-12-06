@@ -53,6 +53,7 @@ class LMDatasetConfig:
             urls = [url for pat in urls for url in braceexpand.braceexpand(pat)]
             files = fsspec.open_files(urls, "r", compression="infer")
             for file in files:
+                print(file)
                 with file as f:
                     for line in f.readlines():
                         text = json.loads(line)[self.text_key]
