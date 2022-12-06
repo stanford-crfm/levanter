@@ -66,7 +66,8 @@ class LMDatasetConfig:
     @cached_property
     def the_tokenizer(self):
         if self.tokenizer == "passthrough":
-            return PassthroughTokenizer(34026)  # hard-coding the vocab size for now
+            #return PassthroughTokenizer(77026)  # hard-coding the vocab size for now
+            return PassthroughTokenizer(77035)  # hard-coding the vocab size for now
         else:
             return AutoTokenizer.from_pretrained(self.tokenizer)
 

@@ -23,6 +23,7 @@ from levanter.trainer_hooks import StepInfo
 
 logger = logging.getLogger(__name__)
 
+
 M = TypeVar("M")
 X = TypeVar("X")
 Y = TypeVar("Y")
@@ -165,6 +166,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     thread.start()
 
     def log_memory_usage(step: StepInfo):
+        jax.lib.xla_bridge.get_backend().defragment()
         process = subprocess.run(
             args=f"go tool pprof -tags {tempfile_name}".split(" "),
             stdout=subprocess.PIPE,
