@@ -1,9 +1,9 @@
 data:
   train_urls:
-      - "/files/lakhmidi-data/train.txt"
+      - "/nlp/scr/dlwh/lakhmidi/train.txt"
   validation_urls:
-      - "/files/lakhmidi-data/test.txt"
-  cache_dir: "/files/lakhmidi-data/cache/"
+      - "/nlp/scr/dlwh/lakhmidi/test.txt"
+  cache_dir: "/nlp/scr/dlwh/lakhmidi/cache/"
   tokenizer: "passthrough"
   plaintext: True
   enforce_eos: False
@@ -20,7 +20,7 @@ trainer:
   weight_decay: 0.1
   model_axis_size: 1
   num_train_steps: 50000
-  per_device_train_batch_size: 4
+  per_device_parallelism: 16
   steps_per_save: 10000
 
   axis_resources:
