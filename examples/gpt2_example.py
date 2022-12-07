@@ -195,6 +195,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        engine.add_hook(callbacks.defragment, every=100)
 
         # data loader
         iter_data = iter(dataset)

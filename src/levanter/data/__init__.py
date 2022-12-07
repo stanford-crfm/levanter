@@ -2,7 +2,7 @@ import json
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import braceexpand
 import datasets
