@@ -463,7 +463,6 @@ class LMDatasetConfig:
         files = fsspec.open_files(urls, "r", compression="infer")
         for file in files:
             with file as f:
-                f.seek(0)
                 for line in f.readlines():
                     text = json.loads(line)[self.text_key]
                     if self.enforce_eos:
