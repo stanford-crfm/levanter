@@ -85,7 +85,7 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
 def _load_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
 
-    fs = fsspec.core.url_to_fs(ledger_path)
+    fs = fsspec.core.url_to_fs(ledger_path)[0]
     if fs.exists(ledger_path):
         with fsspec.open(ledger_path, "r") as f:
             return json.load(f)
@@ -184,7 +184,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     @staticmethod
     def exists(cache_dir):
         path = os.path.join(cache_dir, "ledger.json")
-        fs = fsspec.core.url_to_fs(path)
+        fs = fsspec.core.url_to_fs(path)[0]
         return fs.exists(path)
 
 
@@ -237,7 +237,7 @@ def build_cache(
         logger.info("Found existing indexed dataset at %s", cache_dir)
         return
 
-    fs = fsspec.core.url_to_fs(cache_dir, **(fsspec_args or {}))
+    fs = fsspec.core.url_to_fs(cache_dir, **(fsspec_args or {}))[0]
     fs.makedirs(cache_dir, exist_ok=True)
 
     file_names = [file_template.format(i) for i in range(num_shards)]
@@ -519,7 +519,7 @@ def _create_sharded_cache(
     # the basic flow we follow is to create a cache for each input doc shard, then merge them together
     # this can run in parallel on different machines, so we need to be careful about how we do this
     # we create a lock file for each cache dir before we start creating it, and then delete it when we're done
-    if not (isinstance(fsspec.core.url_to_fs(cache_root), LocalFileSystem)):
+    if not (isinstance(fsspec.core.url_to_fs(cache_root)[0], LocalFileSystem)):
         raise NotImplementedError("Sharded cache creation only works with local filesystems for now")
 
     finished_caches = []
