@@ -1,10 +1,10 @@
 import pyrallis
 
-from levanter.data.text import CachedLMDatasetConfig
+from levanter.data.text import LMDatasetConfig
 
 
 @pyrallis.wrap()
-def main(args: CachedLMDatasetConfig):
+def main(args: LMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
 
     for split in ["train", "validation"]:

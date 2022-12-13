@@ -22,7 +22,7 @@ from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_ax
 from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
-from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainGpt2Config:
-    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
+    data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 
