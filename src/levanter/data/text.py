@@ -11,6 +11,7 @@
 # }
 # We don't currently use the num_tokens field, but it's useful for sanity checking.
 # The ledger is written last, so we can always check to see if we were interrupted.
+import contextlib
 import copy
 import json
 import logging
@@ -166,6 +167,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         finished caches.
         :return:
         """
+
         ledger = []
         for cache_dir in finished_caches:
             cache_files = _load_ledger(cache_dir)["files"]
@@ -408,42 +410,7 @@ class LMDatasetConfig:
         return AutoTokenizer.from_pretrained(self.tokenizer)
 
     def build_or_load_document_cache(self, split: str):
-        cache_dir = os.path.join(self.cache_dir, f"{split}")
-        num_shards = self.num_train_shards if split == "train" else self.num_val_shards
-        batch_size = self.train_group_size if split == "train" else self.val_group_size
-
-        if self.create_sharded_cache:
-            assert self.id is None
-
-            urls = self._urls_for_split(split)
-            # use cases:
-            #  * urls is power of two, desired number of shards is power of two
-            #  * the pile: 30 urls, would ideally like shards to be divisible by 32 or 64
-            gcd = math.gcd(len(urls), num_shards)
-            urls_per_group = len(urls) // gcd
-            shards_per_group = num_shards // gcd
-
-            logger.info(
-                f"Creating sharded cache for {split} with {gcd} groups of {urls_per_group} urls and"
-                f" {shards_per_group} shards"
-            )
-
-            shard_urls = list(batched(urls, urls_per_group))
-
-            def tokenize_shard(urls_for_shard):
-                texts_iter = self._generate_texts_from_urls(urls_for_shard)
-                for batch in batched(texts_iter, batch_size):
-                    yield tokenize_batch(self.the_tokenizer, batch, self.enforce_eos)
-
-            return _create_sharded_cache(cache_dir, shard_urls, tokenize_shard, shards_per_group)
-
-        else:
-            doc_iter = self._doc_iterator(split)
-            token_iter = (
-                tokenize_batch(self.the_tokenizer, batch, self.enforce_eos) for batch in batched(doc_iter, batch_size)
-            )
-
-            return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
+        build_or_load_document_cache(self, split)
 
     def _doc_iterator(self, split: str):
         if self.id is not None:
@@ -456,10 +423,10 @@ class LMDatasetConfig:
                     text += self.the_tokenizer.eos_token
                 yield text
         else:
-            urls = self._urls_for_split(split)
-            yield from self._generate_texts_from_urls(urls)
+            urls = self.urls_for_split(split)
+            yield from self.generate_texts_from_urls(urls)
 
-    def _generate_texts_from_urls(self, urls):
+    def generate_texts_from_urls(self, urls):
         files = fsspec.open_files(urls, "r", compression="infer")
         for file in files:
             with file as f:
@@ -469,7 +436,7 @@ class LMDatasetConfig:
                         text += self.the_tokenizer.eos_token
                     yield text
 
-    def _urls_for_split(self, split):
+    def urls_for_split(self, split):
         if split == "train":
             urls = self.train_urls
         elif split == "validation":
@@ -484,13 +451,52 @@ class LMDatasetConfig:
             else:
                 return [url]
 
-        urls = [fsspec_expand_glob(url) for pat in urls for url in braceexpand.braceexpand(pat)]
+        urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
 
     def __post_init__(self):
         if self.id is not None and self.create_sharded_cache:
             # TODO: this is doable now in a reasonable-ish way but it's not implemented yet
             raise ValueError("Cannot currently create sharded cache for HF datasets")
+
+
+def build_or_load_document_cache(config: LMDatasetConfig, split: str):
+    cache_dir = os.path.join(config.cache_dir, f"{split}")
+    num_shards = config.num_train_shards if split == "train" else config.num_val_shards
+    batch_size = config.train_group_size if split == "train" else config.val_group_size
+
+    if config.create_sharded_cache:
+        assert config.id is None
+
+        urls = config.urls_for_split(split)
+        # use cases:
+        #  * urls is power of two, desired number of shards is power of two
+        #  * the pile: 30 urls, would ideally like shards to be divisible by 32 or 64
+        gcd = math.gcd(len(urls), num_shards)
+        urls_per_group = len(urls) // gcd
+        shards_per_group = num_shards // gcd
+
+        logger.info(
+            f"Creating sharded cache for {split} with {gcd} groups of {urls_per_group} urls and"
+            f" {shards_per_group} shards"
+        )
+
+        shard_urls = list(batched(urls, urls_per_group))
+
+        def tokenize_shard(urls_for_shard):
+            texts_iter = config.generate_texts_from_urls(urls_for_shard)
+            for batch in batched(texts_iter, batch_size):
+                yield tokenize_batch(config.the_tokenizer, batch, config.enforce_eos)
+
+        return _create_sharded_cache(cache_dir, shard_urls, tokenize_shard, shards_per_group)
+
+    else:
+        doc_iter = config._doc_iterator(split)
+        token_iter = (
+            tokenize_batch(config.the_tokenizer, batch, config.enforce_eos) for batch in batched(doc_iter, batch_size)
+        )
+
+        return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
 
 
 # this is the shard-aware/preemptible version of the above. we can process shards in parallel on different machines
@@ -529,68 +535,86 @@ def _create_sharded_cache(
     if not (isinstance(fsspec.core.url_to_fs(cache_root)[0], LocalFileSystem)):
         raise NotImplementedError("Sharded cache creation only works with local filesystems for now")
 
+    if TokenizedDocumentCache.exists(cache_root):
+        return TokenizedDocumentCache.load(cache_root)
+
     finished_caches = []
 
     shards_remaining = list(range(len(input_docs_shards)))
-    pbar = tqdm(total=len(input_docs_shards), desc="Creating caches")
+    # pbar = tqdm(total=len(input_docs_shards), desc="Creating caches")
 
-    def cache_dir_path(shard):
-        return os.path.join(cache_root, f"shard_{shard}")
+    def cache_dir_path(shard_idx):
+        return os.path.join(cache_root, f"shard_{shard_idx}")
 
     # first do a quick pass to see if we have any caches that are already built. this is mostly for the progress bar
+    shards_to_remove = []
     for i in shards_remaining:
         cache_dir = cache_dir_path(i)
         try:
             if TokenizedDocumentCache.exists(cache_dir):
                 finished_caches.append(cache_dir)
-                shards_remaining.remove(i)
+                shards_to_remove.append(i)
         except ValueError:
             pass
 
-    pbar.update(len(finished_caches))
+    for i in shards_to_remove:
+        shards_remaining.remove(i)
 
-    wait_time = 0.1  # seconds
+    logger.info(f"Found {len(finished_caches)} finished caches")
+
+    # pbar.update(len(finished_caches))
+
+    @contextlib.contextmanager
+    def find_and_lock_shard():
+        wait_time = 0.1  # seconds
+        for i in shards_remaining:
+            cache_dir = cache_dir_path(i)
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+                lock_file = os.path.join(cache_dir, "lock")
+                lock = filelock.FileLock(lock_file, timeout=wait_time)
+                logger.debug(f"Trying to acquire lock {lock_file}")
+                with lock:
+                    wait_time = 0.1  # reset the wait time
+                    logger.debug(f"Acquired lock {lock_file}")
+                    yield i, cache_dir
+                    break
+            except filelock.Timeout:
+                logger.debug(f"Lock {lock_file} is already locked. Doubling wait time to {wait_time * 2} seconds")
+                wait_time *= 2
+                pass
+        else:
+            logger.warning("No shards available to process")
+            yield (None, None)
 
     while len(shards_remaining) > 0:
         # we create a lock file for each cache dir before we start creating it, and then delete it when we're done
         # this way, if we crash, we can detect that the cache dir is incomplete and delete it
-        for i in shards_remaining:
-            cache_dir = cache_dir_path(i)
-            os.makedirs(cache_dir, exist_ok=True)
-            lock_file = os.path.join(cache_dir, "lock")
-            lock = filelock.FileLock(lock_file, timeout=wait_time)
-            logger.debug(f"Trying to acquire lock {lock_file}")
+        with find_and_lock_shard() as (i, cache_dir):
+            if i is None:
+                break
+            logger.info(f"Creating cache for shard {i}")
             try:
-                with lock:
-                    logger.debug(f"Acquired lock {lock_file}")
-                    logger.info(f"Creating cache for shard {i}")
-                    wait_time = 0.1  # reset the wait time
-                    # we have the lock, so we can create the cache
-                    try:
-                        shard = input_docs_shards[i]
-                        tokenized_shard = tokenize(shard)
-                        # build_or_load is idempotent: once the cache is created, it won't be recreated
-                        # and we have a lock so no one else can create it
-                        # TODO: would nice to save our progress within a shard or something for large datasets
-                        cache = TokenizedDocumentCache.build_or_load(
-                            tokenized_shard, cache_dir, num_shards_per_doc_shard, flatten_docs=True
-                        )
-                    except Exception as e:
-                        logger.error(f"Error creating cache for shard {i}", exc_info=e)
-                        raise
+                shard = input_docs_shards[i]
+                tokenized_shard = tokenize(shard)
+                # build_or_load is idempotent: once the cache is created, it won't be recreated
+                # and we have a lock so no one else can create it
+                # TODO: would nice to save our progress within a shard or something for large datasets
+                cache = TokenizedDocumentCache.build_or_load(
+                    tokenized_shard, cache_dir, num_shards_per_doc_shard, flatten_docs=True
+                )
+            except Exception as e:
+                logger.error(f"Error creating cache for shard {i} {shard}", exc_info=e)
+                raise
 
-                    logger.info(f"Created cache for shard {i}")
-                    # we're done with this shard, so remove it from the list
-                    shards_remaining.remove(i)
-                    finished_caches.append(cache)
-                    pbar.update(1)
-            except filelock.Timeout:
-                logger.debug(f"Lock {lock_file} is already locked. Doubling wait time to {wait_time * 2} seconds")
-                wait_time *= 2
-                continue
+            logger.info(f"Finished shard {i}")
+            # we're done with this shard, so remove it from the list
+            shards_remaining.remove(i)
+            finished_caches.append(cache.cache_dir)
+            # pbar.update(1)
 
     # now we merge the shards together
-    logger.info("Merging shards together...")
+    logger.info(f"Merging {len(finished_caches)} caches together...")
     # merging is simple conceptually since we just have to concatenate the ledgers (after prepending the shard path)
     # since it's also idempotent, we don't have to be too careful about this
     merged_cache = TokenizedDocumentCache.merge(finished_caches, cache_root)

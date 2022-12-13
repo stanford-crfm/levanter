@@ -2,7 +2,7 @@ import contextlib
 import logging as pylogging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -32,7 +32,7 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
         wandb.log(params, step=step)
 
 
-def init_logger(path: Path, level: int = pylogging.INFO) -> None:
+def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
     """
     Initialize logging.Logger with the appropriate name, console, and file handlers.
 
