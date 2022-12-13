@@ -476,7 +476,15 @@ class LMDatasetConfig:
             urls = self.validation_urls
         else:
             raise ValueError(f"Unknown split {split}")
-        urls = [url for pat in urls for url in braceexpand.braceexpand(pat)]
+
+        def fsspec_expand_glob(url):
+            if "*" in url:
+                fs = fsspec.core.url_to_fs(url)[0]
+                return fs.glob(url)
+            else:
+                return [url]
+
+        urls = [fsspec_expand_glob(url) for pat in urls for url in braceexpand.braceexpand(pat)]
         return urls
 
     def __post_init__(self):
