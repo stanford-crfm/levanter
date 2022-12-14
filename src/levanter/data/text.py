@@ -563,6 +563,8 @@ def _create_sharded_cache(
     logger.info(f"Found {len(finished_caches)} finished caches")
 
     # pbar.update(len(finished_caches))
+    bad_shards = []
+
 
     @contextlib.contextmanager
     def find_and_lock_shard():
@@ -603,15 +605,20 @@ def _create_sharded_cache(
                 cache = TokenizedDocumentCache.build_or_load(
                     tokenized_shard, cache_dir, num_shards_per_doc_shard, flatten_docs=True
                 )
+                logger.info(f"Finished shard {i}")
+                # we're done with this shard, so remove it from the list
+                shards_remaining.remove(i)
+                finished_caches.append(cache.cache_dir)
+                # pbar.update(1)
             except Exception as e:
+                bad_shards.append(i)
+                shards_remaining.remove(i)
                 logger.error(f"Error creating cache for shard {i} {shard}", exc_info=e)
-                raise
 
-            logger.info(f"Finished shard {i}")
-            # we're done with this shard, so remove it from the list
-            shards_remaining.remove(i)
-            finished_caches.append(cache.cache_dir)
-            # pbar.update(1)
+
+    if len(bad_shards) != 0:
+        logger.error(f"Found bad shards: {bad_shards} {[input_docs_shards[i] for i in bad_shards]}. Aborting.")
+        raise ValueError(f"Found bad shards: {bad_shards} {[input_docs_shards[i] for i in bad_shards]}. Aborting.")
 
     # now we merge the shards together
     logger.info(f"Merging {len(finished_caches)} caches together...")
