@@ -1,6 +1,6 @@
 import functools as ft
-from pathlib import Path
 import pickle
+from pathlib import Path
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
 import equinox as eqx
@@ -15,6 +15,7 @@ from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
+from haliax.util import ensure_tuple
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -87,6 +88,7 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
     """
 
     # add key shape to global_shape and pad out axes
+    global_shape = ensure_tuple(global_shape)
     orig_global_shape = global_shape
     global_shape = global_shape + key.shape
     mesh_axes = list(mesh_axes) + [None] * (len(global_shape) - len(mesh_axes))
@@ -125,8 +127,6 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
-
-
 def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     """
     Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
@@ -145,8 +145,8 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
 
     if is_source:
-        pickled = pickle.dumps(obj, 0).decode("ascii")  # 0 is pickle protocol. 0 only uses ascii, and we need utf-8...
-        client.key_value_set(_LEV_KEY, pickled)
+        pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. 0 only uses ascii, and we need utf-8...
+        client.key_value_set(_LEV_KEY, pickled.decode("ascii"))
 
     client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
 
@@ -209,6 +209,7 @@ def multihost_broadcast_obj(obj, is_source: Optional[bool] = None):
         obj = pickle.loads(pickled)
 
     import sys
+
     sys.exit(0)
     return obj
 

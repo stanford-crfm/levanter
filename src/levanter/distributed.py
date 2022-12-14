@@ -6,22 +6,26 @@ from typing import List, Optional
 import jax
 
 
-# This is a copy-paste and modification of the original SlurmCluster class in jax.
-# The key difference is that it uses the SLURM_LOCAL_PROCESS_COUNT to determine how many devices to use
-
 _JOBID_PARAM = "SLURM_JOB_ID"
-_NODE_LIST_CHOICES=["SLURM_STEP_NODELIST", "SLURM_JOB_NODELIST", "SLURM_NODELIST"]
+_NODE_LIST_CHOICES = ["SLURM_STEP_NODELIST", "SLURM_JOB_NODELIST", "SLURM_NODELIST"]
 _PROCESS_COUNT = "SLURM_NTASKS"
 _PROCESS_ID = "SLURM_PROCID"
 _LOCAL_PROCESS_ID = "SLURM_LOCALID"
 _NUM_NODES = "SLURM_STEP_NUM_NODES"
 _TASKS_PER_NODE = "SLURM_STEP_TASKS_PER_NODE"
 _VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
-
-
+_NODE_NAME = "SLURM_TOPOLOGY_ADDR"
 
 
 class LevanterSlurmCluster:
+    """
+    This class is a copy-paste and modification of the original SlurmCluster class in jax, with a few differences:
+    - It uses the SLURM_LOCAL_PROCESS_COUNT to determine how many devices to use
+    - It looks in a few places for the node list, since the environment variable is set differently
+    depending on how you run
+    # TODO: upstream this
+    """
+
     @classmethod
     def is_env_present(cls) -> bool:
         return _JOBID_PARAM in os.environ
@@ -31,11 +35,10 @@ class LevanterSlurmCluster:
         return int(os.environ[_LOCAL_PROCESS_ID])
 
     # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
-    # TODO: upstream this
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
-        port = int(os.environ[_JOBID_PARAM]) % 2 ** 12 + (65535 - 2 ** 12 + 1)
+        port = int(os.environ[_JOBID_PARAM]) % 2**12 + (65535 - 2**12 + 1)
 
         # Parse the first hostname of the job
         # If we are looking for 'node001',
@@ -43,18 +46,19 @@ class LevanterSlurmCluster:
         # 'node[001-0015],host2', and 'node[001,007-015],host2'.
         node_list = LevanterSlurmCluster._node_list()
         if node_list is None:
-            raise ValueError("Could not find node list in environment variables. "
-                             "You must set coordinator_address manually.")
-        delims = {',', '['}
+            raise ValueError(
+                "Could not find node list in environment variables. You must set coordinator_address manually."
+            )
+        delims = {",", "["}
         ind = next((i for i, ch in enumerate(node_list) if ch in delims), len(node_list))
-        if ind == len(node_list) or node_list[ind] == ',':  # Formats: 'node001' or 'node001,host2'
-            return f'{node_list[:ind]}:{port}'
+        if ind == len(node_list) or node_list[ind] == ",":  # Formats: 'node001' or 'node001,host2'
+            return f"{node_list[:ind]}:{port}"
         else:  # Formats: 'node[001-0015],host2' or 'node[001,007-015],host2'
             prefix = node_list[:ind]
-            suffix = node_list[ind + 1:]
-            delims2 = {',', '-'}
+            suffix = node_list[ind + 1 :]
+            delims2 = {",", "-"}
             ind2 = next((i for i, ch in enumerate(suffix) if ch in delims2), None)
-            return f'{prefix}{suffix[:ind2]}:{port}'
+            return f"{prefix}{suffix[:ind2]}:{port}"
 
     @classmethod
     def _node_list(cls):
@@ -80,8 +84,9 @@ class LevanterSlurmCluster:
 
         multi_match = re.compile(r"(\d+)\(x(\d+)\)")
         for x in os.environ[_TASKS_PER_NODE].split(","):
-            if multi_match.match(x):
-                unrolled_tasks_per_node.extend([int(multi_match.match(x).group(1))] * int(multi_match.match(x).group(2)))
+            match = multi_match.match(x)
+            if match:
+                unrolled_tasks_per_node.extend([int(match.group(1))] * int(match.group(2)))
             else:
                 unrolled_tasks_per_node.append(int(x))
 
@@ -91,14 +96,18 @@ class LevanterSlurmCluster:
         # thankfully slurm exposes a command to expand this list for us
         node_list = LevanterSlurmCluster._node_list()
         if node_list is None:
-            raise ValueError("Could not find node list in environment variables. "
-                             "You must set coordinator_address manually.")
-        import sys
-        node_list = subprocess.check_output(["scontrol", "show", "hostnames", node_list],
-                                            input=b'').decode("utf-8").splitlines()
+            raise ValueError(
+                "Could not find node list in environment variables. You must set coordinator_address manually."
+            )
+
+        node_list = (
+            subprocess.check_output(["scontrol", "show", "hostnames", node_list], input=b"")
+            .decode("utf-8")
+            .splitlines()
+        )
 
         # finally, we can figure out which node we are on
-        local_node = os.environ['SLURM_TOPOLOGY_ADDR']
+        local_node = os.environ[_NODE_NAME]
         local_node_index = node_list.index(local_node)
         tasks_on_local_node = unrolled_tasks_per_node[local_node_index]
 

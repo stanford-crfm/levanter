@@ -15,15 +15,19 @@ import copy
 import json
 import logging
 import os
+from dataclasses import dataclass
+from functools import cached_property
 from itertools import chain
-from typing import Iterator, Optional, Sequence
+from typing import Callable, Iterator, List, Optional, Sequence
 
+import braceexpand
+import datasets
 import fsspec
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
-from transformers import BatchEncoding
+from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
@@ -40,7 +44,7 @@ overwatch = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset(ShardableDataset[BatchEncoding]):
+class TokenSeqDataset(ShardableDataset[Sequence[int]]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
     """
@@ -56,9 +60,10 @@ class TokenSeqDataset(ShardableDataset[BatchEncoding]):
         """
         return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
-    def __iter__(self) -> Iterator[BatchEncoding]:
+    def __iter__(self) -> Iterator[Sequence[int]]:
         for doc in self.doc_cache:
-            yield from concatenate_and_group_texts(doc, self.seq_len, self.stride)
+            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride):
+                yield encoded_slice["input_ids"]
 
     @staticmethod
     def build_or_load(
@@ -261,20 +266,17 @@ def build_cache(
         raise
 
 
-def tokenize_batch(tokenizer, texts, enforce_eos: bool) -> BatchEncoding:
-    if enforce_eos:
-        tokens = tokenizer([t + tokenizer.eos_token for t in texts], return_attention_mask=False)
-        assert all(t[-1] == tokenizer.eos_token_id for t in tokens["input_ids"])
-        return tokens
+def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncoding]:
+    # see if the tokenizer appends eos
+    # HF's BPE-based tokenizers do not, but the bert and roberta ones do
+    # TODO: this doesn't necessarily ensure it, I guess, but eh
+    always_appends_eos = tokenizer("hi there").ends_with(tokenizer.eos_token_id)
+    if not always_appends_eos and enforce_eos:
+        tokenize = lambda x: tokenizer(x + " " + tokenizer.eos_token, return_attention_mask=False)  # noqa: E731
     else:
-        return tokenizer(texts, return_attention_mask=False)
+        tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
 
-
-def preprocess_dataset(dataset, tokenizer, cache_dir, seq_len, num_shards, enforce_eos, doc_group_size=1000):
-    data = (x["text"] for x in dataset)
-
-    token_iter = (tokenize_batch(tokenizer, batch, enforce_eos) for batch in batched(data, doc_group_size))
-    return TokenSeqDataset.build_or_load(token_iter, seq_len=seq_len, cache_dir=cache_dir, num_shards=num_shards)
+    return tokenize
 
 
 def concatenate_and_group_texts(
@@ -333,3 +335,76 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
         labels[0 : target_len - stride] = sentinel
 
     return labels
+
+
+@dataclass
+class LMDatasetConfig:
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    id: Optional[str] = None  # id (or path) for hf dataset
+    name: Optional[str] = None  # name for hf dataset
+    stream: bool = True  # whether to use streaming when doing hf
+
+    train_urls: List[str] = ()  # type: ignore
+    validation_urls: List[str] = ()  # type:ignore
+
+    tokenizer: str = "gpt2"
+    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
+
+    @cached_property
+    def the_tokenizer(self):
+        return AutoTokenizer.from_pretrained(self.tokenizer)
+
+    def doc_iterator(self, split: str):
+        if self.id is not None:
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
+            data = dataset[split]
+            for doc in data:
+                yield doc[self.text_key]
+        else:
+            if split == "train":
+                urls = self.train_urls
+            elif split == "validation":
+                urls = self.validation_urls
+            else:
+                raise ValueError(f"Unknown split {split}")
+
+            urls = [url for pat in urls for url in braceexpand.braceexpand(pat)]
+            files = fsspec.open_files(urls, "r", compression="infer")
+            for file in files:
+                with file as f:
+                    for line in f.readlines():
+                        yield json.loads(line)[self.text_key]
+
+    # def __post_init__(self):
+    #     if self.id is None and len(self.train_urls) == 0 and len(self.validation_urls) == 0:
+    #         raise ValueError("Either id or urls must be provided")
+
+
+@dataclass
+class CachedLMDatasetConfig(LMDatasetConfig):
+    cache_dir: str = "cache/"
+    num_train_shards: int = 128
+    num_val_shards: int = 32
+
+    train_group_size: int = 1000
+    val_group_size: int = 100
+
+    enforce_eos: bool = (
+        True  # whether or not to ensure that the last token is an eos token, even if the tokenizer doesn't add one
+    )
+
+    def build_or_load_document_cache(self, split: str):
+        cache_dir = os.path.join(self.cache_dir, f"{split}")
+        # TODO: think about doing this on apache beam or something fancy. Maybe nothing fancy we can do for HF datasets,
+        # but for pure-url based ones, shouldn't be hard.
+        doc_iter = self.doc_iterator(split)
+        group_size = self.train_group_size if split == "train" else self.val_group_size
+
+        tokenize_fn = batch_tokenizer(self.the_tokenizer, self.enforce_eos)
+
+        token_iter = (tokenize_fn(batch) for batch in batched(doc_iter, group_size))
+
+        num_shards = self.num_train_shards if split == "train" else self.num_val_shards
+
+        return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
