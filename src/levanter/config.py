@@ -214,7 +214,6 @@ class DistributedConfig:
             device_ids = self.local_device_ids
             coordinator_address = self.coordinator_address
 
-
             if LevanterSlurmCluster.is_env_present():
                 if device_ids is None:
                     device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
@@ -223,8 +222,10 @@ class DistributedConfig:
                     coordinator_address = LevanterSlurmCluster.get_coordinator_address()
 
             jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
-            logger.info(f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
-                        f", coordinator_address={coordinator_address}, process_id={self.process_id}")
+            logger.info(
+                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
+                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
+            )
 
 
 @dataclass
@@ -284,7 +285,6 @@ class TrainerConfig:
         return self.run_base_dir / self.run_name
 
     def initialize(self, all_config):
-        import sys
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
         self._initialize_jax_config()
@@ -294,7 +294,6 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        print("device mesh")
         devices = jax.devices()
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
@@ -306,8 +305,6 @@ class TrainerConfig:
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
-        print("data axis size")
-
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 

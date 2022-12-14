@@ -23,7 +23,7 @@ conda install -c conda-forge go
 ### Single Node
 
 ```bash
-srun --cpus-per-task=128 --gres=gpu:8 --job-name=levanter-multi-1 --mem=1000G --nodelist=sphinx[7-8] --open-mode=append --partition=sphinx --time=14-0 ~/src/levanter/scripts/launch-raw.sh python examples/gpt2_example.py --config_path config/gpt2_small.yaml
+srun --cpus-per-task=128 --gres=gpu:8 --job-name=levanter-multi-1 --mem=1000G --nodelist=sphinx[7-8] --open-mode=append --partition=sphinx --time=14-0 ~/src/levanter/scripts/run-slurm.sh python examples/gpt2_example.py --config_path config/gpt2_small.yaml
 ```
 
 ### Multinode
