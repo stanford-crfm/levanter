@@ -79,11 +79,12 @@ def check_batch_shard_consistency(batch: GlobalDeviceArray):
             )
 
             if shard_i.data is not None and shard_j.data is not None:
-                moved = jax.device_put(shard_j.data, shard_i.device)
+                data_i = np.array(shard_i.data)
+                data_j = np.array(shard_j.data)
                 if should_be_same:
-                    assert np.all(shard_i.data == moved)
+                    assert np.all(data_i == data_j)
                 else:
-                    assert not np.all(shard_i.data == moved)
+                    assert not np.all(data_i == data_j)
 
 
 def test_sharded_data_loading_model_axis_1():
