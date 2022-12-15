@@ -63,9 +63,9 @@ def check_batch_shard_consistency(batch, mesh):
             data_axis_pos_j = shard_j.device.id // model_axis_size
             if shard_i.data is not None and shard_j.data is not None:
                 if data_axis_pos_i == data_axis_pos_j:
-                    assert np.all(shard_i.data == shard_j.data)
+                    assert np.all(np.array(shard_i.data) == np.array(shard_j.data))
                 else:
-                    assert not np.all(shard_i.data == shard_j.data)
+                    assert not np.all(np.array(shard_i.data) == np.array(shard_j.data))
 
 
 def test_sharded_data_loading_model_axis_1():
