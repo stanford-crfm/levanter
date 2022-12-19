@@ -176,7 +176,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                 absolute_path = os.path.join(cache_dir, entry["file_name"])
                 relative_path = os.path.relpath(absolute_path, cache_root)
                 ledger.append({**entry, "file_name": relative_path})
-            ledger.extend(_load_ledger(cache_dir)["files"])
 
         with fsspec.open(os.path.join(cache_root, "ledger.json"), "w") as f:
             json.dump({"files": ledger}, f)
