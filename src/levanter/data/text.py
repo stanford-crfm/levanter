@@ -322,8 +322,13 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
     # see if the tokenizer appends eos
     # HF's BPE-based tokenizers do not, but the bert and roberta ones do
     # TODO: this doesn't necessarily ensure it, I guess, but eh
-    always_appends_eos = tokenizer("hi there").ends_with(tokenizer.eos_token_id)
-    if not always_appends_eos and enforce_eos:
+    if enforce_eos:
+        input_ids = tokenizer("hi there")["input_ids"]
+        should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    else:
+        should_append_eos = False
+
+    if should_append_eos:
         tokenize = lambda x: tokenizer(x + " " + tokenizer.eos_token, return_attention_mask=False)  # noqa: E731
     else:
         tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
