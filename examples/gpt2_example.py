@@ -48,7 +48,6 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
-    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
@@ -166,15 +165,17 @@ def main(config: TrainGpt2Config):
             model_inf = prepare_model_for_compute(info.model)
 
             # standard evaluation loop
-            loss = 0.0
+            loss = jax.numpy.zeros(())  # keep it in jax space as long as possible
             n = 0
 
             for batch in eval_dataset:
-                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
+                loss += compute_loss_pjit(model_inf, batch)
                 n += 1
 
             if n > 0:
                 loss /= n
+
+            loss = simplify_gdas(loss).item()
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -191,7 +192,7 @@ def main(config: TrainGpt2Config):
         )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        engine.add_hook(callbacks.log_memory_usage(), every=1)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
@@ -250,8 +251,6 @@ def main(config: TrainGpt2Config):
 
         # donate the model and the opt_state so they can used for outputs
         train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
-
-        jax.profiler.start_trace("/scr-ssd/dlwh/jax-trace", create_perfetto_link=True)
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
