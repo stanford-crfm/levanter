@@ -22,7 +22,7 @@ from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
-from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
+from levanter.jax_utils import global_key_array, parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
@@ -175,7 +175,7 @@ def main(config: TrainGpt2Config):
             if n > 0:
                 loss /= n
 
-            loss = simplify_gdas(loss).item()
+            loss = loss.item()
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -262,7 +262,7 @@ def main(config: TrainGpt2Config):
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
 
-                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, example_keys))
+                step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jnp.mean(step_loss).item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):

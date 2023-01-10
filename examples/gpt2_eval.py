@@ -17,7 +17,6 @@ from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
-from levanter.jax_utils import simplify_gdas
 from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
@@ -106,7 +105,7 @@ def main(config: EvalGpt2Config):
             n = 0
 
             for batch in eval_dataset:
-                loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
+                loss += compute_loss_pjit(model_inf, batch).item()
                 n += 1
 
         def eval_dataloader():

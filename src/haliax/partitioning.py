@@ -127,14 +127,15 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            # if isinstance(node.array, GlobalDeviceArray):
-            # TODO: should probably check for compatibility
-            #    return FROM_GDA
-            # else:
-            return NamedArray(
-                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
-                node.axes,
-            )
+            if isinstance(node.array, GlobalDeviceArray):
+                return FROM_GDA
+            # elif isinstance(node.array, jax.Array):
+            #     reutn
+            else:
+                return NamedArray(
+                    PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
+                    node.axes,
+                )
         elif isinstance(node, GlobalDeviceArray):
             return FROM_GDA
         # TODO: jax.Array
@@ -212,6 +213,7 @@ def named_pjit(
         static = (static_fun, static_argspec)
 
         output_shape = _cached_filter_eval_shape(fn, *args, **kwargs)
+        # TODO: with new jax.Array I shouldn't have to specify shardings, but I do...
         in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
         out_resources = infer_resource_partitions(output_shape, out_axis_resources)
 

@@ -156,21 +156,6 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     return obj
 
 
-def simplify_gdas(pytree: PyTree):
-    """Simplify fully-replicated global device arrays to simple arrays. Typically this is for scalars or small arrays
-    that we want to log"""
-
-    def _simplify_gda(gda):
-        if isinstance(gda, GlobalDeviceArray):
-            if gda.is_fully_replicated:
-                return gda.local_data(0)
-            return gda
-        else:
-            return gda
-
-    return jax.tree_map(_simplify_gda, pytree)
-
-
 # Copy paste from equinox
 def ordered_tree_map(
     f: Callable[..., Any],
