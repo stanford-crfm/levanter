@@ -109,11 +109,9 @@ def main(config: EvalGpt2Config):
                 loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
-            if n > 0:
-                loss /= n
-
-            logger.info(f"validation loss: {loss:.3f}")
-            return loss
+        def eval_dataloader():
+            for batch in eval_dataset:
+                yield (batch,)
 
         # initialize the model
         if config.checkpoint_path is not None:
