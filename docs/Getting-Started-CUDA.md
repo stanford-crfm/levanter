@@ -1,5 +1,7 @@
 # Getting Started with CUDA
 
+**Note** that right now CUDA support is very preliminary and Levanter does not work on a multi-machine setup.
+
 ## Setting up dependencies
 ```bash
 # 3.11 is too new for tensorstore
