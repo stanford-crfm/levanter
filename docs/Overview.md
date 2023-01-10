@@ -268,6 +268,7 @@ and 2) ultimately `xmap` can be confusing because you write non-named code for p
 of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated,
 and it makes it harder to play with different partitioning strategies.
 
+XXX Flax names
 
 #### Named Tensors Elsewhere
 
