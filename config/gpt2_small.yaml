@@ -21,6 +21,8 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: 1
 
+  train_batch_size: 512
+
   axis_resources:
     batch: "data"
     # ZERO-3

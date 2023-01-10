@@ -58,8 +58,10 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
         mapping.update(kwargs)
 
     _mapping_holder.thread_data.resource_mapping = mapping
-    yield
-    _mapping_holder.thread_data.resource_mapping = old_mapping
+    try:
+        yield
+    finally:
+        _mapping_holder.thread_data.resource_mapping = old_mapping
 
 
 T = TypeVar("T", bound=PyTree)
@@ -171,7 +173,6 @@ def named_pjit(
     """
     # TODO: support jax.Array
 
-
     if fn is None:
         return functools.partial(
             named_pjit,
@@ -186,7 +187,6 @@ def named_pjit(
     axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
     in_axis_resources = in_axis_resources or axis_resources
     out_axis_resources = out_axis_resources or axis_resources
-
 
     if axis_resources is None and (in_axis_resources is None or out_axis_resources is None):
         raise ValueError(
@@ -303,10 +303,10 @@ def physical_axis_size(axis: Axis, mapping: Optional[ResourceMapping] = None) ->
     return prod([mesh_shape[n] for n in name])
 
 
-def pspec_for_axis(axis: AxisSpec) -> PartitionSpec:
+def pspec_for_axis(axis: AxisSpec, mapping: Optional[ResourceMapping] = None) -> PartitionSpec:
     """Get the PartitionSpec for a single axis"""
     axis = ensure_tuple(axis)
-    return PartitionSpec(*(physical_axis_name(a) for a in axis))
+    return PartitionSpec(*(physical_axis_name(a, mapping) for a in axis))
 
 
 def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Axis:

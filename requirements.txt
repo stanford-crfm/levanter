@@ -12,3 +12,4 @@ jmp @ git+https://github.com/deepmind/jmp#7b3ae548154625a56a6dbdb03bc07d4f599c37
 fsspec==2022.10.0 # pin this to make gcsfs happy
 tensorstore
 pytimeparse
+humanfriendly

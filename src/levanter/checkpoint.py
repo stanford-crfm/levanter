@@ -252,8 +252,10 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
 
     def maybe_unstrip_protocol(path: str):
         base_has_protocol = fs._strip_protocol(checkpoint_path) != checkpoint_path
-        if base_has_protocol:
-            return fs.unstrip_protocol(path)
+        path_has_protocol = fs._strip_protocol(path) != path
+        if base_has_protocol and not path_has_protocol:
+            base_path_protocol = checkpoint_path.split("://")[0]  # type: ignore
+            return f"{base_path_protocol}://{path}"
         return path
 
     ckpt_dirs = [maybe_unstrip_protocol(d) for d in fs.glob(os.path.join(checkpoint_path, "*")) if fs.isdir(d)]
