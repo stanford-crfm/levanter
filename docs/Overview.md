@@ -741,7 +741,6 @@ the `dict` containing those mappings. That's it! Here's that same example from a
 import haliax as hax
 from haliax.partitioning import named_pjit
 import jax
-import jax.numpy as jnp
 import numpy as onp
 
 Batch = hax.Axis("batch", 128)
@@ -855,9 +854,13 @@ bias terms.
 
 Schematically, that looks something like this:
 
+XXX figure for Zero
+
 
 
 We use device meshes and `named_pjit` to partition, so let's see how we can do that.
+
+XXX code
 
 
 
