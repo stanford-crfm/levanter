@@ -40,7 +40,7 @@ TODO: put things on pypi, etc
 
 ### Training a GPT2-nano
 
-As a kind of hello world, here's how you can train a GPT2-nano model on a small dataset.
+As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on a small dataset.
 
 ```bash
 python examples/gpt2_example.py --config_path config/gpt2_nano.yaml
@@ -52,14 +52,17 @@ You can change the dataset by changing the `dataset` field in the config file.
 The config file is a [Pyrallis](https://github.com/eladrich/pyrallis) config file. Pyrallis is yet-another yaml-to-dataclass library.
 You can use `--help` or poke around other configs to see all the options available to you.
 
-### Training on a TPU Cloud VM
+#### Training on a TPU Cloud VM
 
 Please see the [TPU Getting Started](docs/Getting-Started-TPU-VM.md) guide for more information on how to set up a TPU Cloud VM and run Levanter there.
 
-### Training with CUDA
+#### Training with CUDA
 
 Please see the [CUDA Getting Started](docs/Getting-Started-CUDA.md) guide for more information on how to set up a CUDA environment and run Levanter there.
 
+### Understanding Levanter and Haliax
+
+Please see the [Overview](docs/Overview.md) guide for more information on how Levanter and Haliax work, their inspirations, etc.
 
 ## Contributing
 
