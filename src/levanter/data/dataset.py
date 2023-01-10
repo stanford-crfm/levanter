@@ -13,6 +13,10 @@ class Dataset(Iterable[T], ABC):
     def __iter__(self) -> Iterator[T]:
         raise NotImplementedError
 
+    @abstractmethod
+    def __len__(self) -> int:
+        raise NotImplementedError
+
 
 class ShardableDataset(Dataset[T], ABC):
     @abstractmethod
@@ -53,3 +57,6 @@ class ShuffleDataset(ShardableDataset[T]):
             i = jrandom.randint(subkey, (), 0, len(buffer))
             yield buffer[i]
             del buffer[i]
+
+    def __len__(self) -> int:
+        return len(self.dataset)

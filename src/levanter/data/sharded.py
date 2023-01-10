@@ -1,9 +1,11 @@
-import itertools
+from functools import cached_property
 from typing import Iterator, Optional, Sequence, Tuple, TypeVar
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
+from jax.experimental.multihost_utils import process_allgather
 from jax.interpreters.pxla import Mesh, PartitionSpec
 
 import levanter.mesh
@@ -64,18 +66,9 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[GlobalDeviceArray]:
-        # TODO: support not infinite iterators
-        def loop_gen():
-            while True:
-                for ex in self.local_dataset:
-                    yield ex
+        assert len(self.item_shape) == len(self.partition_spec)
 
-        it = loop_gen()
-
-        item_shape = self.item_shape
-        pspec = self.partition_spec
-
-        assert len(item_shape) == len(pspec)
+        it = iter(self.local_dataset)
 
         # This callback takes a sequence of slices indicating a grid of the data to load, and returns the data
         # We're mostly going to ignore the slices, because we're streaming the data
@@ -90,24 +83,23 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
             data_for_slice = {}
 
             for tslice_index in indices:
-                begin_ends_for_index = self._get_begin_end_for_slice(item_shape, tslice_index)
+                begin_ends_for_index = self._get_begin_end_for_slice(self.item_shape, tslice_index)
                 slice_sizes = [s[1] - s[0] for s in begin_ends_for_index]
 
                 num_examples = slice_sizes[0]
 
                 if begin_ends_for_index not in data_for_slice:
-                    data_for_slice[begin_ends_for_index] = np.stack(
-                        list([ex for ex in itertools.islice(it, num_examples)])
-                    )
+                    examples = [next(it) for _ in range(num_examples)]
+                    data_for_slice[begin_ends_for_index] = np.stack(examples)
                 out.append(data_for_slice[begin_ends_for_index])
 
             return out
 
-        while True:
+        for _ in range(self._global_min_length):
             yield GlobalDeviceArray.from_batched_callback(
-                item_shape,
+                self.item_shape,
                 self.mesh,
-                pspec,
+                self.partition_spec,
                 callback,
             )
 
@@ -128,3 +120,14 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
     def item_shape(self):
         # TODO: make datasets expose data shapes as pytrees
         return (self.batch_size, self.local_dataset.seq_len)
+
+    def __len__(self):
+        return self._global_min_length
+
+    @cached_property
+    def _global_min_length(self):
+        # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
+        # length is the min over the shards, so we have to communicate the min via jax
+        local_len = len(self.local_dataset) // self.batch_size
+        all_lengths = process_allgather(jnp.array(local_len), jax.process_count())
+        return int(jnp.min(all_lengths))

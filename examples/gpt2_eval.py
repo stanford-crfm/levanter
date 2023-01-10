@@ -1,4 +1,3 @@
-import itertools
 import logging
 from dataclasses import dataclass
 from functools import partial
@@ -77,8 +76,7 @@ def main(config: EvalGpt2Config):
             return jnp.mean(compute_loss_vmap(model, input_ids, key))
 
         def eval_dataloader():
-            # TODO: only do one pass
-            for batch in itertools.islice(eval_dataset, 100):
+            for batch in eval_dataset:
                 yield (batch,)
 
         # initialize the model
