@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import jax
 import jax.numpy as jnp
 
@@ -72,6 +74,14 @@ def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
     """Version of jnp.arange that returns a NamedArray"""
     stop = start + axis.size * step
     return NamedArray(jnp.arange(start, stop, step, dtype=dtype), (axis,))
+
+
+def stack(axis: Axis, arrays: Sequence[NamedArray]) -> NamedArray:
+    """Version of jnp.stack that returns a NamedArray"""
+    if len(arrays) == 0:
+        return zeros(axis)
+    arrays = [a.rearrange(arrays[0].axes) for a in arrays]
+    return NamedArray(jnp.stack([a.array for a in arrays], axis=0), (axis,) + arrays[0].axes)
 
 
 # elementwise unary operations
