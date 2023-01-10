@@ -26,7 +26,7 @@ Ex = TypeVar("Ex")
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
+class GlobalBatchDataset(Dataset[PyTree[GlobalDeviceArray]]):
     """
     GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     GlobalDeviceArrays representing batches of data. A GlobalDeviceArray is an array that has a global shape
@@ -66,7 +66,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
         self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
-    def __iter__(self) -> Iterator[GlobalDeviceArray]:
+    def __iter__(self) -> Iterator[PyTree[GlobalDeviceArray]]:
         one_item_generator = iter(self.local_dataset)
 
         for _ in range(self._global_min_length):
