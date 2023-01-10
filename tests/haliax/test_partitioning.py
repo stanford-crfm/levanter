@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import SingleDeviceSharding
 from jaxtyping import Array
 from utils import skip_if_not_enough_devices
 
@@ -35,7 +36,7 @@ def test_infer_named_axes():
         axes: MyModule = infer_resource_partitions(mod)
 
         assert axes.named.array == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
-        assert axes.unnamed1 is None
+        assert axes.unnamed1 is None or isinstance(axes.unnamed1, SingleDeviceSharding)
 
 
 class MyModuleInit(eqx.Module):
