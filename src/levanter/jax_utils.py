@@ -9,7 +9,6 @@ from chex import PRNGKey
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
-from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
@@ -79,7 +78,7 @@ def set_hardware_rng_ops(enabled: bool = True):
         jax.config.update("jax_default_prng_impl", "threefry2x32")
 
 
-def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
+def global_key_array(key: PRNGKey, global_shape, mesh, mesh_axes):
     """
     Create a global array with the given key. This ensures that:
     * individual keys at positions are unique
@@ -106,10 +105,9 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
         lens = [i[1] - i[0] for i in indices]
         return shaped_rng_split(base_key, lens[0 : len(orig_global_shape)])
 
-    return GlobalDeviceArray.from_callback(
-        global_shape=global_shape,
-        global_mesh=global_mesh,
-        mesh_axes=mesh_axes,
+    return jax.make_array_from_callback(
+        global_shape,
+        jax.sharding.MeshPspecSharding(mesh=mesh, spec=mesh_axes),
         data_callback=data_callback,
     )
 
@@ -154,21 +152,6 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         obj = pickle.loads(pickled)
 
     return obj
-
-
-def simplify_gdas(pytree: PyTree):
-    """Simplify fully-replicated global device arrays to simple arrays. Typically this is for scalars or small arrays
-    that we want to log"""
-
-    def _simplify_gda(gda):
-        if isinstance(gda, GlobalDeviceArray):
-            if gda.is_fully_replicated:
-                return gda.local_data(0)
-            return gda
-        else:
-            return gda
-
-    return jax.tree_map(_simplify_gda, pytree)
 
 
 # Copy paste from equinox
