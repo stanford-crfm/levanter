@@ -5,7 +5,6 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Uni
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import process_allgather
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
@@ -26,10 +25,10 @@ Ex = TypeVar("Ex")
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
+class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
     """
     GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
-    GlobalDeviceArrays representing batches of data. A GlobalDeviceArray is an array that has a global shape
+    distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
     but only has the data for some of the chunks of the array (namely, the ones on the local devices).
     Thus, each process loads the data for its devices.
 
@@ -66,7 +65,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
         self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
-    def __iter__(self) -> Iterator[GlobalDeviceArray]:
+    def __iter__(self) -> Iterator[PyTree[jax.Array]]:
         one_item_generator = iter(self.local_dataset)
 
         for _ in range(self._global_min_length):
@@ -104,7 +103,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
             shape_leaves = jax.tree_util.tree_leaves(self.item_shape)
 
-            # Callback passed to GlobalDeviceArray.from_callback to get the data for each device
+            # Callback passed to jax.make_array_from_callback to get the data for each device
             def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
                 batch_slice = indices[0]
                 begin, end, _ = batch_slice.indices(self.Batch.size)
@@ -114,10 +113,9 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
-                GlobalDeviceArray.from_callback(
+                jax.make_array_from_callback(
                     to_raw_shape(shape),
-                    self.mesh,
-                    self._pspec_for(shape),
+                    jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
                 for leaf_index, shape in enumerate(shape_leaves)

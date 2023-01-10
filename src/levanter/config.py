@@ -270,7 +270,7 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
-    use_gda: bool = True  # whether or not to use GlobalDeviceArrays for pjitted models.
+    use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
 
     distributed: DistributedConfig = DistributedConfig()
 
@@ -323,7 +323,7 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
+        jax.config.update("jax_array", self.use_jax_array)
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)

@@ -163,7 +163,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
     If training_state is None, no training state will be saved.
 
-    This method is GlobalDeviceArray-aware, and will save shards in a way that can be restored
+    This method is jax.Array and GlobalDeviceArray-aware, and will save shards in a way that can be restored
     """
     checkpoint_path = str(checkpoint_path)
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")

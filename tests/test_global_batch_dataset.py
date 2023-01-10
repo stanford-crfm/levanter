@@ -1,10 +1,10 @@
 import itertools
-from typing import List, Union
+from typing import Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.global_device_array import GlobalDeviceArray, Shard
+from jax.experimental.global_device_array import Shard
 from jax.experimental.maps import Mesh
 from jaxtyping import PyTree
 from transformers import BatchEncoding
@@ -55,15 +55,15 @@ def test_sharded_data_loading_model_axis_2():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(cache, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
             check_batch_shard_consistency(batch)
 
 
-def check_batch_shard_consistency(batch: GlobalDeviceArray):
-    model_axis_size = batch.mesh.devices.shape[1]
+def check_batch_shard_consistency(batch):
+    model_axis_size = batch.sharding.mesh.devices.shape[1]
     for i, shard_i in enumerate(batch.global_shards):
         data_axis_pos_i = shard_i.device.id // model_axis_size
         model_axis_pos_i = shard_i.device.id % model_axis_size
@@ -71,8 +71,8 @@ def check_batch_shard_consistency(batch: GlobalDeviceArray):
             data_axis_pos_j = shard_j.device.id // model_axis_size
             model_axis_pos_j = shard_j.device.id % model_axis_size
 
-            data_is_sharded = any(q == ResourceAxis.DATA for q in batch.mesh_axes)
-            model_is_sharded = any(q == ResourceAxis.MODEL for q in batch.mesh_axes)
+            data_is_sharded = any(q == ResourceAxis.DATA for q in batch.sharding.spec)
+            model_is_sharded = any(q == ResourceAxis.MODEL for q in batch.sharding.spec)
 
             should_be_same = (not data_is_sharded or data_axis_pos_i == data_axis_pos_j) and (
                 not model_is_sharded or model_axis_pos_i == model_axis_pos_j
@@ -102,7 +102,7 @@ def test_sharded_data_loading_model_axis_1():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(cache, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
@@ -132,8 +132,7 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
             )
             datasets.append(dataset)
 
-        batches: List[List[GlobalDeviceArray]] = [list(itertools.islice(dataset, 10)) for dataset in datasets]
-        b1: GlobalDeviceArray
+        batches = [list(itertools.islice(dataset, 10)) for dataset in datasets]
         for (b1, b2) in zip(*batches):
             assert b1.shape == b2.shape
             assert jnp.all(b1._value != b2._value)
@@ -195,7 +194,7 @@ def test_structured_batches_model_axis_1():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(dataset, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             check_structured_batch(dataset, batch, mesh)
 
@@ -215,7 +214,7 @@ def test_structured_batches_model_axis_2():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(dataset, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             check_structured_batch(dataset, batch, mesh)
 
@@ -285,7 +284,7 @@ def test_structured_batches_model_axis_1_with_names():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(dataset, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             check_structured_batch(dataset, batch, mesh)
 
@@ -306,7 +305,7 @@ def test_structured_batches_model_axis_2_with_names():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(dataset, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             check_structured_batch(dataset, batch, mesh)
 
@@ -328,7 +327,7 @@ def test_structured_batches_model_axis_2_subsharded():
         Batch = Axis("batch", len(devices))
         dataset = GlobalBatchDataset(dataset, mesh, Batch)
 
-        batches: List[GlobalDeviceArray] = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             check_structured_batch(dataset, batch, mesh)
 
