@@ -1,14 +1,14 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import jax
 import numpy as np
 from jax.experimental.maps import Mesh
 
 
-def local_device_grid_positions(mesh, process_index: int = jax.process_index()) -> Tuple[np.ndarray, np.ndarray]:
+def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
     """Returns a tuple of nd arrays, one for each axis, indicating the position of each device on the grid.
     Analogous to what np.where would return."""
-    pi = process_index
+    pi = process_index or jax.process_index()
     # our device indices are [process_index * num_devices_per_node, (process_index + 1) * num_devices_per_node)
     # we could be clever here and do math to figure out where we are in the grid, but it's simpler and less
     # fragile to just search the grid for our devices
@@ -16,7 +16,7 @@ def local_device_grid_positions(mesh, process_index: int = jax.process_index()) 
     return my_device_pos.nonzero()
 
 
-def process_mesh_position(mesh, process_index: int = jax.process_index()) -> Tuple[int, int]:
+def process_mesh_position(mesh, process_index: Optional[int] = None) -> Tuple[int, int]:
     """
     If we envision each process as a subgrid of the mesh for its devices, this is the position of the process
     in the coarsened process-level mesh

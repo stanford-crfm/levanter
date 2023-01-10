@@ -19,7 +19,7 @@ import haliax.random
 import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_axis_for_partitioning
-from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
+from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
@@ -48,6 +48,7 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
     dataset = GlobalBatchDataset(
@@ -184,11 +185,14 @@ def main(config: TrainGpt2Config):
 
         # boilerplate hooks and such
         engine = TrainerHooks()
-        engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(log_to_wandb, every=1)
-        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
+        engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
+        engine.add_hook(callbacks.log_to_wandb, every=1)
+        engine.add_hook(
+            callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
+        )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
-        engine.add_hook(wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
@@ -247,6 +251,8 @@ def main(config: TrainGpt2Config):
 
         # donate the model and the opt_state so they can used for outputs
         train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
+
+        jax.profiler.start_trace("/scr-ssd/dlwh/jax-trace", create_perfetto_link=True)
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
