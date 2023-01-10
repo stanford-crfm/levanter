@@ -37,8 +37,7 @@ overwatch = logging.getLogger("levanter.data.text")
 
 # TASKS:
 # TODO: figure out directory structure for caching multiple sources
-# TODO: if we're super careful we can compute the number of samples (for a given batch size and stride) in advance
-#       if we do that, we can implement a Map-style dataset, which is somewhat preferable when not streaming
+# TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
@@ -61,9 +60,29 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
         return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
     def __iter__(self) -> Iterator[Sequence[int]]:
+        extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
-            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride):
-                yield encoded_slice["input_ids"]
+
+            # TODO: we could be cleverer here, and avoid these expensive copies etc
+            # should run some benchmarks to see if it's worth it
+            if extra_tokens is not None:
+                doc = _stack_batch_encodings(extra_tokens, doc)
+                extra_tokens = None
+
+            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride, drop_remainder=False):
+                if len(encoded_slice["input_ids"]) < self.seq_len:
+                    assert extra_tokens is None
+                    extra_tokens = encoded_slice
+                else:
+                    extra_tokens = None
+                    yield encoded_slice["input_ids"]
+
+    def __len__(self):
+        total_tokens = self.doc_cache.total_tokens
+        if self.stride is None:
+            return total_tokens // self.seq_len
+        else:
+            return (total_tokens - self.seq_len) // self.stride + 1
 
     @staticmethod
     def build_or_load(
@@ -111,21 +130,29 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     operation, which makes concatenation much faster (and means we don't need to cache slices).
     """
 
-    def __init__(self, cache_dir, cache_files, flatten_docs):
+    def __init__(self, cache_dir, cache_files, token_counts, flatten_docs):
         self.cache_dir = cache_dir
         self.cache_files = cache_files
         self.flatten_docs = flatten_docs
+        self.token_counts = token_counts
+        self.total_tokens = sum(token_counts)
+
+    def __len__(self):
+        if self.flatten_docs:
+            sum([len(self._load_arrow_table(path).to_batches()) for path in self.cache_files])
+        else:
+            return sum([self._load_arrow_table(path).num_rows for path in self.cache_files])
 
     def __iter__(self):
         for cache_file in self.cache_files:
-            full_path = os.path.join(self.cache_dir, cache_file)
-            for entry in _read_cache_file(full_path, self.flatten_docs):
+            for entry in self._read_cache_file(cache_file):
                 yield entry
 
     @staticmethod
     def load(cache_dir, flatten_docs=True):
         ledger = _load_ledger(cache_dir)
-        return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], flatten_docs)
+        token_counts = [entry["num_tokens"] for entry in ledger["files"]]
+        return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], token_counts, flatten_docs)
 
     @staticmethod
     def build_or_load(
@@ -147,28 +174,34 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         if num_shards == 1:
             return self
 
-        return TokenizedDocumentCache(self.cache_dir, self.cache_files[shard_index::num_shards], self.flatten_docs)
+        shard_files = self.cache_files[shard_index::num_shards]
+        shard_token_counts = self.token_counts[shard_index::num_shards]
 
+        return TokenizedDocumentCache(self.cache_dir, shard_files, shard_token_counts, self.flatten_docs)
 
-def _read_cache_file(file, flatten: bool = False) -> Iterator[BatchEncoding]:
-    """Reads the cache files produced by cache_and_group and yields tokenized sequences.
-    If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
-    then the documents returned are actually concatenated documents, where the number is the number of documents
-    presented as a batch to the caching process."""
-    fs, _, paths = fsspec.get_fs_token_paths(file)
-    for b in pq.read_table(file, filesystem=fs).to_batches():
-        if flatten:
-            # insert a newaxis to the beginning so that it appears to be bs=1
-            yield BatchEncoding(
-                {
-                    b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=True)[np.newaxis, :]
-                    for i in range(b.num_columns)
-                }
-            )
-        else:
-            yield BatchEncoding(
-                {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
-            )
+    def _read_cache_file(self, file) -> Iterator[BatchEncoding]:
+        """Reads the cache files produced by cache_and_group and yields tokenized sequences.
+        If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
+        then the documents returned are actually concatenated documents, where the number is the number of documents
+        presented as a batch to the caching process."""
+        for b in self._load_arrow_table(file).to_batches():
+            if self.flatten_docs:
+                # insert a newaxis to the beginning so that it appears to be bs=1
+                yield BatchEncoding(
+                    {
+                        b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=True)[np.newaxis, :]
+                        for i in range(b.num_columns)
+                    }
+                )
+            else:
+                yield BatchEncoding(
+                    {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
+                )
+
+    def _load_arrow_table(self, path):
+        path = os.path.join(self.cache_dir, path)
+        fs, _, paths = fsspec.get_fs_token_paths(path)
+        return pq.read_table(path, filesystem=fs)
 
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
@@ -335,6 +368,20 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
         labels[0 : target_len - stride] = sentinel
 
     return labels
+
+
+def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
+    """Stacks two batch encodings together, assuming that the keys are the same."""
+
+    def _ensure_batched(x):
+        if len(x) == 0:
+            return list(x)
+        elif isinstance(x[0], Sequence) or isinstance(x[0], np.ndarray):
+            return list(x)
+        else:
+            return [x]
+
+    return BatchEncoding({k: _ensure_batched(a[k]) + _ensure_batched(b[k]) for k in a.keys()})
 
 
 @dataclass
