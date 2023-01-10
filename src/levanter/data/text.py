@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Iterator, List, Optional, Sequence
+from typing import Callable, Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
@@ -26,11 +26,13 @@ import fsspec
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from jaxtyping import PyTree
 from tqdm import tqdm
 from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
+from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
 overwatch = logging.getLogger("levanter.data.text")
@@ -76,6 +78,10 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
                 else:
                     extra_tokens = None
                     yield encoded_slice["input_ids"]
+
+    @property
+    def item_shape(self) -> PyTree:
+        return ShapeSpec((self.seq_len,), dtype=np.int32)
 
     def __len__(self):
         total_tokens = self.doc_cache.total_tokens
@@ -150,6 +156,13 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
 
     @staticmethod
     def load(cache_dir, flatten_docs=True):
+        """
+        Load a TokenizedDocumentCache from a directory.
+        :param cache_dir:
+        :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
+        concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
+        :return:
+        """
         ledger = _load_ledger(cache_dir)
         token_counts = [entry["num_tokens"] for entry in ledger["files"]]
         return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], token_counts, flatten_docs)
@@ -178,6 +191,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         shard_token_counts = self.token_counts[shard_index::num_shards]
 
         return TokenizedDocumentCache(self.cache_dir, shard_files, shard_token_counts, self.flatten_docs)
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return {
+            "input_ids": ShapeSpec((None,), dtype=np.int32),
+        }
 
     def _read_cache_file(self, file) -> Iterator[BatchEncoding]:
         """Reads the cache files produced by cache_and_group and yields tokenized sequences.
@@ -303,8 +322,13 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
     # see if the tokenizer appends eos
     # HF's BPE-based tokenizers do not, but the bert and roberta ones do
     # TODO: this doesn't necessarily ensure it, I guess, but eh
-    always_appends_eos = tokenizer("hi there").ends_with(tokenizer.eos_token_id)
-    if not always_appends_eos and enforce_eos:
+    if enforce_eos:
+        input_ids = tokenizer("hi there")["input_ids"]
+        should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    else:
+        should_append_eos = False
+
+    if should_append_eos:
         tokenize = lambda x: tokenizer(x + " " + tokenizer.eos_token, return_attention_mask=False)  # noqa: E731
     else:
         tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
@@ -334,7 +358,7 @@ def concatenate_and_group_texts(
     Returns:
         An iterator of tokenized texts, one at a time.
     """
-    concatenated = BatchEncoding(data={k: list(chain(*v)) for k, v in encoding.items()})
+    concatenated = BatchEncoding(data={k: np.array(list(chain(*v))) for k, v in encoding.items()})
     total_length = len(concatenated.input_ids)
     stride = stride or seq_len
 
