@@ -21,10 +21,7 @@ from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 In = TypeVar("In")
 Ex = TypeVar("Ex")
 
-
-# TODO: maybe generify this to work on more than just single sequence inputs
 # TODO: write tests to verify this works when data spans multiple processes
-# ExampleShape = Union[Tuple[int, ...], Sequence[Tuple[int, ...]]]
 
 _TensorSliceIndex = Tuple[slice, ...]
 
@@ -168,7 +165,7 @@ class GlobalBatchDataset(Dataset[GlobalDeviceArray]):
         # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
         # length is the min over the shards, so we have to communicate the min via jax
         local_len = len(self.local_dataset) // self.batch_size
-        all_lengths = process_allgather(jnp.array(local_len), jax.process_count())
+        all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
     def _stack_leaves_unchecked(self, *leaves):
