@@ -283,3 +283,22 @@ def test_arange():
 
     # test start and stride
     assert jnp.all(jnp.equal(hax.arange(H, start=2, step=2).array, jnp.arange(2, 22, 2)))
+
+
+def test_stack():
+    B = Axis("Batch", 2)
+    H = Axis("Height", 4)
+    W = Axis("Width", 3)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W))
+    named2 = hax.random.uniform(PRNGKey(1), (H, W))
+
+    assert jnp.all(jnp.equal(hax.stack(B, (named1, named2)).array, jnp.stack((named1.array, named2.array), axis=0)))
+
+    named3 = hax.random.uniform(PRNGKey(2), (W, H))
+    # test that this rearranges fine
+    assert jnp.all(
+        jnp.equal(
+            hax.stack(B, (named1, named3)).array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)
+        )
+    )

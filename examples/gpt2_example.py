@@ -1,4 +1,3 @@
-import itertools
 import logging
 from dataclasses import dataclass
 from functools import partial
@@ -11,23 +10,24 @@ import jax.random as jrandom
 import jmp
 import pyrallis
 from equinox import filter_vmap
+from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.partitioning import axis_mapping, named_pjit, round_axis_for_partitioning
-from levanter.callbacks import log_performance_stats, log_to_wandb, pbar_logger, wandb_xla_logger
+from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_axis_for_partitioning
+from levanter import callbacks
 from levanter.config import TrainerConfig
-from levanter.data import CachedLMDatasetConfig
-from levanter.data.sharded import ShardedIndexedDataset
-from levanter.data.text import TokenSeqDataset
+from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.jax_utils import global_key_array, parameter_count, simplify_gdas
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
+from py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -48,22 +48,26 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
-    dataset = ShardedIndexedDataset(
+
+    Batch = Axis("batch", config.trainer.train_batch_size)
+    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
+
+    dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
-        config.trainer.train_batch_size,
+        Batch,
     )
 
-    eval_dataset = ShardedIndexedDataset(
+    eval_dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
-        config.trainer.eval_batch_size,
+        EvalBatch,
     )
 
     # some axes we use outside the model proper
-    # Batch = Axis("batch", config.trainer.train_batch_size)
     SeqLen = config.model.SeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
@@ -157,11 +161,7 @@ def main(config: TrainGpt2Config):
             axis_resources=config.trainer.axis_resources,
         )
 
-        # Set up evaluation: dataloader, loop
-        def eval_dataloader():
-            # TODO: only do one pass
-            yield from itertools.islice(eval_dataset, 50)
-
+        # Set up evaluation
         def evaluate_step(info: StepInfo):
             model_inf = prepare_model_for_compute(info.model)
 
@@ -169,7 +169,7 @@ def main(config: TrainGpt2Config):
             loss = 0.0
             n = 0
 
-            for batch in eval_dataloader():
+            for batch in eval_dataset:
                 loss += simplify_gdas(compute_loss_pjit(model_inf, batch)).item()
                 n += 1
 
@@ -184,27 +184,28 @@ def main(config: TrainGpt2Config):
 
         # boilerplate hooks and such
         engine = TrainerHooks()
-        engine.add_hook(pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(log_to_wandb, every=1)
-        engine.add_hook(log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1)
+        engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
+        engine.add_hook(callbacks.log_to_wandb, every=1)
+        engine.add_hook(
+            callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
+        )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
-        engine.add_hook(wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
         # data loader
-        iter_data = iter(dataset)
+        iter_data = non_caching_cycle(dataset)
 
         # load the last checkpoint and resume if we want
         resume_step = None
         if config.trainer.load_last_checkpoint:
-            # TODO: this won't work past CPU ram size, but that's fine for now
-            with jax.default_device(jax.devices("cpu")[0]):
-                checkpoint = checkpointer.load_checkpoint(
-                    model,
-                    (opt_state, training_key),
-                    config.trainer.load_checkpoint_path,
-                )
+            checkpoint = checkpointer.load_checkpoint(
+                model,
+                (opt_state, training_key),
+                config.trainer.load_checkpoint_path,
+            )
 
             if checkpoint is not None:
                 model, (opt_state, training_key), resume_step = checkpoint
@@ -250,15 +251,19 @@ def main(config: TrainGpt2Config):
         # donate the model and the opt_state so they can used for outputs
         train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
 
+        jax.profiler.start_trace("/scr-ssd/dlwh/jax-trace", create_perfetto_link=True)
+
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
-                    micro_keys = global_key_array(my_key, input_ids.shape[:-1], mesh, dataset.partition_spec[:-1])
+                    example_keys = global_key_array(
+                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
+                    )
 
-                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, micro_keys))
+                step_loss, model, opt_state = simplify_gdas(train_step(model, opt_state, input_ids, example_keys))
                 step_loss = jnp.mean(step_loss).item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):

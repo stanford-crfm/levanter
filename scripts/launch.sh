@@ -1,8 +1,9 @@
 #!/bin/bash
+# This script is used for launching on TPU pods (or other direct run environments) via remote ssh with a virtual env
 set -e
 umask 000
-PSI_ROOT=$(dirname "$(readlink -f $0)")/..
+LEV_ROOT=$(dirname "$(readlink -f $0)")/..
 
 source /files/venv310/bin/activate
 
-PYTHONPATH=${PSI_ROOT}:${PSI_ROOT}/src:${PSI_ROOT}/examples:$PYTHONPATH nohup "$@" &> "log-$(hostname).log"
+PYTHONPATH=${LEV_ROOT}:${LEV_ROOT}/src:${LEV_ROOT}/examples:$PYTHONPATH nohup "$@" > >(tee -a stdout-`hostname`.log) 2> >(tee -a stderr-`hostname`.log >&2)
