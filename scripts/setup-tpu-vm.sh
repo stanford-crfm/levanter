@@ -18,12 +18,16 @@ retCode=$?
 
 # install python 3.10, latest git, and nfs
 # we need git>=2.36 for the glob safe directory thing, below
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo add-apt-repository -y ppa:git-core/ppa
-sudo apt-get update
-sudo apt-get install -y python3.10-full python3.10-dev nfs-common git
 
+# sometimes apt-get update fails, so retry a few times
+for i in {1..5}; do
+  sudo apt-get install -y software-properties-common \
+  && sudo add-apt-repository -y ppa:deadsnakes/ppa \
+  && sudo add-apt-repository -y ppa:git-core/ppa \
+  && sudo apt-get update \
+  && sudo apt-get install -y python3.10-full python3.10-dev nfs-common git \
+  && break
+done
 
 # set up nfs
 NFS_SERVER=10.5.220.250
