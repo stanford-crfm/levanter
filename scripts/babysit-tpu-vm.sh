@@ -29,12 +29,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# set the cmd args:
-CMD_ARGS="$*"
+# set the cmd args. We want to be sure everything is fully quoted when we pass it to the gcloud ssh command
+# in case there are spaces in the command (or embedded quotes)
+CMD_ARGS=()
+for arg in "$@"; do
+  # need to escape any embedded quotes using printf
+  CMD_ARGS+=("$(printf '%q' "$arg")")
+done
 
+# Now turn CMD_ARGS into a single string we can pass
+CMD_ARGS_STR=$(printf ' %s' "${CMD_ARGS[@]}")
+CMD_ARGS_STR=${CMD_ARGS_STR:1}
 
 # now source the helper
-source $SCRIPT_DIR/helpers/parse-tpu-creation-args.sh "${CREATION_ARGS[@]}"
+source "$SCRIPT_DIR"/helpers/parse-tpu-creation-args.sh "${CREATION_ARGS[@]}"
 
 # error out if we didn't set a name
 if [ -z "$VM_NAME" ]; then
@@ -58,9 +66,8 @@ while true; do
     else
       # run the command
       echo "Running command on VM $VM_NAME"
-      echo "Running command: $CMD_ARGS"
-      echo gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command=\"$CMD_ARGS\" --worker=all
-      gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS" --worker=all
+      echo "gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command='$CMD_ARGS_STR' --worker=all"
+      gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS_STR" --worker=all
       if [ $? -eq 0 ]; then
         echo "Command succeeded. Exiting"
         exit 0
