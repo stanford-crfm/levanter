@@ -103,7 +103,7 @@ def accumulate_gradients_sharded(
                     grad = jax.tree_map(jnp.add, grad, this_grad)
                     grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
-                    return this_loss + loss, grad
+                    return loss, grad
 
         loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
         grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
