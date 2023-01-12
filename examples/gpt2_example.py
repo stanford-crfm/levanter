@@ -234,10 +234,10 @@ def main(config: TrainGpt2Config):
 
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
+                Batch,
                 model_inf,
                 input_ids,
                 keys,
-                data_axis_size=config.trainer.data_axis_size,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=compute_axis_mapping,
                 parameter_axis_mapping=parameter_axis_mapping,

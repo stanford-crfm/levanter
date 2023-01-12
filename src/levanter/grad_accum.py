@@ -8,7 +8,8 @@ from jax.interpreters.pxla import PartitionSpec
 import haliax as hax
 from haliax import Axis, auto_sharded
 from haliax.jax_utils import named_call
-from haliax.partitioning import ResourceAxis, ResourceMapping
+from haliax.partitioning import ResourceAxis, ResourceMapping, shard_with_axis_mapping
+from haliax.util import is_named_array
 from levanter.jax_utils import reduce
 
 
@@ -34,9 +35,9 @@ def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs
 @named_call
 def accumulate_gradients_sharded(
     f: Callable[[M, X], Tuple[float, M]],
+    Batch: Axis,
     model: M,
     *inputs: X,
-    data_axis_size: int,
     per_device_parallelism: int,
     compute_axis_mapping: ResourceMapping,
     parameter_axis_mapping: ResourceMapping,
@@ -47,41 +48,80 @@ def accumulate_gradients_sharded(
 
      Parameters:
         f: a function that takes a model and a batch of inputs and returns a tuple of (loss, gradient)
-        data_axis_size: the size of the data parallel axis
         per_device_parallelism: how many examples to process at once on each device
-        inputs: inputs with a leading batch axis, which will be reshaped/split
+        inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
         compute_axis_mapping: a ResourceMapping for doing compute. The model should be sharded this way
         parameter_axis_mapping: a ResourceMapping for doing parameter updates. The model should be sharded this way
     """
-    # data comes in as (batch, ...), and we'll reshape to (data_axis_size, num_micro_steps, per_device_parallelism, ...)
-    batch_size = jnp.shape(inputs[0])[0]
+    batch_size = Batch.size
+    with hax.axis_mapping(compute_axis_mapping):
+        data_axis_size = hax.partitioning.physical_axis_size(Batch)
+        if data_axis_size is None:
+            raise ValueError(f"{Batch} axis must be sharded")
+        physical_axis_name = hax.partitioning.physical_axis_name(Batch)
+        assert physical_axis_name is not None
+
+    # first things first, we want a copy of our gradient sharded like our model, along with a loss value
+    loss = jnp.zeros(())
+    grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+    grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+
+    assert (
+        batch_size % data_axis_size == 0
+    ), f"batch size {batch_size} must be divisible by data axis size {data_axis_size}"
     microbatch_size = data_axis_size * per_device_parallelism
+    assert (
+        batch_size % microbatch_size == 0
+    ), f"batch size {batch_size} must be divisible by microbatch size {microbatch_size}"
+
     num_micro_steps = batch_size // microbatch_size
+
+    Microbatch = Axis("microbatch", microbatch_size)
+    AccumStep = Axis("accum_step", num_micro_steps)
+
     assert num_micro_steps * microbatch_size == batch_size
 
-    # do gradient accumulation on the data parallel axis, with model partitioned according to compute_axis_mapping
-    with hax.axis_mapping(compute_axis_mapping, merge=False):
-        with jax.named_scope("mass reshape"):
+    microbatch_compute_mapping = {**compute_axis_mapping, Microbatch.name: physical_axis_name}  # type: ignore
 
-            def _reshape(x):
-                x = x.reshape((microbatch_size, num_micro_steps) + x.shape[1:])
-                return with_sharding_constraint(x, PartitionSpec(ResourceAxis.DATA, *(None,) * (len(x.shape) - 1)))
+    with hax.axis_mapping(microbatch_compute_mapping, merge=False):
+        # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
+        inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
-            inputs = jax.tree_util.tree_map(_reshape, inputs)
+        # third, we want to do compute.
+        def loop(acc, microbatch):
+            with jax.named_scope("microbatch"):
+                loss, grad = acc
 
-        Microbatch = Axis("microbatch", microbatch_size)
+                this_loss, this_grad = hax.vmap(f, axis=Microbatch)(model, *microbatch)
+                this_loss = with_sharding_constraint(this_loss, PartitionSpec(ResourceAxis.DATA))
 
-        with jax.named_scope("accumulate grad vmap"), hax.axis_mapping(
-            {Microbatch.name: ResourceAxis.DATA}, merge=True
-        ):
-            losses, grads = hax.vmap(accumulate_gradients, axis=Microbatch)(f, model, *inputs)
-            grads = auto_sharded(grads)
+                with jax.named_scope("accumulate"):
+                    this_loss = jnp.mean(this_loss)
+                    this_grad = hax.mean(this_grad, Microbatch)
 
-    # compute means and shard according to the parameter_axis_mapping
-    with jax.named_scope("reduce grads"), hax.axis_mapping(parameter_axis_mapping):
-        # losses and grads have Data leading axis
-        grads = hax.mean(grads, axis=Microbatch)
-        grads = auto_sharded(grads)
-        loss = jnp.mean(losses)
+                    loss = loss + this_loss
+                    grad = jax.tree_map(jnp.add, grad, this_grad)
+                    grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
-    return loss, grads
+                    return this_loss + loss, grad
+
+        loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
+        grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+
+    return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
+
+
+@named_call
+def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs):
+    def _reshape(x):
+        if isinstance(x, hax.NamedArray):
+            x = x.split(Batch, (AccumStep, Microbatch))
+            return auto_sharded(x)
+        elif isinstance(x, jnp.ndarray):
+            x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
+            return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))
+        else:
+            assert jnp.isscalar(x)
+            return x
+
+    return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
