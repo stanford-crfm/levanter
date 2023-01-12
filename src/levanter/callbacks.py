@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterator, Optional, TypeVar
+from typing import Callable, Iterator, Optional
 
 import humanfriendly
 import jax
@@ -21,10 +21,6 @@ from levanter.trainer_hooks import StepInfo
 
 
 logger = logging.getLogger(__name__)
-
-M = TypeVar("M")
-X = TypeVar("X")
-Y = TypeVar("Y")
 
 
 def compute_validation_loss(
