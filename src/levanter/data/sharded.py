@@ -126,6 +126,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
             batch_name = hax.partitioning.physical_axis_name(self.Batch)
+            assert batch_name is not None
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape)  # type: ignore

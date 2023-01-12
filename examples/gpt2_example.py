@@ -4,6 +4,7 @@ from functools import partial
 
 import equinox as eqx
 import jax
+from jax.experimental.pjit import with_sharding_constraint
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jrandom
@@ -53,7 +54,7 @@ def main(config: TrainGpt2Config):
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.train_batch_size)
-    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
@@ -75,7 +76,7 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh as mesh, hax.axis_mapping(parameter_axis_mapping):
+    with config.trainer.device_mesh as mesh, jax.spmd_mode('allow_all'):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -150,8 +151,10 @@ def main(config: TrainGpt2Config):
         # mean_loss: this computes the mean loss over a batch of examples
         def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
+            input_ids = with_sharding_constraint(input_ids, PartitionSpec(ResourceAxis.DATA,))
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
+            result = compute_loss_vmap(model, input_ids, key, inference)
+            return jnp.mean(result)
 
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
@@ -163,20 +166,21 @@ def main(config: TrainGpt2Config):
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
-            model_inf = prepare_model_for_compute(info.model)
+            with hax.axis_mapping(compute_axis_mapping):
+                model_inf = prepare_model_for_compute(info.model)
 
-            # standard evaluation loop
-            loss = jax.numpy.zeros(())  # keep it in jax space as long as possible
-            n = 0
+                # standard evaluation loop
+                loss = jax.numpy.zeros(())  # keep it in jax space as long as possible
+                n = 0
 
-            for batch in eval_dataset:
-                loss += compute_loss_pjit(model_inf, batch)
-                n += 1
+                for batch in eval_dataset:
+                    loss += compute_loss_pjit(model_inf, batch)
+                    n += 1
 
-            if n > 0:
-                loss /= n
+                if n > 0:
+                    loss /= n
 
-            loss = loss.item()
+                loss = loss.item()
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -193,7 +197,7 @@ def main(config: TrainGpt2Config):
         )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
@@ -243,7 +247,7 @@ def main(config: TrainGpt2Config):
                 parameter_axis_mapping=parameter_axis_mapping,
             )
 
-            with jax.named_scope("optimizer"), axis_mapping(parameter_axis_mapping):
+            with jax.named_scope("optimizer"):
                 # distribute gradients across the mesh and apply them
                 updates, opt_state = optimizer.update(grads, opt_state, params=model)
                 model = eqx.apply_updates(model, updates)
@@ -256,7 +260,7 @@ def main(config: TrainGpt2Config):
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
-                with log_time_to_wandb("throughput/loading_time", step=step):
+                with log_time_to_wandb("throughput/loading_time", step=step), hax.axis_mapping(compute_axis_mapping):
                     input_ids = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(

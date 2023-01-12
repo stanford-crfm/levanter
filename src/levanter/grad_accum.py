@@ -93,7 +93,6 @@ def accumulate_gradients_sharded(
                 loss, grad = acc
 
                 this_loss, this_grad = hax.vmap(f, axis=Microbatch)(model, *microbatch)
-                this_loss = with_sharding_constraint(this_loss, PartitionSpec(ResourceAxis.DATA))
 
                 with jax.named_scope("accumulate"):
                     this_loss = jnp.mean(this_loss)
