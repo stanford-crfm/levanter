@@ -17,7 +17,6 @@ from tqdm import tqdm
 import wandb
 from levanter.config import WandbConfig
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
-from levanter.modeling_utils import RunningMean
 from levanter.trainer_hooks import StepInfo
 
 
@@ -33,7 +32,8 @@ def compute_validation_loss(
     dataloader: Callable[[], Iterator[tuple]],
 ):
     def compute_loss(info: StepInfo):
-        total_loss = RunningMean(shape=1)
+        total_loss = 0.0
+        n = 0
         test_loader = dataloader()
 
         pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
@@ -41,10 +41,11 @@ def compute_validation_loss(
             loss = loss_fn(info.model, *batch)
             # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
-            total_loss.update(loss)
-            pbar.set_postfix(loss=total_loss.mean.item())
+            total_loss += loss.item()
+            n += 1
+            pbar.set_postfix(loss=total_loss / n)
 
-        mean_loss = total_loss.mean.item()
+        mean_loss = total_loss / n
         if wandb.run is not None:
             wandb.log({"eval/loss": mean_loss}, step=info.step)
 

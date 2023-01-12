@@ -3,7 +3,6 @@ from functools import partial
 from typing import Callable, Dict, Tuple
 
 import jax
-import jax.numpy as jnp
 
 import haliax as hax
 import haliax.nn as hnn
@@ -22,18 +21,6 @@ ACT2FN: Dict[str, Callable] = {
     "gelu_new": partial(hnn.gelu, approximate=True),
     "quick_gelu": quick_gelu,
 }
-
-
-class RunningMean(object):
-    """Numerically stable running mean for an arbitrary array"""
-
-    def __init__(self, shape=(), dtype=jnp.float32):
-        self.mean = jnp.zeros(shape, dtype)
-        self.count = 0
-
-    def update(self, x):
-        self.count += 1
-        self.mean += (x - self.mean) / self.count
 
 
 # from https://github.com/google/jax/issues/4285
