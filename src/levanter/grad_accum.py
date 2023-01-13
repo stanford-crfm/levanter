@@ -19,6 +19,7 @@ X = TypeVar("X")
 
 @named_call
 def accumulate_gradients(f: Callable[[M, X], Tuple[float, M]], model: M, *inputs: X) -> Tuple[float, M]:
+    """Simple gradient accumulation that just loops over the inputs."""
     zero = (jnp.zeros(()), jax.tree_util.tree_map(lambda m: jnp.zeros_like(m), model), 0)
 
     def compute_and_accumulate(acc, *input):
@@ -61,25 +62,23 @@ def accumulate_gradients_sharded(
         physical_axis_name = hax.partitioning.physical_axis_name(Batch)
         assert physical_axis_name is not None
 
-    # first things first, we want a copy of our gradient sharded like our model, along with a loss value
-    loss = jnp.zeros(())
-    grad = jax.tree_util.tree_map(jnp.zeros_like, model)
-    grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
-
-    assert (
-        batch_size % data_axis_size == 0
-    ), f"batch size {batch_size} must be divisible by data axis size {data_axis_size}"
     microbatch_size = data_axis_size * per_device_parallelism
+    num_micro_steps = batch_size // microbatch_size
+
+    assert batch_size % data_axis_size == 0, f"batch_size % data_axis_size != 0: {batch_size} % {data_axis_size} != 0"
     assert (
         batch_size % microbatch_size == 0
-    ), f"batch size {batch_size} must be divisible by microbatch size {microbatch_size}"
-
-    num_micro_steps = batch_size // microbatch_size
+    ), f"batch_size % microbatch_size != 0: {batch_size} % {microbatch_size} != 0"
 
     Microbatch = Axis(Batch.name, microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
 
     assert num_micro_steps * microbatch_size == batch_size
+
+    # first things first, we want a copy of our gradient sharded like our model, along with a loss value
+    loss = jnp.zeros(())
+    grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+    grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     with hax.axis_mapping(compute_axis_mapping, merge=False):
         # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
@@ -96,7 +95,6 @@ def accumulate_gradients_sharded(
             return loss, grad
 
         loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
-        #grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 
