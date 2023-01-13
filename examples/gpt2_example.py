@@ -129,21 +129,24 @@ def main(config: TrainGpt2Config):
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            pred_y = model(input_ids, key=key, inference=inference)
-            pred_y = mp.cast_to_output(pred_y)
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
 
-            # need to roll the target tokens back by one so that each token is predicting the next token
-            target_y = haliax.roll(input_ids, -1, SeqLen)
-            target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+                pred_y = model(input_ids, key=key, inference=inference)
+                pred_y = mp.cast_to_output(pred_y)
 
-            loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
-            loss = hax.mean(loss, where=loss_mask)
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = haliax.roll(input_ids, -1, SeqLen)
+                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
-            if not inference and config.log_z_regularization > 0:
-                logz_mse = hax.mean((log_normalizers**2))
-                loss += config.log_z_regularization * logz_mse
+                loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+                loss = hax.mean(loss, where=loss_mask)
 
-            return loss.scalar()
+                if not inference and config.log_z_regularization > 0:
+                    logz_mse = hax.mean((log_normalizers**2))
+                    loss += config.log_z_regularization * logz_mse
+
+                return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
         batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
@@ -225,13 +228,13 @@ def main(config: TrainGpt2Config):
             resume_step = 0
 
         # training loop
+        # donate args to conserve memory
+        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
-            model_inf = mp.cast_to_compute(model)
-
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 Batch,
-                model_inf,
+                model,
                 input_ids,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
@@ -246,8 +249,6 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        # donate the model and the opt_state so they can used for outputs
-        train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
