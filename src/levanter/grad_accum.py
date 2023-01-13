@@ -88,14 +88,12 @@ def accumulate_gradients_sharded(
         # third, we want to do compute.
         def loop(acc, microbatch):
             loss, grad = acc
-            with jax.named_scope("microbatch"):
-                this_loss, this_grad = f(model, *microbatch)
-            with jax.named_scope("accumulate"):
-                loss += this_loss
-                grad = jax.tree_map(jnp.add, grad, this_grad)
-                grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+            this_loss, this_grad = f(model, *microbatch)
 
-                return loss, grad
+            loss += this_loss
+            grad = jax.tree_map(jnp.add, grad, this_grad)
+
+            return loss, grad
 
         loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
         grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
