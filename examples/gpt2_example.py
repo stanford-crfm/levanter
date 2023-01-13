@@ -129,9 +129,7 @@ def main(config: TrainGpt2Config):
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            # TODO: revert
             pred_y = model(input_ids, key=key, inference=inference)
-            # pred_y = model(input_ids, inference=True, key=None)
             pred_y = mp.cast_to_output(pred_y)
 
             # need to roll the target tokens back by one so that each token is predicting the next token
@@ -157,7 +155,6 @@ def main(config: TrainGpt2Config):
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            # input_ids = with_sharding_constraint(input_ids, PartitionSpec(ResourceAxis.DATA,))
             result = compute_loss(model, input_ids, None, True)
             return jnp.mean(result)
 
