@@ -92,17 +92,20 @@ def accumulate_gradients_sharded(
             with jax.named_scope("microbatch"):
                 loss, grad = acc
 
-                this_loss, this_grad = hax.vmap(f, axis=Microbatch)(model, *microbatch)
+                with hax.shape_checks(False):
+                    # this_loss, this_grad = hax.vmap(f, axis=Microbatch)(model, *microbatch)
+                    this_loss, this_grad = f(model, *microbatch)
 
-                with jax.named_scope("accumulate"):
-                    this_loss = jnp.mean(this_loss)
-                    this_grad = hax.mean(this_grad, Microbatch)
+                    with jax.named_scope("accumulate"):
+                        this_loss = jnp.mean(this_loss)
+                        # this_grad = hax.mean(this_grad, Microbatch)
+                        this_grad = jax.tree_util.tree_map(lambda x: jnp.mean(x, 0), this_grad)
 
-                    loss = loss + this_loss
-                    grad = jax.tree_map(jnp.add, grad, this_grad)
-                    grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+                        loss = loss + this_loss
+                        grad = jax.tree_map(jnp.add, grad, this_grad)
+                        grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
-                    return loss, grad
+                        return loss, grad
 
         loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
         grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
@@ -114,7 +117,7 @@ def accumulate_gradients_sharded(
 def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs):
     def _reshape(x):
         if isinstance(x, hax.NamedArray):
-            x = x.split(Batch, (AccumStep, Microbatch))
+            x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
             return auto_sharded(x)
         elif isinstance(x, jnp.ndarray):
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])

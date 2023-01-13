@@ -4,13 +4,13 @@ from functools import partial
 
 import equinox as eqx
 import jax
-from jax.experimental.pjit import with_sharding_constraint
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
 from equinox import filter_vmap
+from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
@@ -76,7 +76,7 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh as mesh, jax.spmd_mode('allow_all'):
+    with config.trainer.device_mesh as mesh, jax.spmd_mode("allow_all"):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -131,8 +131,8 @@ def main(config: TrainGpt2Config):
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            input_ids = hax.named(input_ids, SeqLen)
-            pred_y = model(input_ids, inference=inference, key=key)
+            # TODO: revert
+            pred_y = model(input_ids, inference=True, key=None)
             pred_y = mp.cast_to_output(pred_y)
 
             # need to roll the target tokens back by one so that each token is predicting the next token
@@ -148,21 +148,15 @@ def main(config: TrainGpt2Config):
 
             return loss.scalar()
 
-        # mean_loss: this computes the mean loss over a batch of examples
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = with_sharding_constraint(input_ids, PartitionSpec(ResourceAxis.DATA,))
-            compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            result = compute_loss_vmap(model, input_ids, key, inference)
-            return jnp.mean(result)
-
         # get the gradient using a wrapper around jax.value_and_grad
         compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
 
-        compute_loss_pjit = named_pjit(
-            partial(mean_loss, inference=True, key=None),
-            axis_resources=compute_axis_mapping,
-        )
+        @named_pjit(axis_resources=compute_axis_mapping)
+        def eval_loss(model, input_ids):
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            # input_ids = with_sharding_constraint(input_ids, PartitionSpec(ResourceAxis.DATA,))
+            result = compute_loss(model, input_ids, None, True)
+            return jnp.mean(result)
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
@@ -174,7 +168,7 @@ def main(config: TrainGpt2Config):
                 n = 0
 
                 for batch in eval_dataset:
-                    loss += compute_loss_pjit(model_inf, batch)
+                    loss += eval_loss(model_inf, batch)
                     n += 1
 
                 if n > 0:
@@ -262,6 +256,7 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step), hax.axis_mapping(compute_axis_mapping):
                     input_ids = next(iter_data)
+                    input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
