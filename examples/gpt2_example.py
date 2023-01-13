@@ -74,7 +74,7 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh as mesh, jax.spmd_mode("allow_all"):
+    with config.trainer.device_mesh as mesh:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -167,17 +167,15 @@ def main(config: TrainGpt2Config):
                 model_inf = prepare_model_for_compute(info.model)
 
                 # standard evaluation loop
-                loss = jax.numpy.zeros(())  # keep it in jax space as long as possible
+                loss = 0.0
                 n = 0
 
                 for batch in eval_dataset:
-                    loss += eval_loss(model_inf, batch)
+                    loss += eval_loss(model_inf, batch).item()
                     n += 1
 
                 if n > 0:
                     loss /= n
-
-                loss = loss.item()
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -266,7 +264,7 @@ def main(config: TrainGpt2Config):
                     )
 
                 step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
-                step_loss = jnp.mean(step_loss).item()
+                step_loss = step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
