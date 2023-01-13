@@ -9,8 +9,6 @@ import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
-from equinox import filter_vmap
-from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
@@ -18,7 +16,7 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
@@ -126,13 +124,14 @@ def main(config: TrainGpt2Config):
             out_axis_resources=compute_axis_mapping,
         )
 
-        # don't want to compute the mask w.r.t. the final token
+        # don't want to compute the loss w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             # TODO: revert
-            pred_y = model(input_ids, inference=True, key=None)
+            pred_y = model(input_ids, key=key, inference=inference)
+            # pred_y = model(input_ids, inference=True, key=None)
             pred_y = mp.cast_to_output(pred_y)
 
             # need to roll the target tokens back by one so that each token is predicting the next token
@@ -149,7 +148,11 @@ def main(config: TrainGpt2Config):
             return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
+        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+
+        compute_loss_and_grad = eqx.filter_value_and_grad(
+            lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
+        )
 
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):

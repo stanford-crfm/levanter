@@ -76,36 +76,26 @@ def accumulate_gradients_sharded(
 
     num_micro_steps = batch_size // microbatch_size
 
-    Microbatch = Axis("microbatch", microbatch_size)
+    Microbatch = Axis(Batch.name, microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
 
     assert num_micro_steps * microbatch_size == batch_size
 
-    microbatch_compute_mapping = {**compute_axis_mapping, Microbatch.name: physical_axis_name}  # type: ignore
-
-    with hax.axis_mapping(microbatch_compute_mapping, merge=False):
+    with hax.axis_mapping(compute_axis_mapping, merge=False):
         # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
         inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
         # third, we want to do compute.
         def loop(acc, microbatch):
+            loss, grad = acc
             with jax.named_scope("microbatch"):
-                loss, grad = acc
+                this_loss, this_grad = f(model, *microbatch)
+            with jax.named_scope("accumulate"):
+                loss += this_loss
+                grad = jax.tree_map(jnp.add, grad, this_grad)
+                grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
 
-                with hax.shape_checks(False):
-                    # this_loss, this_grad = hax.vmap(f, axis=Microbatch)(model, *microbatch)
-                    this_loss, this_grad = f(model, *microbatch)
-
-                    with jax.named_scope("accumulate"):
-                        this_loss = jnp.mean(this_loss)
-                        # this_grad = hax.mean(this_grad, Microbatch)
-                        this_grad = jax.tree_util.tree_map(lambda x: jnp.mean(x, 0), this_grad)
-
-                        loss = loss + this_loss
-                        grad = jax.tree_map(jnp.add, grad, this_grad)
-                        grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
-
-                        return loss, grad
+                return loss, grad
 
         loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
         grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
