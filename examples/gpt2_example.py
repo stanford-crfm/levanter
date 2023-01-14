@@ -130,6 +130,8 @@ def main(config: TrainGpt2Config):
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+
                 pred_y = model(input_ids, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
@@ -161,18 +163,19 @@ def main(config: TrainGpt2Config):
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
-            model_inf = prepare_model_for_compute(info.model)
+            with hax.axis_mapping(compute_axis_mapping):
+                model_inf = prepare_model_for_compute(info.model)
 
-            # standard evaluation loop
-            loss = 0.0
-            n = 0
+                # standard evaluation loop
+                loss = 0.0
+                n = 0
 
-            for batch in eval_dataset:
-                loss += eval_loss(model_inf, batch).item()
-                n += 1
+                for batch in eval_dataset:
+                    loss += eval_loss(model_inf, batch).item()
+                    n += 1
 
-            if n > 0:
-                loss /= n
+                if n > 0:
+                    loss /= n
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -236,6 +239,7 @@ def main(config: TrainGpt2Config):
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=compute_axis_mapping,
+                parameter_axis_mapping=parameter_axis_mapping,
             )
 
             with jax.named_scope("optimizer"):
@@ -244,6 +248,7 @@ def main(config: TrainGpt2Config):
                 model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
+
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
