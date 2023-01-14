@@ -3,9 +3,7 @@ from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
-import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
@@ -239,16 +237,13 @@ def main(config: TrainGpt2Config):
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=compute_axis_mapping,
-                parameter_axis_mapping=parameter_axis_mapping,
             )
 
-            with jax.named_scope("optimizer"):
-                # distribute gradients across the mesh and apply them
-                updates, opt_state = optimizer.update(grads, opt_state, params=model)
-                model = eqx.apply_updates(model, updates)
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
-
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):

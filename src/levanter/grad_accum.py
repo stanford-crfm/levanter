@@ -8,7 +8,7 @@ from jax.interpreters.pxla import PartitionSpec
 import haliax as hax
 from haliax import Axis, auto_sharded
 from haliax.jax_utils import named_call
-from haliax.partitioning import ResourceAxis, ResourceMapping, shard_with_axis_mapping
+from haliax.partitioning import ResourceAxis, ResourceMapping
 from haliax.util import is_named_array
 from levanter.jax_utils import reduce
 
@@ -41,10 +41,9 @@ def accumulate_gradients_sharded(
     *inputs: X,
     per_device_parallelism: int,
     compute_axis_mapping: ResourceMapping,
-    parameter_axis_mapping: ResourceMapping,
 ) -> Tuple[float, M]:
     """
-    Accumulate gradients across a sharded dataset, keeping a local copy of the gradient on each row of the data
+    Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
      parallel axis. (If the model is not sharded, then a copy of the gradient is on each individual device.)
 
      Parameters:
@@ -52,7 +51,6 @@ def accumulate_gradients_sharded(
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
         compute_axis_mapping: a ResourceMapping for doing compute. The model should be sharded this way
-        parameter_axis_mapping: a ResourceMapping for doing parameter updates. The model should be sharded this way
     """
     batch_size = Batch.size
     with hax.axis_mapping(compute_axis_mapping):
@@ -79,7 +77,7 @@ def accumulate_gradients_sharded(
     loss = jnp.zeros(())
     grad = jax.tree_util.tree_map(jnp.zeros_like, model)
 
-    with hax.axis_mapping(compute_axis_mapping, merge=False):
+    with hax.axis_mapping(compute_axis_mapping):
         # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
         inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
