@@ -49,22 +49,9 @@ def main(config: TrainGpt2Config):
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
+    # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-
-    dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
-        config.trainer.device_mesh,
-        Batch,
-    )
-
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.device_mesh,
-        EvalBatch,
-    )
-
-    # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
@@ -72,7 +59,21 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh as mesh, hax.axis_mapping(compute_axis_mapping):
+    dataset = GlobalBatchDataset(
+        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
+        config.trainer.device_mesh,
+        Batch,
+        compute_axis_mapping,
+    )
+
+    eval_dataset = GlobalBatchDataset(
+        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        config.trainer.device_mesh,
+        EvalBatch,
+        compute_axis_mapping,
+    )
+
+    with config.trainer.device_mesh as mesh:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -247,7 +248,7 @@ def main(config: TrainGpt2Config):
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
-                with log_time_to_wandb("throughput/loading_time", step=step), hax.axis_mapping(compute_axis_mapping):
+                with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
