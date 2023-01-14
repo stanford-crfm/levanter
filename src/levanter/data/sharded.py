@@ -5,6 +5,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Uni
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import process_allgather
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
@@ -113,15 +114,21 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
-                jax.make_array_from_callback(
+                # jax.make_array_from_callback(
+                #     to_raw_shape(shape),
+                #     jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
+                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                # )
+                GlobalDeviceArray.from_callback(
                     to_raw_shape(shape),
-                    jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
+                    self.mesh,
+                    self._pspec_for(shape),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
-            yield gda_tree
+            yield gda_tree  # type: ignore
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
