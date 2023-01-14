@@ -40,7 +40,6 @@ def accumulate_gradients_sharded(
     model: M,
     *inputs: X,
     per_device_parallelism: int,
-    compute_axis_mapping: ResourceMapping,
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
@@ -50,15 +49,13 @@ def accumulate_gradients_sharded(
         f: a function that takes a model and a batch of inputs and returns a tuple of (loss, gradient)
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
-        compute_axis_mapping: a ResourceMapping for doing compute. The model should be sharded this way
     """
     batch_size = Batch.size
-    with hax.axis_mapping(compute_axis_mapping):
-        data_axis_size = hax.partitioning.physical_axis_size(Batch)
-        if data_axis_size is None:
-            raise ValueError(f"{Batch} axis must be sharded")
-        physical_axis_name = hax.partitioning.physical_axis_name(Batch)
-        assert physical_axis_name is not None
+    data_axis_size = hax.partitioning.physical_axis_size(Batch)
+    if data_axis_size is None:
+        raise ValueError(f"{Batch} axis must be sharded")
+    physical_axis_name = hax.partitioning.physical_axis_name(Batch)
+    assert physical_axis_name is not None
 
     microbatch_size = data_axis_size * per_device_parallelism
     num_micro_steps = batch_size // microbatch_size
@@ -77,21 +74,20 @@ def accumulate_gradients_sharded(
     loss = jnp.zeros(())
     grad = jax.tree_util.tree_map(jnp.zeros_like, model)
 
-    with hax.axis_mapping(compute_axis_mapping):
-        # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
-        inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
+    # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
+    inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
-        # third, we want to do compute.
-        def loop(acc, microbatch):
-            loss, grad = acc
-            this_loss, this_grad = f(model, *microbatch)
+    # third, we want to do compute.
+    def loop(acc, microbatch):
+        loss, grad = acc
+        this_loss, this_grad = f(model, *microbatch)
 
-            loss += this_loss
-            grad = jax.tree_map(jnp.add, grad, this_grad)
+        loss += this_loss
+        grad = jax.tree_map(jnp.add, grad, this_grad)
 
-            return loss, grad
+        return loss, grad
 
-        loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
+    loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
 
     return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 
