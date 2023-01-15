@@ -52,14 +52,14 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         local_dataset: ShardableDataset[Sequence[int]],
         mesh: Mesh,
         Batch: hax.Axis,
-        axis_mapping: Optional[ResourceMapping] = None,
+        axis_resources: Optional[ResourceMapping] = None,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
     ):
         self.mesh = mesh
         self.Batch = Batch
-        self.axis_mapping = axis_mapping
+        self.axis_resources = axis_resources
 
         process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
         num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
@@ -135,11 +135,11 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
-            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_mapping)
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
             assert batch_name is not None
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
-            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_mapping)  # type: ignore
+            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
 
     @staticmethod
     def _get_begin_end_for_slice(tensor_shape, tslice_index) -> Tuple[Tuple[int, int], ...]:
