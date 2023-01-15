@@ -191,7 +191,7 @@ def main(config: TrainGpt2Config):
         )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        engine.add_hook(callbacks.log_memory_usage(), every=1)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
