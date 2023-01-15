@@ -18,11 +18,13 @@ retCode=$?
 
 # install python 3.10, latest git, and nfs
 # we need git>=2.36 for the glob safe directory thing, below
+sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:deadsnakes/ppa
 sudo add-apt-repository -y ppa:git-core/ppa
 sudo apt-get update
 sudo apt-get install -y python3.10-full python3.10-dev nfs-common git
+sudo systemctl start unattended-upgrades
 
 
 # set up nfs
