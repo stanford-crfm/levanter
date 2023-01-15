@@ -128,7 +128,7 @@ def main(config: TrainGpt2Config):
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            with hax.axis_mapping(compute_axis_mapping, merge=False):
+            with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
                 pred_y = model(input_ids, key=key, inference=inference)
