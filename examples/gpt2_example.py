@@ -237,6 +237,7 @@ def main(config: TrainGpt2Config):
                 input_ids,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
+                axis_mapping=compute_axis_mapping
             )
 
             # distribute gradients across the mesh and apply them

@@ -40,6 +40,7 @@ def accumulate_gradients_sharded(
     model: M,
     *inputs: X,
     per_device_parallelism: int,
+    axis_mapping
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
@@ -51,10 +52,10 @@ def accumulate_gradients_sharded(
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
     """
     batch_size = Batch.size
-    data_axis_size = hax.partitioning.physical_axis_size(Batch)
+    data_axis_size = hax.partitioning.physical_axis_size(Batch, axis_mapping)
     if data_axis_size is None:
         raise ValueError(f"{Batch} axis must be sharded")
-    physical_axis_name = hax.partitioning.physical_axis_name(Batch)
+    physical_axis_name = hax.partitioning.physical_axis_name(Batch, axis_mapping)
     assert physical_axis_name is not None
 
     microbatch_size = data_axis_size * per_device_parallelism
