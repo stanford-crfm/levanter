@@ -163,14 +163,13 @@ def main(config: TrainGpt2Config):
         # Set up evaluation
         def evaluate_step(info: StepInfo):
             with hax.axis_mapping(compute_axis_mapping):
-                model_inf = prepare_model_for_compute(info.model)
-
                 # standard evaluation loop
                 loss = 0.0
                 n = 0
 
+                print(len(eval_dataset), n)
                 for batch in eval_dataset:
-                    loss += eval_loss(model_inf, batch).item()
+                    loss += eval_loss(model, batch).item()
                     n += 1
 
                 if n > 0:
