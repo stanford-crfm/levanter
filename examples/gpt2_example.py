@@ -115,14 +115,6 @@ def main(config: TrainGpt2Config):
         optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
-        # when it's time to do compute, we want to convert the model to the compute dtype and shard it for inference.
-        # We use this invocation of named_pjit to do that.
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-
         # don't want to compute the loss w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
@@ -148,7 +140,7 @@ def main(config: TrainGpt2Config):
                 return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        #batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        # batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
         batched_loss_function = partial(compute_loss, inference=True)
 
         compute_loss_and_grad = eqx.filter_value_and_grad(
@@ -235,7 +227,8 @@ def main(config: TrainGpt2Config):
                 input_ids,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
-                axis_mapping=compute_axis_mapping
+                compute_axis_mapping=compute_axis_mapping,
+                parameter_axis_mapping=parameter_axis_mapping,
             )
 
             # distribute gradients across the mesh and apply them

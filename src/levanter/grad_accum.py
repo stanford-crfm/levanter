@@ -8,7 +8,7 @@ from jax.interpreters.pxla import PartitionSpec
 import haliax as hax
 from haliax import Axis, auto_sharded
 from haliax.jax_utils import named_call
-from haliax.partitioning import ResourceAxis, ResourceMapping
+from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 from levanter.jax_utils import reduce
 
@@ -40,7 +40,8 @@ def accumulate_gradients_sharded(
     model: M,
     *inputs: X,
     per_device_parallelism: int,
-    axis_mapping
+    compute_axis_mapping,
+    parameter_axis_mapping,
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
@@ -52,10 +53,10 @@ def accumulate_gradients_sharded(
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
     """
     batch_size = Batch.size
-    data_axis_size = hax.partitioning.physical_axis_size(Batch, axis_mapping)
+    data_axis_size = hax.partitioning.physical_axis_size(Batch, compute_axis_mapping)
     if data_axis_size is None:
         raise ValueError(f"{Batch} axis must be sharded")
-    physical_axis_name = hax.partitioning.physical_axis_name(Batch, axis_mapping)
+    physical_axis_name = hax.partitioning.physical_axis_name(Batch, compute_axis_mapping)
     assert physical_axis_name is not None
 
     microbatch_size = data_axis_size * per_device_parallelism
@@ -74,18 +75,20 @@ def accumulate_gradients_sharded(
     # first things first, we want a copy of our gradient sharded like our model, along with a loss value
     loss = jnp.zeros(())
     grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+    grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
     inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
-   # with hax.axis_mapping(axis_mapping):
-   # third, we want to do compute.
+    # with hax.axis_mapping(axis_mapping):
+    # third, we want to do compute.
     def loop(acc, microbatch):
         loss, grad = acc
         this_loss, this_grad = f(model, *microbatch)
 
         loss += this_loss
         grad = jax.tree_map(jnp.add, grad, this_grad)
+        grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
         return loss, grad
 
