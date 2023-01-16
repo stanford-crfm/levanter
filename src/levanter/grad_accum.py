@@ -78,18 +78,18 @@ def accumulate_gradients_sharded(
     # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
     inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
 
-    with hax.axis_mapping(axis_mapping):
-        # third, we want to do compute.
-        def loop(acc, microbatch):
-            loss, grad = acc
-            this_loss, this_grad = f(model, *microbatch)
+   # with hax.axis_mapping(axis_mapping):
+   # third, we want to do compute.
+    def loop(acc, microbatch):
+        loss, grad = acc
+        this_loss, this_grad = f(model, *microbatch)
 
-            loss += this_loss
-            grad = jax.tree_map(jnp.add, grad, this_grad)
+        loss += this_loss
+        grad = jax.tree_map(jnp.add, grad, this_grad)
 
-            return loss, grad
+        return loss, grad
 
-        loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
+    loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
 
     return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 
