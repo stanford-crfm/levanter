@@ -160,7 +160,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_scores = hax.dot(self.HeadDim, q, k)
 
         if mask is not None:
-            attn_scores = hax.where(mask, attn_scores, -1e9)
+            attn_scores = attn_scores + (1.0 - mask) * -1E9
 
         attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
@@ -312,6 +312,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         if not inference and self.config.fcm_prob > 0:
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
             causal_mask = causal_mask & fcm_mask
+            print(causal_mask.axes)
         return causal_mask
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:

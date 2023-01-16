@@ -131,7 +131,7 @@ def main(config: TrainGpt2Config):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, key=key, inference=inference)
+                pred_y = model(input_ids, key=None, inference=True)
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
@@ -148,7 +148,8 @@ def main(config: TrainGpt2Config):
                 return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        #batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        batched_loss_function = partial(compute_loss, inference=True)
 
         compute_loss_and_grad = eqx.filter_value_and_grad(
             lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
@@ -167,7 +168,6 @@ def main(config: TrainGpt2Config):
                 loss = 0.0
                 n = 0
 
-                print(len(eval_dataset), n)
                 for batch in eval_dataset:
                     loss += eval_loss(model, batch).item()
                     n += 1
@@ -190,7 +190,6 @@ def main(config: TrainGpt2Config):
         )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
