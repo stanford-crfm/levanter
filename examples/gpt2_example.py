@@ -146,7 +146,7 @@ def main(config: TrainGpt2Config):
         compute_loss_and_grad = eqx.filter_value_and_grad(
             lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
         )
-
+ 
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))

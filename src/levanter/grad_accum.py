@@ -74,8 +74,9 @@ def accumulate_gradients_sharded(
 
     # first things first, we want a copy of our gradient sharded like our model, along with a loss value
     loss = jnp.zeros(())
-    grad = jax.tree_util.tree_map(jnp.zeros_like, model)
-    grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
+    with jax.named_scope("zeros"):
+        grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+        grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
     inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
@@ -84,11 +85,14 @@ def accumulate_gradients_sharded(
     # third, we want to do compute.
     def loop(acc, microbatch):
         loss, grad = acc
-        this_loss, this_grad = f(model, *microbatch)
+        with jax.named_scope("grad"):
+            this_loss, this_grad = f(model, *microbatch)
+            this_grad = hax.partitioning.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
-        loss += this_loss
-        grad = jax.tree_map(jnp.add, grad, this_grad)
-        grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
+        with jax.named_scope("accum"):
+            loss += this_loss
+            grad = jax.tree_map(jnp.add, grad, this_grad)
+            grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
         return loss, grad
 
