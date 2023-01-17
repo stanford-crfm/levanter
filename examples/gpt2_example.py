@@ -140,8 +140,8 @@ def main(config: TrainGpt2Config):
                 return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        # batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
-        batched_loss_function = partial(compute_loss, inference=True)
+        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        #batched_loss_function = partial(compute_loss, inference=True)
 
         compute_loss_and_grad = eqx.filter_value_and_grad(
             lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
