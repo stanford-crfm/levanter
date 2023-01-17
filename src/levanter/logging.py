@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Optional
 
 import jax
-import jax.numpy as jnp
 from optax import MultiStepsState
 
 import wandb
