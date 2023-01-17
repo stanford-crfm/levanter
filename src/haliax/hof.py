@@ -78,7 +78,7 @@ def scan(
             scanned_x = jax.tree_util.tree_unflatten(x_elem_structure, scanned_x_leaves)
             # this part is the most delicate: combining the scanned x with the unscanned x
             scanned_x = combine(scanned_x, unscanned_xs, is_leaf=is_named_array)
-            scanned_x = auto_sharded(scanned_x)
+            #scanned_x = auto_sharded(scanned_x)
             args, kwargs = scanned_x
             carry, y = f(carry, *args, **kwargs)
             y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
