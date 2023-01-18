@@ -131,17 +131,11 @@ def main(config: TrainGpt2Config):
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                if key is not None:
-                    key, fcm_key = jrandom.split(key, 2)
-                else:
-                    fcm_key = None
 
-                attn_mask = attention_mask(inference, fcm_key)
-
-                pred_y = model(input_ids, attn_mask, key=None, inference=True)
+                pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
@@ -162,14 +156,14 @@ def main(config: TrainGpt2Config):
         # batched_loss_function = partial(compute_loss, inference=True)
 
         compute_loss_and_grad = eqx.filter_value_and_grad(
-            lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
+            lambda model, input_ids, mask, key: hax.mean(batched_loss_function(model, input_ids, mask, key))
         )
 
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
+            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            result = compute_loss(model, input_ids, None, True)
-            return jnp.mean(result)
+            return compute_loss(model, input_ids, mask, None, True)
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
@@ -198,7 +192,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(
             callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
         )
-        #engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        # engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -238,11 +232,13 @@ def main(config: TrainGpt2Config):
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
+            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
                 Batch,
                 model,
                 input_ids,
+                attn_mask,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=compute_axis_mapping,
