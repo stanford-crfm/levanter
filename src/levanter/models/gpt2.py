@@ -88,7 +88,6 @@ class Gpt2Mlp(eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
-        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
@@ -257,6 +256,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], inference, layer_idx, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
+        hidden_states = hax.auto_sharded(hidden_states)
         attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = hidden_states + attn_output
@@ -297,6 +297,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
             hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
         )
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
