@@ -134,7 +134,10 @@ def main(config: TrainGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                key, fcm_key = jrandom.split(key, 2)
+                if key is not None:
+                    key, fcm_key = jrandom.split(key, 2)
+                else:
+                    fcm_key = None
 
                 attn_mask = attention_mask(inference, fcm_key)
 
@@ -195,7 +198,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(
             callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
         )
-        engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        #engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
