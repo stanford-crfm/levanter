@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass
-from functools import partial
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -151,13 +150,10 @@ def main(config: TrainGpt2Config):
 
                 return loss.scalar()
 
-        # get the gradient using a wrapper around jax.value_and_grad
-        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
-        # batched_loss_function = partial(compute_loss, inference=True)
+        def train_batch_loss(model, input_ids, attn_mask, key):
+            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
 
-        compute_loss_and_grad = eqx.filter_value_and_grad(
-            lambda model, input_ids, mask, key: hax.mean(batched_loss_function(model, input_ids, mask, key))
-        )
+        train_loss_and_grad = eqx.filter_value_and_grad(train_batch_loss)
 
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
@@ -234,7 +230,7 @@ def main(config: TrainGpt2Config):
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             loss, grads = accumulate_gradients_sharded(
-                compute_loss_and_grad,
+                train_loss_and_grad,
                 Batch,
                 model,
                 input_ids,
