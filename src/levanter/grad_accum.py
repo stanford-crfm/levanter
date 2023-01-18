@@ -6,7 +6,7 @@ from jax.experimental.pjit import with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 
 import haliax as hax
-from haliax import Axis, auto_sharded
+from haliax import Axis
 from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
@@ -40,7 +40,6 @@ def accumulate_gradients_sharded(
     model: M,
     *inputs: X,
     per_device_parallelism: int,
-    compute_axis_mapping,
     parameter_axis_mapping,
 ) -> Tuple[float, M]:
     """
@@ -51,12 +50,13 @@ def accumulate_gradients_sharded(
         f: a function that takes a model and a batch of inputs and returns a tuple of (loss, gradient)
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
+        parameter_axis_mapping: the axis mapping for the model parameters
     """
     batch_size = Batch.size
-    data_axis_size = hax.partitioning.physical_axis_size(Batch, compute_axis_mapping)
+    data_axis_size = hax.partitioning.physical_axis_size(Batch, parameter_axis_mapping)
     if data_axis_size is None:
         raise ValueError(f"{Batch} axis must be sharded")
-    physical_axis_name = hax.partitioning.physical_axis_name(Batch, compute_axis_mapping)
+    physical_axis_name = hax.partitioning.physical_axis_name(Batch, parameter_axis_mapping)
     assert physical_axis_name is not None
 
     microbatch_size = data_axis_size * per_device_parallelism
@@ -79,9 +79,8 @@ def accumulate_gradients_sharded(
         grad = hax.partitioning.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
-    inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs)
+    inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs, parameter_axis_mapping)
 
-    # with hax.axis_mapping(axis_mapping):
     # third, we want to do compute.
     def loop(acc, microbatch):
         loss, grad = acc
@@ -101,12 +100,11 @@ def accumulate_gradients_sharded(
     return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 
 
-@named_call
-def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs):
+def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs, axis_mapping):
     def _reshape(x):
         if isinstance(x, hax.NamedArray):
             x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
-            return auto_sharded(x)
+            return hax.shard_with_axis_mapping(x, axis_mapping)
         elif isinstance(x, jnp.ndarray):
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
             return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))
