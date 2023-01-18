@@ -41,6 +41,7 @@ class TrainGpt2Config:
     model: Gpt2Config = Gpt2Config()
 
     log_z_regularization: float = 0.0
+    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
 
 @pyrallis.wrap()
@@ -53,6 +54,7 @@ def main(config: TrainGpt2Config):
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
     SeqLen = config.model.SeqLen
+    KeySeqLen = config.model.KeySeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -115,6 +117,16 @@ def main(config: TrainGpt2Config):
         optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
+        # masks for attention and loss
+        def attention_mask(inference, fcm_key):
+            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+
+            # forgetful causal masking
+            if not inference and config.fcm_prob > 0:
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
+                causal_mask = causal_mask & fcm_mask
+            return causal_mask
+
         # don't want to compute the loss w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
@@ -122,8 +134,11 @@ def main(config: TrainGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
+                key, fcm_key = jrandom.split(key, 2)
 
-                pred_y = model(input_ids, key=None, inference=True)
+                attn_mask = attention_mask(inference, fcm_key)
+
+                pred_y = model(input_ids, attn_mask, key=None, inference=True)
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
@@ -140,8 +155,8 @@ def main(config: TrainGpt2Config):
                 return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        # batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
-        batched_loss_function = partial(compute_loss, inference=True)
+        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        # batched_loss_function = partial(compute_loss, inference=True)
 
         compute_loss_and_grad = eqx.filter_value_and_grad(
             lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))

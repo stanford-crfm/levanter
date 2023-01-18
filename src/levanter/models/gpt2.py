@@ -33,7 +33,6 @@ class Gpt2Config:
     embed_pdrop: float = 0.1
     resid_pdrop: float = 0.1
     attn_pdrop: float = 0.1
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
@@ -48,6 +47,10 @@ class Gpt2Config:
     @property
     def SeqLen(self) -> Axis:
         return Axis(name="seqlen", size=self.seq_len)
+
+    @property
+    def KeySeqLen(self) -> Axis:
+        return self.SeqLen.alias(f"key_{self.SeqLen.name}")
 
     @property
     def Embed(self) -> Axis:
@@ -220,7 +223,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: hnn.Dropout
 
-    def __init__(self, config: Gpt2Config, KeySeqLen: Axis, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         assert (
@@ -230,7 +233,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
             SeqLen=config.SeqLen,
-            KeySeqLen=KeySeqLen,
+            KeySeqLen=config.KeySeqLen,
             Embed=config.Embed,
             Heads=config.Heads,
             HeadDim=config.HeadDim,
@@ -269,8 +272,6 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     blocks: Gpt2Block
     ln_f: hnn.LayerNorm
 
-    KeySeqLen: Axis = eqx.static_field()
-
     @property
     def Layers(self) -> Axis:
         return self.config.Layers
@@ -279,20 +280,14 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         super().__init__()
         self.config = config
 
-        self.KeySeqLen = config.SeqLen.alias(f"{config.SeqLen.name}_key")
-
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(
-            config, self.KeySeqLen, key=shaped_rng_split(key, config.num_layers)
-        )
+        # vectorize the blocks
+        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
-        key, fcm_key = haliax.jax_utils.maybe_rng_split(key)
-        mask = self._make_attention_mask(inference, fcm_key)
-
+    def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
         def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, mask, inference=inference, layer_idx=layer_idx, key=key)
+            return block(hidden_states, attn_mask, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
             do_block = jax.checkpoint(do_block)
@@ -304,15 +299,6 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
-
-    def _make_attention_mask(self, inference, fcm_key):
-        causal_mask = hax.nn.attention.causal_mask(self.config.SeqLen, self.KeySeqLen)
-
-        # forgetful causal masking
-        if not inference and self.config.fcm_prob > 0:
-            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
-            causal_mask = causal_mask & fcm_mask
-        return causal_mask
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
@@ -462,13 +448,13 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
-    def __call__(self, input_ids: NamedArray, *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
+        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
