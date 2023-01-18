@@ -165,7 +165,6 @@ def main(config: TrainGpt2Config):
                 attn_mask,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
-                compute_axis_mapping=compute_axis_mapping,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
 
