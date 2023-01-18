@@ -104,8 +104,7 @@ def main(config: TrainGpt2Config):
         @named_pjit(axis_resources=parameter_axis_mapping)
         def init_model():
             model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
-            model = mp.cast_to_param(model)
-            return model
+            return mp.cast_to_param(model)
 
         model = init_model()
 
@@ -153,12 +152,36 @@ def main(config: TrainGpt2Config):
         def train_batch_loss(model, input_ids, attn_mask, key):
             return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
 
-        train_loss_and_grad = eqx.filter_value_and_grad(train_batch_loss)
+        # training loop
+        # donate args to conserve memory
+        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        def train_step(model, opt_state, input_ids, keys):
+            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
+            loss, grads = accumulate_gradients_sharded(
+                eqx.filter_value_and_grad(train_batch_loss),
+                Batch,
+                model,
+                input_ids,
+                attn_mask,
+                keys,
+                per_device_parallelism=config.trainer.per_device_parallelism,
+                compute_axis_mapping=compute_axis_mapping,
+                parameter_axis_mapping=parameter_axis_mapping,
+            )
+
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
+
+        # evaluation loss and loop
 
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            # just use causal mask for evaluation
+            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
             return compute_loss(model, input_ids, mask, None, True)
 
         # Set up evaluation
@@ -223,29 +246,6 @@ def main(config: TrainGpt2Config):
             resume_step = resume_step + 1
         else:
             resume_step = 0
-
-        # training loop
-        # donate args to conserve memory
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, input_ids, keys):
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
-            loss, grads = accumulate_gradients_sharded(
-                train_loss_and_grad,
-                Batch,
-                model,
-                input_ids,
-                attn_mask,
-                keys,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                compute_axis_mapping=compute_axis_mapping,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )
-
-            # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
-
-            return loss, model, opt_state
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
