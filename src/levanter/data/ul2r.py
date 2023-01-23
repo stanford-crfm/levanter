@@ -35,23 +35,20 @@ class Ul2Example:
             + tokenizer.decode(self.outputs)
         )
 
+    def to_decoder_only(self, pad_token_id, QLen, KLen):
+        return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
+
 
 @dataclass
 class DecoderOnlyExample:
     tokens: hax.NamedArray
     targets: hax.NamedArray
-    attention_mask: hax.NamedArray
+    attn_mask: hax.NamedArray
     loss_mask: hax.NamedArray
 
 
-def convert_to_decoder_only(example: Ul2Example, tokenizer, QLen: hax.Axis, KLen: hax.Axis):
-    all_tokens = [example.task_token] + example.inputs.tolist() + [example.outputs.tolist()]
-    all_tokens = np.array(all_tokens, dtype=np.int64)
-    all_tokens = hax.named(all_tokens, QLen)
-
-    # shift back by one since we're predicting the next token
-    targets = hax.roll(all_tokens, -1, QLen)
-
+def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis):
+    all_tokens = np.concatenate([[example.task_token], example.inputs, example.outputs])
     initial_length = len(all_tokens)
 
     max_seq_len = QLen.size
@@ -61,7 +58,12 @@ def convert_to_decoder_only(example: Ul2Example, tokenizer, QLen: hax.Axis, KLen
         all_tokens = all_tokens[:max_seq_len]
     elif len(all_tokens) < max_seq_len:
         num_padding = max_seq_len - len(all_tokens)
-        all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=tokenizer.pad_token_id)
+        all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
+
+    all_tokens = hax.named(all_tokens, QLen)
+
+    # shift back by one since we're predicting the next token
+    targets = hax.roll(all_tokens, -1, QLen)
 
     # Create attention masks
     attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, len(example.inputs) + 1)
@@ -70,10 +72,10 @@ def convert_to_decoder_only(example: Ul2Example, tokenizer, QLen: hax.Axis, KLen
     # 1) task token
     # 2) inputs (except last token of inputs)
     loss_mask = hax.arange(QLen) >= len(example.inputs)
-    # 3) last token of targets
+    # 3) last token of targets and padding
     loss_mask = loss_mask & (hax.arange(QLen) < initial_length - 1)
     # 4) padding
-    loss_mask = loss_mask & (all_tokens != tokenizer.pad_token_id)
+    loss_mask = loss_mask & (all_tokens != pad_token_id)
 
     return DecoderOnlyExample(all_tokens, targets, attention_mask, loss_mask)
 
@@ -148,7 +150,7 @@ class Ul2rDataset(Dataset[DecoderOnlyExample]):
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
             ul2example = self.generator.sample(subkey, example)
-            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer, self.SeqLen, self.KSeqLen)
+            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen)
             yield decoder_only
 
     @property
@@ -156,7 +158,7 @@ class Ul2rDataset(Dataset[DecoderOnlyExample]):
         return DecoderOnlyExample(
             tokens=(self.SeqLen,),  # type: ignore
             targets=(self.SeqLen,),  # type: ignore
-            attention_mask=(self.SeqLen, self.KSeqLen),  # type: ignore
+            attn_mask=(self.SeqLen, self.KSeqLen),  # type: ignore
             loss_mask=(self.SeqLen,),  # type: ignore
         )
 

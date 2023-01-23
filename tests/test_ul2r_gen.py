@@ -1,7 +1,9 @@
 import jax
+import numpy as np
 from transformers import AutoTokenizer
 
-from levanter.data.ul2r import DenoisingTaskConfig, Ul2InstanceGenerator
+import haliax as hax
+from levanter.data.ul2r import DenoisingTaskConfig, Ul2Example, Ul2InstanceGenerator
 
 
 def test_ul2_generator():
@@ -38,3 +40,36 @@ def test_ul2_generator_can_handle_too_few_sentinels():
     for i, tokens in enumerate(synthetic_data):
         # just make sure it doesn't crash
         ul2_generator.sample(tokens, jax.random.PRNGKey(i))
+
+
+def test_decoder_only_example():
+    QLen = hax.Axis("QLen", 25)
+    KLen = QLen.alias("KLen")
+
+    example = Ul2Example(task_token=1000, inputs=np.arange(10), outputs=np.arange(20, 30))
+
+    converted = example.to_decoder_only(1001, QLen, KLen)
+
+    tokens = converted.tokens.array
+
+    assert tokens[0] == 1000
+    assert tokens[1] == 0
+    assert np.all(tokens[1:11] == example.inputs)
+    assert np.all(tokens[11:21] == example.outputs)
+    assert np.all(tokens[21:] == 1001)
+
+    loss_mask = converted.loss_mask.array
+
+    assert np.sum(loss_mask) == len(example.outputs)
+    assert np.all(loss_mask[10:20] == 1)
+    assert np.all(loss_mask[20:] == 0)
+
+    attn_mask = converted.attn_mask.rearrange((QLen, KLen)).array
+
+    assert hax.all(hax.sum(converted.attn_mask, QLen) > 0)
+    assert hax.all(hax.sum(converted.attn_mask, KLen) > 0)
+
+    assert np.all(attn_mask[:, 0] == 1)
+    assert np.all(np.sum(attn_mask[np.arange(0, 11), :], 1) == 11)
+    # start with 1 extra because you can attend to yourself
+    assert np.all(np.sum(attn_mask[np.arange(11, 21), :], 1) == 11 + np.arange(1, 11))
