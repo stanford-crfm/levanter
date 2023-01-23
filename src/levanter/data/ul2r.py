@@ -1,15 +1,15 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
 # See https://arxiv.org/pdf/2210.11399v2.pdf and https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/data/language_modeling/megatron/ul2_dataset.py
 import collections
+import logging
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Union
+from typing import Iterator, List, Optional, Sequence, Union
 
 import jax
 import numpy as np
-import tensorflow as tf
 from jax.random import PRNGKey
 from jaxtyping import PyTree
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 from levanter.data.dataset import Dataset, T
@@ -198,7 +198,7 @@ class Ul2InstanceGenerator:
             self.tokenizer.convert_tokens_to_ids(config.task_token) for config in task_configs
         ]
 
-    def sample(self, tokens: List[int], key: PRNGKey) -> Ul2Example:
+    def sample(self, tokens: Sequence[int], key: PRNGKey) -> Ul2Example:
         """Generate a single Ul2Example from a string"""
         # first decide if we're doing S-denoiser or not
         # gonna be lazy with keys here
@@ -214,20 +214,19 @@ class Ul2InstanceGenerator:
 
         return self.sample_denoiser(tokens, task_config, key)
 
-    def sample_s_denoiser(self, tokens: List[int], key: PRNGKey) -> Ul2Example:
+    def sample_s_denoiser(self, tokens: Sequence[int], key: PRNGKey) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
         # choose a random length
         np_rng = np.random.default_rng(np.array(key).tolist())
         pivot = int(np_rng.integers(0, len(tokens) + 1))
         return Ul2Example(self.s_denoiser_token_id, np.array(tokens[:-pivot]), np.array(tokens[-pivot:]))  # type: ignore
 
-    def sample_denoiser(self, tokens: List[int], task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
+    def sample_denoiser(self, tokens: Sequence[int], task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
         """Build a denoiser example from a list of tokens"""
         # choose a random length
         # Masking.
-        seeds = tf.convert_to_tensor(np.array(jax.random.split(key, 2)))  # needs to be 2x2
-        noise_mask = random_spans_noise_mask(len(tokens), task_config.mask_prob, seeds, task_config.mean_span_length)
-        tokens = tf.convert_to_tensor(tokens)
+        noise_mask = random_spans_noise_mask(len(tokens), task_config.mask_prob, key, task_config.mean_span_length)
+        tokens = np.array(tokens)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
 
@@ -292,7 +291,7 @@ class Ul2InstanceGenerator:
 # limitations under the License.
 
 
-def random_spans_noise_mask(length, noise_density, seeds, mean_noise_span_length=3.0, random_roll=False):
+def random_spans_noise_mask(length, noise_density, key: PRNGKey, mean_noise_span_length=3.0, random_roll=False):
     """Noise mask consisting of random spans of noise tokens.
     The number of noise tokens and the number of noise spans and non-noise spans
     are determined deterministically as follows:
@@ -304,7 +303,7 @@ def random_spans_noise_mask(length, noise_density, seeds, mean_noise_span_length
     Args:
       length: an int32 scalar (length of the incoming token sequence)
       noise_density: a float - approximate density of output mask
-      seeds: an int32 Tensor, shaped (2, 2)
+      seed: an int
       mean_noise_span_length: a number
       random_roll: bool, whether to roll the mask by a random integer offset in
         [0, length). Set random_roll to True to get a more uniform distribution
@@ -315,28 +314,24 @@ def random_spans_noise_mask(length, noise_density, seeds, mean_noise_span_length
       a boolean tensor with shape [length]
     """
     if noise_density == 0.0:
-        return tf.zeros(length, bool)
+        return np.zeros(length, bool)
 
     orig_length = length
     # increase length to avoid degeneracy
-    length = tf.maximum(length, 2)
+    length = max(length, 2)
 
-    def to_int(x):
-        return tf.cast(x, np.int32)
-
-    def to_float(x):
-        return tf.cast(x, np.float32)
-
-    num_noise_tokens = to_int(np.round(to_float(length) * noise_density))
+    num_noise_tokens = int(round(float(length) * noise_density))
     # avoid degeneracy by ensuring positive numbers of noise and nonnoise tokens.
-    num_noise_tokens = np.minimum(np.maximum(num_noise_tokens, 1), length - 1)
-    num_noise_spans = to_int(np.round(to_float(num_noise_tokens) / mean_noise_span_length))
+    num_noise_tokens = np.clip(num_noise_tokens, 1, length - 1)
+    num_noise_spans = int(round(float(num_noise_tokens) / mean_noise_span_length))
     # avoid degeneracy by ensuring positive number of noise spans
-    num_noise_spans = np.maximum(num_noise_spans, 1)
+    num_noise_spans = max(num_noise_spans, 1)
     num_nonnoise_tokens = length - num_noise_tokens
 
+    np_rng = np.random.default_rng(np.array(key))
+
     # pick the lengths of the noise spans and the non-noise spans
-    def _random_segmentation(num_items, num_segments, seed):
+    def _random_segmentation(num_items, num_segments):
         """Partition a sequence of items randomly into non-empty segments.
         Args:
           num_items: an integer scalar > 0
@@ -347,31 +342,40 @@ def random_spans_noise_mask(length, noise_density, seeds, mean_noise_span_length
           up to num_items
         """
         first_in_segment = np.pad(
-            tf.random.shuffle(to_int(tf.range(num_items - 1) < num_segments - 1), seed=int(seed[0])), [[1, 0]]
+            np_rng.permutation((np.arange(num_items - 1) < num_segments - 1).astype(int)), [[1, 0]]
         )
-        segment_id = tf.cumsum(first_in_segment)
-        segment_length = tf.math.segment_sum(tf.ones_like(segment_id), segment_id)
+        segment_id = np.cumsum(first_in_segment)
+        # segment_length = tf.math.segment_sum(tf.ones_like(segment_id), segment_id)
+        segment_length = segment_sum(np.ones_like(segment_id), segment_id)
+
         return segment_length
 
-    noise_span_lengths = _random_segmentation(num_noise_tokens, num_noise_spans, seeds[0])
-    nonnoise_span_lengths = _random_segmentation(num_nonnoise_tokens, num_noise_spans, seeds[1])
-    interleaved_span_lengths = tf.reshape(
-        tf.stack([nonnoise_span_lengths, noise_span_lengths], axis=1), [num_noise_spans * 2]
+    noise_span_lengths = _random_segmentation(num_noise_tokens, num_noise_spans)
+    nonnoise_span_lengths = _random_segmentation(num_nonnoise_tokens, num_noise_spans)
+    interleaved_span_lengths = np.reshape(
+        np.stack([nonnoise_span_lengths, noise_span_lengths], axis=1), [num_noise_spans * 2]
     )
-    span_starts = tf.cumsum(interleaved_span_lengths)[:-1]
-    span_start_indicator = tf.math.unsorted_segment_sum(tf.ones_like(span_starts), span_starts, length)
-    span_num = tf.cumsum(span_start_indicator)
-    is_noise = tf.equal(span_num % 2, 1)
+    span_starts = np.cumsum(interleaved_span_lengths)[:-1]
+    span_start_indicator = np.bincount(span_starts, minlength=length)
+    span_num = np.cumsum(span_start_indicator)
+    is_noise = np.equal(span_num % 2, 1)
 
     mask = is_noise[:orig_length]
 
-    if random_roll:
-        roll_seed = (seeds[0][0] + seeds[1][1], seeds[0][1] - seeds[1][0])  # new seed.
-        # Roll the mask by a random offset e.g. for offset=2: [1,2,3,4] => [3,4,1,2]
-        offset = tf.random.stateless_uniform([1], seed=roll_seed, dtype=tf.int32, minval=0, maxval=length)[0]
-        mask = tf.roll(mask, shift=offset, axis=0)
+    # if random_roll:
+    #     roll_seed = (seeds[0][0] + seeds[1][1], seeds[0][1] - seeds[1][0])  # new seed.
+    #     # Roll the mask by a random offset e.g. for offset=2: [1,2,3,4] => [3,4,1,2]
+    #     offset = tf.random.stateless_uniform([1], seed=roll_seed, dtype=tf.int32, minval=0, maxval=length)[0]
+    #     mask = tf.roll(mask, shift=offset, axis=0)
 
     return mask
+
+
+def segment_sum(data, segment_ids):
+    data = np.asarray(data)
+    s = np.zeros((np.max(segment_ids) + 1,) + data.shape[1:], dtype=data.dtype)
+    np.add.at(s, segment_ids, data)
+    return s
 
 
 def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
@@ -389,49 +393,22 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
       a Tensor with the same shape and dtype as tokens
     """
 
-    prev_token_is_noise = tf.pad(noise_mask[:-1], [[1, 0]])
+    prev_token_is_noise = np.pad(noise_mask[:-1], [[1, 0]])
 
-    first_noise_tokens = tf.logical_and(noise_mask, tf.logical_not(prev_token_is_noise))
-    subsequent_noise_tokens = tf.logical_and(noise_mask, prev_token_is_noise)
+    first_noise_tokens = np.logical_and(noise_mask, np.logical_not(prev_token_is_noise))
+    subsequent_noise_tokens = np.logical_and(noise_mask, prev_token_is_noise)
 
     # sentinel = sentinel_id(tokenizer) + 1 - tf.cumsum(tf.cast(first_noise_tokens, tokens.dtype))
-    segments = tf.cumsum(tf.cast(first_noise_tokens, tokens.dtype))
-    assert int(tf.reduce_max(segments)) <= len(sentinel_tokens)
-    sentinel = sentinel_tokens[segments]
+    segments = np.cumsum(first_noise_tokens.astype(tokens.dtype))
+    # assert int(np.max(segments)) <= len(sentinel_tokens)
+    if int(np.max(segments)) > len(sentinel_tokens):
+        logging.warning("Too many noise spans, reusing sentinels")
+    sentinel = sentinel_tokens[segments % len(sentinel_tokens)]
 
-    tokens = tf.where(first_noise_tokens, sentinel, tokens)
-    return tf.boolean_mask(tokens, tf.logical_not(subsequent_noise_tokens))
+    tokens = np.where(first_noise_tokens, sentinel, tokens)
+    return tokens[np.logical_not(subsequent_noise_tokens)]
 
 
 # note(dlwh): this is some ninja sh*t right here.
 def nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
-    return noise_span_to_unique_sentinel(tokens, tf.logical_not(noise_mask), sentinel_tokens)
-
-
-if __name__ == "__main__":
-    import time
-
-    from levanter.data.text import TokenSeqDataset
-
-    dataset = TokenSeqDataset.load("cache/train", 2048)
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
-    tokenizer.add_special_tokens({"additional_special_tokens": ["<mask>"]})
-    tokenizer.mask_token = "<mask>"
-
-    ul2_generator = Ul2InstanceGenerator(
-        tokenizer,
-        [f"<mask_{i}>" for i in range(2048)],  # this is excessive but will work
-        DenoisingTaskConfig.ul2r_configs(),
-    )
-
-    time_in = time.time()
-
-    for i, tokens in zip(range(1000), dataset):
-        # print(tokens)
-        # print(tokenizer.decode(tokens))
-        #
-        # print(ul2_generator.sample(tokens, jax.random.PRNGKey(i)).render(tokenizer))
-        ul2_generator.sample(tokens, jax.random.PRNGKey(i))  # type: ignore
-
-    print(time.time() - time_in)
+    return noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
