@@ -103,6 +103,11 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
+    @staticmethod
+    def load(cache_dir: str, seq_len: int, stride: Optional[int] = None) -> "TokenSeqDataset":
+        doc_cache = TokenizedDocumentCache.load(cache_dir, True)
+        return TokenSeqDataset(doc_cache, seq_len, stride)
+
 
 def _load_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
