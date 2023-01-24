@@ -46,6 +46,12 @@ def scan(
                     False otherwise. Behaves similarly to the `default` argument in filter_jit
     """
 
+    def is_scanned_with_axis(leaf):
+        if is_named_array(leaf):
+            return axis in leaf.axes and is_scanned(leaf)
+        else:
+            return is_scanned(leaf)
+
     def scanned_f(init, *args, **kwargs):
         # This implementation is a bit tricky.
 
@@ -53,7 +59,7 @@ def scan(
         # unscanned arguments are just passed through, essentially captured as part of a lambda
         # scanned arguments are passed through the scan, which means we need to hoist the axis to the front
         xs = (args, kwargs)
-        scanned_xs, unscanned_xs = eqx.partition(xs, is_scanned, is_leaf=is_named_array)
+        scanned_xs, unscanned_xs = eqx.partition(xs, is_scanned_with_axis, is_leaf=is_named_array)
 
         # Next we have to hoist the axis we're scanning over to the front of the array, because that's what scan
         # expects. Then we have to scan over the 0th dim of the arrays (as flattened non-pytrees)
@@ -72,11 +78,9 @@ def scan(
             scanned_x = jax.tree_util.tree_unflatten(x_elem_structure, scanned_x_leaves)
             # this part is the most delicate: combining the scanned x with the unscanned x
             scanned_x = combine(scanned_x, unscanned_xs, is_leaf=is_named_array)
-            scanned_x = auto_sharded(scanned_x)
             args, kwargs = scanned_x
             carry, y = f(carry, *args, **kwargs)
             y = jax.tree_util.tree_map(_pacify_named_arrays, y, is_leaf=is_named_array)
-            y = auto_sharded(y)
             return carry, y
 
         leaves = jax.tree_util.tree_leaves(axis_first_xs)

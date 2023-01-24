@@ -46,7 +46,7 @@ _mapping_holder = _ResourceMappingHolder()
 
 
 @contextlib.contextmanager
-def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
+def axis_mapping(mapping: ResourceMapping, *, merge: bool = False, **kwargs):
     """Context manager for setting the global resource mapping"""
     mapping = dict(mapping)
 
@@ -161,8 +161,8 @@ def named_pjit(
 
     :param fn: The function to be pjit'd
     :param axis_resources: A mapping from logical axis names to physical axis names
-    :param in_axis_resources: A mapping from logical axis names to physical axis names for the input
-    :param out_axis_resources: A mapping from logical axis names to physical axis names for the output
+    :param in_axis_resources: A mapping from logical axis names to physical axis names for arguments, defaults to axis_resources
+    :param out_axis_resources: A mapping from logical axis names to physical axis names for the result, defaults to axis_resources
     :param donate_args: A PyTree of booleans or function leaf->bool, indicating whether to donate arguments to the
      computation
     :param donate_kwargs: A PyTree of booleans or function leaf->bool, indicating whether to donate keyword arguments to

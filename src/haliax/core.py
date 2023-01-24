@@ -23,7 +23,7 @@ _ENABLE_SHAPE_CHECKS = True
 
 
 @contextlib.contextmanager
-def shape_checks(enabled):
+def enable_shape_checks(enabled):
     """
     Sometimes we end up in situations where an array that jax makes is passed into the NamedArray constructor that
     doesn't conform to the shape we expect. This shows up in particular when we are using jax.vmap or jax.scan,
@@ -908,6 +908,6 @@ __all__ = [
     "broadcast_to",
     "broadcast_axis",
     "broadcast_arrays",
-    "shape_checks",
+    "enable_shape_checks",
     "are_shape_checks_enabled",
 ]
