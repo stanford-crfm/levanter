@@ -19,10 +19,10 @@ class Linear(eqx.Module):
     In: AxisSpec = eqx.static_field()
     Out: AxisSpec = eqx.static_field()
 
-    def __init__(self, In: AxisSpec, Out: AxisSpec, *, key, include_bias=True):
+    def __init__(self, In: AxisSpec, Out: AxisSpec, *, key, use_bias=True):
         joint_spec = hax.concat_axis_specs(In, Out)
         self.weight = hax.random.generate_sharded(hax.random.normal)(key, joint_spec) * 0.02
-        self.bias = hax.zeros(Out) if include_bias else None
+        self.bias = hax.zeros(Out) if use_bias else None
 
         self.In = In
         self.Out = Out
