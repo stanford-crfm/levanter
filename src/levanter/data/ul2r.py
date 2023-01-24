@@ -1,5 +1,5 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
-# See https://arxiv.org/pdf/2210.11399v2.pdf and https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/data/language_modeling/megatron/ul2_dataset.py
+# See https://arxiv.org/pdf/2210.11399v2.pdf
 import collections
 import logging
 from dataclasses import dataclass
@@ -108,7 +108,6 @@ class DenoisingTaskConfig:
     def ul2r_configs(r_task_token: str = "[NLU]", x_task_token: str = "[NLG]") -> List["DenoisingTaskConfig"]:
         return [
             DenoisingTaskConfig(r_task_token, 0.15, 3.0),
-            # TODO: S-denoiser
             DenoisingTaskConfig(x_task_token, 0.15, 32.0),
             DenoisingTaskConfig(x_task_token, 0.5, 3.0),
         ]
