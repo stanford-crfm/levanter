@@ -182,7 +182,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         assert self.Batch.size % len(leaves) == 0
 
         if is_named_array(leaves[0]):
-            with hax.shape_checks(False):  # because we're building parts of the array on each device
+            with hax.enable_shape_checks(False):  # because we're building parts of the array on each device
                 return hax.stack(self.Batch, leaves)
         else:
             return np.stack(leaves)

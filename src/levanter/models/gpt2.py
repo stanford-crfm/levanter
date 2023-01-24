@@ -88,6 +88,7 @@ class Gpt2Mlp(eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
