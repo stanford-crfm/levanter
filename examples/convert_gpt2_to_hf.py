@@ -62,7 +62,7 @@ def main(config: ConvertGpt2Config):
         if config.old_style_model:
             model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
         else:
-            with hax.shape_checks(False):
+            with hax.enable_shape_checks(False):
                 model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
             def patch_vocab(array):

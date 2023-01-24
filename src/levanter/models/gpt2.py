@@ -85,6 +85,7 @@ class Gpt2Mlp(eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
@@ -160,7 +161,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_scores = hax.dot(self.HeadDim, q, k)
 
         if mask is not None:
-            attn_scores = hax.where(mask, attn_scores, -1e9)
+            attn_scores = attn_scores + (1.0 - mask) * -1e9
 
         attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
@@ -295,7 +296,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             return block(hidden_states, mask, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block)
+            do_block = jax.checkpoint(do_block, prevent_cse=False)
 
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore

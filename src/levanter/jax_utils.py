@@ -9,6 +9,7 @@ from chex import PRNGKey
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
@@ -105,9 +106,15 @@ def global_key_array(key: PRNGKey, global_shape, mesh, mesh_axes):
         lens = [i[1] - i[0] for i in indices]
         return shaped_rng_split(base_key, lens[0 : len(orig_global_shape)])
 
-    return jax.make_array_from_callback(
-        global_shape,
-        jax.sharding.MeshPspecSharding(mesh=mesh, spec=mesh_axes),
+    # return jax.make_array_from_callback(
+    #     global_shape,
+    #     jax.sharding.MeshPspecSharding(mesh=mesh, spec=mesh_axes),
+    #     data_callback=data_callback,
+    # )
+    return GlobalDeviceArray.from_callback(
+        global_shape=global_shape,
+        global_mesh=mesh,
+        mesh_axes=mesh_axes,
         data_callback=data_callback,
     )
 

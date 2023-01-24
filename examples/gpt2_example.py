@@ -3,13 +3,10 @@ from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
-import jax.profiler
 import jax.random as jrandom
 import jmp
 import pyrallis
-from equinox import filter_vmap
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
@@ -17,14 +14,15 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, axis_mapping, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.jax_utils import global_key_array, parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
-from levanter.modeling_utils import accumulate_gradients_sharded, cross_entropy_loss_and_log_normalizers
+from levanter.modeling_utils import cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
@@ -51,28 +49,29 @@ def main(config: TrainGpt2Config):
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
+    # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
-    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
-
-    dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
-        config.trainer.device_mesh,
-        Batch,
-    )
-
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.device_mesh,
-        EvalBatch,
-    )
-
-    # some axes we use outside the model proper
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
     SeqLen = config.model.SeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    dataset = GlobalBatchDataset(
+        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
+        config.trainer.device_mesh,
+        Batch,
+        compute_axis_mapping,
+    )
+
+    eval_dataset = GlobalBatchDataset(
+        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        config.trainer.device_mesh,
+        EvalBatch,
+        compute_axis_mapping,
+    )
 
     with config.trainer.device_mesh as mesh:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
@@ -116,66 +115,57 @@ def main(config: TrainGpt2Config):
         optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
-        # when it's time to do compute, we want to convert the model to the compute dtype and shard it for inference.
-        # We use this invocation of named_pjit to do that.
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-
-        # don't want to compute the mask w.r.t. the final token
+        # don't want to compute the loss w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            input_ids = hax.named(input_ids, SeqLen)
-            pred_y = model(input_ids, inference=inference, key=key)
-            pred_y = mp.cast_to_output(pred_y)
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
 
-            # need to roll the target tokens back by one so that each token is predicting the next token
-            target_y = haliax.roll(input_ids, -1, SeqLen)
-            target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+                pred_y = model(input_ids, key=None, inference=True)
+                pred_y = mp.cast_to_output(pred_y)
 
-            loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
-            loss = hax.mean(loss, where=loss_mask)
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = haliax.roll(input_ids, -1, SeqLen)
+                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
-            if not inference and config.log_z_regularization > 0:
-                logz_mse = hax.mean((log_normalizers**2))
-                loss += config.log_z_regularization * logz_mse
+                loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+                loss = hax.mean(loss, where=loss_mask)
 
-            return loss.scalar()
+                if not inference and config.log_z_regularization > 0:
+                    logz_mse = hax.mean((log_normalizers**2))
+                    loss += config.log_z_regularization * logz_mse
 
-        # mean_loss: this computes the mean loss over a batch of examples
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            # None here means the first argument (the model) is not vectorized but instead broadcasted
-            compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
+                return loss.scalar()
 
         # get the gradient using a wrapper around jax.value_and_grad
-        compute_loss_and_grad = eqx.filter_value_and_grad(partial(compute_loss, inference=False))
+        batched_loss_function = hax.vmap(partial(compute_loss, inference=False), axis=Batch)
+        #batched_loss_function = partial(compute_loss, inference=True)
 
-        compute_loss_pjit = named_pjit(
-            partial(mean_loss, inference=True, key=None),
-            axis_resources=config.trainer.axis_resources,
+        compute_loss_and_grad = eqx.filter_value_and_grad(
+            lambda model, input_ids, key: hax.mean(batched_loss_function(model, input_ids, key))
         )
+ 
+        @named_pjit(axis_resources=compute_axis_mapping)
+        def eval_loss(model, input_ids):
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            result = compute_loss(model, input_ids, None, True)
+            return jnp.mean(result)
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
-            model_inf = prepare_model_for_compute(info.model)
+            with hax.axis_mapping(compute_axis_mapping):
+                # standard evaluation loop
+                loss = 0.0
+                n = 0
 
-            # standard evaluation loop
-            loss = jax.numpy.zeros(())  # keep it in jax space as long as possible
-            n = 0
+                for batch in eval_dataset:
+                    loss += eval_loss(model, batch).item()
+                    n += 1
 
-            for batch in eval_dataset:
-                loss += compute_loss_pjit(model_inf, batch)
-                n += 1
-
-            if n > 0:
-                loss /= n
-
-            loss = loss.item()
+                if n > 0:
+                    loss /= n
 
             logger.info(f"validation loss: {loss:.3f}")
             if wandb.run is not None:
@@ -192,7 +182,6 @@ def main(config: TrainGpt2Config):
         )
         engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
@@ -228,42 +217,39 @@ def main(config: TrainGpt2Config):
             resume_step = 0
 
         # training loop
+        # donate args to conserve memory
+        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
-            model_inf = mp.cast_to_compute(model)
-
             loss, grads = accumulate_gradients_sharded(
                 compute_loss_and_grad,
-                model_inf,
+                Batch,
+                model,
                 input_ids,
                 keys,
-                data_axis_size=config.trainer.data_axis_size,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 compute_axis_mapping=compute_axis_mapping,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
 
-            with jax.named_scope("optimizer"), axis_mapping(parameter_axis_mapping):
-                # distribute gradients across the mesh and apply them
-                updates, opt_state = optimizer.update(grads, opt_state, params=model)
-                model = eqx.apply_updates(model, updates)
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
-
-        # donate the model and the opt_state so they can used for outputs
-        train_step = named_pjit(train_step, parameter_axis_mapping, donate_args=(True, True, False, False))
 
         # finally, run the training loop
         for step in range(resume_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
+                    input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
 
                 step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
-                step_loss = jnp.mean(step_loss).item()
+                step_loss = step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
