@@ -11,7 +11,7 @@ from jaxtyping import PyTree
 
 from .core import NamedArray
 from .jax_utils import broadcast_prefix, combine, is_jax_array_like
-from .partitioning import auto_sharded, physical_axis_name
+from .partitioning import physical_axis_name
 from .types import Axis
 from .util import is_jax_or_hax_array_like, is_named_array
 
