@@ -149,15 +149,15 @@ def main(config: TrainGpt2Config):
 
                 return loss.scalar()
 
-        def train_batch_loss(model, input_ids, attn_mask, key):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
+        def train_batch_loss(model, input_ids, attn_mask):
+            return hax.mean(compute_loss(model, input_ids, attn_mask, key=None, inference=True))
 
         # training loop
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, input_ids, keys):
+        def train_step(model, opt_state, input_ids, key):
 
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
+            attn_mask = hax.vmap(attention_mask, Batch)(False, key)
             attn_mask = hax.auto_sharded(attn_mask)
 
             loss, grads = accumulate_gradients_sharded(
@@ -166,7 +166,7 @@ def main(config: TrainGpt2Config):
                 model,
                 input_ids,
                 attn_mask,
-                keys,
+                # key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
