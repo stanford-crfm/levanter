@@ -300,16 +300,15 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
             return block(hidden_states, attn_mask, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block, prevent_cse=False)
-            fold_fn = checkpointed_fold(do_block, self.Layers,
-                                        checkpoint_block_size=self.config.gradient_checkpointing_block_size)
+            # do_block = jax.checkpoint(do_block, prevent_cse=False)
+            fold_fn = checkpointed_fold(
+                do_block, self.Layers, checkpoint_block_size=self.config.gradient_checkpointing_block_size
+            )
         else:
             fold_fn = hax.fold(do_block, self.Layers)
 
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
-            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
-        )
+        hidden_states = fold_fn(hidden_states, self.blocks, hax.arange(self.Layers), key=keys)  # type: ignore
         hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.ln_f(hidden_states)
 
