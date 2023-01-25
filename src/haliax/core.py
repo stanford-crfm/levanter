@@ -474,13 +474,13 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
     axis_index = array._lookup_indices(axis)
     if axis_index is None:
         raise ValueError(f"axis {axis} not found in {array}")
-    if isinstance(index, int):
+    if isinstance(index, NamedArray):
+        new_array = jnp.take(array.array, index.array, axis=axis_index)
+        new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index + 1 :]
+    else:
         # just drop the axis
         new_array = jnp.take(array.array, index, axis=axis_index)
         new_axes = array.axes[:axis_index] + array.axes[axis_index + 1 :]
-    else:
-        new_array = jnp.take(array.array, index.array, axis=axis_index)
-        new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index + 1 :]
     # new axes come from splicing the old axis with
     return NamedArray(new_array, new_axes)
 
