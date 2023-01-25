@@ -46,6 +46,7 @@ def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
         activation_function=config.activation_function,
         scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
         upcast_attn=config.reorder_and_upcast_attn,
+        gradient_checkpointing=False,
     )
 
     return levanter_config

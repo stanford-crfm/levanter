@@ -45,11 +45,11 @@ def checkpointed_fold(
                 return leaf
 
         def do_one_index(carry_index, i):
-            carry, i = carry_index
+            carry, start = carry_index
             (my_args, my_kwargs) = jax.tree_util.tree_map(
-                partial(select_index_for_axis, index=i), (args, kwargs), is_leaf=is_scanned_with_axis
+                partial(select_index_for_axis, index=start+i), (args, kwargs), is_leaf=is_scanned_with_axis
             )
-            return (fn(carry, *my_args, **my_kwargs), i + 1), None
+            return (fn(carry, *my_args, **my_kwargs), start), None
 
         def do_one_block(carry, i):
             carry, _ = carry

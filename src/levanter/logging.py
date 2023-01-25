@@ -25,7 +25,6 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
 
     if hasattr(opt_state, "hyperparams"):
         params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
-        # print(params)
         wandb.log(params, step=step)
 
 
