@@ -458,7 +458,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
