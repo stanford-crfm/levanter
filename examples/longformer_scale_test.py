@@ -12,6 +12,12 @@ W = hax.Axis("W", 512)
 D = hax.Axis("D", 4096)
 B = hax.Axis("B", 256)
 
+# Len = hax.Axis("Len", 64)
+# W = hax.Axis("W", 4)
+# D = hax.Axis("D", 8)
+# B = hax.Axis("B", 4)
+
+
 devices = np.array(jax.devices())
 mesh = Mesh(devices, ("data",))
 
@@ -25,9 +31,12 @@ def do_attn(inputs):
     return result
 
 
-data = hax.random.uniform(jax.random.PRNGKey(0), (B, Len, D))
+@named_pjit(axis_resources=axis_resources)
+def init():
+    return hax.random.uniform(jax.random.PRNGKey(0), (B, Len, D))
 
 
 if __name__ == "__main__":
     with mesh:
+        data = init()
         result = do_attn(data)

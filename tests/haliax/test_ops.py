@@ -183,6 +183,8 @@ def test_tril_triu():
 
 
 def test_sliding_window():
+    from haliax.numpy_extensions import padded_moving_window
+
     Height = Axis("Height", 10)
     Width = Axis("Width", 3)
     Depth = Axis("Depth", 4)
@@ -193,15 +195,13 @@ def test_sliding_window():
 
     assert sliding.axes == (Height, Window, Width, Depth)
     assert sliding.array.shape == (Height.size, Window.size, Width.size, Depth.size)
-
-    from haliax.numpy_extensions import padded_moving_window
-
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0))
 
     sliding = hax.sliding_window(named1, Width, Window, -100.0)
-    assert sliding.axes == (Height, Width, Window, Depth)
+    assert sliding.axes == (Width, Height, Window, Depth)
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0, axis=1))
 
     sliding = hax.sliding_window(named1, Depth, Window, -100.0)
-    assert sliding.axes == (Height, Width, Depth, Window)
+    assert sliding.axes == (Depth, Height, Width, Window)
+    # assert sliding.axes == (Height, Width, Depth, Window)
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0, axis=2))

@@ -97,8 +97,9 @@ def sliding_window(a: NamedArray, axis: Axis, window_axis: Axis, padding) -> Nam
 
     windowed = padded_moving_window(a.array, window_axis.size, padding, axis=index_of_axis)
 
-    # currently our padded_moving_window inserts the window axis after the index of the original axis
-    new_axes = a.axes[: index_of_axis + 1] + (window_axis,) + a.axes[index_of_axis + 1 :]
+    # currently our padded_moving_window inserts the window axis at the index of the original axis
+    # and moves the original axis to the beginning.
+    new_axes = (axis,) + a.axes[:index_of_axis] + (window_axis,) + a.axes[index_of_axis + 1 :]
 
     return NamedArray(windowed, new_axes)
 

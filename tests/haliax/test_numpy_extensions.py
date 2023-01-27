@@ -23,16 +23,14 @@ def test_moving_window_jit():
 def test_moving_window_axis():
     a = jnp.arange(10).reshape((2, 5))
     moved = moving_window(a, 3, axis=1)
-    assert moved.shape == (2, 3, 3)
-    assert jnp.allclose(
-        moved,
-        jnp.array(
-            [
-                [[0, 1, 2], [1, 2, 3], [2, 3, 4]],
-                [[5, 6, 7], [6, 7, 8], [7, 8, 9]],
-            ]
-        ),
-    )
+    assert moved.shape == (3, 2, 3)
+
+    np_a = jnp.arange(10).reshape((2, 5))
+    np_sliding = np.lib.stride_tricks.sliding_window_view(np_a, 3, axis=1)
+    # np_sliding.shape == (2, 3, 3)
+    np_sliding = np_sliding.transpose((2, 0, 1))
+
+    assert jnp.allclose(moved, np_sliding)
 
     a = jnp.arange(24).reshape((2, 3, 4))
 
@@ -41,7 +39,7 @@ def test_moving_window_axis():
     moved = moving_window(a, 2, axis=1)
     np_sliding = np.lib.stride_tricks.sliding_window_view(np_a, 2, axis=1)
     # np_sliding.shape == (2, 2, 4, 2) because window dim comes last
-    np_sliding = np_sliding.transpose((0, 1, 3, 2))
+    np_sliding = np_sliding.transpose((3, 0, 1, 2))
     assert moved.shape == (2, 2, 2, 4)
     assert jnp.allclose(moved, np_sliding)
 
@@ -75,7 +73,9 @@ def test_padded_moving_window_axis():
         np.pad(np_a, ((0, 0), (5 - 3, 0)), "constant", constant_values=100), 3, axis=1
     )
 
-    assert moved.shape == (2, 5, 3)
+    np_moved = np_moved.transpose((1, 0, 2))
+
+    assert moved.shape == (5, 2, 3)
     assert jnp.allclose(
         moved,
         np_moved,
