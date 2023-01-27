@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Optional
 
 import jax
@@ -6,12 +7,14 @@ from jax import vmap
 
 
 # based on from https://github.com/google/jax/issues/3171#issuecomment-1140299630
+@partial(jax.jit, static_argnums=(1, 2))
 def moving_window(a, size: int, axis: Optional[int] = None) -> jnp.ndarray:
     if axis is None:
         axis = 0
     starts = jnp.arange(a.shape[axis] - size + 1)
 
-    # TODO: if we set out_axes=-1 we get something closer to numpy behavior. see if it matters for xla/jit
+    # TODO: np will move the window axis to the end, while this puts it next to the axis it was applied to
+    # We could move the axes around to match np, but I'm not sure if that's a good idea for perf???
     return vmap(lambda start: jax.lax.dynamic_slice_in_dim(a, start, size, axis=axis), out_axes=axis)(starts)
 
 
