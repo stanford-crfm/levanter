@@ -87,10 +87,26 @@ def isclose(a: NamedArray, b: NamedArray, rtol=1e-05, atol=1e-08, equal_nan=Fals
     return NamedArray(jnp.isclose(a.array, b.array, rtol=rtol, atol=atol, equal_nan=equal_nan), a.axes)
 
 
+def sliding_window(a: NamedArray, axis: Axis, window_axis: Axis, padding) -> NamedArray:
+    """Compute a sliding window over an array along a named axis."""
+    index_of_axis = a._lookup_indices(axis)
+    if index_of_axis is None:
+        raise ValueError(f"Axis {axis} not found in array. Available axes: {a.axes}")
+
+    from haliax.numpy_extensions import padded_moving_window
+
+    windowed = padded_moving_window(a.array, window_axis.size, padding, axis=index_of_axis)
+
+    # currently our padded_moving_window inserts the window axis after the index of the original axis
+    new_axes = a.axes[: index_of_axis + 1] + (window_axis,) + a.axes[index_of_axis + 1 :]
+
+    return NamedArray(windowed, new_axes)
+
+
 def raw_array_or_scalar(x: NamedOrNumeric):
     if isinstance(x, NamedArray):
         return x.array
     return x
 
 
-__all__ = ["trace", "where", "tril", "triu", "isclose"]
+__all__ = ["trace", "where", "tril", "triu", "isclose", "sliding_window"]

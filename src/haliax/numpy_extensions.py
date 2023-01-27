@@ -13,6 +13,8 @@ def moving_window(a, size: int, axis: Optional[int] = None) -> jnp.ndarray:
         axis = 0
     starts = jnp.arange(a.shape[axis] - size + 1)
 
+    # TODO: maybe better to just leave out_axes = 0
+
     # TODO: np will move the window axis to the end, while this puts it next to the axis it was applied to
     # We could move the axes around to match np, but I'm not sure if that's a good idea for perf???
     return vmap(lambda start: jax.lax.dynamic_slice_in_dim(a, start, size, axis=axis), out_axes=axis)(starts)
