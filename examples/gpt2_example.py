@@ -156,7 +156,10 @@ def main(config: TrainGpt2Config):
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
+
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
+            attn_mask = hax.auto_sharded(attn_mask)
+
             loss, grads = accumulate_gradients_sharded(
                 eqx.filter_value_and_grad(train_batch_loss),
                 Batch,
@@ -210,7 +213,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(
             callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
         )
-        engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        # engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency

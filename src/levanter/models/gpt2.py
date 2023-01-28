@@ -43,6 +43,8 @@ class Gpt2Config:
     gradient_checkpointing: bool = False
     gradient_checkpointing_block_size: int = 5
 
+    use_bias: bool = True
+
     # Axes
     @property
     def SeqLen(self) -> Axis:
@@ -78,16 +80,19 @@ class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key):
+    def __init__(
+        self, Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True
+    ):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc)
-        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj)
+        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
+        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         self.act = activation_fn  # type: ignore
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
@@ -121,6 +126,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         upcast: bool,
         *,
         key,
+        use_bias: bool = True,
     ):
         self.Heads = Heads
         self.HeadDim = HeadDim
@@ -129,8 +135,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.KeySeqLen = KeySeqLen
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj)
+        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj, use_bias=use_bias)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -241,6 +247,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             key=k_attn,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
             upcast=config.upcast_attn,
+            use_bias=config.use_bias,
         )
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
@@ -250,6 +257,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             Intermediate=config.Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
+            use_bias=config.use_bias,
         )
 
     @named_call
@@ -450,7 +458,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
