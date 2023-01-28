@@ -26,9 +26,7 @@ axis_resources = {"B": "data"}
 
 @named_pjit(axis_resources=axis_resources)
 def do_attn(inputs):
-    result = causal_sliding_window_attention(Len, W, D, inputs, inputs, inputs)
-
-    return result
+    return causal_sliding_window_attention(Len, W, D, inputs, inputs, inputs)
 
 
 @named_pjit(axis_resources=axis_resources)

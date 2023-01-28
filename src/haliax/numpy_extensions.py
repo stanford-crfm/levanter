@@ -16,39 +16,20 @@ def moving_window(a: jnp.ndarray, size: int, axis: Optional[int] = None) -> jnp.
     that is, the number of windows is the first axis, then the axes before the window axis, then the window axis, then
     the axes after the window axis.
     """
-    if axis is None:
-        axis = 0
-    starts = jnp.arange(a.shape[axis] - size + 1)
+    axis = axis or 0
+    axis_size = a.shape[axis]
+    num_windows = axis_size - size + 1
+    tiles = [1] * a.ndim
+    tiles[axis] = num_windows + 1
+    tiled = jnp.tile(a, tiles)
 
-    def roll(x, i):
-        return jnp.roll(x, -i, axis=axis)
+    # slide one element along the axis
+    sliced = jax.lax.dynamic_slice_in_dim(tiled, 0, num_windows * (axis_size + 1), axis=axis)
+    new_shape = a.shape[:axis] + (num_windows, axis_size + 1) + a.shape[axis + 1 :]
+    reshaped = jnp.reshape(sliced, new_shape)
 
-    rolled = jax.vmap(roll, in_axes=(None, 0), out_axes=0)(a, starts)
-    # rolled has shape ( a.shape[axis] - size + 1, *a.shape
-    # but we want (a.shape[axis] - size + 1, a.shape[:axis], size, a.shape[axis+1:])
-    # so we need to slice out the axis we want
-    desired_shape = (a.shape[axis] - size + 1, *a.shape[:axis], size, *a.shape[axis + 1 :])
-    return jax.lax.slice(rolled, (0,) * rolled.ndim, desired_shape)
-
-    # TODO: maybe better to just leave out_axes = 0
-
-    # TODO: np will move the window axis to the end, while this puts it next to the axis it was applied to
-    # We could move the axes around to match np, but I'm not sure if that's a good idea for perf???
-    # return vmap(lambda start: jax.lax.dynamic_slice_in_dim(a, start, size, axis=axis), out_axes=axis)(starts)
-    # num_windows = a.shape[axis] - size + 1
-
-    # # the way we're going to do this is by broadcasting the array num_windows times, then ravel, then reshape
-    # # [a b c d e] W=3
-    # broadcasted = jax.lax.broadcast_in_dim(a, (num_windows, *a.shape), tuple(range(1, a.ndim)))
-    # # [[a b c d e] [a b c d e] [a b c d e] ...]
-    # raveled = broadcasted.ravel()
-    # # [a b c d e a b c d e a b c d e ...]
-    # # now we want
-    # # [[a b c] [b c d] [c d e] ...]
-    # # to do that we first reshape to
-    # # [[a b c d e a] [b c d e a b] [c d e a b c] ...]
-    # # then we can slice out the first 3 elements of each row
-    # reshaped = raveled.reshape((num_windows, ))
+    # now slice out the windows
+    return jax.lax.dynamic_slice_in_dim(reshaped, 0, size, axis=axis + 1)
 
 
 def padded_moving_window(
