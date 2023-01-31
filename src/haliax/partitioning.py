@@ -181,7 +181,7 @@ def named_pjit(
             **pjit_args,
         )
 
-    axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
+    axis_resources = axis_resources is not None and axis_resources or _mapping_holder.thread_data.resource_mapping
     in_axis_resources = in_axis_resources or axis_resources
     out_axis_resources = out_axis_resources or axis_resources
 

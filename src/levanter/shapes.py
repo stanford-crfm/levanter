@@ -21,7 +21,7 @@ class NamedShapeSpec:
     """A shape specification with named axes."""
 
     shape: Optional[Tuple[Axis, ...]]
-    dtype: Optional[DType]
+    dtype: Optional[DType] = None
 
     size = property(lambda self: prod(ax.size for ax in self.shape))
     ndim = property(lambda self: len(self.shape))

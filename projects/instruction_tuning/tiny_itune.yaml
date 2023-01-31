@@ -1,0 +1,28 @@
+hf_model: distilgpt2
+
+trainer:
+  num_train_steps: 100
+
+  weight_decay: 0.0
+  learning_rate: 1E-4
+  warmup_ratio: 0.05
+
+  per_device_eval_parallelism: 1
+  per_device_parallelism: 1
+  train_batch_size: 32
+
+  axis_resources:
+    batch: "data"
+  parameter_axis_resources:
+    embed: "data"
+
+data:
+  id: dlwh/wikitext_103_detokenized
+
+ul2r_phase_fraction: 0.02
+
+instruction_weight: 0.4
+instruction_datasets:
+#  - id: 'Muennighoff/P3'
+  - id: 'Muennighoff/natural-instructions'
+    input_fields: ["definition", "inputs"]

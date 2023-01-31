@@ -1,6 +1,6 @@
 import itertools
-from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from functools import cached_property, partial
+from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
@@ -49,7 +49,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def __init__(
         self,
-        local_dataset: ShardableDataset[Sequence[int]],
+        local_dataset: ShardableDataset[PyTree],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
@@ -95,7 +95,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
                 num_examples_for_this_device = end - begin
                 individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
 
-                local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+                local_batch = build_batch(self.Batch, individual_datums, unchecked=True)
                 batch_leaves, _batch_structure = jax.tree_util.tree_flatten(local_batch)
 
                 if batch_tree_structure is None:
@@ -160,7 +160,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
             else:
                 return ShapeSpec((self.Batch.size,) + shape, shape_spec.dtype)
 
-        return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape)
+        return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape, is_leaf=is_named_array)
 
     def __len__(self):
         return self._global_min_length
@@ -177,12 +177,25 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
-    def _stack_leaves_unchecked(self, *leaves):
-        assert len(leaves) <= self.Batch.size
-        assert self.Batch.size % len(leaves) == 0
 
-        if is_named_array(leaves[0]):
+def _stack_leaves_unchecked(Batch, unchecked, *leaves):
+    if unchecked:
+        assert len(leaves) <= Batch.size
+        assert Batch.size % len(leaves) == 0
+    else:
+        assert len(leaves) == Batch.size
+
+    if is_named_array(leaves[0]):
+        if unchecked:
             with hax.enable_shape_checks(False):  # because we're building parts of the array on each device
-                return hax.stack(self.Batch, leaves)
+                return hax.stack(Batch, leaves)
         else:
-            return np.stack(leaves)
+            return hax.stack(Batch, leaves)
+    else:
+        return np.stack(leaves)
+
+
+def build_batch(Batch: hax.Axis, individual_datums, *, unchecked: bool = False):
+    """Build a batch from a list of individual datums. If unchecked is True, then we don't check
+    that the length of the datums is the batch size, which is useful when building parts of the batch distributed"""
+    return jax.tree_map(partial(_stack_leaves_unchecked, Batch, unchecked), *individual_datums, is_leaf=is_named_array)

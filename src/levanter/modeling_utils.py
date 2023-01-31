@@ -1,8 +1,10 @@
 import functools
+import logging
 from functools import partial
 from typing import Callable, Dict, Tuple
 
 import jax
+import jax.numpy as jnp
 
 import haliax as hax
 import haliax.nn as hnn
@@ -54,6 +56,9 @@ def cross_entropy_loss_and_log_normalizers(
     """
     log_normalizers = hax.nn.logsumexp(pred_y, Label)
     neg_log_normalized = log_normalizers - pred_y
+
+    if jnp.issubdtype(target_y.dtype, jnp.integer):
+        logging.warning("Target is integer, you probably meant to use one_hot")
 
     loss = hax.dot(Label, target_y, neg_log_normalized)
 
