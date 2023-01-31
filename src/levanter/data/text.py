@@ -28,7 +28,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import AutoTokenizer, BatchEncoding
+from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
@@ -423,7 +423,7 @@ class LMDatasetConfig:
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     @cached_property
-    def the_tokenizer(self):
+    def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return AutoTokenizer.from_pretrained(self.tokenizer)
 
     def doc_iterator(self, split: str):
