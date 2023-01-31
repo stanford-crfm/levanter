@@ -384,27 +384,34 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         Embed: Axis,
         Vocab: Axis,
         SeqLen: Axis,
-        initializer_range: float,
-        tie_word_embeddings: bool,
+        token_embeddings: NamedArray,
+        position_embeddings: NamedArray,
+        token_out_embeddings: Optional[NamedArray],
         dropout_prob: float,
-        *,
-        key,
     ):
         super().__init__()
-        k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
         self.Vocab = Vocab
         self.SeqLen = SeqLen
         self.Embed = Embed
 
-        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
+        self.token_embeddings = token_embeddings
+        self.position_embeddings = position_embeddings
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
+        self.token_out_embeddings = token_out_embeddings
 
+    @staticmethod
+    def init(Embed, Vocab, SeqLen, initializer_range, tie_word_embeddings, dropout_prob, *, key):
+        k_wte, k_wpe, k_out = jrandom.split(key, 3)
+        token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
+        position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
         if tie_word_embeddings:
-            self.token_out_embeddings = None
+            token_out_embeddings = None
         else:
-            self.token_out_embeddings = sharded_normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
+            token_out_embeddings = sharded_normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
+        return Gpt2Embeddings(
+            Embed, Vocab, SeqLen, token_embeddings, position_embeddings, token_out_embeddings, dropout_prob
+        )
 
     @named_call
     def embed(self, input_ids, inference, *, key):
@@ -423,6 +430,58 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         assert self.token_out_embeddings is None
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+
+    def resize_vocab(self, NewVocab: Axis):
+        if NewVocab.size < self.Vocab.size:
+            token_embeddings = self.token_embeddings.rearrange((self.Vocab, self.Embed)).array
+            token_embeddings = token_embeddings[: NewVocab.size]
+            new_token_embeddings = NamedArray(token_embeddings, (NewVocab, self.Embed))
+
+            if self.token_out_embeddings is not None:
+                token_out_embeddings = self.token_out_embeddings.rearrange((self.Vocab, self.Embed)).array
+                token_out_embeddings = token_out_embeddings[: NewVocab.size]
+                new_token_out_embeddings = NamedArray(token_out_embeddings, (NewVocab, self.Embed))
+            else:
+                new_token_out_embeddings = None
+
+        elif NewVocab.size > self.Vocab.size:
+            token_embeddings = self.token_embeddings.rearrange((self.Vocab, self.Embed)).array
+            extra_items = NewVocab.size - self.Vocab.size
+
+            # tip I saw somewhere: better to initialize with the mean of existing embeddings
+            # than to initialize with zeros or random
+            mean = jnp.mean(token_embeddings, axis=0)
+            mean = jnp.broadcast_to(mean, (extra_items, self.Embed.size))
+            new_token_embeddings = NamedArray(
+                jnp.concatenate([token_embeddings, mean], axis=0), (NewVocab, self.Embed)
+            )
+
+            if self.token_out_embeddings is not None:
+                token_out_embeddings = self.token_out_embeddings.rearrange((self.Vocab, self.Embed)).array
+                mean = jnp.mean(token_out_embeddings, axis=0)
+                new_token_out_embeddings = NamedArray(
+                    jnp.concatenate([token_out_embeddings, mean], axis=0), (NewVocab, self.Embed)
+                )
+            else:
+                new_token_out_embeddings = None
+
+        else:
+            # just have to handle any renaming
+            new_token_embeddings = self.token_embeddings.rename({self.Vocab: NewVocab})
+            if self.token_out_embeddings is not None:
+                new_token_out_embeddings = self.token_out_embeddings.rename({self.Vocab: NewVocab})
+            else:
+                new_token_out_embeddings = None
+
+        return Gpt2Embeddings(
+            self.Embed,
+            NewVocab,
+            self.SeqLen,
+            new_token_embeddings,
+            self.position_embeddings,
+            new_token_out_embeddings,
+            self.dropout.pdrop,
+        )
 
 
 class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
@@ -445,10 +504,20 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
     def SeqLen(self) -> Axis:
         return self.embeddings.SeqLen
 
-    def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
+    def resize_vocab(self, NewVocab: Axis) -> "Gpt2LMHeadModel":
+        return Gpt2LMHeadModel(
+            self.transformer,
+            self.embeddings.resize_vocab(NewVocab),
+        )
+
+    def __init__(self, transformer: Gpt2Transformer, embeddings: Gpt2Embeddings):
+        self.transformer = transformer
+        self.embeddings = embeddings
+
+    def init(self, Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings(
+        self.embeddings = Gpt2Embeddings.init(
             Vocab=Vocab,
             Embed=config.Embed,
             SeqLen=config.SeqLen,

@@ -117,7 +117,7 @@ def main(config: EvalGpt2Config):
 
             @named_pjit(axis_resources=parameter_axis_mapping)
             def init_model():
-                model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+                model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)
                 return model
 

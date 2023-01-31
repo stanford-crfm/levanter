@@ -24,8 +24,8 @@ def test_gradient_checkpointing():
 
         Vocab = Axis("vocab", 128)
 
-        model = Gpt2LMHeadModel(Vocab, config, key=key)
-        model_checkpoint = Gpt2LMHeadModel(Vocab, config_checkpoint, key=key)
+        model = Gpt2LMHeadModel.init(Vocab, config, key=key)
+        model_checkpoint = Gpt2LMHeadModel.init(Vocab, config_checkpoint, key=key)
 
         input_ids = hax.arange(config.SeqLen, dtype=jnp.int32)
 

@@ -57,7 +57,7 @@ def main(config: ConvertGpt2Config):
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+        model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
 
         if config.old_style_model:
             model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)

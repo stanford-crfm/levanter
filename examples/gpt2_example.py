@@ -103,7 +103,7 @@ def main(config: TrainGpt2Config):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_pjit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+            model = Gpt2LMHeadModel.init(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
