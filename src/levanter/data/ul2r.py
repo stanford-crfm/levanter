@@ -25,7 +25,7 @@ class Ul2Example(eqx.Module):
 
     inputs: np.ndarray
     outputs: np.ndarray
-    task_token: Optional[int] = eqx.static_field()
+    task_token: Optional[int]
 
     def render(self, tokenizer: PreTrainedTokenizerBase):
         """renders a pretty version of the example as a string"""
@@ -53,16 +53,21 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
     if example.task_token is not None:
         all_tokens.append(example.task_token)
     all_tokens.extend(example.inputs)
+    input_length = len(all_tokens)
+
     all_tokens.extend(example.outputs)
     all_tokens = np.asarray(all_tokens, dtype=np.int32)
 
-    initial_length = len(all_tokens)
+    unpadded_length = len(all_tokens)
 
     max_seq_len = QLen.size
 
     # pad or truncate
     if len(all_tokens) > max_seq_len:
-        all_tokens = all_tokens[:max_seq_len]
+        # take from the end of the sequence
+        all_tokens = all_tokens[-max_seq_len:]
+        input_length = input_length - (unpadded_length - max_seq_len)
+        unpadded_length = max_seq_len
     elif len(all_tokens) < max_seq_len:
         num_padding = max_seq_len - len(all_tokens)
         all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
@@ -73,19 +78,19 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
     targets = hax.roll(all_tokens_named, -1, QLen)
 
     # Create attention masks
-    attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, len(example.inputs) + 1)
+    attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, input_length)
 
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QLen) >= len(example.inputs)
-    # 3) last token of targets and padding
-    loss_mask = loss_mask & (hax.arange(QLen) < initial_length - 1)
+    loss_mask = hax.arange(QLen) >= input_length
+    # 3) last token of targets
+    loss_mask = loss_mask & (hax.arange(QLen) < unpadded_length)
     # 4) padding
     if pad_token_id is not None:
         loss_mask = loss_mask & (all_tokens_named != pad_token_id)
 
-    assert jnp.any(loss_mask.array)
+    assert hax.sum(loss_mask) == unpadded_length - input_length
 
     return DecoderOnlyExample(all_tokens_named, targets, attention_mask, loss_mask)
 

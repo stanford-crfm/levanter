@@ -1,9 +1,11 @@
+import json
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 import datasets
 import equinox as eqx
+import fsspec
 import jax
 import jax.random as jrandom
 import numpy.random
@@ -38,7 +40,7 @@ class InstructionTuneConfig:
     trainer: TrainerConfig
     data: CachedLMDatasetConfig
 
-    instruction_datasets: List[dict]  # should be InstructionDatasetConfig but pyrallis doesn't like it
+    instruction_dataset_path: str
     instruction_weight: float = 0.5
 
     ul2r_phase_fraction: float = 0.5  # fraction of training steps to spend in UL2R phase
@@ -46,12 +48,12 @@ class InstructionTuneConfig:
     hf_revision: Optional[str] = None
 
     def build_instruction_dataset(self):
-        instruction_configs = [InstructionDatasetConfig(**d) for d in self.instruction_datasets]
-        instruction_hf_dsets = [c.canonicalize_hf() for c in instruction_configs]
-        interleaved = datasets.interleave_datasets(instruction_hf_dsets, stopping_strategy="all_exhausted")
-        # interleaved = interleaved.shuffle(self.trainer.seed + 43, buffer_size=10000)
+        def iter_dataset():
+            with fsspec.open(self.instruction_dataset_path, compression="infer") as f:
+                for line in f:
+                    yield json.loads(line)
 
-        return InstructionTuningDataset(interleaved, self.data.the_tokenizer)
+        return InstructionTuningDataset(iter_dataset(), self.data.the_tokenizer)
 
 
 @pyrallis.wrap()
@@ -60,8 +62,8 @@ def main(config: InstructionTuneConfig):
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
     if tokenizer.pad_token_id is None:
-        logging.warning(f"Adding pad token to tokenizer: {tokenizer.eos_token_id}")
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        logging.warning(f"Adding pad token to tokenizer: <|pad|>")
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
     # We follow two steps, more or less following the recipe from together's gpt-jt https://huggingface.co/togethercomputer/GPT-JT-6B-v1
     # 1. do continued pretraining on the model following ul2r for ul2r_phase_fraction of the training steps
@@ -216,12 +218,6 @@ def main(config: InstructionTuneConfig):
                 yield batch
 
         iter_data_2 = batch_sampler()
-
-        for x in range(10):
-            batch = next(iter_data_2)
-            print(batch)
-
-        return
 
         for step in range(ul2r_steps, config.trainer.num_train_steps):
             with capture_time() as step_time:

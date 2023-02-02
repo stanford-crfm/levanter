@@ -514,10 +514,11 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
         self.transformer = transformer
         self.embeddings = embeddings
 
-    def init(self, Vocab: Axis, config: Gpt2Config, *, key):
+    @staticmethod
+    def init(Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
-        self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings.init(
+        transformer = Gpt2Transformer(config, key=k_t)
+        embeddings = Gpt2Embeddings.init(
             Vocab=Vocab,
             Embed=config.Embed,
             SeqLen=config.SeqLen,
@@ -526,6 +527,8 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             dropout_prob=config.embed_pdrop,
             key=k_embeddings,
         )
+
+        return Gpt2LMHeadModel(transformer, embeddings)
 
     def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
         if not inference and key is None:

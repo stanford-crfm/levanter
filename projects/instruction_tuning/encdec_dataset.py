@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Union
 
 import jax.numpy as jnp
 import pyrallis.utils
@@ -42,13 +42,13 @@ class InstructionDatasetConfig:
 class InstructionTuningDataset(Dataset[Ul2Example]):
     def __init__(
         self,
-        hf_dataset,
+        base_dataset: Iterable[Dict[str, str]],
         tokenizer,
         task_token: Optional[str] = None,
         input_fields: Union[str, List[str]] = "inputs",
         output_field: str = "targets",
     ):
-        self.hf_dataset = hf_dataset
+        self.base_dataset = base_dataset
         self.tokenizer = tokenizer
 
         if task_token is not None:
@@ -61,18 +61,16 @@ class InstructionTuningDataset(Dataset[Ul2Example]):
         self.output_field = output_field
 
     def __iter__(self) -> Iterator[DecoderOnlyExample]:
-        for example in self.hf_dataset:
+        for example in self.base_dataset:
             yield self._process_example(example)
 
-    def _process_example(self, example) -> DecoderOnlyExample:
+    def _process_example(self, example) -> Ul2Example:
         input_text = "\n".join([example[field] for field in self.input_fields])
         input_ids = self.tokenizer.encode(input_text)
         output_text = example[self.output_field]
         output_ids = self.tokenizer.encode(output_text)
 
-        ex = Ul2Example(inputs=input_ids, outputs=output_ids, task_token=self.task_token_id)
-
-        return ex
+        return Ul2Example(inputs=input_ids, outputs=output_ids, task_token=self.task_token_id)
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
@@ -83,7 +81,7 @@ class InstructionTuningDataset(Dataset[Ul2Example]):
         )  # type: ignore
 
     def __len__(self) -> int:
-        return len(self.hf_dataset)
+        return len(self.base_dataset)
 
 
 if __name__ == "__main__":
