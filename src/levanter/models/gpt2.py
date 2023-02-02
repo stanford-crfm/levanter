@@ -432,46 +432,12 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
     def resize_vocab(self, NewVocab: Axis):
-        if NewVocab.size < self.Vocab.size:
-            token_embeddings = self.token_embeddings.rearrange((self.Vocab, self.Embed)).array
-            token_embeddings = token_embeddings[: NewVocab.size]
-            new_token_embeddings = NamedArray(token_embeddings, (NewVocab, self.Embed))
+        new_token_embeddings = self._resize_vocab_array(NewVocab, self.token_embeddings)
 
-            if self.token_out_embeddings is not None:
-                token_out_embeddings = self.token_out_embeddings.rearrange((self.Vocab, self.Embed)).array
-                token_out_embeddings = token_out_embeddings[: NewVocab.size]
-                new_token_out_embeddings = NamedArray(token_out_embeddings, (NewVocab, self.Embed))
-            else:
-                new_token_out_embeddings = None
-
-        elif NewVocab.size > self.Vocab.size:
-            token_embeddings = self.token_embeddings.rearrange((self.Vocab, self.Embed)).array
-            extra_items = NewVocab.size - self.Vocab.size
-
-            # tip I saw somewhere: better to initialize with the mean of existing embeddings
-            # than to initialize with zeros or random
-            mean = jnp.mean(token_embeddings, axis=0)
-            mean = jnp.broadcast_to(mean, (extra_items, self.Embed.size))
-            new_token_embeddings = NamedArray(
-                jnp.concatenate([token_embeddings, mean], axis=0), (NewVocab, self.Embed)
-            )
-
-            if self.token_out_embeddings is not None:
-                token_out_embeddings = self.token_out_embeddings.rearrange((self.Vocab, self.Embed)).array
-                mean = jnp.mean(token_out_embeddings, axis=0)
-                new_token_out_embeddings = NamedArray(
-                    jnp.concatenate([token_out_embeddings, mean], axis=0), (NewVocab, self.Embed)
-                )
-            else:
-                new_token_out_embeddings = None
-
+        if self.token_out_embeddings is not None:
+            new_token_out_embeddings = self._resize_vocab_array(NewVocab, self.token_out_embeddings)
         else:
-            # just have to handle any renaming
-            new_token_embeddings = self.token_embeddings.rename({self.Vocab: NewVocab})
-            if self.token_out_embeddings is not None:
-                new_token_out_embeddings = self.token_out_embeddings.rename({self.Vocab: NewVocab})
-            else:
-                new_token_out_embeddings = None
+            new_token_out_embeddings = None
 
         return Gpt2Embeddings(
             self.Embed,
@@ -482,6 +448,27 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
             new_token_out_embeddings,
             self.dropout.pdrop,
         )
+
+    def _resize_vocab_array(self, NewVocab, array):
+        if NewVocab.size < self.Vocab.size:
+            token_embeddings = array.rearrange((self.Vocab, self.Embed)).array
+            token_embeddings = token_embeddings[: NewVocab.size]
+            new_token_embeddings = NamedArray(token_embeddings, (NewVocab, self.Embed))
+        elif NewVocab.size > self.Vocab.size:
+            token_embeddings = array.rearrange((self.Vocab, self.Embed)).array
+            extra_items = NewVocab.size - self.Vocab.size
+
+            # tip I saw somewhere: better to initialize with the mean of existing embeddings
+            # than to initialize with zeros or random
+            mean = jnp.mean(token_embeddings, axis=0)
+            mean = jnp.broadcast_to(mean, (extra_items, self.Embed.size))
+            new_token_embeddings = NamedArray(
+                jnp.concatenate([token_embeddings, mean], axis=0), (NewVocab, self.Embed)
+            )
+        else:
+            # just have to handle any renaming
+            new_token_embeddings = array.rename({self.Vocab: NewVocab})
+        return new_token_embeddings
 
 
 class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
@@ -503,6 +490,10 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
     @property
     def SeqLen(self) -> Axis:
         return self.embeddings.SeqLen
+
+    @property
+    def KeySeqLen(self) -> Axis:
+        return self.transformer.config.KeySeqLen
 
     def resize_vocab(self, NewVocab: Axis) -> "Gpt2LMHeadModel":
         return Gpt2LMHeadModel(

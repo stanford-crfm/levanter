@@ -1,16 +1,16 @@
 import json
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional
 
-import datasets
 import equinox as eqx
 import fsspec
 import jax
 import jax.random as jrandom
 import numpy.random
 import pyrallis
-from instruction_tuning.encdec_dataset import InstructionDatasetConfig, InstructionTuningDataset
+from instruction_tuning.encdec_dataset import InstructionTuningDataset
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
@@ -20,6 +20,7 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_pjit
 from levanter import callbacks
+from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, build_batch
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
@@ -28,7 +29,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.jax_utils import global_key_array
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
 
@@ -62,7 +63,7 @@ def main(config: InstructionTuneConfig):
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
     if tokenizer.pad_token_id is None:
-        logging.warning(f"Adding pad token to tokenizer: <|pad|>")
+        logging.warning("Adding pad token to tokenizer: <|pad|>")
         tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
     # We follow two steps, more or less following the recipe from together's gpt-jt https://huggingface.co/togethercomputer/GPT-JT-6B-v1
@@ -76,30 +77,21 @@ def main(config: InstructionTuneConfig):
     ul2r_key, itune_key, training_key = jax.random.split(jax.random.PRNGKey(config.trainer.seed), 3)
 
     # load a model
-    # with jax.default_device(jax.devices("cpu")[0]):
-    #     model = load_hf_gpt2_checkpoint(config.hf_model, revision=config.hf_revision)
-
-    tiny_model_config = Gpt2Config(num_layers=4, num_heads=4, hidden_dim=32)
+    with jax.default_device(jax.devices("cpu")[0]):
+        model: Gpt2LMHeadModel = load_hf_gpt2_checkpoint(config.hf_model, revision=config.hf_revision)
 
     # 1. ul2r phase
-    base_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), tiny_model_config.SeqLen.size)
+    base_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), model.SeqLen.size)
     task_configs = DenoisingTaskConfig.ul2r_configs()
     base_dataset = Ul2rDataset(  # type: ignore
-        base_dataset, tiny_model_config.SeqLen, tiny_model_config.KeySeqLen, ul2r_key, tokenizer, task_configs
+        base_dataset, model.SeqLen, model.KeySeqLen, ul2r_key, tokenizer, task_configs
     )
 
-    # NB we can't make this until we have added all our tokens to the tokenizer
+    # NB we can't make this until we have added all our tokens to the tokenizer (which is a side effect of building the dataset)
     Vocab = Axis("vocab", len(tokenizer))
+    model = model.resize_vocab(Vocab)
 
     with config.trainer.device_mesh as mesh:
-        # model = named_pjit(lambda m: m, axis_resources=parameter_axis_mapping)(model)
-        @named_pjit(axis_resources=parameter_axis_mapping)
-        def init_model():
-            model = Gpt2LMHeadModel.init(Vocab, tiny_model_config, key=ul2r_key)
-            return mp.cast_to_param(model)
-
-        model = init_model()
-
         Batch = Axis("batch", config.trainer.train_batch_size)
         # TODO: evaluation
         SeqLen = model.SeqLen
@@ -187,35 +179,29 @@ def main(config: InstructionTuneConfig):
         # 2. fine-tuning phase
         logging.info("Starting instruction-tuning phase")
 
-        # build our sampling scheme
-        def sampling_iterator():
-            prng = numpy.random.default_rng(numpy.array(itune_key))
-
-            iter_core = iter_data
-            iter_itune = iter(itune_dataset)
-
-            while True:
-                if prng.uniform() < config.instruction_weight:
-                    example = next(iter_itune)
-                    yield convert_to_decoder_only(example, tokenizer.pad_token_id, SeqLen, KeySeqLen)
-                else:
-                    yield next(iter_core)
-
         def batch_sampler():
             # Todo this is not ideal
             shard_batch = pjit(
-                lambda x: x,
+                partial(build_batch, unchecked=False),
                 in_axis_resources=None,
                 out_axis_resources=PartitionSpec(ResourceAxis.DATA),
-                donate_argnums=0,
+                static_argnums=(0, 2),
             )
+            prng = numpy.random.default_rng(numpy.array(itune_key))
+            iter_itune = iter(itune_dataset)
 
             while True:
-                batch = []
-                for i in range(config.trainer.train_batch_size):
-                    batch.append(next(sampling_iterator()))
-                batch = shard_batch(build_batch(Batch, batch, unchecked=False))
-                yield batch
+                # TODO: probably better if we make mixed batches
+                if prng.uniform() < config.instruction_weight:
+                    batch = []
+                    for i in range(config.trainer.train_batch_size):
+                        example = next(iter_itune)
+                        example = convert_to_decoder_only(example, tokenizer.pad_token_id, SeqLen, KeySeqLen)
+                        batch.append(example)
+                    batch = shard_batch(Batch, batch)
+                    yield batch
+                else:
+                    yield next(iter_data)
 
         iter_data_2 = batch_sampler()
 
@@ -230,7 +216,7 @@ def main(config: InstructionTuneConfig):
 
                 step_loss, model, opt_state = train_step(model, opt_state, batch, example_keys)
                 step_loss = step_loss.item()
-                wandb.log({"phase": 1}, step=step)
+                wandb.log({"phase": 2}, step=step)
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
