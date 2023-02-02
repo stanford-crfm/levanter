@@ -97,8 +97,14 @@ def main(config: InstructionTuneConfig):
         SeqLen = model.SeqLen
         KeySeqLen = model.config.KeySeqLen
 
+        # shard the model and make an optimizer
         optimizer = config.trainer.optimizer()
-        opt_state = optimizer.init(model)
+
+        def init(model):
+            opt_state = optimizer.init(model)
+            return model, opt_state
+
+        model, opt_state = hax.partitioning.named_pjit(init, parameter_axis_mapping, donate_args=True)(model)
 
         def compute_loss(model: Gpt2LMHeadModel, ex: DecoderOnlyExample, inference, key):
             with hax.axis_mapping(compute_axis_mapping):
