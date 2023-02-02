@@ -46,7 +46,7 @@ _mapping_holder = _ResourceMappingHolder()
 
 
 @contextlib.contextmanager
-def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
+def axis_mapping(mapping: ResourceMapping, *, merge: bool = False, **kwargs):
     """Context manager for setting the global resource mapping"""
     mapping = dict(mapping)
 
@@ -58,8 +58,10 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = True, **kwargs):
         mapping.update(kwargs)
 
     _mapping_holder.thread_data.resource_mapping = mapping
-    yield
-    _mapping_holder.thread_data.resource_mapping = old_mapping
+    try:
+        yield
+    finally:
+        _mapping_holder.thread_data.resource_mapping = old_mapping
 
 
 T = TypeVar("T", bound=PyTree)
@@ -125,17 +127,14 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            # if isinstance(node.array, GlobalDeviceArray):
-            # TODO: should probably check for compatibility
-            #    return FROM_GDA
-            # else:
             return NamedArray(
                 PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
                 node.axes,
             )
         elif isinstance(node, GlobalDeviceArray):
             return FROM_GDA
-        # TODO: jax.Array
+        elif hasattr(node, "sharding"):
+            return node.sharding
         else:
             return None
 
@@ -153,7 +152,7 @@ def named_pjit(
     **pjit_args,
 ):
     """
-    A version of pjit that uses NamedArrays, GlobalDeviceArrays, and the provided resource mapping to infer the
+    A version of pjit that uses NamedArrays and the provided resource mapping to infer the
     resource partitions.
 
     If no resource mapping is provided, this function attempts to use the global resource mapping.
@@ -162,15 +161,14 @@ def named_pjit(
 
     :param fn: The function to be pjit'd
     :param axis_resources: A mapping from logical axis names to physical axis names
-    :param in_axis_resources: A mapping from logical axis names to physical axis names for the input
-    :param out_axis_resources: A mapping from logical axis names to physical axis names for the output
+    :param in_axis_resources: A mapping from logical axis names to physical axis names for arguments, defaults to axis_resources
+    :param out_axis_resources: A mapping from logical axis names to physical axis names for the result, defaults to axis_resources
     :param donate_args: A PyTree of booleans or function leaf->bool, indicating whether to donate arguments to the
      computation
     :param donate_kwargs: A PyTree of booleans or function leaf->bool, indicating whether to donate keyword arguments to
         the computation
     """
     # TODO: support jax.Array
-
 
     if fn is None:
         return functools.partial(
@@ -186,7 +184,6 @@ def named_pjit(
     axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
     in_axis_resources = in_axis_resources or axis_resources
     out_axis_resources = out_axis_resources or axis_resources
-
 
     if axis_resources is None and (in_axis_resources is None or out_axis_resources is None):
         raise ValueError(
@@ -212,6 +209,7 @@ def named_pjit(
         static = (static_fun, static_argspec)
 
         output_shape = _cached_filter_eval_shape(fn, *args, **kwargs)
+        # TODO: with new jax.Array I shouldn't have to specify shardings, but I do...
         in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
         out_resources = infer_resource_partitions(output_shape, out_axis_resources)
 
@@ -303,10 +301,10 @@ def physical_axis_size(axis: Axis, mapping: Optional[ResourceMapping] = None) ->
     return prod([mesh_shape[n] for n in name])
 
 
-def pspec_for_axis(axis: AxisSpec) -> PartitionSpec:
+def pspec_for_axis(axis: AxisSpec, mapping: Optional[ResourceMapping] = None) -> PartitionSpec:
     """Get the PartitionSpec for a single axis"""
     axis = ensure_tuple(axis)
-    return PartitionSpec(*(physical_axis_name(a) for a in axis))
+    return PartitionSpec(*(physical_axis_name(a, mapping) for a in axis))
 
 
 def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Axis:

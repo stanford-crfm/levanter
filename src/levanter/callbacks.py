@@ -1,23 +1,26 @@
 import copy
 import logging
+import os
+import re
+import subprocess
+import tempfile
+import threading
 import time
-from typing import Callable, Iterator, Optional, TypeVar
+import warnings
+from typing import Callable, Iterator, Optional
 
+import humanfriendly
+import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
 import wandb
 from levanter.config import WandbConfig
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
-from levanter.modeling_utils import RunningMean
 from levanter.trainer_hooks import StepInfo
 
 
 logger = logging.getLogger(__name__)
-
-M = TypeVar("M")
-X = TypeVar("X")
-Y = TypeVar("Y")
 
 
 def compute_validation_loss(
@@ -25,7 +28,8 @@ def compute_validation_loss(
     dataloader: Callable[[], Iterator[tuple]],
 ):
     def compute_loss(info: StepInfo):
-        total_loss = RunningMean(shape=1)
+        total_loss = 0.0
+        n = 0
         test_loader = dataloader()
 
         pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
@@ -33,10 +37,11 @@ def compute_validation_loss(
             loss = loss_fn(info.model, *batch)
             # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
-            total_loss.update(loss)
-            pbar.set_postfix(loss=total_loss.mean.item())
+            total_loss += loss.item()
+            n += 1
+            pbar.set_postfix(loss=total_loss / n)
 
-        mean_loss = total_loss.mean.item()
+        mean_loss = total_loss / n
         if wandb.run is not None:
             wandb.log({"eval/loss": mean_loss}, step=info.step)
 
@@ -122,3 +127,94 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
         pbar.set_postfix(loss=step.loss)
 
     return update_pbar
+
+
+def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool = False):
+    """
+    Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.
+    We only log when hooks are invoked, so there's not much point in running this much more frequently than you invoke
+    the hook.
+
+    I think it's a good idea to run this in a separate thread, so that you sample from random points, but I'm not sure.
+    :param sample_interval:
+    :return:
+    """
+
+    directory = "/dev/shm"
+    # macos doesn't have /dev/shm
+    if not os.path.exists(directory):
+        directory = tempfile.gettempdir()
+
+    tempfile_name = os.path.join(directory, f"memory_usage_{os.getpid()}.prof")
+
+    # a lot of this code is lifted from https://github.com/ayaka14732/jax-smi CC-0
+
+    def inner():
+        import posix
+        import time
+
+        while True:
+            jax.profiler.save_device_memory_profile(f"{tempfile_name}.new")
+            posix.rename(f"{tempfile_name}.new", tempfile_name)
+            time.sleep(sample_interval)
+
+    thread = threading.Thread(target=inner, daemon=True)
+    thread.start()
+
+    def log_memory_usage(step: StepInfo):
+        process = subprocess.run(
+            args=f"go tool pprof -tags {tempfile_name}".split(" "),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+        if process.returncode != 0:
+            warnings.warn("failed to run pprof. Is go installed?")
+            return
+
+        output = process.stdout.decode("utf-8")
+
+        # output looks like this:
+        #          2.4MB (12.53%): TFRT_CPU_0
+        #          2.4MB (12.50%): TFRT_CPU_1
+        #          2.4MB (12.50%): TFRT_CPU_2
+        #          2.4MB (12.50%): TFRT_CPU_3
+        #          2.4MB (12.50%): TFRT_CPU_4
+        #          2.4MB (12.50%): TFRT_CPU_5
+        #          2.4MB (12.50%): TFRT_CPU_6
+        #          2.4MB (12.50%): TFRT_CPU_7
+        #
+        #  kind: Total 19.5MB
+        #         18.9MB (97.20%): buffer
+        #        558.4kB ( 2.80%): executable
+
+        # gpus look like this:
+        #          1.0MB ( 0.00%): gpu:0
+        per_device, by_kind = output.split("kind: Total ")
+
+        # first, get the total memory usage
+        regex = re.compile(r"^(\d+\.\d+[a-zA-Z]+)")
+        match = regex.search(by_kind)
+        if match:
+            memory_usage = humanfriendly.parse_size(match.group(1))
+            wandb.log({"memory/total": memory_usage / 1e6}, step=step.step)
+
+        # this works for the "kind" and the individual devices
+        regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
+
+        if log_individual_devices:
+            # now, get the memory usage per device.
+            # split the output at kind: Total
+            for match in regex.finditer(per_device):
+                memory_usage = humanfriendly.parse_size(match.group(1))
+                device_name = match.group(3)
+                wandb.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+
+        # now, get the memory usage per kind.
+        # same regex as above
+        for match in regex.finditer(by_kind):
+            memory_usage = match.group(1)
+            memory_usage = humanfriendly.parse_size(memory_usage)
+            wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
+
+    return log_memory_usage

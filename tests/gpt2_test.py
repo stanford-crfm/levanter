@@ -29,7 +29,9 @@ def test_gradient_checkpointing():
 
         input_ids = hax.arange(config.SeqLen, dtype=jnp.int32)
 
-        a1 = model(input_ids, inference=False, key=key)
-        a2 = model_checkpoint(input_ids, inference=False, key=key)
+        causal_mask = hax.nn.attention.causal_mask(config.SeqLen, config.KeySeqLen)
+
+        a1 = model(input_ids, inference=False, key=key, attn_mask=causal_mask)
+        a2 = model_checkpoint(input_ids, inference=False, key=key, attn_mask=causal_mask)
 
         assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
