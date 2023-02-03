@@ -3,6 +3,7 @@ hf_model: stanford-crfm/BioMedLM
 trainer:
   num_train_steps: 20000 # 512 * 1024 * 20000 ≈ 10.5B tokens
 
+  mp: p=f32,c=bfloat16
   weight_decay: 0.0
   learning_rate: 1E-5
   warmup_ratio: 0.02
@@ -12,6 +13,9 @@ trainer:
 
   axis_resources:
     batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"
   parameter_axis_resources:
     embed: "data"
 

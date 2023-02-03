@@ -7,7 +7,6 @@ from typing import Optional
 import equinox as eqx
 import fsspec
 import jax
-import jax.random as jrandom
 import numpy.random
 import pyrallis
 from instruction_tuning.encdec_dataset import InstructionTuningDataset
@@ -26,7 +25,6 @@ from levanter.data.sharded import GlobalBatchDataset, build_batch
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.data.ul2r import DecoderOnlyExample, DenoisingTaskConfig, Ul2rDataset, convert_to_decoder_only
 from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.jax_utils import global_key_array
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2LMHeadModel
@@ -91,7 +89,7 @@ def main(config: InstructionTuneConfig):
     Vocab = Axis("vocab", len(tokenizer))
     model = model.resize_vocab(Vocab)
 
-    with config.trainer.device_mesh as mesh:
+    with config.trainer.device_mesh:
         Batch = Axis("batch", config.trainer.train_batch_size)
         # TODO: evaluation
         SeqLen = model.SeqLen
@@ -104,13 +102,13 @@ def main(config: InstructionTuneConfig):
             opt_state = optimizer.init(model)
             return model, opt_state
 
-        model, opt_state = hax.partitioning.named_pjit(init, parameter_axis_mapping, donate_args=True)(model)
+        model, opt_state = named_pjit(init, parameter_axis_mapping, donate_args=True)(model)
 
-        def compute_loss(model: Gpt2LMHeadModel, ex: DecoderOnlyExample, inference, key):
+        def compute_loss(model: Gpt2LMHeadModel, ex: DecoderOnlyExample):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(ex.tokens, ex.attn_mask, key=key, inference=inference)
+                pred_y = model(ex.tokens, ex.attn_mask, key=None, inference=True)
                 pred_y = mp.cast_to_output(pred_y)
 
                 loss = cross_entropy_loss(pred_y, Vocab, hax.nn.one_hot(ex.targets, Vocab))
@@ -118,19 +116,18 @@ def main(config: InstructionTuneConfig):
 
                 return loss.scalar()
 
-        def train_batch_loss(model, example, key):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, example, key=key, inference=False))
+        def train_batch_loss(model, example):
+            return hax.mean(hax.vmap(compute_loss, Batch)(model, example))
 
         # training loop
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, batch: DecoderOnlyExample, keys):
+        def train_step(model, opt_state, batch: DecoderOnlyExample):
             loss, grads = accumulate_gradients_sharded(
                 eqx.filter_value_and_grad(train_batch_loss),
                 Batch,
                 model,
                 batch,
-                keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
@@ -150,7 +147,7 @@ def main(config: InstructionTuneConfig):
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
-        base_dataset = GlobalBatchDataset(base_dataset, config.trainer.device_mesh, Batch)  # type: ignore
+        base_dataset = GlobalBatchDataset(base_dataset, config.trainer.device_mesh, Batch, compute_axis_mapping)  # type: ignore
 
         iter_data = non_caching_cycle(base_dataset)
 
@@ -164,12 +161,8 @@ def main(config: InstructionTuneConfig):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     batch = next(iter_data)
-                    my_key, training_key = jrandom.split(training_key, 2)
-                    example_keys = global_key_array(
-                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
-                    )
 
-                step_loss, model, opt_state = train_step(model, opt_state, batch, example_keys)
+                step_loss, model, opt_state = train_step(model, opt_state, batch)
                 step_loss = step_loss.item()
                 wandb.log({"phase": 1}, step=step)
 
@@ -191,7 +184,7 @@ def main(config: InstructionTuneConfig):
                 partial(build_batch, unchecked=False),
                 in_axis_resources=None,
                 out_axis_resources=PartitionSpec(ResourceAxis.DATA),
-                static_argnums=(0, 2),
+                static_argnums=(0,),
             )
             prng = numpy.random.default_rng(numpy.array(itune_key))
             iter_itune = iter(itune_dataset)
@@ -215,12 +208,8 @@ def main(config: InstructionTuneConfig):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     batch = next(iter_data_2)
-                    my_key, training_key = jrandom.split(training_key, 2)
-                    example_keys = global_key_array(
-                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
-                    )
 
-                step_loss, model, opt_state = train_step(model, opt_state, batch, example_keys)
+                step_loss, model, opt_state = train_step(model, opt_state, batch)
                 step_loss = step_loss.item()
                 wandb.log({"phase": 2}, step=step)
 
