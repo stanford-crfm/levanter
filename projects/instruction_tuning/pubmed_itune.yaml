@@ -20,7 +20,7 @@ trainer:
     embed: "data"
 
 data:
-  cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/"
+  cache_dir: "gs://levanter-data/tokenized/pubmed-sharded/"
   tokenizer: stanford-crfm/BioMedLM
 
 ul2r_phase_fraction: 0.30
