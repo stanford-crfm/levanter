@@ -32,7 +32,9 @@ def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map
     return config, checkpoint
 
 
-def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
+def hf_gpt2_config_to_levanter(config: HfGpt2Config, config_overrides) -> Gpt2Config:
+    if config_overrides is not None:
+        config = config_overrides.apply(config)
     levanter_config = Gpt2Config(
         seq_len=config.n_positions,
         # vocab_size=config.vocab_size,
@@ -70,13 +72,13 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
+def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None, config_overrides=None):
     config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
 
     Vocab = Axis("vocab", config.vocab_size)
-    lev_config = hf_gpt2_config_to_levanter(config)
+    lev_config = hf_gpt2_config_to_levanter(config, config_overrides)
     key = PRNGKey(0)
     model = Gpt2LMHeadModel.init(Vocab, lev_config, key=key)
 

@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass
@@ -27,9 +28,22 @@ from levanter.data.ul2r import DecoderOnlyExample, DenoisingTaskConfig, Ul2rData
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss
-from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
+
+
+@dataclass
+class ModelOverridesConfig:
+    gradient_checkpointing: Optional[bool] = True
+    embed_pdrop: Optional[float] = 0.0
+    attn_pdrop: Optional[float] = 0.0
+    resid_pdrop: Optional[float] = 0.0
+
+    def apply(self, config: Gpt2Config):
+        d = dataclasses.asdict(self)
+        d = {k: v for k, v in d.items() if v is not None}
+        return dataclasses.replace(config, **d)
 
 
 @dataclass
@@ -45,6 +59,7 @@ class InstructionTuneConfig:
     ul2r_phase_fraction: float = 0.5  # fraction of training steps to spend in UL2R phase
 
     hf_revision: Optional[str] = None
+    model: ModelOverridesConfig = ModelOverridesConfig()
 
     def build_instruction_dataset(self):
         def iter_dataset():
