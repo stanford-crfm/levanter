@@ -91,7 +91,9 @@ def main(config: InstructionTuneConfig):
 
     # load a model
     with jax.default_device(jax.devices("cpu")[0]):
-        model: Gpt2LMHeadModel = load_hf_gpt2_checkpoint(config.hf_model, revision=config.hf_revision)
+        model: Gpt2LMHeadModel = load_hf_gpt2_checkpoint(
+            config.hf_model, revision=config.hf_revision, config_overrides=config.model.apply
+        )
 
     # 1. ul2r phase
     base_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), model.SeqLen.size)

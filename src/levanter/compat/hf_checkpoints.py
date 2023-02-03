@@ -33,8 +33,6 @@ def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map
 
 
 def hf_gpt2_config_to_levanter(config: HfGpt2Config, config_overrides) -> Gpt2Config:
-    if config_overrides is not None:
-        config = config_overrides.apply(config)
     levanter_config = Gpt2Config(
         seq_len=config.n_positions,
         # vocab_size=config.vocab_size,
@@ -49,6 +47,9 @@ def hf_gpt2_config_to_levanter(config: HfGpt2Config, config_overrides) -> Gpt2Co
         scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
         upcast_attn=config.reorder_and_upcast_attn,
     )
+
+    if config_overrides is not None:
+        levanter_config = config_overrides(levanter_config)
 
     return levanter_config
 
