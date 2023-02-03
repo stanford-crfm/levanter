@@ -95,14 +95,15 @@ def main(config: InstructionTuneConfig):
         SeqLen = model.SeqLen
         KeySeqLen = model.config.KeySeqLen
 
-        # shard the model and make an optimizer
         optimizer = config.trainer.optimizer()
 
-        def init(model):
+        # shard the model and make an optimizer
+        @named_pjit(axis_resources=parameter_axis_mapping)
+        def init_model(model):
             opt_state = optimizer.init(model)
             return model, opt_state
 
-        model, opt_state = named_pjit(init, parameter_axis_mapping, donate_args=True)(model)
+        model, opt_state = init_model(model)
 
         def compute_loss(model: Gpt2LMHeadModel, ex: DecoderOnlyExample):
             with hax.axis_mapping(compute_axis_mapping):
@@ -117,7 +118,7 @@ def main(config: InstructionTuneConfig):
                 return loss.scalar()
 
         def train_batch_loss(model, example):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, example))
+            return hax.mean(compute_loss(model, example))
 
         # training loop
         # donate args to conserve memory
