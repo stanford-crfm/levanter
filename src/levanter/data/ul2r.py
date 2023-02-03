@@ -8,7 +8,6 @@ from typing import Iterator, List, Optional, Sequence, Union
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 from jax.random import PRNGKey
 from jaxtyping import PyTree
@@ -48,6 +47,7 @@ class DecoderOnlyExample(eqx.Module):
     loss_mask: hax.NamedArray
 
 
+# TODO: really need to make some unit tests for this
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis):
     all_tokens = []
     if example.task_token is not None:
@@ -64,10 +64,11 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
 
     # pad or truncate
     if len(all_tokens) > max_seq_len:
-        # take from the end of the sequence
-        all_tokens = all_tokens[-max_seq_len:]
-        input_length = input_length - (unpadded_length - max_seq_len)
+        # take from the beginning
+        all_tokens = all_tokens[:max_seq_len]
+        input_length = min(input_length, max_seq_len)
         unpadded_length = max_seq_len
+        assert input_length <= unpadded_length
     elif len(all_tokens) < max_seq_len:
         num_padding = max_seq_len - len(all_tokens)
         all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
