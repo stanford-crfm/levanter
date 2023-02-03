@@ -169,7 +169,14 @@ class Ul2rDataset(ShardableDataset[DecoderOnlyExample]):
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
             ul2example = self.generator.sample(example, key=subkey)
-            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen)
+            try:
+                decoder_only = convert_to_decoder_only(
+                    ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen
+                )
+            except AssertionError:
+                print(ul2example.render(self.tokenizer))
+                raise
+
             yield decoder_only
 
     @property
