@@ -5,8 +5,6 @@ import jax.numpy as jnp
 
 import haliax as hax
 from haliax import Axis, NamedArray
-
-# from haliax.nn.attention import causal_mask
 from haliax.types import PrecisionLike
 
 
@@ -48,12 +46,6 @@ def _ignore_padding_attn_mask(SeqLen, Window):
     return (Window.size - 1 - hax.arange(SeqLen)).broadcast_axis(Window) <= hax.arange(Window)
 
 
-def _sliding_window_causal_mask(Window, KPos):
-    diff = hax.arange(KPos) - hax.arange(Window).broadcast_axis(KPos)
-    attn_mask = (diff >= 0) & (diff < Window.size)
-    return attn_mask.rearrange((Window, KPos))
-
-
 def causal_sliding_window_attention2(
     SeqLen: Axis,
     Window: Axis,
@@ -71,39 +63,41 @@ def causal_sliding_window_attention2(
     # We use the window size as the block size
     # The basic idea is that we want to compute attention one block (of query) at a time, where a block is a window
     # of the sequence. Each q can attend to the prior window_size-1 positions plus itself
-    assert Window.size <= SeqLen.size, "Window size must be less than sequence length"
+    assert Window.size <= SeqLen.size, "Window size must be at least 2x sequence length"
+    PaddedLen = Axis("PaddedLen", SeqLen.size + Window.size - 1)
+
+    padded_key = hax.pad_left(key, SeqLen, PaddedLen, 0.0)
+    padded_value = hax.pad_left(value, SeqLen, PaddedLen, 0.0)
+
     # TODO: relax?
     assert SeqLen.size % Window.size == 0, "Sequence length must be divisible by window size"
     Block = Axis("Block", SeqLen.size // Window.size)
-    BlockSize = Axis(
-        "BlockSize", Window.size * 2
-    )  # * 2 because we want to include all possible positions for our query block
+    BlockSize = Axis("BlockSize", Window.size * 2 - 1)
 
-    # first things first: we roll the key and value tensors so that the first window_size-1 positions are
-    # the last window_size-1 positions of the sequence
-    # TODO: if we're clever we could avoid this and just do some indexing with a special case for the first block
-    # unclear if that's better
-    # -1 because we want to include the current position in the window
-    rolled_key = hax.roll(key, Window.size - 1, SeqLen)
-    rolled_value = hax.roll(value, Window.size - 1, SeqLen)
+    # the attention structure is that each query attends to the prior window_size positions (q - window_size, q]
+    # We extract one query block of length Window.size at a time (the block size and window size could be different, but
+    # this seems fine)
+    # For each query block, we extract a key and value block of length BlockSize == Window.size * 2 - 1
+    # The key block is [query_block_start - window_size + 1, query_block_start + window_size)
 
-    # each w in Window attends to the next w positions (because we rolled the key and value)
-    attn_mask = _sliding_window_causal_mask(Window, BlockSize)
+    # for our attention masks, we have to account for the padding in the key and value blocks.
+    # because of the padding
+    # each q can attend to k s.t. k \in [q, q + window_size)
+    # equivalently, k - q \in [0, window_size)
+    diff = hax.arange(BlockSize) - hax.arange(Window).broadcast_axis(BlockSize)
+    attn_mask = (diff >= 0) & (diff < Window.size)
 
-    # for the 0th block, we don't want to attend to the first window_size-1 positions
+    # no attending to padding for 0th block
     attn_mask_0 = attn_mask & (hax.arange(BlockSize) >= Window.size - 1)
-    # for the final block, the key/value blocks will extend past the end,
-    # so we need to mask out the extra positions and be careful with slicing
-    # attn_mask_final = causal_mask(Window, BlockSize)
 
     def attend_block(block_idx):
         block_idx = block_idx.scalar()
         block_start = block_idx * Window.size
         # our query block spans [block_start, block_start + window_size)
-        query_block = _query_block(query, block_start)
+        query_block = query.slice(SeqLen, Window, start=block_start)
         # extract the relevant window from the key and value
-        key_block = _kv_block(block_start, rolled_key)
-        value_block = _kv_block(block_start, rolled_value)
+        key_block = _kv_block(padded_key, block_start)
+        value_block = _kv_block(padded_value, block_start)
 
         mask = jax.lax.cond(block_idx == 0, lambda _: attn_mask_0, lambda _: attn_mask, None)
 
@@ -111,14 +105,9 @@ def causal_sliding_window_attention2(
             Window, BlockSize, Head, query_block, key_block, value_block, mask, None, attention_dtype, precision
         )
 
-    def _query_block(query, block_start):
-        return query.slice(SeqLen, Window, start=block_start)
-
-    def _kv_block(block_start, rolled_kv):
+    def _kv_block(kv, block_start):
         # each q can attend to the prior window_size-1 positions
-        # because we rolled the key and value, we can just take the first BlockSize positions starting from block_start
-        # we have to be careful for the final block: slice will mess with the start index if it's too large
-        return rolled_kv.slice(SeqLen, BlockSize, start=block_start)
+        return kv.slice(PaddedLen, BlockSize, start=block_start)
 
     # we use scan here to encourage jax to do the blocking
     _, blocked_attn = hax.scan(lambda _, block_idx: (None, attend_block(block_idx)), Block)(None, hax.arange(Block))  # type: ignore
