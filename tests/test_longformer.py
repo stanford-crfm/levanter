@@ -5,23 +5,7 @@ import numpy as np
 import haliax as hax
 from haliax import Axis
 from haliax.nn.attention import causal_mask
-from levanter.models.longformer import _ignore_padding_attn_mask, causal_sliding_window_attention2
-
-
-def test_ignore_padding_mask():
-
-    for (sz, w) in [(10, 5), (10, 4), (10, 10), (10, 9), (10, 1)]:
-        SeqLen = Axis("SeqLen", sz)
-        Window = Axis("Window", w)
-
-        mask = _ignore_padding_attn_mask(SeqLen, Window).rearrange((SeqLen, Window)).array
-
-        assert mask[0, Window.size - 1]
-        assert jnp.all(hax.logical_not(mask[0, : Window.size - 1]))
-        assert jnp.all(mask[Window.size :, :])
-        assert jnp.all(mask[Window.size - 1, :])
-
-        assert jnp.sum(hax.logical_not(mask).astype(jnp.int32)) == sum(range(Window.size))
+from levanter.models.longformer import causal_sliding_window_attention
 
 
 def test_causal_sliding_window_attention_simple():
@@ -43,7 +27,7 @@ def test_causal_sliding_window_attention_simple():
         keys = hax.named(keys, (SeqLen, Head))
         values = hax.named(values, (SeqLen, Head))
 
-        result = causal_sliding_window_attention2(SeqLen, Window, Head, query, keys, values)
+        result = causal_sliding_window_attention(SeqLen, Window, Head, query, keys, values)
         # we should be able to attend to the previous W positions for each position (including current), so 6-10 can't attend
         # to 0-4 and can't get the 100.0 key
         result = result.rearrange((SeqLen, Head)).array
@@ -53,7 +37,6 @@ def test_causal_sliding_window_attention_simple():
 
 def test_sliding_window_attention_fancier():
     D = 4
-    jax.config.update("jax_disable_jit", True)
     for L, W in [(2, 1), (2, 2), (4, 2), (10, 5), (15, 5), (16, 2), (15, 3), (10, 10)]:
         SeqLen = Axis("SeqLen", L)
         Window = Axis("Window", W)
@@ -65,7 +48,7 @@ def test_sliding_window_attention_fancier():
         keys = hax.random.uniform(k_key, (SeqLen, Head))
         values = hax.random.uniform(v_key, (SeqLen, Head))
 
-        result = causal_sliding_window_attention2(SeqLen, Window, Head, query, keys, values)
+        result = causal_sliding_window_attention(SeqLen, Window, Head, query, keys, values)
         result = result.rearrange((SeqLen, Head)).array
 
         KSeqLen = Axis("KSeqLen", SeqLen.size)
