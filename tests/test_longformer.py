@@ -1,9 +1,10 @@
+import jax.config
 import jax.numpy as jnp
 import numpy as np
 
 import haliax as hax
 from haliax import Axis
-from levanter.models.longformer import _ignore_padding_attn_mask, causal_sliding_window_attention
+from levanter.models.longformer import _ignore_padding_attn_mask, causal_sliding_window_attention2
 
 
 def test_ignore_padding_mask():
@@ -24,7 +25,7 @@ def test_ignore_padding_mask():
 
 def test_causal_sliding_window_attention():
     # test that we can't attend to something outside of the range
-    L, W, D = 10, 5, 2
+    L, W, D = 15, 5, 2
     SeqLen = Axis("SeqLen", L)
     Window = Axis("Window", W)
     Head = Axis("Head", D)
@@ -40,7 +41,8 @@ def test_causal_sliding_window_attention():
     keys = hax.named(keys, (SeqLen, Head))
     values = hax.named(values, (SeqLen, Head))
 
-    result = causal_sliding_window_attention(SeqLen, Window, Head, query, keys, values)
+    jax.config.update("jax_disable_jit", True)
+    result = causal_sliding_window_attention2(SeqLen, Window, Head, query, keys, values)
     # we should be able to attend to the previous W positions for each position (including current), so 6-10 can't attend
     # to 0-4 and can't get the 100.0 key
     result = result.rearrange((SeqLen, Head)).array
