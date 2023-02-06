@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import jax
 import jax.numpy as jnp
 
@@ -11,12 +13,12 @@ from .core import (
     broadcast_to,
     concat_axis_specs,
     dot,
+    enable_shape_checks,
     flatten_axes,
     named,
     rearrange,
     rename,
     roll,
-    shape_checks,
     split,
     take,
     unbind,
@@ -24,7 +26,7 @@ from .core import (
 )
 from .hof import fold, scan, vmap
 from .ops import clip, isclose, trace, tril, triu, where
-from .partitioning import auto_sharded, axis_mapping
+from .partitioning import auto_sharded, axis_mapping, shard_with_axis_mapping
 from .types import Axis, AxisSpec
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
@@ -72,6 +74,14 @@ def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
     """Version of jnp.arange that returns a NamedArray"""
     stop = start + axis.size * step
     return NamedArray(jnp.arange(start, stop, step, dtype=dtype), (axis,))
+
+
+def stack(axis: Axis, arrays: Sequence[NamedArray]) -> NamedArray:
+    """Version of jnp.stack that returns a NamedArray"""
+    if len(arrays) == 0:
+        return zeros(axis)
+    arrays = [a.rearrange(arrays[0].axes) for a in arrays]
+    return NamedArray(jnp.stack([a.array for a in arrays], axis=0), (axis,) + arrays[0].axes)
 
 
 # elementwise unary operations
@@ -349,7 +359,8 @@ __all__ = [
     "true_divide",
     "auto_sharded",
     "axis_mapping",
-    "shape_checks",
+    "shard_with_axis_mapping",
+    "enable_shape_checks",
     "are_shape_checks_enabled",
     "isclose",
 ]

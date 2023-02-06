@@ -3,7 +3,7 @@ import tempfile
 import pytest
 from transformers import AutoTokenizer, BatchEncoding
 
-from levanter.data.text import TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -128,3 +128,36 @@ def test_doc_cache_sharding():
             for i in range(len(reconstructed)):
                 as_listed = BatchEncoding(data={k: [vv.tolist() for vv in v] for k, v in reconstructed[i].items()})
                 assert as_listed == docs[i]
+
+
+def test_token_seq_dataset_len_is_correct():
+    # num_docs, seq_len, doc_length
+    configurations_to_test = [
+        (3, 10, 7),
+        (3, 10, 1),
+        (3, 10, 10),
+        (1, 10, 10),
+        (1, 10, 5),
+        (1, 10, 1),
+        (1, 10, 7),
+        (3, 10, 20),
+        (2, 10, 21),
+    ]
+
+    for flatten_docs in [True, False]:
+        for num_docs, seq_len, doc_length in configurations_to_test:
+            docs = [
+                BatchEncoding(data=dict(input_ids=[list(range(i * doc_length, (i + 1) * doc_length))]))
+                for i in range(num_docs)
+            ]
+            total_tokens_in_docs = sum([len(d["input_ids"][0]) for d in docs])
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cache = TokenizedDocumentCache.build_or_load(
+                    docs, f"{tmpdir}/cache", num_shards=1, flatten_docs=flatten_docs
+                )
+
+                ds = TokenSeqDataset(cache, seq_len)
+                assert len(ds) == (total_tokens_in_docs // seq_len)
+                all_examples = list(ds)
+                assert len(all_examples) == (total_tokens_in_docs // seq_len)

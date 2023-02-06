@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, cast
+from typing import Callable, Dict, List, Optional, Union, cast
 
 import equinox as eqx
 import jax
@@ -14,6 +14,9 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
 from levanter.modeling_utils import ACT2FN
+
+
+sharded_normal = hax.random.generate_sharded(hax.random.normal)
 
 
 @dataclass(frozen=True)
@@ -30,7 +33,6 @@ class Gpt2Config:
     embed_pdrop: float = 0.1
     resid_pdrop: float = 0.1
     attn_pdrop: float = 0.1
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
@@ -41,10 +43,16 @@ class Gpt2Config:
     gradient_checkpointing: bool = False
     gradient_checkpointing_block_size: int = 5
 
+    use_bias: bool = True
+
     # Axes
     @property
     def SeqLen(self) -> Axis:
         return Axis(name="seqlen", size=self.seq_len)
+
+    @property
+    def KeySeqLen(self) -> Axis:
+        return self.SeqLen.alias(f"key_{self.SeqLen.name}")
 
     @property
     def Embed(self) -> Axis:
@@ -72,16 +80,21 @@ class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(self, Embed: Axis, Intermediate: Axis, activation_fn, *, key):
+    def __init__(
+        self, Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True
+    ):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc)
-        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj)
-        self.act = ACT2FN[activation_fn]  # type: ignore
+        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
+        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
+        if isinstance(activation_fn, str):
+            activation_fn = ACT2FN[activation_fn]
+        self.act = activation_fn  # type: ignore
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
-        hidden_states = jax.tree_util.tree_map(self.act, hidden_states)
+        hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
 
@@ -113,6 +126,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         upcast: bool,
         *,
         key,
+        use_bias: bool = True,
     ):
         self.Heads = Heads
         self.HeadDim = HeadDim
@@ -121,8 +135,8 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         self.KeySeqLen = KeySeqLen
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj)
+        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj, use_bias=use_bias)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -155,7 +169,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_scores = hax.dot(self.HeadDim, q, k)
 
         if mask is not None:
-            attn_scores = hax.where(mask, attn_scores, -1e9)
+            attn_scores = attn_scores + (1.0 - mask) * -1e9
 
         attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
@@ -215,7 +229,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
     mlp: Gpt2Mlp
     resid_dropout: hnn.Dropout
 
-    def __init__(self, config: Gpt2Config, KeySeqLen: Axis, *, key):
+    def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
         assert (
@@ -225,7 +239,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
             SeqLen=config.SeqLen,
-            KeySeqLen=KeySeqLen,
+            KeySeqLen=config.KeySeqLen,
             Embed=config.Embed,
             Heads=config.Heads,
             HeadDim=config.HeadDim,
@@ -233,6 +247,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             key=k_attn,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
             upcast=config.upcast_attn,
+            use_bias=config.use_bias,
         )
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
@@ -242,12 +257,14 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
             Intermediate=config.Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
+            use_bias=config.use_bias,
         )
 
     @named_call
     def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], inference, layer_idx, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
+        hidden_states = hax.auto_sharded(hidden_states)
         attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = hidden_states + attn_output
@@ -264,8 +281,6 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
     blocks: Gpt2Block
     ln_f: hnn.LayerNorm
 
-    KeySeqLen: Axis = eqx.static_field()
-
     @property
     def Layers(self) -> Axis:
         return self.config.Layers
@@ -274,40 +289,26 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
         super().__init__()
         self.config = config
 
-        self.KeySeqLen = config.SeqLen.alias(f"{config.SeqLen.name}_key")
-
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(
-            config, self.KeySeqLen, key=shaped_rng_split(key, config.num_layers)
-        )
+        # vectorize the blocks
+        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
-        key, fcm_key = haliax.jax_utils.maybe_rng_split(key)
-        mask = self._make_attention_mask(inference, fcm_key)
-
+    def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
         def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, mask, inference=inference, layer_idx=layer_idx, key=key)
+            return block(hidden_states, attn_mask, inference=inference, layer_idx=layer_idx, key=key)
 
         if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block)
+            do_block = jax.checkpoint(do_block, prevent_cse=False)
 
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
             hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
         )
+        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
-
-    def _make_attention_mask(self, inference, fcm_key):
-        causal_mask = hax.nn.attention.causal_mask(self.config.SeqLen, self.KeySeqLen)
-
-        # forgetful causal masking
-        if not inference and self.config.fcm_prob > 0:
-            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KeySeqLen, self.config.fcm_prob, key=fcm_key)
-            causal_mask = causal_mask & fcm_mask
-        return causal_mask
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
@@ -396,14 +397,14 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         self.SeqLen = SeqLen
         self.Embed = Embed
 
-        self.token_embeddings = hax.random.normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = hax.random.normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
+        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
+        self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
             self.token_out_embeddings = None
         else:
-            self.token_out_embeddings = hax.random.normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
+            self.token_out_embeddings = sharded_normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
 
     @named_call
     def embed(self, input_ids, inference, *, key):
@@ -457,13 +458,13 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
-    def __call__(self, input_ids: NamedArray, *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, inference=inference, key=k_transformer)
+        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits

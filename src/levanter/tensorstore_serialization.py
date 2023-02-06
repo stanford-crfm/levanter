@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 import tensorstore
-from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import ShardedDeviceArray
 from tensorstore import TensorStore
 
@@ -25,7 +24,7 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
     specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
 
     # TODO: jax gda_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    # gda_ser only supports saving GlobalDeviceArrays, so we can't use its top-level function run_serialization.
+    # gda_ser only supports saving sharded arrays, so we can't use its top-level function run_serialization.
     # however we're inspired by its implementation, meaning we'll make a tree of futures and wait on them.
     async def _do_serialize():
         futures = jtu.tree_map(_serialize_one_leaf, pytree, specs)
@@ -41,8 +40,11 @@ def _tensorstore_spec_for(checkpoint_dir, key_path: str):
 
 
 async def _serialize_one_leaf(x, spec):
-    if isinstance(x, GlobalDeviceArray):
-        return await gda_ser.async_serialize(x, spec)
+    if isinstance(x, jax.Array):
+        if not x.is_fully_addressable:
+            return await gda_ser.async_serialize(x, spec)
+        else:
+            return await save_array_to_tensorstore(x, spec)
     elif isinstance(x, (bool, float, complex, int)):
         return await save_array_to_tensorstore(np.array(x), spec)
     elif x is None:
@@ -78,8 +80,11 @@ async def load_array_from_tensorstore(spec):
 
 
 async def _deserialize_one_leaf(like, spec):
-    if isinstance(like, GlobalDeviceArray):
-        return await gda_ser.async_deserialize(like.sharding, spec, global_shape=like.shape, dtype=like.dtype)
+    if isinstance(like, jax.Array):
+        if not like.is_fully_addressable:
+            return await gda_ser.async_deserialize(like.sharding, spec, global_shape=like.shape, dtype=like.dtype)
+        else:
+            return await load_array_from_tensorstore(spec)
     elif isinstance(like, (bool, float, complex, int)):
         arr = await load_array_from_tensorstore(spec)
         return arr.item()

@@ -9,6 +9,7 @@ model:
   num_heads: 12
   num_layers: 12
   seq_len: 1024
+  gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
   wandb:
@@ -21,10 +22,12 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: 1
 
+  train_batch_size: 512
+
   axis_resources:
     batch: "data"
-    # ZERO-3
-    # "embed": ResourceAxis.DATA,
     vocab: "model"
     mlp: "model"
     heads: "model"
+  parameter_axis_resources:
+    embed: "data"

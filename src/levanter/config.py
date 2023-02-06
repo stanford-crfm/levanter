@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import List, Mapping, Optional, Union
 
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
 import optax
 import pyrallis
-from furl import furl
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+from jax._src.clusters import SlurmCluster, TpuCluster
 from jax.experimental.maps import Mesh
 from pyrallis import field
 
@@ -25,6 +24,7 @@ from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter import jax_utils
 from levanter.checkpoint import Checkpointer, CheckpointInterval
 from levanter.datetime_utils import encode_timedelta, parse_timedelta
+from levanter.distributed import LevanterSlurmCluster
 
 
 logger = logging.getLogger(__name__)
@@ -107,9 +107,10 @@ class WandbConfig:
                 id=r.id,
                 group=r.group,
             )
-            metadata_to_share = jax_utils.multihost_broadcast_obj(
+            metadata_to_share = jax_utils.multihost_broadcast_sync(
                 metadata_to_share, is_source=jax.process_index() == 0
             )
+
             if jax.process_index() != 0:
                 assert r.mode == "disabled"
                 for k, v in metadata_to_share.items():
@@ -167,7 +168,7 @@ class CheckpointerConfig:
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=f"{self.base_path}/{run_name}",
+            base_path=os.path.join(self.base_path, run_name),
             save_interval=self.save_interval,
             step_policies=keeps,
         )
@@ -187,6 +188,46 @@ class CheckpointerConfig:
             prev_interval = interval
 
 
+@dataclass(frozen=True)
+class DistributedConfig:
+    coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
+    num_processes: Optional[int] = None
+    process_id: Optional[int] = None
+    local_device_ids: Optional[Union[int, List[int]]] = None
+
+    def _is_distributed(self):
+        if (
+            (self.coordinator_address is not None)
+            or (self.num_processes is not None)
+            or (self.process_id is not None)
+            or (self.local_device_ids is not None)
+        ):
+            return True
+
+        # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
+        # since it depends on the jax internals, but it's the best we can do
+        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+            return True
+
+    def initialize(self):
+        if self._is_distributed():
+            device_ids = self.local_device_ids
+            coordinator_address = self.coordinator_address
+
+            if LevanterSlurmCluster.is_env_present():
+                if device_ids is None:
+                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
+
+                if coordinator_address is None:
+                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+
+            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
+            logger.info(
+                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
+                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
+            )
+
+
 @dataclass
 class TrainerConfig:
     seed: int = 0
@@ -194,7 +235,7 @@ class TrainerConfig:
 
     wandb: WandbConfig = WandbConfig()
     log_dir: Path = Path("logs/")
-    run_base_dir: furl = furl("runs/")
+    run_base_dir: Path = Path("runs/")
 
     # config related to partitioning
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
@@ -215,7 +256,7 @@ class TrainerConfig:
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[furl] = None
+    load_checkpoint_path: Optional[str] = None
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -229,7 +270,9 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
-    use_gda: bool = True  # whether or not to use GlobalDeviceArrays for pjitted models.
+    use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
+
+    distributed: DistributedConfig = DistributedConfig()
 
     @property
     def run_name(self) -> str:
@@ -238,14 +281,16 @@ class TrainerConfig:
         return wandb.run.name or wandb.run.id
 
     @property
-    def run_dir(self) -> furl:
+    def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
+        self.distributed.initialize()
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
+        self._validate()
 
     @cached_property
     def device_mesh(self) -> Mesh:
@@ -278,12 +323,11 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_parallel_functions_output_gda", self.use_gda)
+        jax.config.update("jax_array", self.use_jax_array)
 
     def _initialize_logging(self):
-        log_dir = self.log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(log_dir / f"{self.run_name}.log")
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
     def optimizer(self):
         """Creates the optimizer"""
@@ -332,8 +376,8 @@ class TrainerConfig:
                 schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
         return schedule
 
-    # post init
-    def __post_init__(self):
+    # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
+    def _validate(self):
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
@@ -360,11 +404,9 @@ class TrainerConfig:
 
 
 def register_codecs():
-    pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
-    pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
-    pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
-    pyrallis.decode.register(furl, furl)
-    pyrallis.encode.register(furl, str)
+    # pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
+    # pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
+    # pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):

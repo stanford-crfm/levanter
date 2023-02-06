@@ -1,0 +1,3 @@
+id: dlwh/wikitext_103_detokenized
+new_vocab_size: 128000
+enforce_bos_eos: true

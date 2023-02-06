@@ -1,4 +1,5 @@
 import functools as ft
+import pickle
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
@@ -8,12 +9,12 @@ from chex import PRNGKey
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
-from jax.experimental import multihost_utils
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
+from haliax.util import ensure_tuple
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -78,7 +79,7 @@ def set_hardware_rng_ops(enabled: bool = True):
         jax.config.update("jax_default_prng_impl", "threefry2x32")
 
 
-def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
+def global_key_array(key: PRNGKey, global_shape, mesh, mesh_axes):
     """
     Create a global array with the given key. This ensures that:
     * individual keys at positions are unique
@@ -86,6 +87,7 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
     """
 
     # add key shape to global_shape and pad out axes
+    global_shape = ensure_tuple(global_shape)
     orig_global_shape = global_shape
     global_shape = global_shape + key.shape
     mesh_axes = list(mesh_axes) + [None] * (len(global_shape) - len(mesh_axes))
@@ -104,9 +106,14 @@ def global_key_array(key: PRNGKey, global_shape, global_mesh, mesh_axes):
         lens = [i[1] - i[0] for i in indices]
         return shaped_rng_split(base_key, lens[0 : len(orig_global_shape)])
 
+    # return jax.make_array_from_callback(
+    #     global_shape,
+    #     jax.sharding.MeshPspecSharding(mesh=mesh, spec=mesh_axes),
+    #     data_callback=data_callback,
+    # )
     return GlobalDeviceArray.from_callback(
         global_shape=global_shape,
-        global_mesh=global_mesh,
+        global_mesh=mesh,
         mesh_axes=mesh_axes,
         data_callback=data_callback,
     )
@@ -124,74 +131,34 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
-def multihost_broadcast_obj(obj, is_source: Optional[bool] = None):
-    """Very hacky way to broadcast an arbitrary pickleable object from the given host to all hosts.
-    This is useful for broadcasting things like wandb run id names. This is very slow, but it's only
-    used for initialization so it's not a big deal."""
-    # TODO: see if we can access underlying jax communication mechanism to do this more efficiently
-    import pickle
-
+def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
+    """
+    Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
+    process_index 0 is the source.
+    """
+    _LEV_KEY = "LEVANTER_MULTIHOST_BROADCAST_SYNC"
     if is_source is None:
         is_source = jax.process_index() == 0
 
-    BUF_SIZE = 16 * 1024
-    HEADER_SIZE = 4  # 4 bytes for length of packet. overkill, but whatever
-    CONTENT_SIZE = BUF_SIZE - HEADER_SIZE
+    import jax._src.distributed as distributed
+    from jaxlib.xla_extension import DistributedRuntimeClient
 
-    buf = jnp.zeros(BUF_SIZE, dtype=jnp.uint8)
+    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+
+    if client is None:
+        raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
+
     if is_source:
-        pickled = pickle.dumps(obj)
-        # need to be careful here. we have to always send at least one packet, even if it's empty
-        # so that the other side knows we're done
-        if len(pickled) == 0:
-            multihost_utils.broadcast_one_to_all(buf, is_source)
-        else:
-            if len(pickled) == 0:
-                content_length = 0
-                header = content_length.to_bytes(HEADER_SIZE, "big")
-                pad_length = CONTENT_SIZE
-                buf = jnp.array(header + b"\0" * pad_length, dtype=jnp.uint8)
-                multihost_utils.broadcast_one_to_all(buf, is_source=is_source)
-            else:
-                # send BUF_SIZE at a time including header
-                for i in range(0, len(pickled), CONTENT_SIZE):
-                    content_length = min(CONTENT_SIZE, len(pickled) - i)
-                    pad_length = CONTENT_SIZE - content_length
-                    header = content_length.to_bytes(HEADER_SIZE, "big")
-                    # have to convert to list because numpy will attempt to parse as ascii
-                    buf = jnp.array(
-                        list(header + pickled[i : i + content_length] + b"\0" * pad_length), dtype=jnp.uint8
-                    )
-                    multihost_utils.broadcast_one_to_all(buf, is_source=is_source)
-    else:
-        pickled = b""
-        # build up the pickled string
-        while True:
-            buf = multihost_utils.broadcast_one_to_all(buf, is_source=is_source)
-            content_length = int.from_bytes(buf[:HEADER_SIZE], "big")
-            pickled += bytes(buf[HEADER_SIZE : HEADER_SIZE + content_length])
-            if content_length < CONTENT_SIZE:
-                break
+        pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
+        client.key_value_set(_LEV_KEY, pickled.decode("ascii"))
 
-        # depickle:
+    client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
+
+    if not is_source:
+        pickled = bytes(client.blocking_key_value_get(_LEV_KEY, timeout_in_ms=20_000), "ascii")
         obj = pickle.loads(pickled)
 
     return obj
-
-
-def simplify_gdas(pytree: PyTree):
-    """Simplify fully-replicated global device arrays to simple arrays. Typically this is for scalars or small arrays
-    that we want to log"""
-
-    def _simplify_gda(gda):
-        if isinstance(gda, GlobalDeviceArray):
-            if gda.is_fully_replicated:
-                return gda.local_data(0)
-            return gda
-        else:
-            return gda
-
-    return jax.tree_map(_simplify_gda, pytree)
 
 
 # Copy paste from equinox
