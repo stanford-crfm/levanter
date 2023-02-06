@@ -26,8 +26,11 @@ def causal_sliding_window_attention(
     # The basic idea is that we want to compute attention one block (of query) at a time, where a block is a window
     # of the sequence. Each q can attend to the prior window_size-1 positions plus itself
     assert Window.size <= SeqLen.size, "Window size must be at least 2x sequence length"
-    PaddedLen = Axis("PaddedLen", SeqLen.size + Window.size - 1)
 
+    # TODO: padding ends up being very expensive and it would be better if we avoided it
+    # to do so, we'd need to special case the first and last blocks.
+    # The first block would need to switched to a causal mask against the first window_size positions
+    PaddedLen = Axis("PaddedLen", SeqLen.size + Window.size - 1)
     padded_key = hax.pad_left(key, SeqLen, PaddedLen, 0.0)
     padded_value = hax.pad_left(value, SeqLen, PaddedLen, 0.0)
 
