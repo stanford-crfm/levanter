@@ -22,7 +22,7 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: 2
   per_device_eval_parallelism: 8
-  max_train_steps: 50000
+  num_train_steps: 50000
 
   axis_resources:
     batch: "data"
