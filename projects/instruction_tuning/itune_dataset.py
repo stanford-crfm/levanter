@@ -81,11 +81,15 @@ class InstructionTuningDataset(Dataset[Ul2Example]):
         )  # type: ignore
 
     def __len__(self) -> int:
-        return len(self.base_dataset)
+        return len(self.base_dataset)  # type: ignore
 
 
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+
     # dataset_name = 'Muennighoff/P3'
     dataset_name = "Muennighoff/natural-instructions"
     dataset = InstructionTuningDataset(
@@ -102,9 +106,9 @@ if __name__ == "__main__":
     import time
 
     time_in = time.time()
-    for i, example in zip(range(1024), dataset):
+    for i, example in zip(range(4096), dataset):
         # render(example)
-        convert_to_decoder_only(example, 0, Axis("SeqLen", 1024), Axis("KSeqLen", 1024))
-        # pass
+        print(example.render(tokenizer))
+        convert_to_decoder_only(example, tokenizer.pad_token_id, Axis("SeqLen", 1024), Axis("KSeqLen", 1024))
 
     print(f"Time: {time.time() - time_in}")

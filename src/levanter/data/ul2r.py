@@ -28,13 +28,10 @@ class Ul2Example(eqx.Module):
 
     def render(self, tokenizer: PreTrainedTokenizerBase):
         """renders a pretty version of the example as a string"""
-        return (
-            tokenizer.decode(self.task_token)
-            + " "
-            + tokenizer.decode(self.inputs)
-            + "\n<!TARGETS!>\n"
-            + tokenizer.decode(self.outputs)
-        )
+        task_str = ""
+        if self.task_token is not None:
+            task_str = tokenizer.decode(self.task_token) + " "
+        return task_str + tokenizer.decode(self.inputs) + "\n<!TARGETS!>\n" + tokenizer.decode(self.outputs)
 
     def to_decoder_only(self, pad_token_id, QLen, KLen):
         return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
@@ -48,7 +45,7 @@ class DecoderOnlyExample(eqx.Module):
 
 
 # TODO: really need to make some unit tests for this
-def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis):
+def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis) -> DecoderOnlyExample:
     all_tokens = []
     if example.task_token is not None:
         all_tokens.append(example.task_token)
@@ -84,12 +81,9 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QLen) >= input_length
+    loss_mask = hax.arange(QLen) >= input_length - 1
     # 3) last token of targets
-    loss_mask = loss_mask & (hax.arange(QLen) < unpadded_length)
-    # 4) padding
-    if pad_token_id is not None:
-        loss_mask = loss_mask & (all_tokens_named != pad_token_id)
+    loss_mask = loss_mask & (hax.arange(QLen) < unpadded_length - 1)
 
     assert hax.sum(loss_mask) == unpadded_length - input_length
 
