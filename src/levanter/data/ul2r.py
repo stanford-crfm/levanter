@@ -273,22 +273,6 @@ class Ul2InstanceGenerator:
 
         return Ul2Example(inputs, targets, self.tokenizer.convert_tokens_to_ids(task_config.task_token))
 
-        # max_predictions_per_seq = task_config.mask_prob * len(tokens)
-        # np_rng = np.random.default_rng(np.array(key))
-        # output_tokens, masked_spans = create_masked_lm_predictions(
-        #     tokens=tokens,
-        #     masked_lm_prob=task_config.mask_prob,
-        #     mask_id=self.tokenizer.mask_token_id,
-        #     span_length_distribution=task_config.length_distribution,
-        #     max_predictions_per_seq=max_predictions_per_seq,
-        #     np_rng=np_rng,
-        #     max_ngram_size=1024
-        # )
-        #
-        # t5_input, t5_output = self._create_t5_input_output_from_spans(output_tokens, masked_spans)
-
-        # return Ul2Example(self.tokenizer.convert_tokens_to_ids(task_config.task_token), t5_input, t5_output)
-
     def _create_t5_input_output_from_spans(self, output_tokens, masked_spans):
         sentinel_tokens = collections.deque(self.sentinel_token_ids)
         t5_input = []
@@ -439,9 +423,7 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     first_noise_tokens = np.logical_and(noise_mask, np.logical_not(prev_token_is_noise))
     subsequent_noise_tokens = np.logical_and(noise_mask, prev_token_is_noise)
 
-    # sentinel = sentinel_id(tokenizer) + 1 - tf.cumsum(tf.cast(first_noise_tokens, tokens.dtype))
     segments = np.cumsum(first_noise_tokens.astype(tokens.dtype))
-    # assert int(np.max(segments)) <= len(sentinel_tokens)
     if int(np.max(segments)) > len(sentinel_tokens):
         logging.warning("Too many noise spans, reusing sentinels")
     sentinel = sentinel_tokens[segments % len(sentinel_tokens)]
@@ -450,6 +432,5 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return tokens[np.logical_not(subsequent_noise_tokens)]
 
 
-# note(dlwh): this is some ninja sh*t right here.
 def nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
