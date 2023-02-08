@@ -34,9 +34,6 @@ class Ul2Example(eqx.Module):
             task_str = tokenizer.decode(self.task_token) + " "
         return task_str + tokenizer.decode(self.inputs) + "\n<!TARGETS!>\n" + tokenizer.decode(self.outputs)
 
-    def to_decoder_only(self, pad_token_id, QLen, KLen):
-        return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
-
 
 class DecoderOnlyExample(eqx.Module):
     tokens: hax.NamedArray
@@ -45,7 +42,6 @@ class DecoderOnlyExample(eqx.Module):
     loss_mask: hax.NamedArray
 
 
-# TODO: really need to make some unit tests for this
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis) -> DecoderOnlyExample:
     all_tokens = []
     if example.task_token is not None:

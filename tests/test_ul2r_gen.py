@@ -4,7 +4,7 @@ import numpy as np
 from transformers import AutoTokenizer
 
 import haliax as hax
-from levanter.data.ul2r import DenoisingTaskConfig, Ul2Example, Ul2InstanceGenerator
+from levanter.data.ul2r import DenoisingTaskConfig, Ul2Example, Ul2InstanceGenerator, convert_to_decoder_only
 
 
 def test_ul2_generator_seed_works():
@@ -49,7 +49,7 @@ def test_decoder_only_example():
 
     example = Ul2Example(task_token=1000, inputs=np.arange(10), outputs=np.arange(20, 30))
 
-    converted = example.to_decoder_only(1001, QLen, KLen)
+    converted = convert_to_decoder_only(example, 1001, QLen, KLen)
 
     tokens = converted.tokens.array
 
@@ -93,7 +93,8 @@ def test_decoder_only_example_attention():
     outputs = np.arange(input_length * 2, (input_length * 2) + (L - input_length))
     assert len(outputs) + input_length == L
 
-    ex = Ul2Example(task_token=1000, inputs=inputs, outputs=outputs).to_decoder_only(1001, SeqLen, KSeqLen)
+    example = Ul2Example(task_token=1000, inputs=inputs, outputs=outputs)
+    ex = convert_to_decoder_only(example, 1001, SeqLen, KSeqLen)
 
     attn_mask = ex.attn_mask
 
