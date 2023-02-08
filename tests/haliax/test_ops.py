@@ -198,10 +198,9 @@ def test_sliding_window():
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0))
 
     sliding = hax.sliding_window(named1, Width, Window, -100.0)
-    assert sliding.axes == (Width, Height, Window, Depth)
+    assert sliding.axes == (Height, Width, Window, Depth)
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0, axis=1))
 
     sliding = hax.sliding_window(named1, Depth, Window, -100.0)
-    assert sliding.axes == (Depth, Height, Width, Window)
-    # assert sliding.axes == (Height, Width, Depth, Window)
+    assert sliding.axes == (Height, Width, Depth, Window)
     assert jnp.allclose(sliding.array, padded_moving_window(named1.array, Window.size, -100.0, axis=2))

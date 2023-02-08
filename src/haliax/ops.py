@@ -88,7 +88,9 @@ def isclose(a: NamedArray, b: NamedArray, rtol=1e-05, atol=1e-08, equal_nan=Fals
 
 
 def sliding_window(a: NamedArray, axis: Axis, window_axis: Axis, padding) -> NamedArray:
-    """Compute a sliding window over an array along a named axis."""
+    """Compute a sliding window over an array along a named axis. The array pads the original array with the given padding
+    so that the returned shape is (..., axis, window_axis, ...).
+    """
     index_of_axis = a._lookup_indices(axis)
     if index_of_axis is None:
         raise ValueError(f"Axis {axis} not found in array. Available axes: {a.axes}")
@@ -99,7 +101,14 @@ def sliding_window(a: NamedArray, axis: Axis, window_axis: Axis, padding) -> Nam
 
     # currently our padded_moving_window inserts the window axis at the index of the original axis
     # and moves the original axis to the beginning.
-    new_axes = (axis,) + a.axes[:index_of_axis] + (window_axis,) + a.axes[index_of_axis + 1 :]
+    new_axes = (
+        a.axes[:index_of_axis]
+        + (
+            axis,
+            window_axis,
+        )
+        + a.axes[index_of_axis + 1 :]
+    )
 
     return NamedArray(windowed, new_axes)
 
