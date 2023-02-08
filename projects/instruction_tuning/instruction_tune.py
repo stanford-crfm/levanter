@@ -10,7 +10,7 @@ import fsspec
 import jax
 import numpy.random
 import pyrallis
-from instruction_tuning.encdec_dataset import InstructionTuningDataset
+from instruction_tuning.itune_dataset import InstructionTuningDataset
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
@@ -209,12 +209,17 @@ def main(config: InstructionTuneConfig):
 
             while True:
                 # TODO: probably better if we make mixed batches
+                # TODO: probably better if we create the shard for each device on the respective host
                 if prng.uniform() < config.instruction_weight:
-                    batch = []
-                    for i in range(config.trainer.train_batch_size):
-                        example = next(iter_itune)
-                        example = convert_to_decoder_only(example, tokenizer.pad_token_id, SeqLen, KeySeqLen)
-                        batch.append(example)
+                    # construct batch on cpu
+                    with jax.default_device(jax.devices("cpu")[0]):
+                        batch = []
+                        for i in range(config.trainer.train_batch_size):
+                            example = next(iter_itune)
+                            example = convert_to_decoder_only(example, tokenizer.pad_token_id, SeqLen.size).to_named(
+                                SeqLen, KeySeqLen
+                            )
+                            batch.append(example)
                     batch = shard_batch(Batch, batch)
                     yield batch
                 else:

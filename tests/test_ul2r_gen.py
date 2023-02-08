@@ -49,9 +49,9 @@ def test_decoder_only_example():
 
     example = Ul2Example(task_token=1000, inputs=np.arange(10), outputs=np.arange(20, 30))
 
-    converted = convert_to_decoder_only(example, 1001, QLen, KLen)
+    converted = convert_to_decoder_only(example, 1001, QLen.size)
 
-    tokens = converted.tokens.array
+    tokens = converted.tokens
 
     assert tokens[0] == 1000
     assert tokens[1] == 0
@@ -59,17 +59,18 @@ def test_decoder_only_example():
     assert np.all(tokens[11:21] == example.outputs)
     assert np.all(tokens[21:] == 1001)
 
-    loss_mask = converted.loss_mask.array
+    loss_mask = converted.loss_mask
 
     assert np.sum(loss_mask) == len(example.outputs)
     assert np.all(loss_mask[0:10] == 0)
     assert np.all(loss_mask[10:20] == 1)
     assert np.all(loss_mask[20:] == 0)
 
-    attn_mask = converted.attn_mask.rearrange((QLen, KLen)).array
+    attn_mask = converted.attn_mask
+    named_attn_mask = converted.to_named(QLen, KLen).attn_mask
 
-    assert hax.all(hax.sum(converted.attn_mask, QLen) > 0)
-    assert hax.all(hax.sum(converted.attn_mask, KLen) > 0)
+    assert hax.all(hax.sum(named_attn_mask, QLen) > 0)
+    assert hax.all(hax.sum(named_attn_mask, KLen) > 0)
 
     assert np.all(attn_mask[:, 0] == 1)
     assert np.all(np.sum(attn_mask[np.arange(0, 11), :], 1) == 11)  # inputs fully attend to task token + inputs
@@ -94,9 +95,7 @@ def test_decoder_only_example_attention():
     assert len(outputs) + input_length == L
 
     example = Ul2Example(task_token=1000, inputs=inputs, outputs=outputs)
-    ex = convert_to_decoder_only(example, 1001, SeqLen, KSeqLen)
-
-    attn_mask = ex.attn_mask
+    attn_mask = convert_to_decoder_only(example, 1001, L).to_named(SeqLen, KSeqLen).attn_mask
 
     # testing here that we can't attend to the inputs from the outputs
     keys = np.zeros((L, D), dtype=np.float32)

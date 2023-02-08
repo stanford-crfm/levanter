@@ -4,7 +4,6 @@ import collections
 import dataclasses
 import logging
 from dataclasses import dataclass
-from functools import partial
 from typing import Iterator, List, Optional, Sequence, Union
 
 import equinox as eqx
@@ -36,13 +35,28 @@ class Ul2Example(eqx.Module):
 
 
 class DecoderOnlyExample(eqx.Module):
+    tokens: np.ndarray
+    targets: np.ndarray
+    attn_mask: np.ndarray
+    loss_mask: np.ndarray
+
+    def to_named(self, QLen: hax.Axis, KLen: hax.Axis) -> "NamedDecoderOnly":
+        return NamedDecoderOnly(
+            hax.named(self.tokens, QLen),
+            hax.named(self.targets, QLen),
+            hax.named(self.attn_mask, (QLen, KLen)),
+            hax.named(self.loss_mask, QLen),
+        )
+
+
+class NamedDecoderOnly(eqx.Module):
     tokens: hax.NamedArray
     targets: hax.NamedArray
     attn_mask: hax.NamedArray
     loss_mask: hax.NamedArray
 
 
-def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis) -> DecoderOnlyExample:
+def convert_to_decoder_only(example: Ul2Example, pad_token_id, max_seq_len: int) -> DecoderOnlyExample:
     all_tokens = []
     if example.task_token is not None:
         all_tokens.append(example.task_token)
@@ -54,7 +68,8 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
 
     unpadded_length = len(all_tokens)
 
-    max_seq_len = QLen.size
+    QLen = hax.Axis("QLen", max_seq_len)
+    KLen = hax.Axis("KLen", max_seq_len)
 
     # pad or truncate
     if len(all_tokens) > max_seq_len:
@@ -69,26 +84,23 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
 
     # do on the cpu to avoid dumb roundtrips to gpu/tpu
     with jax.default_device(jax.devices("cpu")[0]):
-        all_tokens_named = hax.named(all_tokens, QLen)
-
         # shift back by one since we're predicting the next token
-        targets = hax.roll(all_tokens_named, -1, QLen)
+        targets = np.roll(all_tokens, -1)
 
-        attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, input_length)
-        loss_mask = _create_decoder_loss_mask(QLen, input_length, unpadded_length)
-        assert hax.sum(loss_mask) == unpadded_length - input_length
+        attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, input_length).rearrange((QLen, KLen)).array
+        loss_mask = _create_decoder_loss_mask(max_seq_len, input_length, unpadded_length)
+        assert np.sum(loss_mask) == unpadded_length - input_length
 
-    return DecoderOnlyExample(all_tokens_named, targets, attention_mask, loss_mask)
+    return DecoderOnlyExample(all_tokens, targets, attention_mask, loss_mask)
 
 
-@partial(jax.jit, static_argnums=(0,))
-def _create_decoder_loss_mask(QLen, input_length, unpadded_length):
+def _create_decoder_loss_mask(max_seq_len, input_length, unpadded_length):
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QLen) >= input_length - 1
+    loss_mask = np.arange(max_seq_len) >= input_length - 1
     # 3) last token of targets
-    loss_mask = loss_mask & (hax.arange(QLen) < unpadded_length - 1)
+    loss_mask = loss_mask & (np.arange(max_seq_len) < unpadded_length - 1)
 
     return loss_mask
 
@@ -168,8 +180,10 @@ class Ul2rDataset(ShardableDataset[DecoderOnlyExample]):
             ul2example = self.generator.sample(example, key=subkey)
             try:
                 decoder_only = convert_to_decoder_only(
-                    ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen
-                )
+                    ul2example,
+                    self.tokenizer.pad_token_id,
+                    self.SeqLen.size,
+                ).to_named(self.SeqLen, self.KSeqLen)
             except AssertionError:
                 print(ul2example.render(self.tokenizer))
                 raise
