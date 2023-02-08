@@ -26,56 +26,78 @@ def causal_sliding_window_attention(
     # The basic idea is that we want to compute attention one block (of query) at a time, where a block is a window
     # of the sequence. Each q can attend to the prior window_size-1 positions plus itself
     assert Window.size <= SeqLen.size, "Window size must be at least 2x sequence length"
-
-    # TODO: padding ends up being very expensive and it would be better if we avoided it
-    # to do so, we'd need to special case the first and last blocks.
-    # The first block would need to switched to a causal mask against the first window_size positions
-    PaddedLen = Axis("PaddedLen", SeqLen.size + Window.size - 1)
-    padded_key = hax.pad_left(key, SeqLen, PaddedLen, 0.0)
-    padded_value = hax.pad_left(value, SeqLen, PaddedLen, 0.0)
-
-    # TODO: relax?
     assert SeqLen.size % Window.size == 0, "Sequence length must be divisible by window size"
-    Block = Axis("Block", SeqLen.size // Window.size)
-    BlockSize = Axis("BlockSize", Window.size * 2 - 1)
+
+    if Window.size == SeqLen.size:
+        # we can just use regular attention
+        # we have to special case this because jax won't like the attend_block_N function
+        # which doesn't actually get executed but does get traced
+        K = SeqLen.alias("K")
+        return hax.nn.attention.dot_product_attention(
+            SeqLen,
+            K,
+            Head,
+            query,
+            key.rename({SeqLen: K}),
+            value.rename({SeqLen: K}),
+            mask=hax.nn.attention.causal_mask(SeqLen, K),
+            attention_dtype=attention_dtype,
+            precision=precision,
+        )
 
     # the attention structure is that each query attends to the prior window_size positions (q - window_size, q]
     # We extract one query block of length Window.size at a time (the block size and window size could be different, but
     # this seems fine)
-    # For each query block, we extract a key and value block of length BlockSize == Window.size * 2 - 1
+    # For each query block, we extract a key and value block of length KWindow == Window.size * 2 - 1
     # The key block is [query_block_start - window_size + 1, query_block_start + window_size)
 
-    # for our attention masks, we have to account for the padding in the key and value blocks.
-    # because of the padding
-    # each q can attend to k s.t. k \in [q, q + window_size)
+    # TODO: relax?
+    Block = Axis("Block", SeqLen.size // Window.size)
+    KWindow = Axis("KWindow", Window.size * 2 - 1)  # this is what we need to grab from the key/value
+
+    # this makes code a bit easier to read below
+    Q = Window
+    K = KWindow
+
+    # for our attention masks, each q can attend to the prior window_size-1 positions plus itself
+    # that is, each q can attend to k s.t. k \in [q - window_size + 1, q]
+    # however, note that K is offset by window_size - 1, so we need to shift the mask by that amount
+    # this means that we want to mask out k s.t. k \in [q, q + window_size)
     # equivalently, k - q \in [0, window_size)
-    diff = hax.arange(BlockSize) - hax.arange(Window).broadcast_axis(BlockSize)
+    diff = hax.arange(K) - hax.arange(Q).broadcast_axis(K)
     attn_mask = (diff >= 0) & (diff < Window.size)
 
-    # no attending to padding for 0th block
-    attn_mask_0 = attn_mask & (hax.arange(BlockSize) >= Window.size - 1)
-
-    def attend_block(block_idx):
+    def attend_block_N(block_idx):
         block_idx = block_idx.scalar()
-        block_start = block_idx * Window.size
-        # our query block spans [block_start, block_start + window_size)
-        query_block = query.slice(SeqLen, Window, start=block_start)
+        query_block = query.slice(SeqLen, Q, start=block_idx * Q.size)
         # extract the relevant window from the key and value
-        key_block = _kv_block(padded_key, block_start)
-        value_block = _kv_block(padded_value, block_start)
-
-        mask = jax.lax.cond(block_idx == 0, lambda _: attn_mask_0, lambda _: attn_mask, None)
+        # this spans [query_block_start - window_size + 1, query_block_start + window_size)
+        key_block = key.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
+        value_block = value.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
 
         return hax.nn.attention.dot_product_attention(
-            Window, BlockSize, Head, query_block, key_block, value_block, mask, None, attention_dtype, precision
+            Q, K, Head, query_block, key_block, value_block, attn_mask, None, attention_dtype, precision
         )
 
-    def _kv_block(kv, block_start):
-        # each q can attend to the prior window_size-1 positions
-        return kv.slice(PaddedLen, BlockSize, start=block_start)
+    # for the 0th block, we have to worry about the out-of-bounds. just use a causal mask and do normal causal attention
+    # NB if you change it so that the block size and window size aren't the same, you'll need to change this
+    K0 = Q.alias("K0")
+    attn_mask_0 = hax.nn.attention.causal_mask(Q, K0)
+
+    def attend_block_0(block_idx):
+        query_block = query.slice(SeqLen, Q, start=0)
+        key_block = key.slice(SeqLen, K0, start=0)
+        value_block = value.slice(SeqLen, K0, start=0)
+        return hax.nn.attention.dot_product_attention(
+            Q, K0, Head, query_block, key_block, value_block, attn_mask_0, None, attention_dtype, precision
+        )
+
+    # extra arg/return for dummy scan accumulator
+    def attend_block(_, block_idx):
+        return None, jax.lax.cond(block_idx.scalar() == 0, attend_block_0, attend_block_N, block_idx)
 
     # we use scan here to encourage jax to do the blocking
-    _, blocked_attn = hax.scan(lambda _, block_idx: (None, attend_block(block_idx)), Block)(None, hax.arange(Block))  # type: ignore
+    _, blocked_attn = hax.scan(attend_block, Block)(None, hax.arange(Block))  # type: ignore
 
     # now we need to unblock the attention
-    return blocked_attn.flatten_axes((Block, Window), SeqLen)
+    return blocked_attn.flatten_axes((Block, Q), SeqLen)
