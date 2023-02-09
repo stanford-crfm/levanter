@@ -40,9 +40,9 @@ if __name__ == "__main__":
     with mesh:
         data = init()
         result = do_attn(data)
-        result.array.wait_until_ready()
+        result.array.block_until_ready()
         time_in = time.time()
         result2 = do_attn(data)
-        result2.array.wait_until_ready()
+        result2.array.block_until_ready()
         time_out = time.time()
         print(time_out - time_in)

@@ -65,3 +65,36 @@ def test_sliding_window_attention_fancier():
         expected = expected.rearrange((SeqLen, Head)).array
 
         assert jnp.allclose(result, expected)
+
+
+def test_longformer_alibi_bias():
+    D = 1
+    W = 32
+    H = 1
+
+    L = 4096
+
+    Head = Axis("Head", H)
+    SeqLen = Axis("SeqLen", L)
+    Window = Axis("Window", W)
+    Hidden = Axis("Hidden", D)
+
+    # this cycles [31, ..., 0, 31, ..., 0, ...]
+    cycle = np.flip(np.arange(W, dtype=np.float32))
+    v = np.tile(cycle, L // W).reshape((L, H, D))
+    v = hax.named(v, (SeqLen, Head, Hidden))
+
+    q = hax.ones((SeqLen, Head, Hidden), dtype=jnp.float32)
+    k = hax.ones((SeqLen, Head, Hidden), dtype=jnp.float32)
+
+    # bias gets geometrically larger as we go further in the sequence
+    # this is especially true if there are a lot of heads
+    big_head = hax.Axis("Head", 16)
+    bias = hax.nn.attention.alibi_attention_bias(big_head, SeqLen, dtype=jnp.float32).slice(big_head, Head, 0)
+
+    attn = causal_sliding_window_attention(SeqLen, Window, Hidden, q, k, v, bias=bias, attention_dtype=jnp.float32)
+    attn = attn.rearrange((SeqLen, Head, Hidden)).array.reshape(L)
+
+    # final value for each cycle should be the same
+    finals = attn[W - 1 :: W]
+    assert np.isclose(finals, finals[0]).all(), f"finals: {finals}"

@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.random import PRNGKey
 
 import haliax
@@ -190,7 +191,7 @@ def _get_alibi_slopes(heads: int) -> List[float]:
     )
 
 
-def alibi_attention_bias(Heads: Axis, SeqLen: Axis) -> NamedArray:
+def alibi_attention_bias(Heads: Axis, SeqLen: Axis, dtype=jnp.float32) -> NamedArray:
     """
     Creates an attention bias for alibi attention.
 
@@ -198,7 +199,8 @@ def alibi_attention_bias(Heads: Axis, SeqLen: Axis) -> NamedArray:
     :param Heads: Axis of heads
     :return: NamedArray of shape (Heads, QSeqLen)
     """
-    slopes = haliax.named(jnp.array(_get_alibi_slopes(Heads.size)), Heads)
+    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size)), Heads)
     positions = haliax.arange(SeqLen).broadcast_axis(Heads)
 
-    return slopes * positions
+    biases = slopes * positions
+    return biases.astype(dtype)

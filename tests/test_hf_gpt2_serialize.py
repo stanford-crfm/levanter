@@ -5,11 +5,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as onp
-import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
+from utils import skip_if_no_torch
 
 import haliax as hax
 from levanter.config import TrainerConfig
@@ -17,21 +17,12 @@ from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2LMHeadModel
 
 
-def has_torch():
-    try:
-        import torch  # noqa F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_hf_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("gpt2", None)
 
 
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_mistral_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
 
@@ -88,7 +79,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
 # Gradient tests
 
 
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_hf_gradient():
     _compare_gpt2_checkpoint_gradients("gpt2", None)
 

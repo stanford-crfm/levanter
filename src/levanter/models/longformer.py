@@ -15,6 +15,7 @@ def causal_sliding_window_attention(
     query: NamedArray,
     key: NamedArray,
     value: NamedArray,
+    bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
 ) -> NamedArray:
@@ -41,6 +42,7 @@ def causal_sliding_window_attention(
             key.rename({SeqLen: K}),
             value.rename({SeqLen: K}),
             mask=hax.nn.attention.causal_mask(SeqLen, K),
+            bias=bias,
             attention_dtype=attention_dtype,
             precision=precision,
         )
@@ -75,8 +77,13 @@ def causal_sliding_window_attention(
         key_block = key.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
         value_block = value.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
 
+        if bias is not None:
+            bias_block = bias.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
+        else:
+            bias_block = None
+
         return hax.nn.attention.dot_product_attention(
-            Q, K, Head, query_block, key_block, value_block, attn_mask, None, attention_dtype, precision
+            Q, K, Head, query_block, key_block, value_block, attn_mask, bias_block, attention_dtype, precision
         )
 
     # for the 0th block, we have to worry about the out-of-bounds. just use a causal mask and do normal causal attention
@@ -88,8 +95,12 @@ def causal_sliding_window_attention(
         query_block = query.slice(SeqLen, Q, start=0)
         key_block = key.slice(SeqLen, K0, start=0)
         value_block = value.slice(SeqLen, K0, start=0)
+        if bias is not None:
+            bias_block = bias.slice(SeqLen, K0, start=0)
+        else:
+            bias_block = None
         return hax.nn.attention.dot_product_attention(
-            Q, K0, Head, query_block, key_block, value_block, attn_mask_0, None, attention_dtype, precision
+            Q, K0, Head, query_block, key_block, value_block, attn_mask_0, bias_block, attention_dtype, precision
         )
 
     # extra arg/return for dummy scan accumulator
