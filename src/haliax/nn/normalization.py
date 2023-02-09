@@ -26,6 +26,9 @@ class LayerNorm(eqx.Module):
         if elementwise_affine:
             self.weight = hax.ones(axis)
             self.bias = hax.zeros(axis)
+        else:
+            self.weight = None
+            self.bias = None
 
     def __call__(self, x: NamedArray) -> NamedArray:
         mean = x.mean(self.axis)

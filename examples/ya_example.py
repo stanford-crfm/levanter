@@ -6,23 +6,22 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
 import pyrallis
-from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.jax_utils import global_key_array, parameter_count
+from levanter.jax_utils import parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss_and_log_normalizers
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.yatransformer import YaConfig, YaLMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
 
@@ -34,17 +33,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TrainGpt2Config:
+class TrainYaConfig:
     data: CachedLMDatasetConfig = CachedLMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
-    model: Gpt2Config = Gpt2Config()
+    model: YaConfig = YaConfig()
 
     log_z_regularization: float = 0.0
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
 
 @pyrallis.wrap()
-def main(config: TrainGpt2Config):
+def main(config: TrainYaConfig):
     config.trainer.initialize(config)
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
@@ -53,7 +52,6 @@ def main(config: TrainGpt2Config):
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
     SeqLen = config.model.SeqLen
-    KeySeqLen = config.model.KeySeqLen
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -74,7 +72,7 @@ def main(config: TrainGpt2Config):
         compute_axis_mapping,
     )
 
-    with config.trainer.device_mesh as mesh:
+    with config.trainer.device_mesh:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -103,7 +101,7 @@ def main(config: TrainGpt2Config):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_pjit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+            model = YaLMHeadModel(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
@@ -115,25 +113,17 @@ def main(config: TrainGpt2Config):
         optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
-        # masks for attention and loss
-        def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-
-            # forgetful causal masking
-            if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
-                causal_mask = causal_mask & fcm_mask
-            return causal_mask
+        # TODO: bring back forgetful_causal_masking
 
         # don't want to compute the loss w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
+        def compute_loss(model: YaLMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, key=key, inference=inference)
+                pred_y = model(input_ids)
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
@@ -143,30 +133,20 @@ def main(config: TrainGpt2Config):
                 loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
                 loss = hax.mean(loss, where=loss_mask)
 
-                if not inference and config.log_z_regularization > 0:
-                    logz_mse = hax.mean((log_normalizers**2))
-                    loss += config.log_z_regularization * logz_mse
-
                 return loss.scalar()
 
-        def train_batch_loss(model, input_ids, attn_mask, key):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
+        def train_batch_loss(model, input_ids):
+            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids))
 
         # training loop
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, input_ids, keys):
-
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
-            attn_mask = hax.auto_sharded(attn_mask)
-
+        def train_step(model, opt_state, input_ids):
             loss, grads = accumulate_gradients_sharded(
                 eqx.filter_value_and_grad(train_batch_loss),
                 Batch,
                 model,
                 input_ids,
-                attn_mask,
-                keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
@@ -182,9 +162,7 @@ def main(config: TrainGpt2Config):
         @named_pjit(axis_resources=compute_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            # just use causal mask for evaluation
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            return compute_loss(model, input_ids, mask, None, True)
+            return compute_loss(model, input_ids)
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
@@ -255,12 +233,8 @@ def main(config: TrainGpt2Config):
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     input_ids = hax.named(input_ids, (Batch, SeqLen))
-                    my_key, training_key = jrandom.split(training_key, 2)
-                    example_keys = global_key_array(
-                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
-                    )
 
-                step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
+                step_loss, model, opt_state = train_step(model, opt_state, input_ids)
                 step_loss = step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
