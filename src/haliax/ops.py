@@ -87,32 +87,6 @@ def isclose(a: NamedArray, b: NamedArray, rtol=1e-05, atol=1e-08, equal_nan=Fals
     return NamedArray(jnp.isclose(a.array, b.array, rtol=rtol, atol=atol, equal_nan=equal_nan), a.axes)
 
 
-def sliding_window(a: NamedArray, axis: Axis, window_axis: Axis, padding) -> NamedArray:
-    """Compute a sliding window over an array along a named axis. The array pads the original array with the given padding
-    so that the returned shape is (..., axis, window_axis, ...).
-    """
-    index_of_axis = a._lookup_indices(axis)
-    if index_of_axis is None:
-        raise ValueError(f"Axis {axis} not found in array. Available axes: {a.axes}")
-
-    from haliax.numpy_extensions import padded_moving_window
-
-    windowed = padded_moving_window(a.array, window_axis.size, padding, axis=index_of_axis)
-
-    # currently our padded_moving_window inserts the window axis at the index of the original axis
-    # and moves the original axis to the beginning.
-    new_axes = (
-        a.axes[:index_of_axis]
-        + (
-            axis,
-            window_axis,
-        )
-        + a.axes[index_of_axis + 1 :]
-    )
-
-    return NamedArray(windowed, new_axes)
-
-
 def pad_left(array: NamedArray, axis: Axis, new_axis: Axis, value=0) -> NamedArray:
     """Pad an array along named axes."""
     amount_to_pad_to = new_axis.size - axis.size
@@ -136,4 +110,4 @@ def raw_array_or_scalar(x: NamedOrNumeric):
     return x
 
 
-__all__ = ["trace", "where", "tril", "triu", "isclose", "sliding_window", "pad_left", "clip"]
+__all__ = ["trace", "where", "tril", "triu", "isclose", "pad_left", "clip"]
