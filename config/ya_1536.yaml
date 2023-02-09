@@ -8,7 +8,7 @@ model:
   hidden_dim: 1536
   num_heads: 12
   num_layers: 48
-  seq_len: 4096
+  seq_len: 1024
   window_size: 1024
   gradient_checkpointing: true
 trainer:
