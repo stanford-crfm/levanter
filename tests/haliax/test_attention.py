@@ -3,7 +3,7 @@ from jax.random import PRNGKey
 from utils import skip_if_no_torch
 
 import haliax as hax
-from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weights, forgetful_causal_mask
+from haliax.nn.attention import alibi_bias, dot_product_attention_weights, forgetful_causal_mask
 
 
 def test_alibi_attention_bias():
@@ -11,7 +11,7 @@ def test_alibi_attention_bias():
     NumHeads = hax.Axis("NumHeads", 1)
     Hid = hax.Axis("Hid", 8)
 
-    bias = alibi_attention_bias(NumHeads, KeySeqLen)
+    bias = alibi_bias(NumHeads, KeySeqLen)
 
     query = hax.ones((NumHeads, Hid))
     key = hax.ones((KeySeqLen, NumHeads, Hid))
@@ -38,7 +38,7 @@ def test_alibi_attention_compared_to_hf():
         build_alibi_tensor(torch.ones(1, L.size), H.size, dtype=torch.float32).numpy().reshape(H.size, L.size)
     )
 
-    hax_tensor = np.array(alibi_attention_bias(H, L).array)
+    hax_tensor = np.array(alibi_bias(H, L).array)
 
     assert np.allclose(torch_tensor, hax_tensor)
 

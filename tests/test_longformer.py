@@ -4,8 +4,7 @@ import numpy as np
 
 import haliax as hax
 from haliax import Axis
-from haliax.nn.attention import causal_mask
-from levanter.models.longformer import causal_sliding_window_attention
+from haliax.nn.attention import causal_mask, causal_sliding_window_attention
 
 
 def test_causal_sliding_window_attention_simple():
@@ -91,7 +90,7 @@ def test_longformer_alibi_bias_pos_invariance():
     # this is especially true if there are a lot of heads
     big_head = hax.Axis("Head", 16)
     # NB: this test doesn't work if you use bfloat16 for biases
-    bias = hax.nn.attention.alibi_attention_bias(big_head, SeqLen, dtype=jnp.float32).slice(big_head, Head, 0)
+    bias = hax.nn.attention.alibi_bias(big_head, SeqLen, dtype=jnp.float32).slice(big_head, Head, 0)
 
     attn = causal_sliding_window_attention(SeqLen, Window, Hidden, q, k, v, bias=bias, attention_dtype=jnp.bfloat16)
     attn = attn.rearrange((SeqLen, Head, Hidden)).array.reshape(L)

@@ -5,8 +5,8 @@ import numpy as np
 from jax.experimental.maps import Mesh
 
 import haliax as hax
+from haliax.nn.attention import causal_sliding_window_attention
 from haliax.partitioning import named_pjit
-from levanter.models.longformer import causal_sliding_window_attention
 
 
 Len = hax.Axis("Len", 8192)
