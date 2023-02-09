@@ -1,4 +1,6 @@
+import numpy as np
 from jax.random import PRNGKey
+from utils import skip_if_no_torch
 
 import haliax as hax
 from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weights, forgetful_causal_mask
@@ -21,6 +23,24 @@ def test_alibi_attention_bias():
     assert weights_bias.take(KeySeqLen, -1).item() > weights_no_bias.take(KeySeqLen, -1).item()
 
     assert weights_no_bias.take(KeySeqLen, -1).item() == weights_no_bias.take(KeySeqLen, -2).item()
+
+
+@skip_if_no_torch
+def test_alibi_attention_compared_to_hf():
+    import torch
+    from transformers.models.bloom.modeling_bloom import build_alibi_tensor
+
+    L = hax.Axis("L", 128)
+    H = hax.Axis("NumHeads", 16)
+
+    # Returns tensor shaped (batch_size * num_heads, 1, max_seq_len)
+    torch_tensor = (
+        build_alibi_tensor(torch.ones(1, L.size), H.size, dtype=torch.float32).numpy().reshape(H.size, L.size)
+    )
+
+    hax_tensor = np.array(alibi_attention_bias(H, L).array)
+
+    assert np.allclose(torch_tensor, hax_tensor)
 
 
 def test_fcm_attention_mask():
