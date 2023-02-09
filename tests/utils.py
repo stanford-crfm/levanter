@@ -97,3 +97,16 @@ def assert_trees_not_close(a, b):
 
 def arrays_only(x):
     return eqx.filter(x, eqx.is_inexact_array_like)
+
+
+def has_torch():
+    try:
+        import torch  # noqa F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def skip_if_no_torch(f):
+    return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
