@@ -272,6 +272,49 @@ def test_rearrange_unused_ellipsis():
     assert hax.rearrange(named1, (D, ..., W, H)).axes == (D, W, H)
 
 
+def test_flatten_axes():
+    H = Axis("Height", 2)
+    W = Axis("Width", 3)
+    D = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    HW = Axis("HW", 6)
+    assert jnp.all(jnp.equal(hax.flatten_axes(named1, (H, W), HW).array, jnp.reshape(named1.array, (6, 4))))
+
+    HWD = Axis("HWD", 24)
+    assert jnp.all(jnp.equal(hax.flatten_axes(named1, (H, W, D), HWD).array, jnp.reshape(named1.array, (24,))))
+
+    HD = Axis("HD", 8)
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named1, (H, D), HD).array, jnp.reshape(named1.array.swapaxes(1, 2), (8, 3)))
+    )
+
+    # do some reordering
+    named2 = hax.random.uniform(PRNGKey(1), (D, H, W))
+
+    assert jnp.all(jnp.equal(hax.flatten_axes(named2, (H, W), HW).array, jnp.reshape(named2.array, (4, 6))))
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named2, (H, W, D), HWD).array, jnp.reshape(named2.array.transpose(1, 2, 0), (24,)))
+    )
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named2, (H, D), HD).array, jnp.reshape(named2.array.swapaxes(0, 1), (8, 3)))
+    )
+
+    # once more with H at the end
+    named3 = hax.random.uniform(PRNGKey(2), (W, D, H))
+
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named3, (H, W), HW).array, jnp.reshape(named3.array.transpose(1, 2, 0), (4, 6)))
+    )
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named3, (H, W, D), HWD).array, jnp.reshape(named3.array.transpose(2, 0, 1), (24,)))
+    )
+    assert jnp.all(
+        jnp.equal(hax.flatten_axes(named3, (H, D), HD).array, jnp.reshape(named3.array.swapaxes(1, 2), (3, 8)))
+    )
+
+
 def test_arange():
     H = Axis("Height", 10)
 

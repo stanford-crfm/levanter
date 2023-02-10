@@ -659,7 +659,8 @@ def rename(array: NamedArray, renames: Mapping[Axis, Axis]) -> NamedArray:
 def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) -> NamedArray:
     """
     Merge a sequence of axes into a single axis. The new axis must have the same size as the product of the old axes.
-    For now the new axis will always be the last axis
+    The old_axes will be rearranged to be in order starting at the first old axis index, then flattened.
+    This means that array.unflatten_axes(axis, new_axes).flatten_axes(new_axes, axis) == array
     """
     if len(old_axes) == 0:
         raise ValueError("Must specify at least one axis to merge")
@@ -667,11 +668,37 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) ->
     if new_axis.size != prod(ax.size for ax in old_axes):
         raise ValueError(f"Cannot merge {old_axes} into {new_axis}: size mismatch")
 
-    # TODO: might want to do something more clever here when the old_axes aren't at the end
-    array = rearrange(array, (...,) + tuple(old_axes))
-    new_axes = array.axes[: -len(old_axes)] + (new_axis,)
-    raw_array = array.array.reshape(array.array.shape[: -len(old_axes)] + (new_axis.size,))
-    return NamedArray(raw_array, new_axes)
+    # our strategy is to move the old axes into order starting at the first old axis index, then flatten
+
+    axis_indices = [array._lookup_indices(ax) for ax in old_axes]
+    if any(i is None for i in axis_indices):
+        raise ValueError(f"Axis {old_axes} not found in {array}")
+
+    first_index = axis_indices[0]
+    assert first_index is not None  # mypy
+
+    axis_indices = set(axis_indices)  # type: ignore
+
+    prefix_axes = []
+    # move the old axes into order starting at the first old axis index
+    for i in range(first_index):
+        if i not in axis_indices:
+            prefix_axes.append(array.axes[i])
+
+    postfix_axes = []
+    for i in range(first_index + 1, len(array.axes)):
+        if i not in axis_indices:
+            postfix_axes.append(array.axes[i])
+
+    rearranged_axes = []
+    rearranged_axes.extend(prefix_axes)
+    rearranged_axes.extend(old_axes)
+    rearranged_axes.extend(postfix_axes)
+
+    array = rearrange(array, rearranged_axes)
+    new_axes = prefix_axes + [new_axis] + postfix_axes
+    raw_array = jax.lax.collapse(array.array, len(prefix_axes), len(prefix_axes) + len(old_axes))
+    return NamedArray(raw_array, tuple(new_axes))
 
 
 def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> NamedArray:
