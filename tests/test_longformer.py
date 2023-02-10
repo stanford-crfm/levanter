@@ -1,3 +1,4 @@
+import equinox
 import jax.config
 import jax.numpy as jnp
 import numpy as np
@@ -98,3 +99,27 @@ def test_longformer_alibi_bias_pos_invariance():
     # final value for each cycle should be the same
     finals = attn[W - 1 :: W]
     assert np.isclose(finals, finals[0], rtol=2e-4).all(), f"finals: {finals}"
+
+
+def test_longformer_grad():
+    D = 4
+    W = 32
+    H = 2
+
+    L = 128
+
+    Head = Axis("Head", H)
+    SeqLen = Axis("SeqLen", L)
+    Window = Axis("Window", W)
+    Hidden = Axis("Hidden", D)
+
+    def grad_sliding_window_attention(q, k, v):
+        return equinox.filter_grad(
+            lambda x: causal_sliding_window_attention(SeqLen, Window, Hidden, x, k, v).sum().scalar()
+        )(q)
+
+    q = hax.random.uniform(jax.random.PRNGKey(0), (SeqLen, Head, Hidden))
+    k = hax.random.uniform(jax.random.PRNGKey(1), (SeqLen, Head, Hidden))
+    v = hax.random.uniform(jax.random.PRNGKey(2), (SeqLen, Head, Hidden))
+
+    grad_q = grad_sliding_window_attention(q, k, v)  # noqa: F841

@@ -1,7 +1,7 @@
 data:
   id: dlwh/wikitext_103_detokenized
 model:
-  hidden_dim: 32
+  hidden_dim: 256
   num_heads: 4
   num_layers: 2
 trainer:

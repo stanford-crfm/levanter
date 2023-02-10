@@ -62,6 +62,7 @@ def dot_product_attention_weights(
 
     if bias is not None:
         weights = weights + bias
+
     if mask is not None:
         weights = haliax.where(mask, weights, -1e9)
 
