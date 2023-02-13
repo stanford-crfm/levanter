@@ -89,6 +89,7 @@ class YaAttention(eqx.Module):
         attn = causal_sliding_window_attention(
             self.config.SeqLen, self.config.Window, self.config.HeadDim, q, k, v, bias=bias
         )
+        # assert attn.axes == (self.config.SeqLen, self.config.Heads, self.config.HeadDim), attn.axes
 
         return self.p_out(attn)
 
@@ -108,17 +109,16 @@ class YaBlock(eqx.Module):
         k_attn, k_mlp = jax.random.split(key, 2)
         self.attn = YaAttention(config, key=k_attn)
         self.mlp = SwiGluMLP(config.Embed, config.Mlp, key=k_mlp)
-        # TODO: use elementwise_affine=True?
-        self.ln_attn = hnn.LayerNorm(config.Embed, elementwise_affine=False)
-        self.ln_mlp = hnn.LayerNorm(config.Embed, elementwise_affine=False)
+        self.ln_attn = hnn.LayerNorm(config.Embed, learn_bias=False)
+        self.ln_mlp = hnn.LayerNorm(config.Embed, learn_bias=False)
         self.a_attn = hax.zeros(())
         self.a_mlp = hax.zeros(())
 
     @named_call
     def __call__(self, x, bias):
         # TODO: parallel attention/mlp?
-        x = x + self.attn(self.ln_attn(x), bias) * self.a_attn
-        x = x + self.mlp(self.ln_mlp(x)) * self.a_mlp
+        x = x + self.attn(self.ln_attn(x), bias)
+        x = x + self.mlp(self.ln_mlp(x))
         return x
 
 
@@ -132,7 +132,7 @@ class YaTransformer(eqx.Module):
         self.config = config
         # vectorize the blocks
         self.blocks = hax.vmap(YaBlock, config.Layers)(config, key=shaped_rng_split(key, config.num_layers))
-        self.ln_f = hnn.LayerNorm(config.Embed)
+        self.ln_f = hnn.LayerNorm(config.Embed, learn_bias=False)
 
     @named_call
     def __call__(self, x):
@@ -143,7 +143,6 @@ class YaTransformer(eqx.Module):
             do_block = jax.checkpoint(do_block, prevent_cse=False)
 
         x = hax.fold(do_block, self.config.Layers)(x, self.blocks)
-        x = self.ln_f(x)
         return self.ln_f(x)
 
 

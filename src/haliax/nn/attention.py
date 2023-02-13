@@ -293,11 +293,12 @@ def causal_sliding_window_attention(
     attn_mask_0 = hax.nn.attention.causal_mask(Q, K0)
 
     def attend_block_0(block_idx):
-        query_block = query.slice(SeqLen, Q, start=0)
-        key_block = key.slice(SeqLen, K0, start=0)
-        value_block = value.slice(SeqLen, K0, start=0)
+        block_idx = block_idx.scalar()
+        query_block = query.slice(SeqLen, Q, start=block_idx)
+        key_block = key.slice(SeqLen, K0, start=block_idx)
+        value_block = value.slice(SeqLen, K0, start=block_idx)
         if bias is not None:
-            bias_block = bias.slice(SeqLen, K0, start=0)
+            bias_block = bias.slice(SeqLen, K0, start=block_idx)
         else:
             bias_block = None
         return hax.nn.attention.dot_product_attention(

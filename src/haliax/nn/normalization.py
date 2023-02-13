@@ -9,7 +9,7 @@ from ..types import AxisSpec
 
 
 class LayerNorm(eqx.Module):
-    r"""
+    """
     Normalises the input along the specified axis (or axes), using the mean and variance of the
     input along that axis.
     """
@@ -19,15 +19,18 @@ class LayerNorm(eqx.Module):
     weight: Optional[NamedArray]
     bias: Optional[NamedArray]
 
-    def __init__(self, axis: AxisSpec, eps: float = 1e-5, elementwise_affine: bool = True):
+    def __init__(self, axis: AxisSpec, eps: float = 1e-5, learn_scale: bool = True, learn_bias: bool = True):
         self.axis = axis
         self.eps = eps
 
-        if elementwise_affine:
+        if learn_scale:
             self.weight = hax.ones(axis)
-            self.bias = hax.zeros(axis)
         else:
             self.weight = None
+
+        if learn_bias:
+            self.bias = hax.zeros(axis)
+        else:
             self.bias = None
 
     def __call__(self, x: NamedArray) -> NamedArray:
@@ -37,5 +40,9 @@ class LayerNorm(eqx.Module):
         out = (x - mean) * inv
 
         if self.weight is not None:
-            out = self.weight * out + self.bias
+            out = self.weight * out
+
+        if self.bias is not None:
+            out = out + self.bias
+
         return out
