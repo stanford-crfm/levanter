@@ -1,6 +1,6 @@
 data:
   cache_dir: "gs://levanter-data/tokenized/MultiLegalPile_Wikipedia_Shuffled"
-  tokenizer: "dlwh/multilegal_tokenizer"
+  tokenizer: "dlwh/multilegal_tokenizer_128k"
 model:
   hidden_dim: 1536
   num_heads: 24
