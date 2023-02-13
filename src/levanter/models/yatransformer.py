@@ -100,10 +100,6 @@ class YaBlock(eqx.Module):
     ln_attn: hnn.LayerNorm
     ln_mlp: hnn.LayerNorm
 
-    # re-zero style residual connections arxiv.org/abs/2003.04887
-    a_attn: hax.NamedArray
-    a_mlp: hax.NamedArray
-
     def __init__(self, config: YaConfig, key: PRNGKey):
         super().__init__()
         k_attn, k_mlp = jax.random.split(key, 2)
@@ -111,8 +107,6 @@ class YaBlock(eqx.Module):
         self.mlp = SwiGluMLP(config.Embed, config.Mlp, key=k_mlp)
         self.ln_attn = hnn.LayerNorm(config.Embed, learn_bias=False)
         self.ln_mlp = hnn.LayerNorm(config.Embed, learn_bias=False)
-        self.a_attn = hax.zeros(())
-        self.a_mlp = hax.zeros(())
 
     @named_call
     def __call__(self, x, bias):
