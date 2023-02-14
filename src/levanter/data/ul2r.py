@@ -14,7 +14,7 @@ from jaxtyping import PyTree
 from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
-from levanter.data.dataset import Dataset, ShardableDataset, T
+from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -40,8 +40,8 @@ class DecoderOnlyExample(eqx.Module):
     attn_mask: np.ndarray
     loss_mask: np.ndarray
 
-    def to_named(self, QLen: hax.Axis, KLen: hax.Axis) -> "NamedDecoderOnly":
-        return NamedDecoderOnly(
+    def to_named(self, QLen: hax.Axis, KLen: hax.Axis) -> "NamedLmExample":
+        return NamedLmExample(
             hax.named(self.tokens, QLen),
             hax.named(self.targets, QLen),
             hax.named(self.attn_mask, (QLen, KLen)),
@@ -49,7 +49,7 @@ class DecoderOnlyExample(eqx.Module):
         )
 
 
-class NamedDecoderOnly(eqx.Module):
+class NamedLmExample(eqx.Module):
     tokens: hax.NamedArray
     targets: hax.NamedArray
     attn_mask: hax.NamedArray
@@ -146,7 +146,7 @@ class DenoisingTaskConfig:
 DEFAULT_S_DENOISER_CONFIG = DenoisingTaskConfig(S_TASK_TOKEN, 1.0, 512.0)
 
 
-class Ul2rDataset(ShardableDataset[DecoderOnlyExample]):
+class Ul2rDataset(ShardableDataset[NamedLmExample]):
     def __init__(
         self,
         base_dataset: Dataset[Sequence[int]],
@@ -173,7 +173,7 @@ class Ul2rDataset(ShardableDataset[DecoderOnlyExample]):
         )
         self.tokenizer = tokenizer
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[NamedLmExample]:
         key = self.initial_key
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
@@ -202,7 +202,7 @@ class Ul2rDataset(ShardableDataset[DecoderOnlyExample]):
     def __len__(self) -> int:
         return len(self.base_dataset)
 
-    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[T]":
+    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[NamedLmExample]":
         return Ul2rDataset(
             self.base_dataset.shard(shard_id, num_shards),  # type: ignore
             self.SeqLen,

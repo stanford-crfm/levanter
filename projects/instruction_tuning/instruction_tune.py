@@ -24,7 +24,7 @@ from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, build_batch
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
-from levanter.data.ul2r import DecoderOnlyExample, DenoisingTaskConfig, Ul2rDataset, convert_to_decoder_only
+from levanter.data.ul2r import DenoisingTaskConfig, NamedLmExample, Ul2rDataset, convert_to_decoder_only
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss
@@ -96,13 +96,12 @@ def main(config: InstructionTuneConfig):
         )
 
     # 1. ul2r phase
-    base_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), model.SeqLen.size)
+    base_token_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), model.SeqLen.size)
     task_configs = DenoisingTaskConfig.ul2r_configs()
-    base_dataset = Ul2rDataset(  # type: ignore
-        base_dataset, model.SeqLen, model.KeySeqLen, ul2r_key, tokenizer, task_configs
-    )
+    base_dataset = Ul2rDataset(base_token_dataset, model.SeqLen, model.KeySeqLen, ul2r_key, tokenizer, task_configs)
 
-    # NB we can't make this until we have added all our tokens to the tokenizer (which is a side effect of building the dataset)
+    # NB we can't make this until we have added all our tokens to the tokenizer
+    # (which is sadly a side effect of building the dataset)
     Vocab = Axis("vocab", len(tokenizer))
     model = model.resize_vocab(Vocab)
 
@@ -122,7 +121,7 @@ def main(config: InstructionTuneConfig):
 
         model, opt_state = init_model(model)
 
-        def compute_loss(model: Gpt2LMHeadModel, ex: DecoderOnlyExample):
+        def compute_loss(model: Gpt2LMHeadModel, ex: NamedLmExample):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
@@ -140,7 +139,7 @@ def main(config: InstructionTuneConfig):
         # training loop
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, batch: DecoderOnlyExample):
+        def train_step(model, opt_state, batch: NamedLmExample):
             loss, grads = accumulate_gradients_sharded(
                 eqx.filter_value_and_grad(train_batch_loss),
                 Batch,
