@@ -329,7 +329,9 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
         should_append_eos = False
 
     if should_append_eos:
-        tokenize = lambda x: tokenizer(x + " " + tokenizer.eos_token, return_attention_mask=False)  # noqa: E731
+        tokenize = lambda x: tokenizer(  # noqa: E731
+            [d + " " + tokenizer.eos_token for d in x], return_attention_mask=False
+        )
     else:
         tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
 
