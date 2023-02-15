@@ -77,7 +77,7 @@ Now that you have a TPU VM instance, you can follow the [Running Levanter] steps
 
 #### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/launch.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpoint_dir gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/launch.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
@@ -86,7 +86,7 @@ on each worker.
 #### Launch a GPT-2 Small in interactive mode
 This version writes to the terminal, you should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/run.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpoint_dir gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/run.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ## Common Issues
