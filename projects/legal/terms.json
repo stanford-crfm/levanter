@@ -1,0 +1,409 @@
+{
+  "latin": [
+    "in casu",
+    "de lege lata",
+    "de lege ferenda",
+    "in fine",
+    "e contrario",
+    "in dubio",
+    "sui generis"
+  ],
+  "ruling": {
+    "bg": {
+      "Bulgaria": [
+        "BKC",
+        "съд "
+      ]
+    },
+    "de": {
+      "Germany": [
+        "BGH",
+        "BVerG"
+      ],
+      "Austria": [
+        "OGH"
+      ],
+      "Switzerland": [
+        "BGE",
+        "BGer"
+      ],
+      "EU": [
+        "EGMR",
+        "EuGH",
+        "EuG"
+      ]
+    },
+    "el": {
+      "Greece": [
+        "ΑΕΔ"
+      ]
+    },
+    "et": {
+      "Estonia": [
+        "Kohus",
+        "Riigikohus"
+      ]
+    },
+    "fi": {
+      "Finland": [
+        "KKO",
+        "HD",
+        "tuomioistuin"
+      ]
+    },
+    "hu": {
+      "Hungary": [
+        "bíróság",
+        "Kúria"
+      ]
+    },
+    "fr": {
+      "France": [],
+      "Switzerland": [
+        "ATF"
+      ],
+      "Belgium": [
+        "Zie Cass."
+      ],
+      "Canada": [
+        "CSC"
+      ],
+      "EU": [
+        "CourEDH",
+        "EJC"
+      ]
+    },
+    "it": {
+      "Italy": [
+        "Cass. Sez.",
+        "Cass.",
+        "provvedimento n."
+      ],
+      "Switzerland": [
+        "DTF",
+        "sentenza"
+      ],
+      "EU": [
+        "CGUE",
+        "CorteEDU"
+      ]
+    },
+    "da": {
+      "Denmark": [
+        "Højesteret"
+      ]
+    },
+    "nl": {
+      "Netherlands": [
+        "RBZWB ",
+        "RBDHA",
+        "CRVB"
+      ],
+      "Belgium": [
+        "CASS",
+        "GHCC",
+        "Gerechtshof"
+      ]
+    },
+    "pl": {
+      "Poland": [
+        "SK \\d{1,2}/\\d{1,2}",
+        "FSK",
+        "SA/\\w{2}",
+        "KpT \\d{1,2}/\\d{1,2}",
+        "K \\d{1,2}/\\d{1,2}"
+      ]
+    },
+    "sk": {
+      "Slovakia": [
+        "súd"
+      ]
+    },
+    "cs": {
+      "CzechRepublic": [
+        "soud",
+        "ÚS \\d{1,5}/\\d{2}"
+      ]
+    },
+    "pt": {
+      "Portugal": [
+        "Acórdão n\\. \\d{1,3}\\/\\d{4}"
+      ]
+    },
+    "en": {
+      "US": [
+        "v."
+      ],
+      "UK": [
+        "UKSC",
+        "UKHL",
+        "UKPC",
+        "EWCA",
+        "EWCA Civ"
+      ],
+      "EU": [
+        "HUDOC",
+        "CJEU"
+      ]
+    },
+    "hr": {
+      "Croatia": [
+        "sud"
+      ]
+    },
+    "mt": {
+      "Malta": [
+        "Qorti",
+        "QOJ"
+      ]
+    },
+    "ro": {
+      "Romania": [
+        "ICCJ",
+        "CCR",
+        "CSM"
+      ]
+    },
+    "sv": {
+      "Sweden": [
+        "HD",
+        "domstolen"
+      ]
+    },
+    "sl": {
+      "Slovenia": [
+        "VSLS",
+        "ICC",
+        "ZKP",
+        "Sodišče"
+      ]
+    },
+    "ga": {
+      "Irland": [
+        "H. Ct.",
+        "Spec. Crim. Ct."
+      ]
+    },
+    "lt": {
+      "Latvia": [
+        "tiesa",
+        "ECT"
+      ]
+    },
+    "lv": {
+      "lithuania": [
+        "TGT",
+        "teismas"
+      ]
+    },
+    "es": {
+      "Spain": [
+        "Roj",
+        "Decisión nº",
+        "Resolución",
+        "Real Decreto"
+      ]
+    }
+  },
+  "law": {
+    "de": {
+      "Germany": [
+        "Art.",
+        "§"
+      ],
+      "Austria": [
+        "Art.",
+        "§"
+      ],
+      "Switzerland": [
+        "Art.",
+        "§"
+      ],
+      "EU": [
+        "Art.",
+        "§"
+      ]
+    },
+    "fr": {
+      "France": [
+        "l'article",
+        "§",
+        "art."
+      ],
+      "Switzerland": [
+        "art.",
+        "§"
+      ],
+      "Belgium": [
+        "l'article",
+        "§"
+      ],
+      "Canada": [
+        "art.",
+        "§"
+      ],
+      "EU": [
+        "art.",
+        "§"
+      ]
+    },
+    "it": {
+      "Italy": [
+        "art.",
+        "articolo",
+        "§"
+      ],
+      "Switzerland": [
+        "art.",
+        "§"
+      ],
+      "EU": [
+        "art.",
+        "§"
+      ]
+    },
+    "pl": {
+      "Poland": [
+        "art.",
+        "ustawy"
+      ]
+    },
+    "bg": {
+      "Bulgaria": [
+        "Дело",
+        "ECLI"
+      ]
+    },
+    "hr": {
+      "Croatia": [
+        "Broj odluke:",
+        "C-"
+      ]
+    },
+    "en": {
+      "UK": [
+        "Art.",
+        "Case No:"
+      ],
+      "EU": [
+        "Art",
+        "§",
+        "Application no."
+      ]
+    },
+    "sk": {
+      "Slovakia": [
+        "Čl.",
+        "§",
+        "VSM",
+        "ECLI:SK:"
+      ]
+    },
+    "cs": {
+      "CzechRepublic": [
+        "zákona č.",
+        "§",
+        "čl.",
+        "SbNU"
+      ]
+    },
+    "pt": {
+      "Portugal": [
+        "artigo"
+      ]
+    },
+    "et": {
+      "Estonia": [
+        "PS",
+        "§",
+        "ECLI:EE",
+        "VõrdKS"
+      ]
+    },
+    "dk": {
+      "Denmark": [
+        "sagsnummer",
+        "SS-"
+      ]
+    },
+    "el": {
+      "Greece": [
+        "Αρ. Πρ."
+      ]
+    },
+    "ro": {
+      "Romania": [
+        "Hotărâre nr.",
+        "articolul"
+      ]
+    },
+    "sv": {
+      "Sweden": [
+        "§",
+        "Målnummer:",
+        "Möd"
+      ]
+    },
+    "sl": {
+      "Slovenia": [
+        "§",
+        "ECLI:SI",
+        "Evidenčna številka:"
+      ]
+    },
+    "fi": {
+      "Finland": [
+        "Diaarinumero",
+        "§",
+        "ECLI:FI"
+      ]
+    },
+    "hu": {
+      "Hungary": [
+        "§",
+        "K-GJ",
+        "Pf.",
+        "Gvf."
+      ]
+    },
+    "ga": {
+      "Ireland": [
+        "IECA",
+        "Art."
+      ]
+    },
+    "mt": {
+      "Malta": [
+        "ECLI:MT:",
+        "Art."
+      ]
+    },
+    "lv": {
+      "Latvia": [
+        "SKC",
+        "Arhīva Nr."
+      ]
+    },
+    "lt": {
+      "lithuania": [
+        "pvz.",
+        "Eilės Nr."
+      ]
+    },
+    "nl": {
+      "Netherlands": [
+        "ECLI:NL: ",
+        "Zaaknummer"
+      ],
+      "Belgium": [
+        "ECLI:BE:",
+        "Rolnummer"
+      ]
+    },
+    "es": {
+      "Spain": [
+        "artículo"
+      ]
+    }
+  }
+}
