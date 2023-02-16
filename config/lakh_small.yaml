@@ -3,7 +3,7 @@ data:
       - "/files/lakhmidi-data/train.txt"
   validation_urls:
       - "/files/lakhmidi-data/test.txt"
-  cache_dir: "/files/lakhmidi-data/cache/"
+  cache_dir: "gs://levanter-lakh/data-v1/cache/"
   tokenizer: "passthrough"
   plaintext: True
   enforce_eos: False
@@ -18,11 +18,16 @@ trainer:
   learning_rate: 6E-4
   weight_decay: 0.1
   model_axis_size: 1
-  per_device_train_batch_size: 4
-  steps_per_save: 10000
+  per_device_parallelism: 4
+
+  checkpointer:
+    base_path: gs://levanter-lakh/checkpoints/
+    save_interval: 30m
 
   axis_resources:
     batch: "data"
     vocab: "model"
     mlp: "model"
     heads: "model"
+  parameter_axis_resources:
+    embed: "data"
