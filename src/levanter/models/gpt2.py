@@ -30,9 +30,10 @@ class Gpt2Config:
     mlp_scale: int = 4
 
     initializer_range: float = 0.02
-    embed_pdrop: float = 0.1
-    resid_pdrop: float = 0.1
-    attn_pdrop: float = 0.1
+    # dropout doesn't really help so we 0 it out by default
+    embed_pdrop: float = 0.0
+    resid_pdrop: float = 0.0
+    attn_pdrop: float = 0.0
     layer_norm_epsilon: float = 1e-5
     activation_function: str = "gelu_new"
 
@@ -40,7 +41,7 @@ class Gpt2Config:
     scale_attn_by_inverse_layer_idx: bool = False
     upcast_attn: bool = False
 
-    gradient_checkpointing: bool = False
+    gradient_checkpointing: bool = True  # better to just always use this
     gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = True
