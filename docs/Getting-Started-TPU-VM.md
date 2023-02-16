@@ -25,15 +25,17 @@ You may also need to create an SSH key and add it to your Google Cloud account. 
 ## Creating a TPU VM Instance
 
 An important thing to know about TPU VMs is that they are not a single machine (for more than a v3-8). Instead, they
-are a collection of workers that are all connected to the same TPU pod, though each worker manages a set of 8 TPUs.
+are a collection of workers that are all connected to the same TPU pod. Each worker manages a set of 8 TPUs.
 This means that you can't just run a single process on a TPU VM instance, you need to run a distributed process,
-and you can't just set up one machine. You need to set up a cluster of machines.
+and you can't just set up one machine, but a whole cluster. We have some scripts to help with this.
 
-### Stanford CRFM
+### Automatic Setup
 
-Stanford CRFM folks can use `scripts/spin-up-tpu-vm.sh` to create a TPU VM instance:
+(CRFM folks: see below)
+
+You can use `infra/spin-up-tpu-vm.sh` to create a TPU VM instance:
 ```bash
-bash scripts/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
+bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
 ```
 
 Defaults are:
@@ -43,12 +45,18 @@ Defaults are:
 
 The command will spam you with a lot of output, sorry.
 
+In addition to creating the instance, it will set up the venv on each worker, and it will clone the repo to `~/levanter/`
+
+
+### CRFM Setup
+
+Stanford CRFM folks can pass a different setup script to `infra/spin-up-tpu-vm.sh` to get our NFS automounted:
+```bash
+bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
+```
+
 In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
 venv and a copy of the repo.
-
-### Other Folks
-
-TODO, but you can follow the script above to get an idea of what you need to do.
 
 ## Useful commands
 
@@ -77,7 +85,7 @@ Now that you have a TPU VM instance, you can follow the [Running Levanter] steps
 
 #### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/launch.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
@@ -86,7 +94,7 @@ on each worker.
 #### Launch a GPT-2 Small in interactive mode
 This version writes to the terminal, you should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... bash /files/levanter/scripts/run.sh python /files/levanter/examples/gpt2_example.py --config_path /files/levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ## Common Issues
