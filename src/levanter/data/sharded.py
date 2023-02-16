@@ -40,7 +40,8 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
     then some processes will need to load the same data. We use the process_mesh_position to determine which data to
     load, by determining which row(s) of the device mesh the process is responsible for.
 
-    For now GlobalBatchDataset is restricted to datasets that return a single sequence of tokens.
+    The len of a GlobalBatchDataset is the minimum length of the shards, assuming that the shards have a length.
+    So it's possible for a GlobalBatchDataset to "lose" data if the shards have different lengths.
 
     :arg local_dataset: a dataset that is shardable and can be iterated over
     :arg mesh: the device mesh
@@ -72,7 +73,15 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
         one_item_generator = iter(self.local_dataset)
 
-        for _ in range(self._global_min_length):
+        try:
+            min_length = self._global_min_length
+        except TypeError:
+            # this happens when the dataset doesn't have a length (e.g. it's an infinite stream)
+            min_length = None
+
+        i = 0
+
+        while True:
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -132,6 +141,10 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
             ]
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
             yield gda_tree  # type: ignore
+
+            i += 1
+            if min_length is not None and i >= min_length:
+                break
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
