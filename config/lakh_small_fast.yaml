@@ -21,7 +21,10 @@ trainer:
   model_axis_size: 1
   num_train_steps: 50000
   per_device_parallelism: 16
-  steps_per_save: 10000
+
+  checkpointer:
+    keep:
+       - every: 1000
 
   axis_resources:
     batch: "data"
