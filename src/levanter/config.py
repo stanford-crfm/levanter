@@ -294,6 +294,7 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
+        print("device mesh")
         devices = jax.devices()
         devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
         return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
@@ -305,6 +306,8 @@ class TrainerConfig:
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
+        print("data axis size")
+
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 

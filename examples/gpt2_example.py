@@ -46,6 +46,7 @@ class TrainGpt2Config:
 @pyrallis.wrap()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
@@ -215,8 +216,10 @@ def main(config: TrainGpt2Config):
         )
         # engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        engine.add_hook(lambda x: callbacks.defragment(), every=100)
 
         # data loader
         iter_data = non_caching_cycle(dataset)
