@@ -40,3 +40,7 @@ pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_
 git clone https://github.com/stanford-crfm/levanter.git
 
 echo $VENV > levanter/infra/venv_path.txt
+
+cd levanter
+
+pip install -e .
