@@ -23,6 +23,7 @@ from typing import Callable, Iterator, List, Optional, Sequence, Tuple, Union
 import braceexpand
 import datasets
 import fsspec
+import numpy
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -422,6 +423,7 @@ class LMDatasetConfig:
     validation_urls: List[str] = ()  # type:ignore
 
     tokenizer: str = "gpt2"
+    plaintext: bool = False
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     @cached_property
@@ -451,7 +453,11 @@ class LMDatasetConfig:
             for file in files:
                 with file as f:
                     for line in f.readlines():
-                        yield json.loads(line)[self.text_key]
+                        if self.plaintext:
+                            text = line  # .decode("utf-8")
+                        else:
+                            text = json.loads(line)[self.text_key]
+                        yield text
 
     # def __post_init__(self):
     #     if self.id is None and len(self.train_urls) == 0 and len(self.validation_urls) == 0:
