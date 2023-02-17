@@ -313,4 +313,10 @@ def causal_sliding_window_attention(
     _, blocked_attn = hax.scan(attend_block, Block)(None, hax.arange(Block))  # type: ignore
 
     # now we need to unblock the attention
+    # we want the returned array to have a shape like Query's, except that we substitute value's dim if different
+    # we also want to flatten the block and q axes
+    # first rearrange so that block is where Q is (Q is where SeqLen should be)
+    Q_pos = blocked_attn.axes.index(Q)
+    # TODO: this is a bit gross
+    blocked_attn = blocked_attn.rearrange(blocked_attn.axes[1:Q_pos] + (Block, Q) + blocked_attn.axes[Q_pos + 1 :])
     return blocked_attn.flatten_axes((Block, Q), SeqLen)
