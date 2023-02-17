@@ -689,7 +689,10 @@ that no device shares any data with another device. That looks like this:
 
 ![Above, but showing the `intermediate` as being partitioned across both data and model](figures/device_mesh_2d_intermediate_fully_partitioned.png)
 
-XXX show projection down
+When we do the next computation, where we matrix-multiply `intermediate: [Batch, SeqLen, Mlp]` by `c_proj: [Mlp, Embed]`,
+Jax will "do the right thing" so that the `Batch` axis is partitioned along the `data` axis, and the `Embed` axis
+is replicated, so that the final result `output: [Batch, SeqLen, Embed]` is also partitioned in the same way as the original
+`input: [Batch, SeqLen, Embed]`.
 
 
 ### `pjit` for Activation Sharding
@@ -853,21 +856,22 @@ we have one `Axis` that consistently shows up in nearly all of our parameters: `
 partition the `Embed` axis along the `data` axis of our device mesh. This will give us a fully sharded model, modulo a few
 bias terms.
 
-Schematically, that looks something like this:
+Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
+device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
+device mesh. Schematically, this looks like:
 
-XXX figure for Zero
-
-
-
-We use device meshes and `named_pjit` to partition, so let's see how we can do that.
-
-XXX code
+![ZeRO partitioning of `c_fc`, as described above](figures/device_mesh_2d_zero.png)
 
 
+Now, to do our forward pass, we repartition our parameters just-in-time so that each device has the parameters it needs:
+we go from the parameter partitioning to the compute partitioning. We then do our forward pass. During the backward pass,
+we repartition our gradients from the compute partitioning to the parameter partitioning. We then do our backward pass,
+accumulating the gradients into the gradient accumulation buffers that are also partitioned along the `data` axis. Finally,
+we do our gradient updates, and then we're ready for the next batch.
 
-fully sharded (i.e. each device holds a slice of
-the parameters), and once for "inference" (i.e. each device gets the parameters it needs to compute its part
-of forward and backward)
+In Haliax, that looks like this:
+
+XXX
 
 ### Other Techniques
 #### Gradient Checkpointing

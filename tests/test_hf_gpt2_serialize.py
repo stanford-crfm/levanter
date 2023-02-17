@@ -5,11 +5,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as onp
-import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
+from utils import skip_if_no_torch
 
 import haliax as hax
 from levanter.config import TrainerConfig
@@ -17,21 +17,12 @@ from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2LMHeadModel
 
 
-def has_torch():
-    try:
-        import torch  # noqa F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_hf_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("gpt2", None)
 
 
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_mistral_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
 
@@ -63,8 +54,10 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
+    attn_mask = hax.nn.attention.causal_mask(model.SeqLen, model.config.KeySeqLen)
+
     def compute(input):
-        return hax.nn.softmax(model(input, inference=True, key=None), axis=model.Vocab)
+        return hax.nn.softmax(model(input, inference=True, key=None, attn_mask=attn_mask), axis=model.Vocab)
 
     compute = jax.jit(compute)
     jax_out = compute(input).array
@@ -86,7 +79,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
 # Gradient tests
 
 
-@pytest.mark.skipif(not has_torch(), reason="torch not installed")
+@skip_if_no_torch
 def test_hf_gradient():
     _compare_gpt2_checkpoint_gradients("gpt2", None)
 
@@ -114,8 +107,10 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
     loss_mask = hax.nn.one_hot(-1, model.SeqLen, dtype=jnp.float32)
     loss_mask = 1 - loss_mask  # one everywhere except the last token
 
+    causal_mask = hax.nn.attention.causal_mask(model.config.SeqLen, model.config.KeySeqLen)
+
     def compute_loss(model, input_ids):
-        pred_y = model(input_ids, key=None, inference=True)
+        pred_y = model(input_ids, key=None, inference=True, attn_mask=causal_mask)
 
         # need to roll the target tokens back by one so that each token is predicting the next token
         target_y = hax.roll(input_ids, -1, model.SeqLen)

@@ -1,7 +1,6 @@
 # helper script used by spin-up-vm.sh and babysit-tpu-vm.sh
 
 
-# set defaults
 # Args we want
 # VM name
 # rest are flags:
@@ -10,12 +9,16 @@
 # vm image (default: tpu-vm-base)
 # preemptible (default: false)
 # autodelete (default: true)
+# setup script (default: infra/setup-tpu-vm.sh)
 
+
+# set defaults
 ZONE="us-east1-d"
 TYPE="v3-32"
 VM_IMAGE="tpu-vm-base"
 PREEMPTIBLE=false
 AUTODELETE=true
+SETUP_SCRIPT="$SCRIPT_DIR/setup-tpu-vm.sh"
 
 # parse args
 while [[ $# -gt 0 ]]; do
@@ -43,6 +46,11 @@ while [[ $# -gt 0 ]]; do
     -a|--autodelete)
       AUTODELETE="false"
       shift # past argument
+      ;;
+    -s|--setup)
+      SETUP_SCRIPT="$2"
+      shift # past argument
+      shift # past value
       ;;
     *)    # unknown option, assume it's the vm name
       # error out if we already set a name

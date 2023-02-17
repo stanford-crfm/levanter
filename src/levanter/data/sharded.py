@@ -5,12 +5,14 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Uni
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import process_allgather
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
 import levanter.mesh
+from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
@@ -50,12 +52,14 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         local_dataset: ShardableDataset[Sequence[int]],
         mesh: Mesh,
         Batch: hax.Axis,
+        axis_resources: Optional[ResourceMapping] = None,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
     ):
         self.mesh = mesh
         self.Batch = Batch
+        self.axis_resources = axis_resources
 
         process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
         num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
@@ -113,22 +117,29 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
-                jax.make_array_from_callback(
+                # jax.make_array_from_callback(
+                #     to_raw_shape(shape),
+                #     jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
+                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                # )
+                GlobalDeviceArray.from_callback(
                     to_raw_shape(shape),
-                    jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
+                    self.mesh,
+                    self._pspec_for(shape),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
-            yield gda_tree
+            yield gda_tree  # type: ignore
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
-            batch_name = hax.partitioning.physical_axis_name(self.Batch)
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+            assert batch_name is not None
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
-            return hax.partitioning.pspec_for_axis(shape_spec.shape)  # type: ignore
+            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
 
     @staticmethod
     def _get_begin_end_for_slice(tensor_shape, tslice_index) -> Tuple[Tuple[int, int], ...]:
@@ -171,7 +182,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         assert self.Batch.size % len(leaves) == 0
 
         if is_named_array(leaves[0]):
-            with hax.shape_checks(False):  # because we're building parts of the array on each device
+            with hax.enable_shape_checks(False):  # because we're building parts of the array on each device
                 return hax.stack(self.Batch, leaves)
         else:
             return np.stack(leaves)

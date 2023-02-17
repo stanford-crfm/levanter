@@ -13,12 +13,14 @@ EOF
 retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
 
-#sudo apt update
-#sudo apt upgrade -y
-
 # install python 3.10, latest git, and nfs
-# we need git>=2.36 for the glob safe directory thing, below
+#sudo apt-get install -y software-properties-common
+#sudo add-apt-repository -y ppa:deadsnakes/ppa
+#sudo add-apt-repository -y ppa:git-core/ppa
+#sudo apt-get update
+#sudo apt-get install -y python3.10-full python3.10-dev nfs-common git golang
 
+sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
 # sometimes apt-get update fails, so retry a few times
 for i in {1..5}; do
   sudo apt-get install -y software-properties-common \
@@ -28,6 +30,7 @@ for i in {1..5}; do
   && sudo apt-get install -y python3.10-full python3.10-dev nfs-common git \
   && break
 done
+sudo systemctl start unattended-upgrades
 
 # set up nfs
 NFS_SERVER=10.5.220.250
@@ -51,5 +54,9 @@ sudo mount -a
 # default to loading the venv
 sudo bash -c "echo \"source ${MOUNT_POINT}/venv310/bin/activate\" > /etc/profile.d/activate_shared_venv.sh"
 
-git config --global --add safe.directory /files/levanter
-git config --global --add safe.directory '/files/*'  # This is maybe not the safest thing, but it makes things easier
+for x in `ls -d /files/lev*`; do
+  git config --global --add safe.directory $x
+done
+
+# symlink lev* to home
+ln -s /files/lev* /home/

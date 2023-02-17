@@ -47,25 +47,26 @@ echo "Adding ssh keys just in case..."
 echo ssh-add ~/.ssh/google_compute_engine
 ssh-add ~/.ssh/google_compute_engine
 
-# upload the setup-tpu-vm.sh script
+# upload the setup script
+SETUP_SCRIPT_NAME=$(basename $SETUP_SCRIPT)
 # note that gcloud scp doesn't always work... so we do it a few times to just be sure
 for i in {1..5}; do
-  echo "Uploading setup-tpu-vm.sh to VM $VM_NAME"
-  gcloud compute tpus tpu-vm scp --zone=$ZONE $SCRIPT_DIR/setup-tpu-vm.sh $VM_NAME:~/ --worker=all
+  echo "Uploading $SETUP_SCRIPT to VM $VM_NAME"
+  gcloud compute tpus tpu-vm scp --zone=$ZONE $SETUP_SCRIPT $VM_NAME:~/ --worker=all
   # check to see if the file exists on all nodes
-  if gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="ls ~/setup-tpu-vm.sh" --worker=all; then
+  if gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="ls ~/$SETUP_SCRIPT_NAME" --worker=all; then
     break
   fi
-  echo "Error uploading setup-tpu-vm.sh, retrying in 5 seconds"
-  sleep 5
   if 5 == $i; then
-    echo "Error uploading setup-tpu-vm.sh, giving up. Note that the machine is still (probably) running"
+    echo "Error uploading ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
     exit 1
   fi
+  echo "Error uploading ${SETUP_SCRIPT_NAME}, retrying in 5 seconds"
+  sleep 5
 done
 
 # run the setup script
-gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/setup-tpu-vm.sh" --worker=all
+gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME" --worker=all
 
 # print out the IP addresses
 echo "VM $VM_NAME IP addresses:"

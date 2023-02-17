@@ -23,7 +23,7 @@ _ENABLE_SHAPE_CHECKS = True
 
 
 @contextlib.contextmanager
-def shape_checks(enabled):
+def enable_shape_checks(enabled):
     """
     Sometimes we end up in situations where an array that jax makes is passed into the NamedArray constructor that
     doesn't conform to the shape we expect. This shows up in particular when we are using jax.vmap or jax.scan,
@@ -157,6 +157,9 @@ class NamedArray:
 
     def rename(self, renames: Mapping[Axis, Axis]) -> "NamedArray":
         return haliax.rename(self, renames=renames)
+
+    def slice(self, axis: Axis, new_axis: Axis, start: int = 0) -> "NamedArray":
+        return haliax.slice(self, axis=axis, new_axis=new_axis, start=start)
 
     def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
@@ -483,6 +486,21 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
         new_axes = array.axes[:axis_index] + index.axes + array.axes[axis_index + 1 :]
     # new axes come from splicing the old axis with
     return NamedArray(new_array, new_axes)
+
+
+def slice(array: NamedArray, axis: Axis, new_axis: Axis, start: int = 0) -> NamedArray:
+    """
+    Selects elements from an array along an axis, by an index or by another named array
+    This is somewhat better than take if you want a contiguous slice of an array
+    """
+    axis_index = array._lookup_indices(axis)
+    if axis_index is None:
+        raise ValueError(f"axis {axis} not found in {array}")
+
+    sliced = jax.lax.dynamic_slice_in_dim(array.array, start, new_axis.size, axis=axis_index)
+    new_axes = array.axes[:axis_index] + (new_axis,) + array.axes[axis_index + 1 :]
+    # new axes come from splicing the old axis with
+    return NamedArray(sliced, new_axes)
 
 
 def dot(axis: AxisSpec, *arrays: NamedArray, precision: PrecisionLike = None) -> NamedArray:
@@ -898,6 +916,7 @@ __all__ = [
     "dot",
     "named",
     "rearrange",
+    "slice",
     "take",
     "split",
     "flatten_axes",
@@ -908,6 +927,6 @@ __all__ = [
     "broadcast_to",
     "broadcast_axis",
     "broadcast_arrays",
-    "shape_checks",
+    "enable_shape_checks",
     "are_shape_checks_enabled",
 ]
