@@ -20,10 +20,10 @@ trainer:
     embed: "data"
 
 data:
-  cache_dir: "gs://levanter-data/tokenized/pubmed-sharded/"
+  cache_dir: "gs://levanter-eu/tokenized/pubmed-sharded/"
   tokenizer: stanford-crfm/BioMedLM
 
 ul2r_phase_fraction: 0.30
 
 instruction_weight: 0.5
-instruction_dataset_path: gs://levanter-data/itune_train.jsonl.zstd
+instruction_dataset_path: gs://levanter-eu/data/itune_train.jsonl.zstd
