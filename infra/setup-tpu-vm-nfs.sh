@@ -14,7 +14,6 @@ retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
 
 # install python 3.10, latest git, and nfs
-# we need git>=2.36 for the glob safe directory thing, below
 sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:deadsnakes/ppa
@@ -49,3 +48,6 @@ sudo bash -c "echo \"source ${MOUNT_POINT}/venv310/bin/activate\" > /etc/profile
 for x in `ls -d /files/lev*`; do
   git config --global --add safe.directory $x
 done
+
+# symlink lev* to home
+ln -s /files/lev* /home/
