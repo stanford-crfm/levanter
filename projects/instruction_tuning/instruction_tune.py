@@ -8,6 +8,7 @@ from typing import Optional
 import equinox as eqx
 import fsspec
 import jax
+import jax.random as jrandom
 import numpy.random
 import pyrallis
 from instruction_tuning.itune_dataset import InstructionTuningDataset
@@ -31,6 +32,9 @@ from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -171,10 +175,38 @@ def main(config: InstructionTuneConfig):
         # Interlude: load the dataset for phase two as a sanity check before doing learning
         itune_dataset = config.build_instruction_dataset()
 
-        ul2r_steps = int(config.trainer.num_train_steps * config.ul2r_phase_fraction)
-        logging.info(f"Starting UL2R phase for {ul2r_steps} steps")
+        resume_step = None
+        if config.trainer.load_last_checkpoint:
+            checkpoint = checkpointer.load_checkpoint(
+                model,
+                (opt_state, training_key),
+                config.trainer.load_checkpoint_path,
+            )
 
-        for step in range(ul2r_steps):
+            if checkpoint is not None:
+                model, (opt_state, training_key), resume_step = checkpoint
+                assert training_key.shape == jrandom.PRNGKey(0).shape
+            elif config.trainer.load_checkpoint_path:
+                raise ValueError("No checkpoint found")
+            else:
+                logger.info("No checkpoint found. Starting from scratch")
+
+        if resume_step is not None:
+            # step is after the batch, so we need to seek to step
+            # TODO: iter_data.seek(resume_step +1)
+            import tqdm
+
+            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
+                next(iter_data)
+            resume_step = resume_step + 1
+        else:
+            resume_step = 0
+
+        ul2r_steps = int(config.trainer.num_train_steps * config.ul2r_phase_fraction)
+        if resume_step < ul2r_steps:
+            logging.info(f"Starting UL2R phase for {ul2r_steps} steps")
+
+        for step in range(resume_step, ul2r_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     batch = next(iter_data)
@@ -186,7 +218,7 @@ def main(config: InstructionTuneConfig):
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
 
-        if ul2r_steps > 0:
+        if resume_step < ul2r_steps and ul2r_steps > 0:
             logging.info("UL2R phase finished. Saving checkpoint")
             checkpointer.save_checkpoint(
                 StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()), "ul2r_finished"
@@ -194,6 +226,8 @@ def main(config: InstructionTuneConfig):
 
         # 2. fine-tuning phase
         logging.info("Starting instruction-tuning phase")
+
+        # TODO: too much copypasta
 
         def batch_sampler():
             # Todo this is not ideal
@@ -225,6 +259,12 @@ def main(config: InstructionTuneConfig):
                     yield next(iter_data)
 
         iter_data_2 = batch_sampler()
+
+        # TODO: would be much better to clean this up to have a single data iterator
+        if resume_step > ul2r_steps:
+            logging.info(f"Seeking to step {resume_step}")
+            for step in range(ul2r_steps, resume_step):
+                _ = next(iter_data_2)
 
         for step in range(ul2r_steps, config.trainer.num_train_steps):
             with capture_time() as step_time:
