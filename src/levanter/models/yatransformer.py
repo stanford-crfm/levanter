@@ -158,6 +158,6 @@ class YaLMHeadModel(eqx.Module):
     @named_call
     def __call__(self, input_ids):
         x = hax.auto_sharded(self.embed.take(self.Vocab, input_ids))
-        x = hax.auto_sharded(self.transformer(x))
+        x = self.transformer(x)
         x = hax.auto_sharded(x.dot(self.config.Embed, self.embed))
         return x
