@@ -118,7 +118,7 @@ def dot_product_attention(
 
 
 def mask_to_bias(mask: NamedArray, mask_value: float = -1e9) -> NamedArray:
-    return mask * mask_value
+    return hax.logical_not(mask) * mask_value
 
 
 def combine_masks_and(mask1: Optional[NamedArray], mask2: Optional[NamedArray]) -> Optional[NamedArray]:
