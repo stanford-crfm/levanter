@@ -15,13 +15,13 @@ from haliax.types import Axis, AxisSpec, PrecisionLike
 
 
 # With attention we usually distinguish between the mask and the bias, though the former is just a special case of the
-# latter. In practice, the mask is a boolean array that is applied using `where` to the logits, while the bias is a
+# latter. In practice, the mask is a boolean array of hard constraints. while the bias is a
 # float array that is added to the logits. The mask is usually used to prevent attention to certain positions, while
 # the bias is usually used to encourage or discourage attention to certain positions.
 # The mask usually is head-independent, while the bias is frequently head-dependent
-
-# because we use named axis we can be fairly loose about the shape of masks and biases: want to have a different
-# mask for each head? fine. want to broadcast across the key sequence length? fine. etc etc
+# Frequently the mask and bias have different shapes. For example, the mask is usually just [SeqLen, SeqLen], while
+# a bias is usually [HeadDim, SeqLen, SeqLen] or [HeadDim, SeqLen]. We therefore separate the mask and bias into
+# separate arguments, even though we could just have you add the mask to the bias.
 
 
 def dot_product_attention_weights(
@@ -64,7 +64,9 @@ def dot_product_attention_weights(
         weights = weights + bias
 
     if mask is not None:
-        weights = haliax.where(mask, weights, -1e9)
+        # where confuses spmd and loses partitioning, so we need to do this instead
+        # weights = haliax.where(mask, weights, -1e9)
+        weights = weights + mask_to_bias(mask)
 
     weights = hnn.softmax(weights, axis=KSeqLen)
 
