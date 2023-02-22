@@ -17,18 +17,15 @@ sharded_normal = hax.random.generate_sharded(hax.random.normal)
 
 
 class NoMlpGpt2Attention(eqx.Module):
-    c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
-    c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
+    c_k: hnn.Linear  # input projection from [embed] -> [heads, head_dim]
+    c_q: hnn.Linear  # input projection from [embed] -> [heads, head_dim]
+    c_v_ff: hnn.Linear  # input projection from [embed] -> [heads, v_dim]
+    c_v_gate: hnn.Linear  # input projection from [embed] -> [heads, v_dim]
+    c_proj: hnn.Linear  # output projection from [heads, v_dim] -> [embed]
     dropout: hnn.Dropout
 
-    c_v_ff: hnn.Linear  # input projection from [v] -> [v]
-    c_v_gate: hnn.Linear  # input projection from [v] -> [v]
-
-    SeqLen: Axis = eqx.static_field()
-    HeadDim: Axis = eqx.static_field()
-    Heads: Axis = eqx.static_field()
-    Qkv: Axis = eqx.static_field()
-    KeySeqLen: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
+    VDim: Axis = eqx.static_field()
 
     # Mistral stability tweaks
     scale_by_inverse_layer_idx: bool = eqx.static_field()
@@ -36,11 +33,7 @@ class NoMlpGpt2Attention(eqx.Module):
 
     def __init__(
         self,
-        SeqLen: Axis,
-        KeySeqLen: Axis,
-        Embed: Axis,
-        Heads: Axis,
-        HeadDim: Axis,
+        config: Gpt2Config,
         dropout_prob: float,
         scale_by_inverse_layer_idx: bool,
         upcast: bool,
@@ -48,19 +41,19 @@ class NoMlpGpt2Attention(eqx.Module):
         key,
         use_bias: bool = True,
     ):
-        self.Heads = Heads
-        self.HeadDim = HeadDim
-        self.SeqLen = SeqLen
-        self.Qkv = Axis("qkv", 3)
-        self.KeySeqLen = KeySeqLen
+        self.config = config
 
-        k_c, k_proj, k_v_ff, k_v_g = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c, use_bias=use_bias)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj, use_bias=use_bias)
+        Embed, Heads, HeadDim = config.Embed, config.Heads, config.HeadDim
+        self.VDim = Axis("v_dim", HeadDim.size * config.mlp_scale // 2)
+
+        k_k, k_q, k_proj, k_v_ff, k_v_g = jrandom.split(key, 4)
+        self.c_k = hnn.Linear(In=Embed, Out=(Heads, HeadDim), key=k_k, use_bias=use_bias)
+        self.c_q = hnn.Linear(In=Embed, Out=(Heads, HeadDim), key=k_q, use_bias=use_bias)
+        self.c_v_ff = hnn.Linear(In=Embed, Out=(Heads, self.VDim), key=k_v_ff, use_bias=False)
+        self.c_v_gate = hnn.Linear(In=Embed, Out=(Heads, self.VDim), key=k_v_g, use_bias=False)
+        self.c_proj = hnn.Linear(In=(Heads, self.VDim), Out=Embed, key=k_proj, use_bias=use_bias)
+
         self.dropout = hnn.Dropout(dropout_prob)
-
-        self.c_v_ff = hnn.Linear(In=Embed, Out=Embed, key=k_v_ff, use_bias=False)
-        self.c_v_gate = hnn.Linear(In=Embed, Out=Embed, key=k_v_g, use_bias=False)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
         self.upcast = upcast
@@ -69,15 +62,20 @@ class NoMlpGpt2Attention(eqx.Module):
     def __call__(
         self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key
     ):
-        qkv_out = self.c_attn(hidden_states)
-        q, k, v = qkv_out.unbind(self.Qkv)
+        q = self.c_q(hidden_states)
+        k = self.c_k(hidden_states)
+        v_ff = self.c_v_ff(hidden_states)
+        v_gate = self.c_v_gate(hidden_states)
+
+        SeqLen, KeySeqLen, HeadDim = self.config.SeqLen, self.config.KeySeqLen, self.config.HeadDim
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.SeqLen: self.KeySeqLen})
-        v = v.rename({self.SeqLen: self.KeySeqLen})
+        k = k.rename({SeqLen: KeySeqLen})
+        v_ff = v_ff.rename({SeqLen: KeySeqLen})
+        v_gate = v_gate.rename({SeqLen: KeySeqLen})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.HeadDim.size))
+        scale = jax.lax.rsqrt(float(HeadDim.size))
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
@@ -89,22 +87,20 @@ class NoMlpGpt2Attention(eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot(self.HeadDim, q, k)
+        attn_scores = hax.dot(HeadDim, q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis=KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
         # do quasi-mlp to v:
-        v_gate = self.c_v_gate(v)
-        v = self.c_v_ff(v)
-        v = hnn.relu(v_gate) * v
+        v = hnn.relu(v_gate) * v_ff
 
-        attn_output = hax.dot(self.KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = hax.dot(KeySeqLen, attn_weights, v)  # [heads, seq_len, v_dim]
 
-        attn_output = self.c_proj(attn_output)
+        attn_output = self.c_proj(attn_output)  # [seq_len, embed]
         return attn_output
 
 
@@ -123,11 +119,7 @@ class NoMlpGpt2Block(eqx.Module):
 
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = NoMlpGpt2Attention(
-            SeqLen=config.SeqLen,
-            KeySeqLen=config.KeySeqLen,
-            Embed=config.Embed,
-            Heads=config.Heads,
-            HeadDim=config.HeadDim,
+            config,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
