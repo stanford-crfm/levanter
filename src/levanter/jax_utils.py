@@ -131,6 +131,9 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
+_sync_counter = 0
+
+
 def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     """
     Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
@@ -155,7 +158,9 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
         client.key_value_set(_LEV_KEY, pickled.decode("ascii"))
 
-    client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
+    global _sync_counter
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=20_000)
+    _sync_counter += 1
 
     if not is_source:
         pickled = bytes(client.blocking_key_value_get(_LEV_KEY, timeout_in_ms=20_000), "ascii")
