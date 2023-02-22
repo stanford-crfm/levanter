@@ -50,4 +50,4 @@ for x in `ls -d /files/lev*`; do
 done
 
 # symlink lev* to home
-ln -s /files/lev* /home/
+ln -s /files/lev* ~
