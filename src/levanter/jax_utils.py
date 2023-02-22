@@ -140,6 +140,9 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     if is_source is None:
         is_source = jax.process_index() == 0
 
+    if jax.process_count() == 1:
+        return obj
+
     import jax._src.distributed as distributed
     from jaxlib.xla_extension import DistributedRuntimeClient
 

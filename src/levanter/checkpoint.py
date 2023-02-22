@@ -13,6 +13,7 @@ from equinox.serialisation import _is_index, default_deserialise_filter_spec, de
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 
+from levanter.jax_utils import multihost_broadcast_sync
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 
 
@@ -91,25 +92,34 @@ class Checkpointer:
                 return  # don't save checkpoint at step 0 unless forced
 
         # two reasons we can save: time or step
-        # they have different behaviors:
-        # * if we save by time, we save the latest checkpoint and delete the previous one
-        # * if we save by step, we save the latest checkpoint and keep the previous one
-        should_save = force
-        next_checkpoint_is_permanent = False
+        # they have different behaviors for retention.
+        # if the previous checkpoint was a temporary checkpoint (i.e. saved b/c of time), we can delete it
+
+        # there's a potential clock skew issue here: if we save by time, and the clock is skewed across processes,
+        # then we could end up with a situation where one process saves a checkpoint, and then another process
+        # saves a checkpoint for the next step, etc. This leads to partial checkpoints, no good.
+        # we fix by having process 0 make the decision
+        my_should_save = force
+        my_save_permanent_ckpt = False
 
         current_every = self._get_current_step_save_interval(step)
         last_save_time = self._dt_now_injection() - self._last_save_time
         if current_every is not None and step % current_every == 0:
-            should_save = True
-            next_checkpoint_is_permanent = True
-            logger.info(f"Saving permanent checkpoint at step {step} because of step policy")
+            my_should_save = True
+            my_save_permanent_ckpt = True
         elif self.save_interval and last_save_time >= self.save_interval:
-            should_save = True
-            next_checkpoint_is_permanent = False
-            logger.info(
-                f"Saving temporary checkpoint at step {step} because of time policy. "
-                f"Time since last save: {last_save_time}"
-            )
+            my_should_save = True
+            my_save_permanent_ckpt = False
+
+        should_save, save_permanent_ckpt = multihost_broadcast_sync((my_should_save, my_save_permanent_ckpt))
+
+        # log the decision
+        if should_save:
+            extra_str = f" We would have said {should_save=}/{save_permanent_ckpt=}."
+            if save_permanent_ckpt:
+                logger.info(f"Saving checkpoint at step {step}.{extra_str}")
+            else:
+                logger.info(f"Saving temporary checkpoint at step {step}.{extra_str}")
 
         if should_save:
             last_checkpoint = self._last_temporary_checkpoint
@@ -117,7 +127,7 @@ class Checkpointer:
 
             self.save_checkpoint(info, destination)
 
-            if not next_checkpoint_is_permanent:
+            if not save_permanent_ckpt:
                 self._last_temporary_checkpoint = destination
             else:
                 self._last_temporary_checkpoint = None
@@ -160,9 +170,9 @@ class Checkpointer:
         )
         # also write a little sentinel file to indicate that we wrote this checkpoint from this worker
         # just for debugging purposes
-        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.txt")
+        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.cert")
         with fsspec.open(sentinel_path, "w") as f:
-            f.write("daklmdlad")
+            f.write("worker participated in checkpoint")
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
