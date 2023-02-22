@@ -98,12 +98,18 @@ class Checkpointer:
         next_checkpoint_is_permanent = False
 
         current_every = self._get_current_step_save_interval(step)
+        last_save_time = self._dt_now_injection() - self._last_save_time
         if current_every is not None and step % current_every == 0:
             should_save = True
             next_checkpoint_is_permanent = True
-        elif self.save_interval and self._dt_now_injection() - self._last_save_time >= self.save_interval:
+            logger.info(f"Saving permanent checkpoint at step {step} because of step policy")
+        elif self.save_interval and last_save_time >= self.save_interval:
             should_save = True
             next_checkpoint_is_permanent = False
+            logger.info(
+                f"Saving temporary checkpoint at step {step} because of time policy. "
+                f"Time since last save: {last_save_time}"
+            )
 
         if should_save:
             last_checkpoint = self._last_temporary_checkpoint
@@ -136,10 +142,12 @@ class Checkpointer:
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
-            fs.rm(os.path.join(plain_path, checkpoint), recursive=True)
+            cp_path = os.path.join(plain_path, checkpoint)
+            logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
+            fs.rm(cp_path, recursive=True)
         # don't let this take down a run
         except Exception:  # pylint: disable=broad-except
-            logger.exception("Failed to delete checkpoint")
+            logger.exception("Failed to delete checkpoint", exc_info=True)
 
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
@@ -150,8 +158,14 @@ class Checkpointer:
             step=info.step,
             checkpoint_path=path,
         )
+        # also write a little sentinel file to indicate that we wrote this checkpoint from this worker
+        # just for debugging purposes
+        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.txt")
+        with fsspec.open(sentinel_path, "w") as f:
+            f.write("daklmdlad")
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
+        logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
 def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
