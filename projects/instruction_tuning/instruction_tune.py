@@ -67,7 +67,7 @@ class InstructionTuneConfig:
 
     def build_instruction_dataset(self):
         def iter_dataset():
-            with fsspec.open(self.instruction_dataset_path, compression="infer") as f:
+            with fsspec.open(self.instruction_dataset_path, "rt", compression="infer") as f:
                 for line in f:
                     yield json.loads(line)
 
