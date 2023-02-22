@@ -204,6 +204,10 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
     logger.info(f"Saved checkpoint for step {step}")
 
+    # make sure that all processes agree on the checkpoint path and also synchronize hosts
+    cp_out = multihost_broadcast_sync(checkpoint_path)
+    assert cp_out == checkpoint_path, f"Checkpoint path mismatch: {cp_out} != {checkpoint_path}"
+
     return checkpoint_path
 
 
