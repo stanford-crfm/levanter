@@ -121,8 +121,8 @@ def wrap_elemwise_binary(op):
     def binop(a, b):
         if isinstance(a, NamedArray) and isinstance(b, NamedArray):
             axes = _broadcast_order(a, b)
-            a = broadcast_to(a, axes)
-            b = broadcast_to(b, axes)
+            a = broadcast_to(a, axes, ensure_order=True)
+            b = broadcast_to(b, axes, ensure_order=True)
             return NamedArray(op(a.array, b.array), axes)
         elif isinstance(a, NamedArray) and jnp.isscalar(b):
             return NamedArray(op(a.array, b), a.axes)
@@ -132,6 +132,5 @@ def wrap_elemwise_binary(op):
             return op(a, b)
 
     return binop
-
 
 __all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call", "wrap_elemwise_binary"]

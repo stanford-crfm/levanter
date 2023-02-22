@@ -831,24 +831,47 @@ def broadcast_to(
     if a.axes == axes:
         return a
 
-    to_add = tuple(ax for ax in axes if ax not in a.axes)
+    # We want to avoid rearrange after broadcasting, because it triggers a copy
+    # So instead we rearrange the already present axes to be in the right order, and then broadcast
+    # the missing axes interleaved in their proper positions
+    reordered_current_axes = tuple(ax for ax in axes if ax in a.axes)
 
-    all_axes = to_add + a.axes
+    if enforce_no_extra_axes:
+        extra_axes = tuple(ax for ax in a.axes if ax not in axes)
+        if extra_axes:
+            raise ValueError(f"Cannot broadcast {a} to {axes}: extra axes present {extra_axes}")
 
-    if enforce_no_extra_axes and len(all_axes) != len(axes):
-        raise ValueError(f"Cannot broadcast {a} to {axes}: extra axes present")
+    if ensure_order:
+        a = a.rearrange(reordered_current_axes)
+        # ok now we have our current axes in the write order, but we need to add in the missing ones
+        # we use broadcast_in_dim to do the work for us
+        desired_shape = tuple(ax.size for ax in axes)
+        # now we just have to map the dims of the current axes to the dims of the desired axes
+        axis_mapping = tuple(axes.index(ax) for ax in a.axes)
+        broadcasted = jax.lax.broadcast_in_dim(a.array, desired_shape, axis_mapping)
+    else:
+        # we don't care about the order, so we can just broadcast to the right shape
+        to_add = tuple(ax for ax in axes if ax not in a.axes)
+        broadcasted = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + list(a.shape))
 
-    extra_axes = tuple(ax for ax in a.axes if ax not in axes)
+    return NamedArray(broadcasted, axes)
 
-    # broadcast whatever we need to the front and reorder
-    a_array = jnp.broadcast_to(a.array, [ax.size for ax in all_axes])
-    a = NamedArray(a_array, all_axes)
 
-    # if the new axes are already in the right order, then we're done
-    if ensure_order and not _is_subsequence(axes, all_axes):
-        a = a.rearrange(axes + extra_axes)
-
-    return typing.cast(NamedArray, a)
+    #
+    # all_axes = to_add + a.axes
+    #
+    # if enforce_no_extra_axes and len(all_axes) != len(axes):
+    #     raise ValueError(f"Cannot broadcast {a} to {axes}: extra axes present")
+    #
+    # extra_axes = tuple(ax for ax in a.axes if ax not in axes)
+    #
+    # # broadcast whatever we need to the front and reorder
+    # a_array = jnp.broadcast_to(a.array, [ax.size for ax in all_axes])
+    # a = NamedArray(a_array, all_axes)
+    #
+    # # if the new axes are already in the right order, then we're done
+    # if ensure_order and not _is_subsequence(axes, all_axes):
+    #     a = a.rearrange(axes + extra_axes)
 
 
 def _is_subsequence(needle, haystack):
