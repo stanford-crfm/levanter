@@ -131,14 +131,21 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
+_sync_counter = 0
+
+
 def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     """
     Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
     process_index 0 is the source.
     """
-    _LEV_KEY = "LEVANTER_MULTIHOST_BROADCAST_SYNC"
+    global _sync_counter
+    key = f"LEVANTER_MULTIHOST_BROADCAST_SYNC{_sync_counter}"
     if is_source is None:
         is_source = jax.process_index() == 0
+
+    if jax.process_count() == 1:
+        return obj
 
     import jax._src.distributed as distributed
     from jaxlib.xla_extension import DistributedRuntimeClient
@@ -150,14 +157,15 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
 
     if is_source:
         pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
-        client.key_value_set(_LEV_KEY, pickled.decode("ascii"))
+        client.key_value_set(key, pickled.decode("ascii"))
 
-    client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=20_000)
 
     if not is_source:
-        pickled = bytes(client.blocking_key_value_get(_LEV_KEY, timeout_in_ms=20_000), "ascii")
+        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=20_000), "ascii")
         obj = pickle.loads(pickled)
 
+    _sync_counter += 1
     return obj
 
 
