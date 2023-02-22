@@ -194,10 +194,9 @@ def main(config: InstructionTuneConfig):
         if resume_step is not None:
             # step is after the batch, so we need to seek to step
             # TODO: iter_data.seek(resume_step +1)
-            import tqdm
 
-            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
-                next(iter_data)
+            # for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
+            #     next(iter_data)
             resume_step = resume_step + 1
         else:
             resume_step = 0
@@ -262,9 +261,10 @@ def main(config: InstructionTuneConfig):
 
         # TODO: would be much better to clean this up to have a single data iterator
         if resume_step > ul2r_steps:
-            logging.info(f"Seeking to step {resume_step}")
-            for step in range(ul2r_steps, resume_step):
-                _ = next(iter_data_2)
+            pass
+            # logging.info(f"Seeking to step {resume_step}")
+            # for step in range(ul2r_steps, resume_step):
+            #     _ = next(iter_data_2)
 
         for step in range(ul2r_steps, config.trainer.num_train_steps):
             with capture_time() as step_time:
