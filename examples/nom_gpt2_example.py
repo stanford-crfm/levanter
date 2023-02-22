@@ -23,6 +23,7 @@ from levanter.jax_utils import global_key_array, parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.modeling_utils import cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.nomlp_gpt2 import NoMlpGpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from py_utils import non_caching_cycle
 
@@ -103,7 +104,7 @@ def main(config: TrainGpt2Config):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_pjit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+            model = NoMlpGpt2LMHeadModel(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
