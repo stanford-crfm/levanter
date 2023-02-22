@@ -46,7 +46,7 @@ class NoMlpGpt2Attention(eqx.Module):
         Embed, Heads, HeadDim = config.Embed, config.Heads, config.HeadDim
         self.VDim = Axis("v_dim", HeadDim.size * config.mlp_scale // 2)
 
-        k_k, k_q, k_proj, k_v_ff, k_v_g = jrandom.split(key, 4)
+        k_k, k_q, k_proj, k_v_ff, k_v_g = jrandom.split(key, 5)
         self.c_k = hnn.Linear(In=Embed, Out=(Heads, HeadDim), key=k_k, use_bias=use_bias)
         self.c_q = hnn.Linear(In=Embed, Out=(Heads, HeadDim), key=k_q, use_bias=use_bias)
         self.c_v_ff = hnn.Linear(In=Embed, Out=(Heads, self.VDim), key=k_v_ff, use_bias=False)
@@ -96,7 +96,7 @@ class NoMlpGpt2Attention(eqx.Module):
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
         # do quasi-mlp to v:
-        v = hnn.relu(v_gate) * v_ff
+        v = hnn.gelu(v_gate) * v_ff
 
         attn_output = hax.dot(KeySeqLen, attn_weights, v)  # [heads, seq_len, v_dim]
 
@@ -107,7 +107,6 @@ class NoMlpGpt2Attention(eqx.Module):
 class NoMlpGpt2Block(eqx.Module):
     ln_1: hnn.LayerNorm
     attn: NoMlpGpt2Attention
-    ln_2: hnn.LayerNorm
     resid_dropout: hnn.Dropout
 
     def __init__(self, config: Gpt2Config, *, key):
