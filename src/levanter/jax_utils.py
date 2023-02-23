@@ -159,10 +159,10 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
         client.key_value_set(key, pickled.decode("ascii"))
 
-    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=20_000)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=200_000)
 
     if not is_source:
-        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=20_000), "ascii")
+        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=200_000), "ascii")
         obj = pickle.loads(pickled)
 
     _sync_counter += 1
