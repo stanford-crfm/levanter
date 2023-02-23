@@ -53,7 +53,7 @@ def main(config: ConvertGpt2Config):
 
     key = jax.random.PRNGKey(0)
 
-    vocab_size = 77035  # 77026#len(tokenizer)
+    vocab_size = 77028  # 77026#len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
