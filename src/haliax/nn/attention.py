@@ -204,8 +204,8 @@ def alibi_bias(Heads: Axis, SeqLen: Axis, dtype=jnp.float32) -> NamedArray:
     :param Heads: Axis of heads
     :return: NamedArray of shape (Heads, QSeqLen)
     """
-    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size)), Heads)
-    positions = haliax.arange(SeqLen).broadcast_axis(Heads)
+    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size)), Heads).broadcast_axis(SeqLen)
+    positions = haliax.arange(SeqLen)
 
     biases = slopes * positions
     return biases.astype(dtype)

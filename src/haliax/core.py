@@ -831,31 +831,35 @@ def broadcast_to(
     if a.axes == axes:
         return a
 
-    # We want to avoid rearrange after broadcasting, because it triggers a copy
-    # So instead we rearrange the already present axes to be in the right order, and then broadcast
-    # the missing axes interleaved in their proper positions
-    reordered_current_axes = tuple(ax for ax in axes if ax in a.axes)
-
     if enforce_no_extra_axes:
         extra_axes = tuple(ax for ax in a.axes if ax not in axes)
         if extra_axes:
             raise ValueError(f"Cannot broadcast {a} to {axes}: extra axes present {extra_axes}")
 
+    # We want to avoid rearrange after broadcasting, because it triggers a copy
+    # So instead we rearrange the already present axes to be in the right order, and then broadcast
+    # the missing axes interleaved in their proper positions.
+    # we have to decide what to do with axes in a.axes that are not in axes. Desiderata:
+    # 1. We want to avoid rearranging axes that are already in the right order
+    # 2. We want to avoid rearranging axes that are contiguous
+    # what we'll do is try to preserve the current order of a.axes, but move in any axes we need to
+
     if ensure_order:
-        a = a.rearrange(reordered_current_axes)
-        # ok now we have our current axes in the write order, but we need to add in the missing ones
+        unioned_axes = _ensure_partial_ordering_consistency(axes, a.axes)
+        reordered_a_axes = tuple(ax for ax in unioned_axes if ax in a.axes)
+        a = a.rearrange(reordered_a_axes)
+        # ok now we have our current axes in the right order, but we need to add in the missing ones
         # we use broadcast_in_dim to do the work for us
-        desired_shape = tuple(ax.size for ax in axes)
+        desired_shape = tuple(ax.size for ax in unioned_axes)
         # now we just have to map the dims of the current axes to the dims of the desired axes
-        axis_mapping = tuple(axes.index(ax) for ax in a.axes)
+        axis_mapping = tuple(unioned_axes.index(ax) for ax in a.axes)
         broadcasted = jax.lax.broadcast_in_dim(a.array, desired_shape, axis_mapping)
+        return NamedArray(broadcasted, unioned_axes)
     else:
         # we don't care about the order, so we can just broadcast to the right shape
         to_add = tuple(ax for ax in axes if ax not in a.axes)
-        broadcasted = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + list(a.shape))
-
-    return NamedArray(broadcasted, axes)
-
+        broadcasted = jnp.broadcast_to(a.array, [ax.size for ax in to_add] + list(a.array.shape))
+        return NamedArray(broadcasted, to_add + a.axes)
 
     #
     # all_axes = to_add + a.axes
@@ -872,6 +876,37 @@ def broadcast_to(
     # # if the new axes are already in the right order, then we're done
     # if ensure_order and not _is_subsequence(axes, all_axes):
     #     a = a.rearrange(axes + extra_axes)
+
+
+def _ensure_partial_ordering_consistency(target_axes, source_axes):
+    """Unions together target_axes and source_axes, ensuring that the returned axes are in an order consistent with
+    target axes, and source_axes to the extent possible."""
+    # the postconditions we want are:
+    # 1. set(target_axes).union(set(source_axes)) == set(result_axes)
+    # if target_index(ax) < target_index(ax') then result_index(ax) < result_index(ax')
+    # if source_index(ax) < source_index(ax') then result_index(ax) < result_index(ax') unless target_index(ax) > target_index(ax')
+    reordered_axes = []
+    target_pos = 0  # how far through axes we've gotten
+    # invariant: target_pos is the next target axis we need to add
+    for ax in source_axes:
+        try:
+            target_index = target_axes.index(ax)
+        except ValueError:
+            target_index = -1
+
+        if target_index >= target_pos:
+            # add everything in between
+            reordered_axes.extend(target_axes[target_pos : target_index + 1])
+            target_pos = target_index + 1
+        elif target_index == -1:  # not in target axes, so can't be in reordered axes
+            reordered_axes.append(ax)
+
+    reordered_axes.extend(target_axes[target_pos:])
+
+    assert all(ax in reordered_axes for ax in target_axes)
+    assert all(ax in reordered_axes for ax in source_axes)
+
+    return reordered_axes
 
 
 def _is_subsequence(needle, haystack):

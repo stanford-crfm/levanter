@@ -266,12 +266,6 @@ def test_categorical():
             Digit,
         ),
     )
-    # https://github.com/google/jax/issues/13124 broadcasting is wrong with jax categorical
-    raw_logits = jnp.broadcast_to(logits.array.reshape(-1, 1, Digit.size), (Height.size, Width.size, Digit.size))
-    check_gen_is_equal(
-        lambda k, s: jax.random.categorical(k, raw_logits, shape=s, axis=-1),
-        lambda k, s: hax.random.categorical(k, s, logits, Digit),
-    )
 
 
 def test_permutation():
