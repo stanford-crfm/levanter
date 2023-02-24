@@ -49,6 +49,7 @@ def main(config: EvalGpt2Config):
 
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
+    KeySeqLen = config.model.KeySeqLen
 
     with config.trainer.device_mesh:
         key = jax.random.PRNGKey(0)
@@ -74,7 +75,8 @@ def main(config: EvalGpt2Config):
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             input_ids = hax.named(input_ids, SeqLen)
-            pred_y = model(input_ids, inference=False, key=None)
+            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            pred_y = model(input_ids, attn_mask=mask, inference=True, key=None)
             pred_y = mp.cast_to_output(pred_y)
 
             # need to roll the target tokens back by one so that each token is predicting the next token
