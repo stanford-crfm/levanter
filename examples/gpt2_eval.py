@@ -108,9 +108,7 @@ def main(config: EvalGpt2Config):
                 loss += compute_loss_pjit(model_inf, batch).item()
                 n += 1
 
-        def eval_dataloader():
-            for batch in eval_dataset:
-                yield (batch,)
+            return loss
 
         # initialize the model
         if config.checkpoint_path is not None:
