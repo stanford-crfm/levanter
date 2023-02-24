@@ -33,11 +33,16 @@ class EvalGpt2Config:
     data: CachedLMDatasetConfig = CachedLMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
 
+    compare_torch: bool = False
+
 
 @pyrallis.wrap()
 def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
 
@@ -45,6 +50,7 @@ def main(config: EvalGpt2Config):
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         EvalBatch,
+        compute_axis_mapping,
     )
 
     # some axes we use outside the model proper
@@ -53,9 +59,6 @@ def main(config: EvalGpt2Config):
 
     with config.trainer.device_mesh:
         key = jax.random.PRNGKey(0)
-
-        compute_axis_mapping = config.trainer.compute_axis_mapping
-        parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
@@ -110,7 +113,7 @@ def main(config: EvalGpt2Config):
                 loss += compute_loss_pjit(model_inf, batch).item()
                 n += 1
 
-            return loss
+            return loss / n
 
         # initialize the model
         if config.checkpoint_path is not None:
@@ -139,6 +142,30 @@ def main(config: EvalGpt2Config):
             loss = evaluate(hf_model)
 
             print("Loss from HF model: ", loss)
+
+            del hf_model
+
+            if config.compare_torch:
+                import torch
+                from transformers import GPT2LMHeadModel
+
+                torch_model = GPT2LMHeadModel.from_pretrained(config.hf_checkpoint)
+
+                def torch_compute_loss(model, input_ids):
+                    input_ids = torch.from_numpy(input_ids)
+                    loss = model(input_ids, labels=input_ids, return_dict=True).loss
+
+                    return loss.item()
+
+                total_loss = 0.0
+                n = 0
+                for batch in eval_dataset:
+                    total_loss += torch_compute_loss(torch_model, batch)
+                    n += 1
+
+                total_loss /= n
+
+                print("Loss from Torch model: ", total_loss)
 
 
 if __name__ == "__main__":
