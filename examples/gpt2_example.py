@@ -194,7 +194,7 @@ def main(config: TrainGpt2Config):
                 n = 0
 
                 for batch in eval_dataset:
-                    loss += eval_loss(model, batch).item()
+                    loss += eval_loss(info.model, batch).item()
                     n += 1
 
                 if n > 0:

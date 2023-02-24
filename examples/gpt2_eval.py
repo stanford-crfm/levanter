@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 import jmp
 import pyrallis
-from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
 import haliax as hax
@@ -44,7 +43,7 @@ def main(config: EvalGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     eval_dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
@@ -67,53 +66,47 @@ def main(config: EvalGpt2Config):
 
         mp: jmp.Policy = config.trainer.mp
 
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-
         # don't want to compute the mask w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
-        def compute_loss(model: Gpt2LMHeadModel, input_ids):
-            input_ids = hax.named(input_ids, SeqLen)
+        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask):
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+
+                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = mp.cast_to_output(pred_y)
+
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = hax.roll(input_ids, -1, SeqLen)
+                target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+
+                loss = cross_entropy_loss(pred_y, Vocab, target_y)
+                loss = hax.mean(loss, where=loss_mask)
+
+                return loss.scalar()
+
+        @named_pjit(axis_resources=compute_axis_mapping)
+        def eval_loss(model, input_ids):
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            # just use causal mask for evaluation
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            pred_y = model(input_ids, attn_mask=mask, inference=True, key=None)
-            pred_y = mp.cast_to_output(pred_y)
-
-            # need to roll the target tokens back by one so that each token is predicting the next token
-            target_y = hax.roll(input_ids, -1, SeqLen)
-            target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-            loss = cross_entropy_loss(pred_y, Vocab, target_y)
-            loss = hax.mean(loss, where=loss_mask)
-
-            return loss.scalar()
-
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
-            # None here means the first argument (the model) is not vectorized but instead broadcasted
-            compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
-
-        compute_loss_pjit = named_pjit(
-            mean_loss,
-            in_axis_mapping=parameter_axis_mapping,
-            axis_resources=compute_axis_mapping,
-        )
+            return compute_loss(model, input_ids, mask)
 
         def evaluate(model):
-            model_inf = prepare_model_for_compute(model)
+            with hax.axis_mapping(compute_axis_mapping):
+                # standard evaluation loop
+                loss = 0.0
+                n = 0
 
-            # standard evaluation loop
-            loss = 0.0
-            n = 0
+                for batch in eval_dataset:
+                    loss += eval_loss(model, batch).item()
+                    n += 1
 
-            for batch in eval_dataset:
-                loss += compute_loss_pjit(model_inf, batch).item()
-                n += 1
+                if n > 0:
+                    loss /= n
 
-            return loss / n
+            logger.info(f"validation loss: {loss:.3f}")
+            return loss
 
         # initialize the model
         if config.checkpoint_path is not None:
