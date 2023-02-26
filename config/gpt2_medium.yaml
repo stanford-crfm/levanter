@@ -20,7 +20,7 @@ trainer:
   learning_rate: 3E-4
   weight_decay: 0.1
   model_axis_size: 1
-  per_device_parallelism: 4
+  per_device_parallelism: 16
 
   axis_resources:
     batch: "data"
