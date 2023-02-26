@@ -1,13 +1,13 @@
 import tempfile
+from urllib.parse import urlparse
 
 import fsspec
-import furl
 from transformers import AutoTokenizer
 
 
 def load_tokenizer(model_name_or_path, local_cache_dir=None):
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
-    is_url_like = furl.furl(model_name_or_path).scheme is not None
+    is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
         # tokenizers are directories, so we have to copy them locally
         if local_cache_dir is None:
