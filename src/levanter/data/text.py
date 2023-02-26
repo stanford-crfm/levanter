@@ -28,10 +28,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerFast
+from transformers import BatchEncoding, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
+from levanter.hf_utils import load_tokenizer
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -426,7 +427,7 @@ class LMDatasetConfig:
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return AutoTokenizer.from_pretrained(self.tokenizer)
+        return load_tokenizer(self.tokenizer)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
