@@ -10,13 +10,14 @@ import pyrallis
 from equinox import default_deserialise_filter_spec
 from huggingface_hub import Repository
 from jaxtyping import PyTree
-from transformers import AutoTokenizer, GPT2Tokenizer
+from transformers import GPT2Tokenizer
 
 import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
 from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
+from levanter.hf_utils import load_tokenizer
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 
@@ -43,7 +44,7 @@ class ConvertGpt2Config:
 
     @cached_property
     def the_tokenizer(self):
-        return AutoTokenizer.from_pretrained(self.tokenizer)
+        return load_tokenizer(self.tokenizer)
 
 
 @pyrallis.wrap()
