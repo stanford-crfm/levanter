@@ -2,6 +2,7 @@
 import dataclasses
 import logging
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
@@ -275,6 +276,10 @@ class TrainerConfig:
 
     distributed: DistributedConfig = DistributedConfig()
 
+    require_accelerator: Optional[
+        bool
+    ] = None  # whether or not to require an accelerator (e.g. TPU or GPU). default depends on the platform: on macos, it's False, otherwise it's True
+
     @property
     def run_name(self) -> str:
         import wandb
@@ -292,6 +297,12 @@ class TrainerConfig:
         self.wandb.init(all_config)
         self._initialize_logging()
         self._validate()
+
+        if self.require_accelerator is None:
+            self.require_accelerator = not sys.platform.startswith("darwin")
+
+        if self.require_accelerator:
+            assert jax.default_backend() != "cpu", "Accelerator required but not found"
 
     @cached_property
     def device_mesh(self) -> Mesh:
