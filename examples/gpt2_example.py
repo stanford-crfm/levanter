@@ -196,6 +196,8 @@ def main(config: TrainGpt2Config):
                 for batch in eval_dataset:
                     loss += eval_loss(model, batch).item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
                 if n > 0:
                     loss /= n
