@@ -253,6 +253,7 @@ class TrainerConfig:
     # Config related to duration
     num_train_steps: int = 400_000
     steps_per_eval: int = 1_000
+    max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
