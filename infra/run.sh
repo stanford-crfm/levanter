@@ -2,7 +2,7 @@ umask 000
 LEV_ROOT=$(dirname "$(readlink -f $0)")/..
 
 # figure out venv, first check if we wrote a path in infra/venv_path
-if [ ! -d "$VENV" ]; then
+if [ ! -d "$VENV" ] && [ -f "$LEV_ROOT/infra/venv_path.txt" ]; then
   VENV=$(cat "$LEV_ROOT"/infra/venv_path.txt)
 fi
 
