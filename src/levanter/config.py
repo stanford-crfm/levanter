@@ -1,4 +1,5 @@
 # Various Pyrallis configs
+import atexit
 import dataclasses
 import logging
 import os
@@ -24,7 +25,7 @@ import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import Checkpointer, CheckpointInterval
 from levanter.distributed import LevanterSlurmCluster
-from levanter.utils import jax_utils
+from levanter.utils import cloud_utils, jax_utils
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
@@ -276,9 +277,12 @@ class TrainerConfig:
 
     distributed: DistributedConfig = DistributedConfig()
 
-    require_accelerator: Optional[
-        bool
-    ] = None  # whether or not to require an accelerator (e.g. TPU or GPU). default depends on the platform: on macos, it's False, otherwise it's True
+    # whether or not to require an accelerator (e.g. TPU or GPU).
+    # default depends on the platform: on macos False, else True
+    require_accelerator: Optional[bool] = None
+
+    # whether or not to shutdown the tpu at exit. If a float, shutdown after that many seconds. True = 5 minutes
+    shutdown_at_exit: Union[bool, float] = False
 
     @property
     def run_name(self) -> str:
@@ -303,6 +307,12 @@ class TrainerConfig:
 
         if self.require_accelerator:
             assert jax.default_backend() != "cpu", "Accelerator required but not found"
+
+        if self.shutdown_at_exit is not False:
+            if isinstance(self.shutdown_at_exit, bool):
+                self.shutdown_at_exit = 5.0 * 60
+            logger.info(f"At end of run, shutting down TPU VM in {self.shutdown_at_exit} seconds")
+            atexit.register(cloud_utils.shutdown_tpu_vm, self.shutdown_at_exit)
 
     @cached_property
     def device_mesh(self) -> Mesh:
