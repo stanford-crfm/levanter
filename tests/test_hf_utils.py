@@ -2,7 +2,7 @@ import os
 
 from fsspec import AbstractFileSystem
 
-from levanter.hf_utils import load_tokenizer
+from levanter.utils.hf_utils import load_tokenizer
 
 
 def test_load_tokenizer_in_memory_fs():

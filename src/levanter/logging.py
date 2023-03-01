@@ -8,7 +8,7 @@ import jax
 from optax import MultiStepsState
 
 import wandb
-from levanter.jax_utils import jnp_to_python
+from levanter.utils.jax_utils import jnp_to_python
 
 
 logger = pylogging.getLogger(__name__)

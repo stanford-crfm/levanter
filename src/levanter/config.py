@@ -22,10 +22,10 @@ from pyrallis import field
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
-from levanter import jax_utils
 from levanter.checkpoint import Checkpointer, CheckpointInterval
-from levanter.datetime_utils import encode_timedelta, parse_timedelta
 from levanter.distributed import LevanterSlurmCluster
+from levanter.utils import jax_utils
+from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
