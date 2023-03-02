@@ -13,7 +13,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
-from levanter.utils.modeling_utils import ACT2FN
+from levanter.nn import ACT2FN
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)

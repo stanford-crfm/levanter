@@ -14,7 +14,7 @@ from utils import skip_if_no_torch
 import haliax as hax
 from levanter.config import TrainerConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
-from levanter.utils.modeling_utils import cross_entropy_loss
+from levanter.nn import cross_entropy_loss
 
 
 @skip_if_no_torch
