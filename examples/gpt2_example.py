@@ -13,6 +13,7 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
+from haliax.nn import cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
@@ -21,7 +22,6 @@ from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.nn import cross_entropy_loss_and_log_normalizers
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle

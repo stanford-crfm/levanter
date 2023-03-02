@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable, Dict, List, Optional, Union, cast
 
 import equinox as eqx
@@ -13,7 +14,6 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
-from levanter.nn import ACT2FN
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
@@ -472,3 +472,13 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}
+
+
+ACT2FN: Dict[str, Callable] = {
+    "relu": hnn.relu,
+    "silu": hnn.silu,
+    "swish": hnn.swish,
+    "gelu": partial(hnn.gelu, approximate=False),
+    "gelu_new": partial(hnn.gelu, approximate=True),
+    "quick_gelu": hnn.quick_gelu,
+}

@@ -12,9 +12,9 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 from utils import skip_if_no_torch
 
 import haliax as hax
+from haliax.nn import cross_entropy_loss
 from levanter.config import TrainerConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
-from levanter.nn import cross_entropy_loss
 
 
 @skip_if_no_torch
