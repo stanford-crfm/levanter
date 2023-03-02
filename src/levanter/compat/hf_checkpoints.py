@@ -1,29 +1,57 @@
 import json
 import os
 
-import torch
 from huggingface_hub import cached_download, hf_hub_url
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
 
 from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+import safetensors
 
+PYTORCH_MODEL="pytorch_model.bin"
+SAFE_TENSORS_MODEL="model.safetensors"
 
-def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map_location=None, revision=None):
-    """
-    Loads a PyTorch model checkpoint.
-    """
-    if map_location is None:
-        map_location = torch.device("cpu")
-
-    if os.path.exists(f"{location_or_id}/{model_file}"):
-        config = json.load(open(f"{location_or_id}/config.json"))
-        checkpoint = torch.load(f"{location_or_id}/{model_file}", map_location=map_location)
+def _attempt_torch_load(path, model_file, device: str):
+    import safetensors.torch
+    # first try to load as safetensors with pytorch backend
+    if model_file is None:
+        model_files = [SAFE_TENSORS_MODEL, PYTORCH_MODEL]
     else:
-        url = hf_hub_url(location_or_id, model_file, revision=revision)
-        model_path = cached_download(url)
-        checkpoint = torch.load(model_path, map_location=map_location)
+        model_files = [model_file]
+    for file in model_files:
+        try:
+            return safetensors.torch.load_file(f"{path}/{file}", device=device)
+        except Exception:  # noqa: E722
+            try:
+                import torch
+                return torch.load(f"{path}/{model_file}", map_location=torch.device(device))
+            except Exception:  # noqa: E722
+                pass
+
+
+def load_hf_model_checkpoint(location_or_id, model_file=None, map_location=None, revision=None):
+    """
+    Loads a safetensors or PyTorch model checkpoint.
+    If model_file is None, this function attempts to load via safetensors first, then PyTorch.
+    """
+    if os.path.exists(f"{location_or_id}/config.json}"):
+        config = json.load(open(f"{location_or_id}/config.json"))
+        checkpoint = _attempt_torch_load(location_or_id, model_file, device=map_location)
+    else:
+        if model_file is None:
+            model_files = [SAFE_TENSORS_MODEL, PYTORCH_MODEL]
+        else:
+            model_files = [model_file]
+
+        for file in model_files:
+            try:
+                url = hf_hub_url(location_or_id, model_file, revision=revision)
+                model_path = cached_download(url)
+            except Exception:  # noqa: E722
+                pass
+
+        checkpoint = _attempt_torch_load(model_path, model_file, device=map_location)
 
         config_url = hf_hub_url(location_or_id, "config.json", revision=revision)
         config_path = cached_download(config_url)
@@ -97,6 +125,7 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
 
 
 def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
+    import torch
     config = gpt2_config_to_hf(model.vocab_size, model.config)
     torch_dict = model.to_torch_dict()
     os.makedirs(path, exist_ok=True)
