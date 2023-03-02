@@ -13,3 +13,4 @@ fsspec==2022.10.0 # pin this to make gcsfs happy
 tensorstore
 pytimeparse
 humanfriendly
+requests

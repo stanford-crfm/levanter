@@ -32,8 +32,8 @@ from transformers import BatchEncoding, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
-from levanter.hf_utils import load_tokenizer
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+from levanter.utils.hf_utils import load_tokenizer
 
 
 overwatch = logging.getLogger("levanter.data.text")
