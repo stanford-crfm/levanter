@@ -17,9 +17,9 @@ from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
 from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
-from levanter.hf_utils import load_tokenizer
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
+from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)

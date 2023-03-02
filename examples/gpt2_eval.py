@@ -17,8 +17,8 @@ from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
-from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.utils.modeling_utils import cross_entropy_loss
 
 
 logger = logging.getLogger(__name__)

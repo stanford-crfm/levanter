@@ -40,19 +40,3 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
-
-
-#
-# def engine_from_loss_fn(
-#         model: T, train_loader,
-#         loss_and_grad_fn: Callable[[T, B, PRNGKey], Any],
-#         optimizer: optax.GradientTransformation,
-#         key: PRNGKey)-> Tuple[Engine, ModelAndOptState]:
-#     def train_step(state, batch, key):
-#         model, opt_state = state
-#         loss, grads = loss_and_grad_fn(model, batch, key)
-#         updates, opt_state = optimizer.update(grads, opt_state)
-#         model = eqx.apply_updates(model, updates)
-#         return (model, opt_state), loss
-#
-#     return Engine(train_step, train_loader, key), ModelAndOptState(model, optimizer.init(model))
