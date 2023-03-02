@@ -40,12 +40,16 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
         save_hf_gpt2_checkpoint,
     )
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision)
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+
+    config, data = load_hf_model_checkpoint(model_id, revision=revision, device=device)
     config = HfGpt2Config.from_dict(config)
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision)
+    model = load_hf_gpt2_checkpoint(model_id, revision=revision, device=device)
 
     input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
 

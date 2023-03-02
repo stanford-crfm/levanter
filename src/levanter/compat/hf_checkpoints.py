@@ -1,61 +1,49 @@
 import json
 import os
 
-from huggingface_hub import cached_download, hf_hub_url
+import safetensors
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
 
 from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-import safetensors
-
-PYTORCH_MODEL="pytorch_model.bin"
-SAFE_TENSORS_MODEL="model.safetensors"
-
-def _attempt_torch_load(path, model_file, device: str):
-    import safetensors.torch
-    # first try to load as safetensors with pytorch backend
-    if model_file is None:
-        model_files = [SAFE_TENSORS_MODEL, PYTORCH_MODEL]
-    else:
-        model_files = [model_file]
-    for file in model_files:
-        try:
-            return safetensors.torch.load_file(f"{path}/{file}", device=device)
-        except Exception:  # noqa: E722
-            try:
-                import torch
-                return torch.load(f"{path}/{model_file}", map_location=torch.device(device))
-            except Exception:  # noqa: E722
-                pass
 
 
-def load_hf_model_checkpoint(location_or_id, model_file=None, map_location=None, revision=None):
+PYTORCH_MODEL = "pytorch_model.bin"
+SAFE_TENSORS_MODEL = "model.safetensors"
+
+
+def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     """
     Loads a safetensors or PyTorch model checkpoint.
     If model_file is None, this function attempts to load via safetensors first, then PyTorch.
     """
-    if os.path.exists(f"{location_or_id}/config.json}"):
+    if os.path.exists(f"{location_or_id}/config.json"):
         config = json.load(open(f"{location_or_id}/config.json"))
-        checkpoint = _attempt_torch_load(location_or_id, model_file, device=map_location)
-    else:
-        if model_file is None:
-            model_files = [SAFE_TENSORS_MODEL, PYTORCH_MODEL]
+        if os.path.exists(f"{location_or_id}/{SAFE_TENSORS_MODEL}"):
+            checkpoint = safetensors.torch.load_file(f"{location_or_id}/{SAFE_TENSORS_MODEL}", device=device)
+        elif os.path.exists(f"{location_or_id}/{PYTORCH_MODEL}"):
+            import torch
+
+            checkpoint = torch.load(f"{location_or_id}/{PYTORCH_MODEL}", map_location=device)
         else:
-            model_files = [model_file]
-
-        for file in model_files:
-            try:
-                url = hf_hub_url(location_or_id, model_file, revision=revision)
-                model_path = cached_download(url)
-            except Exception:  # noqa: E722
-                pass
-
-        checkpoint = _attempt_torch_load(model_path, model_file, device=map_location)
-
-        config_url = hf_hub_url(location_or_id, "config.json", revision=revision)
-        config_path = cached_download(config_url)
+            raise ValueError(f"Could not find model file for {location_or_id}")
+    else:
+        config_path = hf_hub_download(location_or_id, "config.json", revision=revision)
         config = json.load(open(config_path))
+
+        try:
+            model_path = hf_hub_download(location_or_id, SAFE_TENSORS_MODEL, revision=revision)
+            checkpoint = safetensors.torch.load_file(model_path, device=device)
+        except EntryNotFoundError:  # noqa: E722
+            model_path = hf_hub_download(location_or_id, PYTORCH_MODEL, revision=revision)
+            import torch
+
+            if isinstance(device, str):
+                device = torch.device(device)
+            checkpoint = torch.load(model_path, map_location=device)
 
     return config, checkpoint
 
@@ -98,8 +86,8 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
-    config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
+def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
+    config, checkpoint = load_hf_model_checkpoint(location_or_id, device=device, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
 
@@ -126,6 +114,7 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
 
 def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
     import torch
+
     config = gpt2_config_to_hf(model.vocab_size, model.config)
     torch_dict = model.to_torch_dict()
     os.makedirs(path, exist_ok=True)
