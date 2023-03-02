@@ -2,6 +2,7 @@ import json
 import os
 
 import safetensors
+import safetensors.numpy
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.random import PRNGKey
@@ -105,19 +106,18 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
             break
 
     if has_transformer_prefix:
-        model = model.from_torch_dict(checkpoint, prefix="transformer")
+        model = model.from_state_dict(checkpoint, prefix="transformer")
     else:
-        model = model.from_torch_dict(checkpoint)
+        model = model.from_state_dict(checkpoint)
 
     return model
 
 
 def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
-    import torch
-
     config = gpt2_config_to_hf(model.vocab_size, model.config)
-    torch_dict = model.to_torch_dict()
+    state_dict = model.to_state_dict()
     os.makedirs(path, exist_ok=True)
-    torch.save(torch_dict, f"{path}/pytorch_model.bin")
+    # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+    safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)
