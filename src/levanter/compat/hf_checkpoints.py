@@ -38,7 +38,7 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     if os.path.exists(f"{location_or_id}/config.json"):
         config = json.load(open(f"{location_or_id}/config.json"))
         if os.path.exists(f"{location_or_id}/{SAFE_TENSORS_MODEL}"):
-            checkpoint = safetensors.torch.load_file(f"{location_or_id}/{SAFE_TENSORS_MODEL}", device=device)
+            checkpoint = safetensors.numpy.load_file(f"{location_or_id}/{SAFE_TENSORS_MODEL}")
         elif os.path.exists(f"{location_or_id}/{PYTORCH_MODEL}"):
             import torch
 
