@@ -14,3 +14,4 @@ tensorstore
 pytimeparse
 humanfriendly
 requests
+safetensors[numpy]

@@ -1,8 +1,10 @@
 import json
 import os
 
-import torch
-from huggingface_hub import cached_download, hf_hub_url
+import safetensors
+import safetensors.numpy
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
 
@@ -10,24 +12,39 @@ from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
-def load_hf_model_checkpoint(location_or_id, model_file="pytorch_model.bin", map_location=None, revision=None):
-    """
-    Loads a PyTorch model checkpoint.
-    """
-    if map_location is None:
-        map_location = torch.device("cpu")
+PYTORCH_MODEL = "pytorch_model.bin"
+SAFE_TENSORS_MODEL = "model.safetensors"
 
-    if os.path.exists(f"{location_or_id}/{model_file}"):
+
+def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
+    """
+    Loads a safetensors or PyTorch model checkpoint.
+    If model_file is None, this function attempts to load via safetensors first, then PyTorch.
+    """
+    if os.path.exists(f"{location_or_id}/config.json"):
         config = json.load(open(f"{location_or_id}/config.json"))
-        checkpoint = torch.load(f"{location_or_id}/{model_file}", map_location=map_location)
-    else:
-        url = hf_hub_url(location_or_id, model_file, revision=revision)
-        model_path = cached_download(url)
-        checkpoint = torch.load(model_path, map_location=map_location)
+        if os.path.exists(f"{location_or_id}/{SAFE_TENSORS_MODEL}"):
+            checkpoint = safetensors.torch.load_file(f"{location_or_id}/{SAFE_TENSORS_MODEL}", device=device)
+        elif os.path.exists(f"{location_or_id}/{PYTORCH_MODEL}"):
+            import torch
 
-        config_url = hf_hub_url(location_or_id, "config.json", revision=revision)
-        config_path = cached_download(config_url)
+            checkpoint = torch.load(f"{location_or_id}/{PYTORCH_MODEL}", map_location=device)
+        else:
+            raise ValueError(f"Could not find model file for {location_or_id}")
+    else:
+        config_path = hf_hub_download(location_or_id, "config.json", revision=revision)
         config = json.load(open(config_path))
+
+        try:
+            model_path = hf_hub_download(location_or_id, SAFE_TENSORS_MODEL, revision=revision)
+            checkpoint = safetensors.torch.load_file(model_path, device=device)
+        except EntryNotFoundError:  # noqa: E722
+            model_path = hf_hub_download(location_or_id, PYTORCH_MODEL, revision=revision)
+            import torch
+
+            if isinstance(device, str):
+                device = torch.device(device)
+            checkpoint = torch.load(model_path, map_location=device)
 
     return config, checkpoint
 
@@ -70,8 +87,8 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
-def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
-    config, checkpoint = load_hf_model_checkpoint(location_or_id, map_location=map_location, revision=revision)
+def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
+    config, checkpoint = load_hf_model_checkpoint(location_or_id, device=device, revision=revision)
 
     config = HfGpt2Config.from_dict(config)
 
@@ -89,17 +106,18 @@ def load_hf_gpt2_checkpoint(location_or_id, map_location=None, revision=None):
             break
 
     if has_transformer_prefix:
-        model = model.from_torch_dict(checkpoint, prefix="transformer")
+        model = model.from_state_dict(checkpoint, prefix="transformer")
     else:
-        model = model.from_torch_dict(checkpoint)
+        model = model.from_state_dict(checkpoint)
 
     return model
 
 
 def save_hf_gpt2_checkpoint(path, model: Gpt2LMHeadModel):
     config = gpt2_config_to_hf(model.vocab_size, model.config)
-    torch_dict = model.to_torch_dict()
+    state_dict = model.to_state_dict()
     os.makedirs(path, exist_ok=True)
-    torch.save(torch_dict, f"{path}/pytorch_model.bin")
+    # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+    safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)

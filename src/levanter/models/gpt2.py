@@ -1,19 +1,25 @@
 import re
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy
 
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
-from levanter.compat.torch_serialization import StateDict, TorchSerializationMixin, apply_prefix, reshape_linear_layer
+from levanter.compat.torch_serialization import (
+    StateDict,
+    StateDictSerializationMixin,
+    apply_prefix,
+    reshape_linear_layer,
+)
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
@@ -100,7 +106,7 @@ class Gpt2Mlp(eqx.Module):
         return hidden_states
 
 
-class Gpt2Attention(TorchSerializationMixin, eqx.Module):
+class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
@@ -180,9 +186,9 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_output = self.c_proj(attn_output)
         return attn_output
 
-    def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
-        # our c_attn is [embed] -> [3, heads, head_dim] and torch's is the flattened [embed] -> [3 * heads * head_dim]
-        # and our c_proj is [heads, head_dim] -> [embed] and torch's is the flattened [heads * head_dim] -> [embed]
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
+        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
+        # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
@@ -190,22 +196,22 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_linear_layer(
-                torch_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.HeadDim.size)
+                state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.HeadDim.size)
             )
         )
         d.update(
             reshape_linear_layer(
-                torch_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.HeadDim.size), (es,)
+                state_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.HeadDim.size), (es,)
             )
         )
 
-        return super().from_torch_dict(d, prefix)
+        return super().from_state_dict(d, prefix)
 
-    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_torch_dict
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        # need to undo the reshape we did in from_state_dict
         # reminder that everything is vectorized
         my_dict: StateDict = {}
-        super().update_torch_dict(my_dict, prefix)
+        super().update_state_dict(my_dict, prefix)
 
         es = cast(Axis, self.c_attn.In).size
         my_dict.update(
@@ -219,11 +225,11 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
             )
         )
 
-        torch_dict.update(my_dict)
-        return torch_dict
+        state_dict.update(my_dict)
+        return state_dict
 
 
-class Gpt2Block(TorchSerializationMixin, eqx.Module):
+class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     ln_1: hnn.LayerNorm
     attn: Gpt2Attention
     ln_2: hnn.LayerNorm
@@ -277,7 +283,7 @@ class Gpt2Block(TorchSerializationMixin, eqx.Module):
         return hidden_states
 
 
-class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
+class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
     blocks: Gpt2Block
     ln_f: hnn.LayerNorm
@@ -311,25 +317,23 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
         return hidden_states
 
-    def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
 
-    def from_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None):
-        import torch
-
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
-        # whereas in torch we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        # first we vectorize the keys for the torch dict
+        # whereas in hf we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
+        # first we vectorize the keys for the state dict
         # the individual blocks are named h.0.FOO, h.1.FOO, etc.
         # we want to vectorize them to h.FOO, h.FOO, etc.
         vectorized_dict: StateDict = {}
 
-        tensors_to_vectorize: Dict[str, List[Optional[torch.Tensor]]] = {}
+        tensors_to_vectorize: Dict[str, List[Optional[Any]]] = {}
         prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
         other_keys_prefix = cast(str, apply_prefix(prefix, ""))
         escaped = re.escape(prefix_to_vectorize)
         pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
-        for k, v in torch_dict.items():
+        for k, v in state_dict.items():
             match = pattern.match(k)
             if match:
                 block_idx = int(match.group(1))
@@ -343,33 +347,32 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
         # now we have to vectorize the tensors
         for k, tensors in tensors_to_vectorize.items():
-            vectorized_dict[cast(str, apply_prefix("h", k))] = torch.stack(tensors, dim=0)
+            vectorized_dict[cast(str, apply_prefix("h", k))] = numpy.stack(tensors, axis=0)
 
         # now we can just call the base class. No prefix is needed because we've stripped it
-        out = super().from_torch_dict(vectorized_dict, prefix=None)
+        out = super().from_state_dict(vectorized_dict, prefix=None)
         return out
 
-    def update_torch_dict(self, torch_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # this method is also a bit of a pain for the same reasons
         # first just do the normal thing with our own dict, which we'll post-process
         my_state_dict: StateDict = {}
-        super().update_torch_dict(my_state_dict, prefix=None)
+        super().update_state_dict(my_state_dict, prefix=None)
 
         # now go through and devectorize all the "h" keys
         for k, v in my_state_dict.items():
             if k.startswith("h."):
                 # this is a vectorized key, we need to devectorize it
-                unbound = v.unbind(dim=0)
-                for i, v2 in enumerate(unbound):
-                    torch_dict[cast(str, apply_prefix(prefix, f"h.{i}.{k[2:]}"))] = v2
+                for i, v2 in enumerate(v):
+                    state_dict[cast(str, apply_prefix(prefix, f"h.{i}.{k[2:]}"))] = v2
             else:
                 # other keys just copy over
-                torch_dict[k] = v
+                state_dict[k] = v
 
-        return torch_dict
+        return state_dict
 
 
-class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
+class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     token_embeddings: NamedArray
     position_embeddings: NamedArray
     token_out_embeddings: Optional[NamedArray]
@@ -421,12 +424,12 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         embeddings = self.token_out_embeddings or self.token_embeddings
         return hax.dot(self.Embed, hidden_states, embeddings)
 
-    def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         assert self.token_out_embeddings is None
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
-class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
+class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
 
@@ -470,7 +473,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
 
         return lm_logits
 
-    def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}
 
 

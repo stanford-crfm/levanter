@@ -40,12 +40,16 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
         save_hf_gpt2_checkpoint,
     )
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision)
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+
+    config, data = load_hf_model_checkpoint(model_id, revision=revision, device=device)
     config = HfGpt2Config.from_dict(config)
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision)
+    model = load_hf_gpt2_checkpoint(model_id, revision=revision, device=device)
 
     input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
 
@@ -125,19 +129,19 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 
     # gradients are kind of a pain to get at in torch, but we do it anyway
     torch_out.backward()
-    torch_dict = torch_model.transformer.state_dict(keep_vars=True)
-    torch_dict = {k: v.grad for k, v in torch_dict.items()}
+    state_dict = torch_model.transformer.state_dict(keep_vars=True)
+    state_dict = {k: v.grad for k, v in state_dict.items()}
 
     jax_grad: Gpt2LMHeadModel
 
-    jax_grad_dict = jax_grad.to_torch_dict()
+    jax_grad_dict = jax_grad.to_state_dict()
 
     for jax_key, jax_g in jax_grad_dict.items():
-        if jax_key not in torch_dict:
+        if jax_key not in state_dict:
             assert jax_key == "token_out_embeddings"
             continue
 
-        torch_g = torch_dict[jax_key]
+        torch_g = state_dict[jax_key]
         assert onp.isclose(jax_g, torch_g.detach().cpu().numpy(), rtol=1e-2, atol=1e-2).all(), f"{jax_g} != {torch_g}"
 
     # now we also want to check that the optimizers do similar things
@@ -160,15 +164,15 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 
-    new_model_dict = new_model.to_torch_dict()
-    torch_dict = torch_model.transformer.state_dict(keep_vars=True)
+    new_model_dict = new_model.to_state_dict()
+    state_dict = torch_model.transformer.state_dict(keep_vars=True)
 
     # now compare new params
     for key, jax_p in new_model_dict.items():
-        if key not in torch_dict:
+        if key not in state_dict:
             assert key == "token_out_embeddings"
             continue
-        torch_p = torch_dict[key]
+        torch_p = state_dict[key]
         assert onp.isclose(
             jax_p, torch_p.detach().cpu().numpy(), rtol=1e-3, atol=2e-3
         ).all(), f"{key}: {onp.linalg.norm(jax_p - torch_p.detach().cpu().numpy(), ord=onp.inf)}"
