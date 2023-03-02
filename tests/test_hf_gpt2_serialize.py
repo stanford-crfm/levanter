@@ -1,10 +1,12 @@
 import tempfile
 
 import equinox
+import fsspec
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as onp
+from fsspec import AbstractFileSystem
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
@@ -12,9 +14,11 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 from utils import skip_if_no_torch
 
 import haliax as hax
+from haliax import Axis
 from haliax.nn import cross_entropy_loss
+from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint, save_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
-from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
 @skip_if_no_torch
@@ -33,12 +37,6 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
-
-    from levanter.compat.hf_checkpoints import (
-        load_hf_gpt2_checkpoint,
-        load_hf_model_checkpoint,
-        save_hf_gpt2_checkpoint,
-    )
 
     device = "cpu"
     if torch.cuda.is_available():
@@ -69,7 +67,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        save_hf_gpt2_checkpoint(tmpdir, model)
+        save_hf_gpt2_checkpoint(model, tmpdir)
 
         torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir, config=config)
         torch_model2.eval()
@@ -90,8 +88,6 @@ def test_hf_gradient():
 
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
-
-    from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint
 
     config, data = load_hf_model_checkpoint(model_id, revision=revision)
     config = HfGpt2Config.from_dict(config)
@@ -176,3 +172,31 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
         assert onp.isclose(
             jax_p, torch_p.detach().cpu().numpy(), rtol=1e-3, atol=2e-3
         ).all(), f"{key}: {onp.linalg.norm(jax_p - torch_p.detach().cpu().numpy(), ord=onp.inf)}"
+
+
+def test_hf_save_to_fs_spec():
+    Vocab = Axis("Vocab", 128)
+    config = Gpt2Config(hidden_dim=32, num_heads=2, num_layers=2)
+    simple_model = Gpt2LMHeadModel(Vocab, config, key=PRNGKey(0))
+
+    save_hf_gpt2_checkpoint(simple_model, "memory://model")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        # now copy the model to tmp because loading from memory doesn't work
+        fs: AbstractFileSystem = fsspec.filesystem("memory")
+        fs.get("model/", f"{tmpdir}/test", recursive=True)
+
+        loaded_model = load_hf_gpt2_checkpoint(f"{tmpdir}/test")
+
+        simple_dict = simple_model.to_state_dict()
+        loaded_dict = loaded_model.to_state_dict()
+
+        assert simple_dict.keys() == loaded_dict.keys()
+
+        for key, simple_p in simple_dict.items():
+            loaded_p = loaded_dict[key]
+            assert onp.isclose(simple_p, loaded_p).all(), f"{key}: {onp.linalg.norm(simple_p - loaded_p, ord=onp.inf)}"
+
+
+# TODO: would be nice to have a test that tests hf upload?
