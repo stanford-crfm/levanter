@@ -51,7 +51,7 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
 
         try:
             model_path = hf_hub_download(location_or_id, SAFE_TENSORS_MODEL, revision=revision)
-            checkpoint = safetensors.torch.load_file(model_path, device=device)
+            checkpoint = safetensors.numpy.load_file(model_path)
         except EntryNotFoundError:  # noqa: E722
             model_path = hf_hub_download(location_or_id, PYTORCH_MODEL, revision=revision)
             import torch
