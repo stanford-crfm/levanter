@@ -7,14 +7,15 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterator, Optional
 from functools import partial
+from typing import Callable, Iterator, Optional
 
 import humanfriendly
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
+from jax.experimental.pjit import pjit
 from tqdm import tqdm
 
 import levanter.visualization as viz
@@ -23,7 +24,6 @@ from levanter.config import WandbConfig
 from levanter.data import Dataset
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
-from jax.experimental.pjit import FROM_GDA, pjit, with_sharding_constraint
 
 
 logger = logging.getLogger(__name__)
@@ -242,13 +242,12 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
 
         log_probs = []
         targets = []
-        # TODO: haliax-ify?
         for batch in test_data:
             b_logprobs = log_prob_fn(model, batch)
             log_probs.append(b_logprobs)
             targets.append(batch)
 
-
+            # TODO: haliax-ify?
             if len(targets) * b_logprobs.shape[0] >= max_ex:
                 break
 
@@ -256,27 +255,29 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
         targets = _concatenate(targets)
 
         # gather the log probs and targets
-        (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs))
-        print("g")
+        # TODO: is this still necessary?
+        (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs), tiled=True)
 
         log_probs = log_probs[:max_ex]
         targets = targets[:max_ex]
 
         targets = np.array(targets)
-        tokens = [[s.replace("Ġ"," ").replace("Ċ"," ") for s in tokenizer.convert_ids_to_tokens(t)] for t in targets]
-
-        log_probs = np.array(log_probs)
+        tokens = [_decode_tokens_pretty(tokenizer, t) for t in targets]
 
         os.makedirs(html_dir, exist_ok=True)
-
         out_file = os.path.join(html_dir, f"step_{step.step}.html")
 
+        log_probs = np.array(log_probs)
         viz.visualize_log_probs(tokens, log_probs, out_file)
-
         wandb.log({"log_probs": wandb.Html(out_file)}, step=step.step)
 
     return compute_and_viz_log_probs
 
+
 @partial(pjit, out_axis_resources=None)
 def _concatenate(x):
     return jnp.concatenate(x, axis=0)
+
+
+def _decode_tokens_pretty(tok, ids):
+    return [tok.convert_tokens_to_string([x]) if x is not None else "<!UNK|>" for x in tok.convert_ids_to_tokens(ids)]
