@@ -179,7 +179,7 @@ def main(config: TrainGpt2Config):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=compute_axis_mapping)
+        @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             # just use causal mask for evaluation
@@ -194,7 +194,8 @@ def main(config: TrainGpt2Config):
                 n = 0
 
                 for batch in eval_dataset:
-                    loss += eval_loss(model, batch).item()
+                    this_loss = eval_loss(model, batch)
+                    loss += this_loss.item()
                     n += 1
                     if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
                         break
@@ -239,9 +240,9 @@ def main(config: TrainGpt2Config):
 
                 loss = cross_entropy_loss(pred_y, Vocab, target_y)
                 masked = loss * loss_mask
+                loss *= -1.0  # negate because we want log probs
                 # roll forward to get the loss for each token
                 masked = haliax.roll(masked, 1, SeqLen)
-                print(masked.axes)
                 return masked.rearrange((EvalBatch, SeqLen)).array
 
         engine.add_hook(

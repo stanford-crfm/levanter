@@ -8,6 +8,7 @@ import threading
 import time
 import warnings
 from typing import Callable, Iterator, Optional
+from functools import partial
 
 import humanfriendly
 import jax
@@ -22,6 +23,7 @@ from levanter.config import WandbConfig
 from levanter.data import Dataset
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
+from jax.experimental.pjit import FROM_GDA, pjit, with_sharding_constraint
 
 
 logger = logging.getLogger(__name__)
@@ -224,7 +226,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     return log_memory_usage
 
 
-def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_ex=1024):
+def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_ex=128):
     """
     Computes log probabilities for a dataset and visualizes them using visdom.
     :param test_data:
@@ -242,25 +244,16 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
         targets = []
         # TODO: haliax-ify?
         for batch in test_data:
-            print("i")
             b_logprobs = log_prob_fn(model, batch)
-            print("j")
             log_probs.append(b_logprobs)
-            print("k")
             targets.append(batch)
-            print("l")
 
-            print(len(targets), len(test_data))
 
             if len(targets) * b_logprobs.shape[0] >= max_ex:
                 break
 
-        print("hi")
-
-        log_probs = jnp.concatenate(log_probs, axis=0)
-        print("me2")
-        targets = jnp.concatenate(targets, axis=0)
-        print("me")
+        log_probs = _concatenate(log_probs)
+        targets = _concatenate(targets)
 
         # gather the log probs and targets
         (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs))
@@ -270,9 +263,11 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
         targets = targets[:max_ex]
 
         targets = np.array(targets)
-        tokens = [tokenizer.convert_ids_to_tokens(t) for t in targets]
+        tokens = [[s.replace("Ġ"," ").replace("Ċ"," ") for s in tokenizer.convert_ids_to_tokens(t)] for t in targets]
 
         log_probs = np.array(log_probs)
+
+        os.makedirs(html_dir, exist_ok=True)
 
         out_file = os.path.join(html_dir, f"step_{step.step}.html")
 
@@ -281,3 +276,7 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
         wandb.log({"log_probs": wandb.Html(out_file)}, step=step.step)
 
     return compute_and_viz_log_probs
+
+@partial(pjit, out_axis_resources=None)
+def _concatenate(x):
+    return jnp.concatenate(x, axis=0)
