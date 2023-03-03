@@ -239,8 +239,8 @@ def main(config: TrainGpt2Config):
                 target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
                 loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                masked = loss * loss_mask
                 loss *= -1.0  # negate because we want log probs
+                masked = loss * loss_mask
                 # roll forward to get the loss for each token
                 masked = haliax.roll(masked, 1, SeqLen)
                 return masked.rearrange((EvalBatch, SeqLen)).array
