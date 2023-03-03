@@ -462,6 +462,7 @@ class LMDatasetConfig:
     tokenizer: str = "gpt2"
     plaintext: bool = False
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
+    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     # config related to caching
     cache_dir: str = "cache/"
@@ -472,7 +473,7 @@ class LMDatasetConfig:
     val_group_size: int = 100
 
     create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
-    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+    sharded_cache_file_lock_path: Optional[str] = None  # path where we should create file locks for the sharded cache
 
     @cached_property
     def the_tokenizer(self):
@@ -560,7 +561,9 @@ def build_or_load_document_cache(config: LMDatasetConfig, split: str):
             for batch in batched(texts_iter, batch_size):
                 yield btok(batch)
 
-        return _create_sharded_cache(cache_dir, shard_urls, tokenize_shard, shards_per_group)
+        return _create_sharded_cache(
+            cache_dir, shard_urls, tokenize_shard, shards_per_group, config.sharded_cache_file_lock_path
+        )
 
     else:
         doc_iter = config.doc_iterator(split)
@@ -612,6 +615,7 @@ def _create_sharded_cache(
     input_docs_shards: List[T],
     tokenize: Callable[[T], Iterator[BatchEncoding]],
     num_shards_per_doc_shard: int = 1,
+    file_lock_path: Optional[str] = None,
 ) -> TokenizedDocumentCache:
     """
     Creates a document cache for each shard of the input docs, then merges them together. If cache_root
@@ -635,9 +639,6 @@ def _create_sharded_cache(
     # the basic flow we follow is to create a cache for each input doc shard, then merge them together
     # this can run in parallel on different machines, so we need to be careful about how we do this
     # we create a lock file for each cache dir before we start creating it, and then delete it when we're done
-    if not (isinstance(fsspec.core.url_to_fs(cache_root)[0], LocalFileSystem)):
-        raise NotImplementedError("Sharded cache creation only works with local filesystems for now")
-
     if TokenizedDocumentCache.exists(cache_root):
         return TokenizedDocumentCache.load(cache_root)
 
@@ -664,8 +665,16 @@ def _create_sharded_cache(
 
     logger.info(f"Found {len(finished_caches)} finished caches")
 
-    # pbar.update(len(finished_caches))
     bad_shards = []
+
+    lock_path = file_lock_path or cache_root
+    os.makedirs(lock_path, exist_ok=True)
+
+    # can't use real file locks on GCS etc.
+    # TODO: need to solve coordination problem. should probably use Beam or something
+    lock_fs = fsspec.core.url_to_fs(lock_path)
+    if not isinstance(lock_fs, LocalFileSystem):
+        raise ValueError("Can't use file locks on non-local filesystems. You need NFS for coordination atm")
 
     @contextlib.contextmanager
     def find_and_lock_shard():
@@ -673,7 +682,7 @@ def _create_sharded_cache(
         for i in shards_remaining:
             cache_dir = cache_dir_path(i)
             os.makedirs(cache_dir, exist_ok=True)
-            lock_file = os.path.join(cache_dir, "lock")
+            lock_file = os.path.join(lock_path, f"shard_{i}.lock")
             try:
                 lock = filelock.FileLock(lock_file, timeout=wait_time)
                 logger.debug(f"Trying to acquire lock {lock_file}")
@@ -697,6 +706,7 @@ def _create_sharded_cache(
             if i is None:
                 break
             logger.info(f"Creating cache for shard {i}")
+            os.makedirs(cache_dir, exist_ok=True)
             try:
                 shard = input_docs_shards[i]
                 tokenized_shard = tokenize(shard)
