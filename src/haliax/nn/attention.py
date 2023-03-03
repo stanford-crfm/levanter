@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.random import PRNGKey
 
 import haliax
@@ -12,8 +13,10 @@ from haliax.types import Axis, AxisSpec, PrecisionLike
 
 
 # With attention we usually distinguish between the mask and the bias, though the former is just a special case of the
-# latter. In practice, the mask is a boolean array that is applied after the softmax, while the bias is a float array
-# that is applied before the softmax.
+# latter. In practice, the mask is a boolean array that is applied using `where` to the logits, while the bias is a
+# float array that is added to the logits. The mask is usually used to prevent attention to certain positions, while
+# the bias is usually used to encourage or discourage attention to certain positions.
+# The mask usually is head-independent, while the bias is frequently head-dependent
 
 # because we use named axis we can be fairly loose about the shape of masks and biases: want to have a different
 # mask for each head? fine. want to broadcast across the key sequence length? fine. etc etc
@@ -37,8 +40,8 @@ def dot_product_attention_weights(
     :param KSeqLen: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
     :param query: NamedArray of shape (QSeqLen, HeadDim)
     :param key: NamedArray of shape (KSeqLen, HeadDim)
-    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean, applied after softmax.
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float, applied before softmax.
+    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean
+    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float
     :param attention_dtype: Optional dtype to use for attention
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
     :return: NamedArray of shape (QSeqLen, KSeqLen)
@@ -57,11 +60,10 @@ def dot_product_attention_weights(
 
     if bias is not None:
         weights = weights + bias
+    if mask is not None:
+        weights = haliax.where(mask, weights, -1e9)
 
     weights = hnn.softmax(weights, axis=KSeqLen)
-
-    if mask is not None:
-        weights = weights * mask
 
     return weights.astype(orig_dtype)
 
@@ -87,11 +89,15 @@ def dot_product_attention(
     :param query: NamedArray of shape (QSeqLen, HeadDim)
     :param key: NamedArray of shape (KSeqLen, HeadDim)
     :param value: NamedArray of shape (KSeqLen, HeadDim)
-    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean, applied after softmax.
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float, applied before softmax.
+    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be boolean
+    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QSeqLen, KSeqLen). Should be float
     :param attention_dtype: Optional dtype to use for attention
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
     :return: NamedArray of shape (QSeqLen, HeadDim)
+
+    Mask and bias are given as separate arguments because they are often computed separately and have different shapes.
+    For example, mask is frequently just a boolean array of shape (QSeqLen, KSeqLen), while bias is frequently a float
+    array of shape (HeadDim, QSeqLen, KSeqLen) or (HeadDim, KSeqLen)
     """
     # cf https://github.com/google/flax/blob/509bf97ea272e130d932920f45307ac98947d994/flax/linen/attention.py#L125
 
@@ -185,7 +191,7 @@ def _get_alibi_slopes(heads: int) -> List[float]:
     )
 
 
-def alibi_attention_bias(Heads: Axis, SeqLen: Axis) -> NamedArray:
+def alibi_attention_bias(Heads: Axis, SeqLen: Axis, dtype=jnp.float32) -> NamedArray:
     """
     Creates an attention bias for alibi attention.
 
@@ -193,7 +199,8 @@ def alibi_attention_bias(Heads: Axis, SeqLen: Axis) -> NamedArray:
     :param Heads: Axis of heads
     :return: NamedArray of shape (Heads, QSeqLen)
     """
-    slopes = haliax.named(jnp.array(_get_alibi_slopes(Heads.size)), Heads)
+    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size)), Heads)
     positions = haliax.arange(SeqLen).broadcast_axis(Heads)
 
-    return slopes * positions
+    biases = slopes * positions
+    return biases.astype(dtype)

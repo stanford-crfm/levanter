@@ -1,10 +1,11 @@
 import functools
-from typing import Union
+from typing import Tuple, Union
 
 import jax.nn as jnn
 import jax.numpy as jnp
 
 import haliax
+import haliax as hax
 import haliax.nn.attention as attention
 
 from ..core import NamedArray
@@ -56,6 +57,41 @@ def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) ->
         return haliax.named(array, class_axis)
 
 
+def cross_entropy_loss(
+    pred_y: NamedArray,
+    Label: Axis,
+    target_y: NamedArray,
+) -> NamedArray:
+    loss, _ = cross_entropy_loss_and_log_normalizers(pred_y, Label, target_y)
+    return loss
+
+
+def cross_entropy_loss_and_log_normalizers(
+    pred_y: NamedArray,
+    Label: Axis,
+    target_y: NamedArray,
+) -> Tuple[NamedArray, NamedArray]:
+    """
+    Compute the cross entropy loss and log normalizers for a batch of predictions and targets.
+
+    :param pred_y: a NamedArray with the Label axis (and possibly others for e.g. batch and seq) containing the logits
+    :param Label: the Label axis
+    :param target_y: a NamedArray with the Label axis (and possibly others) containing the targets
+
+    :return: tuple of two named arrays, with "per position" losses and log normalizers
+    """
+    log_normalizers = hax.nn.logsumexp(pred_y, Label)
+    neg_log_normalized = log_normalizers - pred_y
+
+    loss = hax.dot(Label, target_y, neg_log_normalized)
+
+    return loss, log_normalizers
+
+
+def quick_gelu(x):
+    return x * sigmoid(1.702 * x)
+
+
 __all__ = [
     "attention",
     "relu",
@@ -79,6 +115,9 @@ __all__ = [
     "softmax",
     "log_softmax",
     "one_hot",
+    "cross_entropy_loss",
+    "cross_entropy_loss_and_log_normalizers",
+    "quick_gelu",
     "Dropout",
     "LayerNorm",
     "Linear",

@@ -87,10 +87,27 @@ def isclose(a: NamedArray, b: NamedArray, rtol=1e-05, atol=1e-08, equal_nan=Fals
     return NamedArray(jnp.isclose(a.array, b.array, rtol=rtol, atol=atol, equal_nan=equal_nan), a.axes)
 
 
+def pad_left(array: NamedArray, axis: Axis, new_axis: Axis, value=0) -> NamedArray:
+    """Pad an array along named axes."""
+    amount_to_pad_to = new_axis.size - axis.size
+    if amount_to_pad_to < 0:
+        raise ValueError(f"Cannot pad {axis} to {new_axis}")
+
+    idx = array._lookup_indices(axis)
+
+    padding = [(0, 0)] * array.ndim
+    if idx is None:
+        raise ValueError(f"Axis {axis} not found in array. Available axes: {array.axes}")
+    padding[idx] = (amount_to_pad_to, 0)
+
+    padded = jnp.pad(array.array, padding, constant_values=value)
+    return NamedArray(padded, array.axes[:idx] + (new_axis,) + array.axes[idx + 1 :])
+
+
 def raw_array_or_scalar(x: NamedOrNumeric):
     if isinstance(x, NamedArray):
         return x.array
     return x
 
 
-__all__ = ["trace", "where", "tril", "triu", "isclose"]
+__all__ = ["trace", "where", "tril", "triu", "isclose", "pad_left", "clip"]

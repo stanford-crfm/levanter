@@ -11,13 +11,13 @@ from transformers import GPT2Tokenizer
 
 import haliax as hax
 from haliax import Axis
+from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
-from levanter.modeling_utils import cross_entropy_loss
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 

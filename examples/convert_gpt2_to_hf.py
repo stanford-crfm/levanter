@@ -10,15 +10,16 @@ import pyrallis
 from equinox import default_deserialise_filter_spec
 from huggingface_hub import Repository
 from jaxtyping import PyTree
-from transformers import AutoTokenizer, GPT2Tokenizer
+from transformers import GPT2Tokenizer
 
 import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
-from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import _save_hf_gpt2_checkpoint_local
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
+from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class ConvertGpt2Config:
 
     @cached_property
     def the_tokenizer(self):
-        return AutoTokenizer.from_pretrained(self.tokenizer)
+        return load_tokenizer(self.tokenizer)
 
 
 @pyrallis.wrap()
@@ -81,11 +82,11 @@ def main(config: ConvertGpt2Config):
             with commit_and_upload_manager:
                 # commit_and_upload_manager will automatically upload the checkpoint to the hub
                 # it also cd's into the repo, so we can just save the checkpoint to the current directory
-                save_hf_gpt2_checkpoint(".", model)
+                _save_hf_gpt2_checkpoint_local(model, ".")
                 if config.save_tokenizer:
                     tokenizer.save_pretrained(".")
         else:
-            save_hf_gpt2_checkpoint(config.output_dir, model)
+            _save_hf_gpt2_checkpoint_local(model, config.output_dir)
             if config.save_tokenizer:
                 tokenizer.save_pretrained(config.output_dir)
 

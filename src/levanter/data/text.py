@@ -32,11 +32,12 @@ import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerFast
+from transformers import BatchEncoding, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger("levanter.data.text")
@@ -364,7 +365,9 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
         should_append_eos = False
 
     if should_append_eos:
-        tokenize = lambda x: tokenizer(x + " " + tokenizer.eos_token, return_attention_mask=False)  # noqa: E731
+        tokenize = lambda x: tokenizer(  # noqa: E731
+            [d + " " + tokenizer.eos_token for d in x], return_attention_mask=False
+        )
     else:
         tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
 
@@ -471,7 +474,7 @@ class LMDatasetConfig:
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return AutoTokenizer.from_pretrained(self.tokenizer)
+        return load_tokenizer(self.tokenizer)
 
     def build_or_load_document_cache(self, split: str):
         build_or_load_document_cache(self, split)

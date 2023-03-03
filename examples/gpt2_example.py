@@ -13,18 +13,18 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
+from haliax.nn import cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.jax_utils import global_key_array, parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
-from levanter.modeling_utils import cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
-from py_utils import non_caching_cycle
+from levanter.utils.jax_utils import global_key_array, parameter_count
+from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,8 @@ def main(config: TrainGpt2Config):
                 for batch in eval_dataset:
                     loss += eval_loss(model, batch).item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
                 if n > 0:
                     loss /= n
@@ -213,7 +215,7 @@ def main(config: TrainGpt2Config):
         engine.add_hook(
             callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
         )
-        # engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
