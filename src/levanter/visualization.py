@@ -34,7 +34,7 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
                 "background-clip: text; -webkit-background-clip: text; color: transparent;"
                 f" title='{lp:.2f}'>{token}</span>"
             )
-        html_code += "<br>"
+        html_code += "<br>\n"
     html_code += "</div>"
 
     # Write the HTML code to a file

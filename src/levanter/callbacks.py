@@ -12,10 +12,14 @@ from typing import Callable, Iterator, Optional
 import humanfriendly
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jax.experimental import multihost_utils
 from tqdm import tqdm
 
+import levanter.visualization as viz
 import wandb
 from levanter.config import WandbConfig
+from levanter.data import Dataset
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
 
@@ -218,3 +222,62 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
+
+
+def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_ex=1024):
+    """
+    Computes log probabilities for a dataset and visualizes them using visdom.
+    :param test_data:
+    :param tokenizer:
+    :param log_prob_fn: a function that takes a model and a batch and returns the log probabilities for each token
+    :param html_dir:
+    :param max_ex:
+    :return:
+    """
+
+    def compute_and_viz_log_probs(step: StepInfo):
+        model = step.model
+
+        log_probs = []
+        targets = []
+        # TODO: haliax-ify?
+        for batch in test_data:
+            print("i")
+            b_logprobs = log_prob_fn(model, batch)
+            print("j")
+            log_probs.append(b_logprobs)
+            print("k")
+            targets.append(batch)
+            print("l")
+
+            print(len(targets), len(test_data))
+
+            if len(targets) * b_logprobs.shape[0] >= max_ex:
+                break
+
+        print("hi")
+
+        log_probs = jnp.concatenate(log_probs, axis=0)
+        print("me2")
+        targets = jnp.concatenate(targets, axis=0)
+        print("me")
+
+        # gather the log probs and targets
+        (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs))
+        print("g")
+
+        log_probs = log_probs[:max_ex]
+        targets = targets[:max_ex]
+
+        targets = np.array(targets)
+        tokens = [tokenizer.convert_ids_to_tokens(t) for t in targets]
+
+        log_probs = np.array(log_probs)
+
+        out_file = os.path.join(html_dir, f"step_{step.step}.html")
+
+        viz.visualize_log_probs(tokens, log_probs, out_file)
+
+        wandb.log({"log_probs": wandb.Html(out_file)}, step=step.step)
+
+    return compute_and_viz_log_probs
