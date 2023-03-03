@@ -1,7 +1,9 @@
 # Various Pyrallis configs
+import atexit
 import dataclasses
 import logging
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
@@ -21,10 +23,10 @@ from pyrallis import field
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
-from levanter import jax_utils
 from levanter.checkpoint import Checkpointer, CheckpointInterval
-from levanter.datetime_utils import encode_timedelta, parse_timedelta
 from levanter.distributed import LevanterSlurmCluster
+from levanter.utils import cloud_utils, jax_utils
+from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
@@ -253,6 +255,7 @@ class TrainerConfig:
     # Config related to duration
     num_train_steps: int = 400_000
     steps_per_eval: int = 1_000
+    max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     load_last_checkpoint: bool = True
@@ -274,6 +277,13 @@ class TrainerConfig:
 
     distributed: DistributedConfig = DistributedConfig()
 
+    # whether or not to require an accelerator (e.g. TPU or GPU).
+    # default depends on the platform: on macos False, else True
+    require_accelerator: Optional[bool] = None
+
+    # whether or not to shutdown the tpu at exit. If a float, shutdown after that many seconds. True = 5 minutes
+    shutdown_at_exit: Union[bool, float] = False
+
     @property
     def run_name(self) -> str:
         import wandb
@@ -291,6 +301,18 @@ class TrainerConfig:
         self.wandb.init(all_config)
         self._initialize_logging()
         self._validate()
+
+        if self.require_accelerator is None:
+            self.require_accelerator = not sys.platform.startswith("darwin")
+
+        if self.require_accelerator:
+            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+
+        if self.shutdown_at_exit is not False:
+            if isinstance(self.shutdown_at_exit, bool):
+                self.shutdown_at_exit = 5.0 * 60
+            logger.info(f"At end of run, shutting down TPU VM in {self.shutdown_at_exit} seconds")
+            atexit.register(cloud_utils.shutdown_tpu_vm, self.shutdown_at_exit)
 
     @cached_property
     def device_mesh(self) -> Mesh:

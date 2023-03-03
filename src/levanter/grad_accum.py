@@ -10,7 +10,7 @@ from haliax import Axis
 from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
-from levanter.jax_utils import reduce
+from levanter.utils.jax_utils import reduce
 
 
 M = TypeVar("M")

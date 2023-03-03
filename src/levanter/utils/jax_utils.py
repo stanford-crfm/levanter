@@ -1,3 +1,4 @@
+import functools
 import functools as ft
 import pickle
 from pathlib import Path
@@ -159,10 +160,10 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
         client.key_value_set(key, pickled.decode("ascii"))
 
-    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=20_000)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=200_000)
 
     if not is_source:
-        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=20_000), "ascii")
+        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=200_000), "ascii")
         obj = pickle.loads(pickled)
 
     _sync_counter += 1
@@ -222,3 +223,18 @@ def leaf_key_paths(pytree, prefix: str = ""):
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}.{i}" for i in range(len(leaves))])
+
+
+# from https://github.com/google/jax/issues/4285
+def recursive_checkpoint(funs, threshold=2):
+    if len(funs) == 1:
+        return funs[0]
+    elif len(funs) == 2:
+        f1, f2 = funs
+        return lambda x: f2(f1(x))
+    elif len(funs) <= threshold:
+        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
+    else:
+        f1 = recursive_checkpoint(funs[: len(funs) // 2])
+        f2 = recursive_checkpoint(funs[len(funs) // 2 :])
+        return lambda x: f2(jax.remat(f1)(x))

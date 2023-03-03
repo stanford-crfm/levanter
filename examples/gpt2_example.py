@@ -13,18 +13,18 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
+from haliax.nn import cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
-from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.jax_utils import global_key_array, parameter_count
 from levanter.logging import capture_time, log_time_to_wandb
-from levanter.modeling_utils import cross_entropy_loss_and_log_normalizers
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo, TrainerHooks
-from py_utils import non_caching_cycle
+from levanter.utils.jax_utils import global_key_array, parameter_count
+from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainGpt2Config:
-    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
+    data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 
@@ -197,6 +197,8 @@ def main(config: TrainGpt2Config):
                 for batch in eval_dataset:
                     loss += eval_loss(model, batch).item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
                 if n > 0:
                     loss /= n

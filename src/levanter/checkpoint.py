@@ -13,8 +13,8 @@ from equinox.serialisation import _is_index, default_deserialise_filter_spec, de
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 
-from levanter.jax_utils import multihost_broadcast_sync
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+from levanter.utils.jax_utils import multihost_broadcast_sync
 
 
 logger = logging.getLogger(__name__)
