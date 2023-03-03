@@ -280,4 +280,6 @@ def _concatenate(x):
 
 
 def _decode_tokens_pretty(tok, ids):
-    return [tok.convert_tokens_to_string([x]) if x is not None else "<!UNK|>" for x in tok.convert_ids_to_tokens(ids)]
+    return [
+        tok.convert_tokens_to_string([x]) if x is not None else tok.unk_token for x in tok.convert_ids_to_tokens(ids)
+    ]
