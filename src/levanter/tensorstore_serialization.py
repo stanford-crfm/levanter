@@ -13,7 +13,7 @@ import tensorstore
 from jax.interpreters.pxla import ShardedDeviceArray
 from tensorstore import TensorStore
 
-from levanter import jax_utils
+from levanter.utils import jax_utils
 
 
 logger = logging.getLogger(__name__)

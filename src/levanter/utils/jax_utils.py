@@ -1,3 +1,4 @@
+import functools
 import functools as ft
 import pickle
 from pathlib import Path
@@ -131,14 +132,21 @@ class pytree_partial(ft.partial):
         return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
+_sync_counter = 0
+
+
 def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     """
     Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
     process_index 0 is the source.
     """
-    _LEV_KEY = "LEVANTER_MULTIHOST_BROADCAST_SYNC"
+    global _sync_counter
+    key = f"LEVANTER_MULTIHOST_BROADCAST_SYNC{_sync_counter}"
     if is_source is None:
         is_source = jax.process_index() == 0
+
+    if jax.process_count() == 1:
+        return obj
 
     import jax._src.distributed as distributed
     from jaxlib.xla_extension import DistributedRuntimeClient
@@ -150,14 +158,15 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
 
     if is_source:
         pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
-        client.key_value_set(_LEV_KEY, pickled.decode("ascii"))
+        client.key_value_set(key, pickled.decode("ascii"))
 
-    client.wait_at_barrier("multihost_broadcast_sync", timeout_in_ms=20_000)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=200_000)
 
     if not is_source:
-        pickled = bytes(client.blocking_key_value_get(_LEV_KEY, timeout_in_ms=20_000), "ascii")
+        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=200_000), "ascii")
         obj = pickle.loads(pickled)
 
+    _sync_counter += 1
     return obj
 
 
@@ -214,3 +223,18 @@ def leaf_key_paths(pytree, prefix: str = ""):
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}.{i}" for i in range(len(leaves))])
+
+
+# from https://github.com/google/jax/issues/4285
+def recursive_checkpoint(funs, threshold=2):
+    if len(funs) == 1:
+        return funs[0]
+    elif len(funs) == 2:
+        f1, f2 = funs
+        return lambda x: f2(f1(x))
+    elif len(funs) <= threshold:
+        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
+    else:
+        f1 = recursive_checkpoint(funs[: len(funs) // 2])
+        f2 = recursive_checkpoint(funs[len(funs) // 2 :])
+        return lambda x: f2(jax.remat(f1)(x))
