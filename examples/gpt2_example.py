@@ -180,7 +180,7 @@ def main(config: TrainGpt2Config):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=compute_axis_mapping)
+        @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             # just use causal mask for evaluation
