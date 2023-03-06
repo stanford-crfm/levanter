@@ -649,6 +649,8 @@ def _create_sharded_cache(
     def cache_dir_path(shard_idx):
         return os.path.join(cache_root, f"shard_{shard_idx}")
 
+    fs = fsspec.core.url_to_fs(cache_dir)[0]
+
     # first do a quick pass to see if we have any caches that are already built. this is mostly for the progress bar
     shards_to_remove = []
     for i in shards_remaining:
@@ -667,22 +669,27 @@ def _create_sharded_cache(
 
     bad_shards = []
 
-    lock_path = file_lock_path or cache_root
-    os.makedirs(lock_path, exist_ok=True)
-
     # can't use real file locks on GCS etc.
     # TODO: need to solve coordination problem. should probably use Beam or something
-    lock_fs = fsspec.core.url_to_fs(lock_path)
+    lock_path = file_lock_path or cache_root
+
+    lock_fs = fsspec.core.url_to_fs(lock_path)[0]
     if not isinstance(lock_fs, LocalFileSystem):
-        raise ValueError("Can't use file locks on non-local filesystems. You need NFS for coordination atm")
+        raise ValueError(f"Can't use file locks on non-local filesystems. You need NFS for coordination atm. {file_lock_path} {cache_root} {lock_fs}")
+
+    os.makedirs(lock_path, exist_ok=True)
+
+    # for reasons I don't totally understand, FileLock doesn't delete the file when it's done. we do it at the end
+    flocks = []
 
     @contextlib.contextmanager
     def find_and_lock_shard():
         wait_time = 0.1  # seconds
         for i in shards_remaining:
             cache_dir = cache_dir_path(i)
-            os.makedirs(cache_dir, exist_ok=True)
+            fs.makedirs(cache_dir, exist_ok=True)
             lock_file = os.path.join(lock_path, f"shard_{i}.lock")
+            flocks.append(lock_file)
             try:
                 lock = filelock.FileLock(lock_file, timeout=wait_time)
                 logger.debug(f"Trying to acquire lock {lock_file}")
@@ -706,7 +713,7 @@ def _create_sharded_cache(
             if i is None:
                 break
             logger.info(f"Creating cache for shard {i}")
-            os.makedirs(cache_dir, exist_ok=True)
+            fs.makedirs(cache_dir, exist_ok=True)
             try:
                 shard = input_docs_shards[i]
                 tokenized_shard = tokenize(shard)
@@ -729,6 +736,14 @@ def _create_sharded_cache(
     if len(bad_shards) != 0:
         logger.error(f"Found bad shards: {bad_shards} {[input_docs_shards[i] for i in bad_shards]}. Aborting.")
         raise ValueError(f"Found bad shards: {bad_shards} {[input_docs_shards[i] for i in bad_shards]}. Aborting.")
+
+    for f in flocks:
+        if os.path.exists(f):
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                # benign race
+                pass
 
     # now we merge the shards together
     logger.info(f"Merging {len(finished_caches)} caches together...")
