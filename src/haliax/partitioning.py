@@ -182,8 +182,12 @@ def named_pjit(
         )
 
     axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
-    in_axis_resources = in_axis_resources or axis_resources
-    out_axis_resources = out_axis_resources or axis_resources
+
+    if in_axis_resources is None:
+        in_axis_resources = axis_resources
+
+    if out_axis_resources is None:
+        out_axis_resources = axis_resources
 
     if axis_resources is None and (in_axis_resources is None or out_axis_resources is None):
         raise ValueError(
