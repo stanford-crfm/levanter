@@ -109,6 +109,8 @@ def main(config: EvalGpt2Config):
                 for batch in eval_dataset:
                     loss += compute_loss_pjit(model_inf, batch).item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
             return loss / n
 
@@ -153,6 +155,8 @@ def main(config: EvalGpt2Config):
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
                 print("Loss from Torch model: ", loss / n)
 
