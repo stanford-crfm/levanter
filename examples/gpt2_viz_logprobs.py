@@ -2,7 +2,6 @@ import logging
 from dataclasses import dataclass
 
 import jax
-import jax.numpy as jnp
 import jmp
 import pyrallis
 from transformers import GPT2Tokenizer
@@ -64,14 +63,11 @@ def main(config: EvalGpt2Config):
         mp: jmp.Policy = config.trainer.mp
 
         # don't want to compute the mask w.r.t. the final token
-        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
-
-        attention_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
+            attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
             attn_mask = hax.auto_sharded(attn_mask)
 
             with hax.axis_mapping(compute_axis_mapping):
@@ -86,10 +82,7 @@ def main(config: EvalGpt2Config):
 
                 loss = cross_entropy_loss(pred_y, Vocab, target_y)
                 loss *= -1.0  # negate because we want log probs
-                masked = loss * loss_mask
-                # roll forward to get the loss for each token
-                masked = hax.roll(masked, 1, SeqLen)
-                return masked.rearrange((EvalBatch, SeqLen)).array
+                return loss.rearrange((EvalBatch, SeqLen)).array
 
         # initialize the model
         @named_pjit(axis_resources=parameter_axis_mapping)
@@ -103,7 +96,7 @@ def main(config: EvalGpt2Config):
         model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
 
         cb = callbacks.compute_and_visualize_log_probs(
-            eval_dataset, tokenizer, compute_log_probs, config.output_dir, max_ex=2048
+            eval_dataset, tokenizer, compute_log_probs, config.output_dir, max_ex=100
         )
         cb(StepInfo(model=model, step=0, opt_state=None, loss=0.0, step_duration=0.0, next_key=0.0))
 
