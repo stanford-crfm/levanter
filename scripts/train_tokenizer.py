@@ -2,8 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 
-import pyrallis
-
+import levanter
 from levanter.data.text import LMDatasetConfig
 
 
@@ -19,7 +18,7 @@ class TrainTokenizerConfig(LMDatasetConfig):
     hub_name: Optional[str] = None
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(config: TrainTokenizerConfig):
     old_tokenizer = config.the_tokenizer
     vocab_size = config.new_vocab_size or old_tokenizer.vocab_size
