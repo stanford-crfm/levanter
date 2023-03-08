@@ -10,6 +10,7 @@ import pyrallis
 from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
+import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
@@ -66,27 +67,22 @@ def main(config: EvalGpt2Config):
 
         mp: jmp.Policy = config.trainer.mp
 
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-
         # don't want to compute the mask w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
-            input_ids = hax.named(input_ids, SeqLen)
-            attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
-            pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
-            pred_y = mp.cast_to_output(pred_y)
+            with haliax.axis_mapping(compute_axis_mapping):
+                input_ids = hax.named(input_ids, SeqLen)
+                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+                pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
+                pred_y = mp.cast_to_output(pred_y)
 
-            # need to roll the target tokens back by one so that each token is predicting the next token
-            target_y = hax.roll(input_ids, -1, SeqLen)
-            target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = hax.roll(input_ids, -1, SeqLen)
+                target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
-            loss = cross_entropy_loss(pred_y, Vocab, target_y)
-            loss = hax.mean(loss, where=loss_mask)
+                loss = cross_entropy_loss(pred_y, Vocab, target_y)
+                loss = hax.mean(loss, where=loss_mask)
 
             return loss.scalar()
 
@@ -99,10 +95,11 @@ def main(config: EvalGpt2Config):
             mean_loss,
             in_axis_resources=parameter_axis_mapping,
             out_axis_resources=compute_axis_mapping,
+            axis_resources=compute_axis_mapping,
         )
 
         def evaluate(model):
-            model_inf = prepare_model_for_compute(model)
+            model_inf = mp.cast_to_compute(model)
 
             # standard evaluation loop
             loss = 0.0
@@ -112,6 +109,8 @@ def main(config: EvalGpt2Config):
                 for batch in eval_dataset:
                     loss += compute_loss_pjit(model_inf, batch).item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
             return loss / n
 
@@ -156,6 +155,8 @@ def main(config: EvalGpt2Config):
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
                     n += 1
+                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                        break
 
                 print("Loss from Torch model: ", loss / n)
 

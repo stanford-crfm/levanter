@@ -1,3 +1,4 @@
+import html
 from typing import List
 
 import numpy as np
@@ -35,13 +36,13 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
     html_code = f"<html>{css_preamble}<div class='logprobs' style='font-family: monospace;'>"
     for doc, pdoc, logpdoc in zip(tokens, probs, log_probs):
         for i, token in enumerate(doc):
-            prob = pdoc[i]
-            lp = logpdoc[i]
+            prob = float(pdoc[i])
+            lp = float(logpdoc[i])
             normed = cm.plasma(norm(lp))
             color = (255 * np.array(normed)).astype(int)
             html_code += (
                 f"<span style='background: rgba({color[0]}, {color[1]}, {color[2]}, {min(0.5,1-prob):.2f});' "
-                f" title='{lp:.2f}'>{token}</span>"
+                f" title='{lp:.4f}'>{_escape(token)}</span>"
             )
         html_code += "<br>\n"
     html_code += "</div></html>"
@@ -49,6 +50,10 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
     # Write the HTML code to a file
     with open(output_path, "w") as f:
         f.write(html_code)
+
+
+def _escape(s: str) -> str:
+    return html.escape(s, quote=False)
 
 
 # dumb main to test it out
