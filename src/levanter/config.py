@@ -263,6 +263,7 @@ class TrainerConfig:
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
+    min_lr_ratio: float = 0.0
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.999
@@ -381,21 +382,23 @@ class TrainerConfig:
     def lr_scheduler(self):
         warmup_steps = int(self.warmup_ratio * self.num_train_steps)
         lr_decay_steps = self.num_train_steps - warmup_steps
-        if warmup_steps == 0 and self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        else:
-            if self.lr_schedule == "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            elif self.lr_schedule == "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps - warmup_steps)
-            elif self.lr_schedule == "linear":
-                schedule = optax.linear_schedule(self.learning_rate, 0.0, lr_decay_steps - warmup_steps)
-            else:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+        min_lr = self.learning_rate * self.min_lr_ratio
 
-            if warmup_steps != 0:
-                warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-                schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+        if self.lr_schedule == "constant":
+            schedule = optax.constant_schedule(self.learning_rate)
+        elif self.lr_schedule == "cosine":
+            schedule = optax.cosine_decay_schedule(
+                self.learning_rate, lr_decay_steps - warmup_steps, min_lr / self.learning_rate
+            )
+        elif self.lr_schedule == "linear":
+            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+        else:
+            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+
+        if warmup_steps != 0:
+            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
+            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+
         return schedule
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
