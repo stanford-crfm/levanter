@@ -13,7 +13,7 @@ import haliax as hax
 import haliax.random
 import wandb
 from haliax import Axis
-from haliax.nn import cross_entropy_loss_and_log_normalizers
+from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
@@ -179,7 +179,7 @@ def main(config: TrainGpt2Config):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=compute_axis_mapping)
+        @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             # just use causal mask for evaluation
@@ -194,7 +194,8 @@ def main(config: TrainGpt2Config):
                 n = 0
 
                 for batch in eval_dataset:
-                    loss += eval_loss(model, batch).item()
+                    this_loss = eval_loss(model, batch)
+                    loss += this_loss.item()
                     n += 1
                     if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
                         break
@@ -220,6 +221,37 @@ def main(config: TrainGpt2Config):
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+
+        # visualize log probs
+        @named_pjit(axis_resources=parameter_axis_mapping)
+        def compute_log_probs(model, input_ids):
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
+            attn_mask = hax.auto_sharded(attn_mask)
+
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+
+                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = mp.cast_to_output(pred_y)
+
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = haliax.roll(input_ids, -1, SeqLen)
+                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+
+                loss = cross_entropy_loss(pred_y, Vocab, target_y)
+                loss *= -1.0  # negate because we want log probs
+                masked = loss * loss_mask
+                # roll forward to get the loss for each token
+                masked = haliax.roll(masked, 1, SeqLen)
+                return masked.rearrange((EvalBatch, SeqLen)).array
+
+        engine.add_hook(
+            callbacks.compute_and_visualize_log_probs(
+                eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+            ),
+            every=config.trainer.steps_per_eval,
+        )
 
         # data loader
         iter_data = non_caching_cycle(dataset)
