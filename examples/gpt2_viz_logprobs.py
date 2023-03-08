@@ -3,10 +3,10 @@ from dataclasses import dataclass
 
 import jax
 import jmp
-import pyrallis
 from transformers import GPT2Tokenizer
 
 import haliax as hax
+import levanter
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
@@ -33,7 +33,7 @@ class EvalGpt2Config:
     compare_torch: bool = False
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer

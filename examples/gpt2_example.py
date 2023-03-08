@@ -5,12 +5,12 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
-import pyrallis
 from jax.interpreters.pxla import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
+import levanter
 import wandb
 from haliax import Axis
 from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
@@ -43,7 +43,7 @@ class TrainGpt2Config:
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
 

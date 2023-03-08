@@ -6,13 +6,13 @@ from typing import Optional
 import fsspec
 import jax
 import jax.numpy as jnp
-import pyrallis
 from equinox import default_deserialise_filter_spec
 from huggingface_hub import Repository
 from jaxtyping import PyTree
 from transformers import GPT2Tokenizer
 
 import haliax as hax
+import levanter
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
@@ -47,7 +47,7 @@ class ConvertGpt2Config:
         return load_tokenizer(self.tokenizer)
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(config: ConvertGpt2Config):
     logger.setLevel(logging.INFO)
     tokenizer: GPT2Tokenizer = config.the_tokenizer
