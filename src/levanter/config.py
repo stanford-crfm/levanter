@@ -1,25 +1,29 @@
 # Various Pyrallis configs
 import atexit
 import dataclasses
+import inspect
 import logging
 import os
 import sys
 import tempfile
+import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
 from typing import List, Mapping, Optional, Union
 
+import fsspec
 import jax
 import jmp
 import numpy as np
 import optax
 import pyrallis
+from fsspec import AbstractFileSystem
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
 from jax.experimental.maps import Mesh
-from pyrallis import field
+from pyrallis import field, parse
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
@@ -452,3 +456,54 @@ def register_codecs():
 
 
 register_codecs()
+
+
+def main(args: list = None):
+    """
+    Like levanter.config.main_decorator but can handle config paths that are urls loadable by fsspec.
+    This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
+    """
+    _cmdline_args = args
+    if args is None:
+        _cmdline_args = sys.argv[1:]
+
+    def wrapper_outer(fn):
+        @wraps(fn)
+        def wrapper_inner(*args, **kwargs):
+            config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
+            argspec = inspect.getfullargspec(fn)
+            argtype = argspec.annotations[argspec.args[0]]
+            cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
+            response = fn(cfg, *args, **kwargs)
+            return response
+
+        return wrapper_inner
+
+    return wrapper_outer
+
+
+def _maybe_get_config_path_and_cmdline_args(args):
+    """
+    We want to accept ... --config_path <config> ... where config could be a path or url.
+    If URL, we need to download it and save it to a temp file. We then want to remove --config_path
+    from the cmdline args so that pyrallis doesn't try to load it as a config path and return it separately here
+    along with the modified cmdline args.
+    """
+    if "--config_path" not in args:
+        return None, args
+    else:
+        config_path_index = args.index("--config_path")
+        config_path = args[config_path_index + 1]
+
+        if urllib.parse.urlparse(config_path).scheme:
+            fs: AbstractFileSystem
+            fs, fs_path = fsspec.core.url_to_fs(config_path)
+            temp_file = tempfile.NamedTemporaryFile(prefix="config", suffix=".yaml", delete=False)
+            atexit.register(lambda: os.unlink(temp_file.name))
+            fs.get(fs_path, temp_file.name)
+            config_path = temp_file.name
+
+        args = args.copy()
+        del args[config_path_index]
+        del args[config_path_index]
+        return config_path, args
