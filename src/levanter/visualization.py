@@ -18,8 +18,7 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
     probs = np.exp(log_probs)
 
     # We encode the log probabilities as a linear gradient
-    p10, p90 = np.percentile(log_probs, [10, 90])
-    norm = cm.colors.Normalize(vmin=p10, vmax=0.0)
+    norm = cm.colors.Normalize(vmin=-10.0, vmax=0.0)
 
     # Generate the HTML code for the visualization
     # css preamble to define a style for the span elements
