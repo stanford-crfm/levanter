@@ -24,10 +24,9 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
     # css preamble to define a style for the span elements
     css_preamble = """
     <style>
-    .logprobs.span {
+    .logprobs span {
         background-clip: text;
         -webkit-background-clip: text;
-        color: transparent;
     }
     </style>
     """
