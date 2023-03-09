@@ -8,9 +8,9 @@ data:
   plaintext: True
   enforce_eos: False
 model:
-  hidden_dim: 1024
-  num_heads: 16
-  num_layers: 24
+  hidden_dim: 1280
+  num_heads: 20
+  num_layers: 36
   seq_len: 1024
   scale_attn_by_inverse_layer_idx: true
   embed_pdrop: 0.1
@@ -18,12 +18,12 @@ model:
   gradient_checkpointing: true
 trainer:
   mp: p=f32,c=bfloat16
-  learning_rate: 3E-4
+  learning_rate: 2E-4
   weight_decay: 0.1
   model_axis_size: 1
   per_device_parallelism: 16
   num_train_steps: 100000
-  #load_checkpoint_path: "gs://levanter-eu/lakh-checkpoints/genial-firefly-238/step-78954"
+  load_checkpoint_path: "gs://levanter-eu/lakh-checkpoints/genial-firefly-238/step-78954"
 
   checkpointer:
     base_path: gs://levanter-eu/lakh-checkpoints/
