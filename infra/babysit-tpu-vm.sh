@@ -82,3 +82,12 @@ while true; do
   echo "Sleeping for 1 minute"
   sleep 60
 done
+
+echo "Job finished!"
+
+# delete the VM when we're done
+gcloud compute tpus tpu-vm describe --zone $ZONE $VM_NAME &> /dev/null
+if [ $? -eq 0 ]; then
+  echo "Deleting VM $VM_NAME"
+  yes | gcloud compute tpus tpu-vm delete --zone $ZONE $VM_NAME
+fi
