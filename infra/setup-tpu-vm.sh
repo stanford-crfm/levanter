@@ -33,8 +33,10 @@ source $VENV/bin/activate
 pip install -U pip
 pip install -U wheel
 
-# jax
-pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# jax and jaxlib
+# libtpu sometimes has issues installing for clinical (probably firewall?)
+# TODO: get these deps from somewhere reasonable
+pip install -U "jax[tpu]==0.4.5" libtpu-nightly==0.1.dev20230216 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # clone levanter
 git clone https://github.com/stanford-crfm/levanter.git
