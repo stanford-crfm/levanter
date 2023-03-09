@@ -1,6 +1,6 @@
 import functools
 import functools as ft
-import pickle
+import json
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
@@ -137,7 +137,7 @@ _sync_counter = 0
 
 def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
     """
-    Uses jax's unpublished distributed api to sync a value across hosts using pickle. If is_source is None, then
+    Uses jax's unpublished distributed api to sync a value across hosts using json dump. If is_source is None, then
     process_index 0 is the source.
     """
     global _sync_counter
@@ -157,14 +157,16 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
 
     if is_source:
-        pickled = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
-        client.key_value_set(key, pickled.decode("ascii"))
+        # serialized = pickle.dumps(obj, 0)  # 0 is pickle protocol. jax only accepts utf-8, and 0 gives us ascii
+        # client.key_value_set(key, serialized.decode("ascii"))
+        serialized = json.dumps(obj)
+        client.key_value_set(key, serialized)
 
     client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=200_000)
 
     if not is_source:
-        pickled = bytes(client.blocking_key_value_get(key, timeout_in_ms=200_000), "ascii")
-        obj = pickle.loads(pickled)
+        serialized = client.blocking_key_value_get(key, timeout_in_ms=200_000)
+        obj = json.loads(serialized)
 
     _sync_counter += 1
     return obj
