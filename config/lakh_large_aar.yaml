@@ -23,7 +23,6 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: 16
   num_train_steps: 100000
-  load_checkpoint_path: "gs://levanter-eu/lakh-checkpoints/genial-firefly-238/step-78954"
 
   checkpointer:
     base_path: gs://levanter-eu/lakh-checkpoints/
