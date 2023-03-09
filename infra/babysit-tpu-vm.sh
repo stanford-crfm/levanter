@@ -70,7 +70,7 @@ while true; do
       gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS_STR" --worker=all
       if [ $? -eq 0 ]; then
         echo "Command succeeded. Exiting"
-        exit 0
+        break
       else
         echo "Command failed"
       fi

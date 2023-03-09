@@ -66,7 +66,18 @@ for i in {1..5}; do
 done
 
 # run the setup script
-gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME" --worker=all
+for i in {1..5}; do
+  gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME > setup.out" --worker=all
+  if [ $? -eq 0 ]; then
+    break
+  fi
+  if 5 == $i; then
+    echo "Error running ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
+    exit 1
+  fi
+  echo "Error running ${SETUP_SCRIPT_NAME}, retrying in 5 seconds"
+  sleep 5
+done
 
 # print out the IP addresses
 echo "VM $VM_NAME IP addresses:"
