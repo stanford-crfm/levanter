@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from typing import Optional
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -41,6 +42,10 @@ class TrainGpt2Config:
 
     log_z_regularization: float = 0.0
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
+
+    hf_save_path: Optional[str] = None
+    hf_upload: Optional[str] = None
+    hf_save_steps: int = 10000
 
 
 @levanter.config.main()
@@ -221,6 +226,10 @@ def main(config: TrainGpt2Config):
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        if config.hf_save_path is not None:
+            from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint_callback
+
+            engine.add_hook(save_hf_gpt2_checkpoint_callback(config.hf_save_path), every=config.hf_save_steps)
 
         # visualize log probs
         @named_pjit(axis_resources=parameter_axis_mapping)
