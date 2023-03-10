@@ -128,7 +128,11 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
 
 
 def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
+    os.makedirs(path, exist_ok=True)
     config = gpt2_config_to_hf(model.vocab_size, model.config)
+    with open(f"{path}/config.json", "w") as f:
+        json.dump(config.to_dict(), f)
+
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
     state_dict = model.to_state_dict()
     state_dict = jax.tree_map(
@@ -139,11 +143,8 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     if jax.process_index() != 0:
         return
 
-    os.makedirs(path, exist_ok=True)
     # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
     safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
-    with open(f"{path}/config.json", "w") as f:
-        json.dump(config.to_dict(), f)
 
 
 def _is_url_like(path):
@@ -201,6 +202,8 @@ def save_hf_gpt2_checkpoint_callback(base_path, hf_repo: Optional[str] = None, *
 
     def cb(step: StepInfo):
         nonlocal hf_upload_kwargs
+        if step.step == 0:
+            return
         if hf_repo is not None and "commit_message" not in hf_upload_kwargs:
             my_upload_kwargs = hf_upload_kwargs.copy()
             my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
