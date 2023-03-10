@@ -9,6 +9,7 @@ from typing import Optional, cast
 import fsspec
 import huggingface_hub
 import jax
+import numpy as np
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
@@ -133,10 +134,12 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)
 
-    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
     state_dict = model.to_state_dict()
+
+    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
     state_dict = jax.tree_map(
-        lambda arr: jax.device_get(multihost_utils.process_allgather(arr, tiled=True)), state_dict
+        lambda arr: np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True))), state_dict
     )
 
     # now that we've moved the model to the CPU, we don't need to do this on all processes
