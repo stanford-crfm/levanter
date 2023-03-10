@@ -271,8 +271,9 @@ class TrainerConfig:
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
-    load_last_checkpoint: Optional[bool] = None  # if None, we'll load the last checkpoint if it exists
-    load_checkpoint_path: Optional[str] = None  # if None, will set to checkpointer.base_path
+    load_checkpoint: Optional[bool] = None  # if None, we'll load a checkpoint if it exists
+    load_checkpoint_path: Optional[str] = None
+    """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -395,7 +396,7 @@ class TrainerConfig:
     def maybe_load_checkpoint(self, model: M, training_state: S) -> typing.Tuple[M, S, Optional[int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
-        if self.load_last_checkpoint is not False:
+        if self.load_checkpoint is not False:
             checkpointer = self.checkpointer.create(self.run_name)
             assert (
                 self.load_checkpoint_path is not None
@@ -403,7 +404,7 @@ class TrainerConfig:
             ckpt = checkpointer.load_checkpoint(model, training_state, self.load_checkpoint_path)
 
             if ckpt is None:
-                if self.load_last_checkpoint is True:
+                if self.load_checkpoint is True:
                     raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
                 logger.info("No checkpoint found. Starting from scratch")
                 return (model, training_state, None)
