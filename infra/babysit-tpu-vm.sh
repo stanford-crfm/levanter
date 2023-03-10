@@ -79,8 +79,8 @@ while true; do
     echo "VM $VM_NAME not found, creating it"
     bash "$SCRIPT_DIR"/spin-up-vm.sh "${CREATION_ARGS[@]}"
   fi
-  echo "Sleeping for 1 minute"
-  sleep 60
+  echo "Sleeping for 10s"
+  sleep 10
 done
 
 echo "Job finished!"
