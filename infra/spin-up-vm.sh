@@ -57,7 +57,7 @@ for i in {1..5}; do
   if gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="ls ~/$SETUP_SCRIPT_NAME" --worker=all; then
     break
   fi
-  if 5 == $i; then
+  if [ 5 -eq $i ]; then
     echo "Error uploading ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
     exit 1
   fi
@@ -71,7 +71,7 @@ for i in {1..5}; do
   if [ $? -eq 0 ]; then
     break
   fi
-  if 5 == $i; then
+  if [ 5 -eq $i ]; then
     echo "Error running ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
     exit 1
   fi
