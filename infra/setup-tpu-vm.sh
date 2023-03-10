@@ -8,7 +8,7 @@ function retry {
     if [ $? -eq 0 ]; then
       break
     fi
-    if 5 == $i; then
+    if [ $i -eq 5 ]; then
       >&2 echo "Error running $*, giving up"
       exit 1
     fi
@@ -29,16 +29,21 @@ EOF
 retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
 
-# install python 3.10, latest git, and nfs
+# install python 3.10, latest git
 sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
 sudo systemctl disable unattended-upgrades
+sudo apt remove -y unattended-upgrades
+# if it's still running somehow, kill it
+if [ $(ps aux | grep unattended-upgrade | wc -l) -gt 1 ]; then
+  sudo kill -9 $(ps aux | grep unattended-upgrade | awk '{print $2}')
+fi
+
 # sometimes apt-get update fails, so retry a few times
 retry sudo apt-get install -y software-properties-common
 retry sudo add-apt-repository -y ppa:deadsnakes/ppa
 retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
-retry sudo apt-get -qq install -y python3.10-full python3.10-dev nfs-common git
-sudo systemctl start unattended-upgrades
+retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 
 VENV=~/venv310
 # if the venv doesn't exist, make it
