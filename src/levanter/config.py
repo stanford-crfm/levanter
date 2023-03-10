@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import tempfile
+import typing
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -34,6 +35,9 @@ from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
+
+M = typing.TypeVar("M")
+S = typing.TypeVar("S")
 
 
 @dataclass
@@ -171,10 +175,13 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
+    def expanded_path(self, run_name):
+        return os.path.expanduser(os.path.join(self.base_path, run_name))
+
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=os.path.join(self.base_path, run_name),
+            base_path=self.expanded_path(run_name),
             save_interval=self.save_interval,
             step_policies=keeps,
         )
@@ -214,6 +221,8 @@ class DistributedConfig:
         # since it depends on the jax internals, but it's the best we can do
         if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
             return True
+
+        return False
 
     def initialize(self):
         if self._is_distributed():
@@ -262,8 +271,8 @@ class TrainerConfig:
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
-    load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[str] = None
+    load_last_checkpoint: Optional[bool] = None  # if None, we'll load the last checkpoint if it exists
+    load_checkpoint_path: Optional[str] = None  # if None, will set to checkpointer.base_path
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
@@ -305,7 +314,7 @@ class TrainerConfig:
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
-        self._validate()
+        self._validate_and_set_defaults()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
@@ -383,6 +392,27 @@ class TrainerConfig:
 
         return optimizer
 
+    def maybe_load_checkpoint(self, model: M, training_state: S) -> typing.Tuple[M, S, Optional[int]]:
+        """Loads a checkpoint if one exists and we're supposed to load it,
+        otherwise returns the model and training state as is"""
+        if self.load_last_checkpoint is not False:
+            checkpointer = self.checkpointer.create(self.run_name)
+            assert (
+                self.load_checkpoint_path is not None
+            ), "load_checkpoint_path should have been set during initialization"
+            ckpt = checkpointer.load_checkpoint(model, training_state, self.load_checkpoint_path)
+
+            if ckpt is None:
+                if self.load_last_checkpoint is True:
+                    raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
+                logger.info("No checkpoint found. Starting from scratch")
+                return (model, training_state, None)
+            else:
+                model, training_state, step = ckpt
+                return (model, training_state, step)
+        else:
+            return (model, training_state, None)
+
     def lr_scheduler(self):
         warmup_steps = int(self.warmup_ratio * self.num_train_steps)
         lr_decay_steps = self.num_train_steps - warmup_steps
@@ -406,7 +436,7 @@ class TrainerConfig:
         return schedule
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
-    def _validate(self):
+    def _validate_and_set_defaults(self):
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
@@ -430,6 +460,9 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        if self.load_checkpoint_path is None:
+            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_name)
 
 
 def register_codecs():

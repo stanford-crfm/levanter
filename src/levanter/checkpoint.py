@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import pathlib
+import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Tuple, TypeVar, Union
 
 import fsspec
 import jax
@@ -20,6 +21,9 @@ from levanter.utils.jax_utils import multihost_broadcast_sync
 logger = logging.getLogger(__name__)
 
 PathLike = Union[str, pathlib.Path]
+
+M = TypeVar("M")
+S = TypeVar("S")
 
 
 @dataclass(frozen=True)
@@ -73,15 +77,23 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
-    def load_checkpoint(self, model, training_state, path: Optional[PathLike] = None, *, discover_latest: bool = True):
+    def load_checkpoint(
+        self, model: M, training_state: S, path: Optional[PathLike] = None, *, discover_latest: bool = True
+    ) -> Optional[Tuple[M, S, int]]:
         if path is None:
             path = self.base_path
         return load_checkpoint(model, training_state, path, discover_latest=discover_latest)
 
-    def load_model(self, model, path: Optional[str] = None, *, discover_latest: bool = True):
+    def load_model(
+        self, model: M, path: Optional[str] = None, *, discover_latest: bool = True
+    ) -> Optional[Tuple[M, int]]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(model, None, path, discover_latest=discover_latest)
+        ckpt = load_checkpoint(model, None, path, discover_latest=discover_latest)
+        if ckpt is None:
+            return None
+        model, _, step = ckpt
+        return model, step
 
     def on_step(self, info, force: bool = False):
         step = info.step
@@ -221,7 +233,9 @@ def save_metadata(checkpoint_path, fs, step):
             json.dump(metadata, json_out)
 
 
-def load_checkpoint(model, training_state, checkpoint_path: PathLike, *, discover_latest=True):
+def load_checkpoint(
+    model: M, training_state: S, checkpoint_path: PathLike, *, discover_latest=True
+) -> Optional[Tuple[M, S, int]]:
     """
     Load a checkpoint from a given path.
 
@@ -279,10 +293,8 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
         return fs.exists(os.path.join(path, "metadata.json"))
 
     def maybe_unstrip_protocol(path: str):
-        base_has_protocol = fs._strip_protocol(checkpoint_path) != checkpoint_path
-        path_has_protocol = fs._strip_protocol(path) != path
-        if base_has_protocol and not path_has_protocol:
-            base_path_protocol = checkpoint_path.split("://")[0]  # type: ignore
+        base_path_protocol = urllib.parse.urlparse(str(checkpoint_path)).scheme
+        if base_path_protocol != "" and not urllib.parse.urlparse(path).scheme != "":
             return f"{base_path_protocol}://{path}"
         return path
 
