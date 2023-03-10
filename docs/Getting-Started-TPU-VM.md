@@ -104,6 +104,9 @@ the VM. This is because preemptible instances can be preempted and will always b
 script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
 It keeps running the command (and relaunching) until the command exits successfully.
 
+Running in this mode is a bit more complex because you need to set a unique run id and (ideally unique) run name
+for your run, which would otherwise be generated for you by WandB.
+
 You can run it like this:
 
 ```bash
@@ -127,10 +130,15 @@ Afterwards, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
-    WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path gs://my_bucket/my_config.yaml
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path gs://my_bucket/my_config.yaml \
+    --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
-The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec.
+The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
+to use WandB, and `--trainer.wandb.name` is a human-readable name for the run, though it is where checkpoints
+will be written (specifically to `gs://path/to/checkpoints/${RUN_NAME}`), so you should probably use a unique name.
+With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
+try to load the latest checkpoint if it exists.
 
 Tokenizers are also loaded via fsspec, so you can use the same trick to load them from GCS if you have a custom
 tokenizer, or you can use an HF tokenizer.
