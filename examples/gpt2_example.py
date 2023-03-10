@@ -257,35 +257,27 @@ def main(config: TrainGpt2Config):
         iter_data = non_caching_cycle(dataset)
 
         # load the last checkpoint and resume if we want
-        resume_step = None
-        if config.trainer.load_last_checkpoint:
-            checkpoint = checkpointer.load_checkpoint(
-                model,
-                (opt_state, training_key),
-                config.trainer.load_checkpoint_path,
-            )
-
-            if checkpoint is not None:
-                model, (opt_state, training_key), resume_step = checkpoint
-                assert training_key.shape == jrandom.PRNGKey(0).shape
-            elif config.trainer.load_checkpoint_path:
-                raise ValueError("No checkpoint found")
-            else:
-                logger.info("No checkpoint found. Starting from scratch")
+        model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
+            model, (opt_state, training_key)
+        )
 
         if resume_step is not None:
             # step is after the batch, so we need to seek to step
-            # TODO: iter_data.seek(resume_step +1)
+            # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
             for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
                 next(iter_data)
-            resume_step = resume_step + 1
+            initial_step = resume_step + 1
         else:
-            resume_step = 0
+            initial_step = 0
+
+        # assign these here in case num_train_steps == 0
+        step_loss = 0.0
+        step_time = lambda: 0.0  # noqa: E731
 
         # finally, run the training loop
-        for step in range(resume_step, config.trainer.num_train_steps):
+        for step in range(initial_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
@@ -295,8 +287,8 @@ def main(config: TrainGpt2Config):
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
 
-                step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
-                step_loss = step_loss.item()
+                jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
+                step_loss = jax_step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
