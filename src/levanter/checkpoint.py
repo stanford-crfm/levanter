@@ -103,6 +103,10 @@ class Checkpointer:
             if not force:
                 return  # don't save checkpoint at step 0 unless forced
 
+        if step == self._last_save_step:
+            # we've already saved a checkpoint at this step
+            return
+
         # two reasons we can save: time or step
         # they have different behaviors for retention.
         # if the previous checkpoint was a temporary checkpoint (i.e. saved b/c of time), we can delete it
