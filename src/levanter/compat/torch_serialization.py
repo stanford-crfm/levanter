@@ -142,6 +142,7 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
+# needs to be jitted because we can't do reshape
 def reshape_linear_layer(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:
