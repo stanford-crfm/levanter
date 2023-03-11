@@ -313,7 +313,7 @@ def main(config: TrainGpt2Config):
             step_duration=step_time(),
         )
 
-        evaluate_step(last_step)
+        engine.run_hooks(last_step, force=True)
         checkpointer.on_step(last_step, force=True)
 
 

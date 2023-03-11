@@ -21,20 +21,23 @@ class StepInfo:
     step_duration: float
 
 
-class TrainerHooks:
-    hooks: List[Callable[[StepInfo], None]] = []
+@dataclass
+class _Hook:
+    fn: Callable[[StepInfo], None]
+    every: int
 
-    def run_hooks(self, info: StepInfo):
+
+class TrainerHooks:
+    hooks: List[_Hook] = []
+
+    def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
-            hook(info)
+            if force or info.step % hook.every == 0:
+                hook.fn(info)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
         def decorator(fn: Callable[[StepInfo], None]):
-            if every == 1:
-                self.hooks.append(fn)
-            else:
-                self.hooks.append(lambda info: fn(info) if info.step % every == 0 else None)
-            return fn
+            self.hooks.append(_Hook(fn, every))
 
         if fn is None:
             return decorator
