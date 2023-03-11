@@ -112,7 +112,7 @@ class Checkpointer:
         # saves a checkpoint for the next step, etc. This leads to partial checkpoints, no good.
         # we fix by having process 0 make the decision
         my_should_save = force
-        my_save_permanent_ckpt = False
+        my_save_permanent_ckpt = force
 
         current_every = self._get_current_step_save_interval(step)
         last_save_time = self._dt_now_injection() - self._last_save_time
