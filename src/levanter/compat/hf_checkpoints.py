@@ -181,7 +181,7 @@ def save_hf_gpt2_checkpoint(model: Gpt2LMHeadModel, path, hf_repo: Optional[str]
             logger.info(f"Copying HF-compatible checkpoint to {path}")
             fs: AbstractFileSystem
             fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
-            fs.put(local_path, path, recursive=True)
+            fs.put(os.path.join(local_path, "*"), path, recursive=True)
 
         if hf_repo is not None:
             logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
