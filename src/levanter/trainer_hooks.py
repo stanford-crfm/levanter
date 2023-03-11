@@ -1,14 +1,8 @@
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, TypeVar
+from typing import Any, Callable, List, Optional
 
 from chex import PRNGKey
 from jaxtyping import PyTree
-
-
-S = TypeVar("S")  # State
-B = TypeVar("B", covariant=True)  # Batch
-Aux = TypeVar("Aux", covariant=True)  # Auxiliary per-iteration results
-T = TypeVar("T")
 
 
 @dataclass
