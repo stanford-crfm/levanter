@@ -226,14 +226,14 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     return log_memory_usage
 
 
-def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_ex=128):
+def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
     """
     Computes log probabilities for a dataset and visualizes them using visdom.
     :param test_data:
     :param tokenizer:
     :param log_prob_fn: a function that takes a model and a batch and returns the log probabilities for each token
     :param html_dir:
-    :param max_ex:
+    :param max_docs:
     :return:
     """
 
@@ -248,7 +248,7 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
             targets.append(batch)
 
             # TODO: haliax-ify?
-            if len(targets) * b_logprobs.shape[0] >= max_ex:
+            if len(targets) * b_logprobs.shape[0] >= max_docs:
                 break
 
         log_probs = _concatenate(log_probs)
@@ -258,8 +258,8 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
         # TODO: is this still necessary?
         (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs), tiled=True)
 
-        log_probs = log_probs[:max_ex]
-        targets = targets[:max_ex]
+        log_probs = log_probs[:max_docs]
+        targets = targets[:max_docs]
 
         targets = np.array(targets)
         tokens = [_decode_tokens_pretty(tokenizer, t) for t in targets]
