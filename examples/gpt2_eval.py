@@ -72,6 +72,7 @@ def main(config: EvalGpt2Config):
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with haliax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
                 input_ids = hax.named(input_ids, SeqLen)
                 attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
@@ -99,7 +100,6 @@ def main(config: EvalGpt2Config):
         )
 
         def evaluate(model):
-            model_inf = mp.cast_to_compute(model)
 
             # standard evaluation loop
             loss = 0.0
@@ -107,7 +107,7 @@ def main(config: EvalGpt2Config):
 
             with hax.axis_mapping(compute_axis_mapping):
                 for batch in eval_dataset:
-                    loss += compute_loss_pjit(model_inf, batch).item()
+                    loss += compute_loss_pjit(model, batch).item()
                     n += 1
                     if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
                         break
