@@ -30,7 +30,7 @@ class EvalGpt2Config:
     data: CachedLMDatasetConfig = CachedLMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
 
-    compare_torch: bool = False
+    num_docs: int = 256
 
 
 @levanter.config.main()
@@ -93,10 +93,13 @@ def main(config: EvalGpt2Config):
 
         model = init_model()
 
-        model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
+        ckpt = load_checkpoint(model, None, config.checkpoint_path)
+
+        assert ckpt is not None
+        model, _, _ = ckpt
 
         cb = callbacks.compute_and_visualize_log_probs(
-            eval_dataset, tokenizer, compute_log_probs, config.output_dir, max_ex=100
+            eval_dataset, tokenizer, compute_log_probs, config.output_dir, max_docs=config.num_docs
         )
         cb(StepInfo(model=model, step=0, opt_state=None, loss=0.0, step_duration=0.0, next_key=0.0))
 
