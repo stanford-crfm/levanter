@@ -155,12 +155,12 @@ def main(config: EvalGpt2Config):
 
                 loss = 0.0
                 n = 0
-                for batch in eval_dataset:
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
                     torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
                     n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                    if total is not None and n >= total:
                         break
 
                 print("Loss from Torch model: ", loss / n)
