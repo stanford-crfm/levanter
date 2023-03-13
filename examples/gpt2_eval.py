@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 import numpy
+import tqdm
 from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
@@ -106,7 +107,7 @@ def main(config: EvalGpt2Config):
             n = 0
 
             with hax.axis_mapping(compute_axis_mapping):
-                for batch in eval_dataset:
+                for batch in tqdm.tqdm(eval_dataset):
                     loss += compute_loss_pjit(model, batch).item()
                     n += 1
                     if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
