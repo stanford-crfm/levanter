@@ -37,8 +37,7 @@ class EvalGpt2Config:
     model: Gpt2Config = Gpt2Config()
 
     compare_torch: bool = False
-
-    max_batches: Optional[int] = None
+    eval_on_train: bool = False
 
 
 @levanter.config.main()
@@ -48,11 +47,12 @@ def main(config: EvalGpt2Config):
 
     EvalBatch = Axis("eval_batch", config.trainer.per_device_eval_parallelism)
 
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.device_mesh,
-        EvalBatch,
-    )
+    if config.eval_on_train:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len)
+    else:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
+
+    eval_dataset = GlobalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
