@@ -38,6 +38,8 @@ class EvalGpt2Config:
 
     compare_torch: bool = False
 
+    max_batches: Optional[int] = None
+
 
 @levanter.config.main()
 def main(config: EvalGpt2Config):
@@ -100,6 +102,8 @@ def main(config: EvalGpt2Config):
             axis_resources=compute_axis_mapping,
         )
 
+        total = config.trainer.max_eval_batches
+
         def evaluate(model):
 
             # standard evaluation loop
@@ -107,10 +111,10 @@ def main(config: EvalGpt2Config):
             n = 0
 
             with hax.axis_mapping(compute_axis_mapping):
-                for batch in tqdm.tqdm(eval_dataset):
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
                     loss += compute_loss_pjit(model, batch).item()
                     n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                    if total is not None and n >= total:
                         break
 
             return loss / n
