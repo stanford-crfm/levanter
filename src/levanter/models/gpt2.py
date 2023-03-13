@@ -14,6 +14,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.nn.scan import Stacked
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -267,7 +268,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], inference, layer_idx, *, key):
+    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
         attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
@@ -283,7 +284,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
-    blocks: Gpt2Block
+    blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
 
     @property
@@ -295,7 +296,8 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         self.config = config
 
         # vectorize the blocks
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
+        self.blocks = Stacked(self.Layers, Gpt2Block, config, key=shaped_rng_split(key, config.num_layers),
+                              gradient_checkpointing=config.gradient_checkpointing)
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
@@ -307,9 +309,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
             do_block = jax.checkpoint(do_block, prevent_cse=False)
 
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
-            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
-        )
+        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference=inference, key=keys)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
