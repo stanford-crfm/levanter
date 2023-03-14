@@ -140,13 +140,13 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
             return arr
         elif arr.device() == "cpu":
             print("cpu")
-            return np.ndarray(arr)
+            return np.array(arr)
         elif arr.is_fully_addressable:
             print("get")
-            return np.ndarray(arr)
+            return np.array(arr)
         else:
             print("all gather")
-            return np.ndarray(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
 
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
     model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
