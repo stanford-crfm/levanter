@@ -135,7 +135,7 @@ class pytree_partial(ft.partial):
 _sync_counter = 0
 
 
-def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
+def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: float = 200.0) -> X:
     """
     Uses jax's unpublished distributed api to sync a value across hosts using json dump. If is_source is None, then
     process_index 0 is the source.
@@ -162,10 +162,10 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None) -> X:
         serialized = json.dumps(obj)
         client.key_value_set(key, serialized)
 
-    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=200_000)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=timeout * 1000.0)
 
     if not is_source:
-        serialized = client.blocking_key_value_get(key, timeout_in_ms=200_000)
+        serialized = client.blocking_key_value_get(key, timeout_in_ms=timeout * 1000.0)
         obj = json.loads(serialized)
 
     _sync_counter += 1
