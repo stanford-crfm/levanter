@@ -142,8 +142,10 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
             print("cpu")
             return np.array(arr)
         elif arr.is_fully_addressable:
-            print("get")
-            return np.array(arr)
+            print("get", arr.shape, arr.sharding)
+            r = np.array(arr)
+            print("get done")
+            return r
         else:
             print("all gather")
             return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
