@@ -8,7 +8,7 @@ from haliax.nn import cross_entropy_loss
 
 
 def next_token_loss(
-    SeqLen: hax.Axs,
+    SeqLen: hax.Axis,
     Vocab: hax.Axis,
     true_ids: NamedArray,
     pred_ids: NamedArray,
