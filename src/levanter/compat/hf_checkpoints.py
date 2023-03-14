@@ -4,11 +4,12 @@ import os
 import shutil
 import tempfile
 import urllib.parse
-from typing import Optional, cast
+from typing import Optional, Union, cast
 
 import fsspec
 import huggingface_hub
 import jax
+import jax.numpy as jnp
 import numpy as np
 import safetensors
 import safetensors.numpy
@@ -16,6 +17,7 @@ from fsspec import AbstractFileSystem
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
+from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
 
@@ -134,20 +136,27 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)
 
+    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
+        if isinstance(arr, np.ndarray):
+            return arr
+        elif "cpu" in arr.device().device_kind:
+            return np.array(arr)
+        elif arr.is_fully_addressable:
+            r = np.array(arr)
+            return r
+        else:
+            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-    model = jax.tree_map(
-        lambda arr: np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True))), model
-    )
+    model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
 
     # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
     state_dict = model.to_state_dict()
 
     # now that we've moved the model to the CPU, we don't need to do this on all processes
-    if jax.process_index() != 0:
-        return
-
-    # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-    safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
+    if jax.process_index() == 0:
+        # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+        safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
 
 
 def _is_url_like(path):
@@ -176,16 +185,24 @@ def save_hf_gpt2_checkpoint(model: Gpt2LMHeadModel, path, hf_repo: Optional[str]
     try:
         logger.info(f"Saving HF-compatible checkpoint to {local_path}")
         _save_hf_gpt2_checkpoint_local(cast(Gpt2LMHeadModel, model), local_path)
+        logger.debug(f"Finished saving HF-compatible checkpoint to {local_path}")
 
-        if tmpdir is not None:  # we're uploading to GCS or similar
-            logger.info(f"Copying HF-compatible checkpoint to {path}")
-            fs: AbstractFileSystem
-            fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
-            fs.put(os.path.join(local_path, "*"), path, recursive=True)
+        sync_global_devices(path)
 
-        if hf_repo is not None:
-            logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
-            huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+        if jax.process_index() == 0:
+            if tmpdir is not None:  # we're uploading to GCS or similar
+                logger.info(f"Copying HF-compatible checkpoint to {path}")
+                fs: AbstractFileSystem
+                fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
+                fs.put(os.path.join(local_path, "*"), path, recursive=True)
+                logger.debug(f"Finished copying HF-compatible checkpoint to {path}")
+
+            if hf_repo is not None:
+                logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
+                huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+                logger.debug(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
+
+        sync_global_devices(path + " done")
     finally:
         if tmpdir is not None:
             shutil.rmtree(tmpdir)

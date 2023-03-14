@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 import numpy
+import tqdm
 from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
@@ -36,6 +37,7 @@ class EvalGpt2Config:
     model: Gpt2Config = Gpt2Config()
 
     compare_torch: bool = False
+    eval_on_train: bool = False
 
 
 @levanter.config.main()
@@ -43,22 +45,24 @@ def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("eval_batch", config.trainer.per_device_eval_parallelism)
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.device_mesh,
-        EvalBatch,
-    )
+    if config.eval_on_train:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len)
+    else:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
+
+    eval_dataset = GlobalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
 
-    with config.trainer.device_mesh:
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         key = jax.random.PRNGKey(0)
 
-        compute_axis_mapping = config.trainer.compute_axis_mapping
-        parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
@@ -71,8 +75,8 @@ def main(config: EvalGpt2Config):
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
-            with haliax.axis_mapping(compute_axis_mapping):
-                input_ids = hax.named(input_ids, SeqLen)
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
                 attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
@@ -88,7 +92,10 @@ def main(config: EvalGpt2Config):
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             return jnp.mean(compute_loss_vmap(model, input_ids))
 
         compute_loss_pjit = named_pjit(
@@ -98,18 +105,19 @@ def main(config: EvalGpt2Config):
             axis_resources=compute_axis_mapping,
         )
 
+        total = config.trainer.max_eval_batches
+
         def evaluate(model):
-            model_inf = mp.cast_to_compute(model)
 
             # standard evaluation loop
             loss = 0.0
             n = 0
 
             with hax.axis_mapping(compute_axis_mapping):
-                for batch in eval_dataset:
-                    loss += compute_loss_pjit(model_inf, batch).item()
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
+                    loss += compute_loss_pjit(model, batch).item()
                     n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                    if total is not None and n >= total:
                         break
 
             return loss / n
@@ -150,12 +158,12 @@ def main(config: EvalGpt2Config):
 
                 loss = 0.0
                 n = 0
-                for batch in eval_dataset:
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
                     torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
                     n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
+                    if total is not None and n >= total:
                         break
 
                 print("Loss from Torch model: ", loss / n)
