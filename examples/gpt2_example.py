@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional
 
 import equinox as eqx
@@ -24,6 +25,7 @@ from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.loss import cross_entropy_and_logsumexp_penalty, next_token_loss
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -139,22 +141,22 @@ def main(config: TrainGpt2Config):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
+                if not inference and config.log_z_regularization > 0:
+                    logsumexp_weight = config.log_z_regularization
+                    loss_fn = partial(cross_entropy_and_logsumexp_penalty, logsumexp_weight=logsumexp_weight)
+                else:
+                    loss_fn = cross_entropy_loss
+
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
-                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                loss = hax.mean(loss, axis=SeqLen, where=loss_mask)
-
+                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, loss_mask, loss_fn=loss_fn)
                 return loss
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             return hax.mean(
                 hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
-            ).scalar()
+            ).scalar().scalar()
 
         # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
