@@ -39,7 +39,7 @@ def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("eval_batch", config.trainer.per_device_eval_parallelism)
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     eval_dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
@@ -50,11 +50,12 @@ def main(config: EvalGpt2Config):
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
 
-    with config.trainer.device_mesh:
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         key = jax.random.PRNGKey(0)
 
-        compute_axis_mapping = config.trainer.compute_axis_mapping
-        parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)

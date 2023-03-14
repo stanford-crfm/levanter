@@ -22,7 +22,6 @@ from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from pyrallis import wrap
 
 
 logger = logging.getLogger(__name__)
