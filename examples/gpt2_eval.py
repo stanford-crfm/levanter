@@ -74,9 +74,8 @@ def main(config: EvalGpt2Config):
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
-            with haliax.axis_mapping(compute_axis_mapping):
+            with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                input_ids = hax.named(input_ids, SeqLen)
                 attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
@@ -92,7 +91,10 @@ def main(config: EvalGpt2Config):
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             return jnp.mean(compute_loss_vmap(model, input_ids))
 
         compute_loss_pjit = named_pjit(

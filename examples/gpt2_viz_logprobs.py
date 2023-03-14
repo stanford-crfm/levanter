@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 
 import jax
+import jax.numpy as jnp
 import jmp
 from transformers import GPT2Tokenizer
 
@@ -70,6 +71,9 @@ def main(config: EvalGpt2Config):
             attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
             attn_mask = hax.auto_sharded(attn_mask)
 
+            # don't want to compute the loss w.r.t. the final token
+            loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
+
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
@@ -82,7 +86,10 @@ def main(config: EvalGpt2Config):
 
                 loss = cross_entropy_loss(pred_y, Vocab, target_y)
                 loss *= -1.0  # negate because we want log probs
-                return loss.rearrange((EvalBatch, SeqLen)).array
+                masked = loss * loss_mask
+                # roll forward to get the loss for each token
+                masked = hax.roll(masked, 1, SeqLen)
+                return masked.rearrange((EvalBatch, SeqLen)).array
 
         # initialize the model
         @named_pjit(axis_resources=parameter_axis_mapping)
