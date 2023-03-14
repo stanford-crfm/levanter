@@ -57,6 +57,9 @@ def main(config: ConvertGpt2Config):
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
+        # we want to call this in case we're on a TPU node
+        jax.process_index()
+
         model = Gpt2LMHeadModel(Vocab, config.model, key=key)
 
         if config.old_style_model:
