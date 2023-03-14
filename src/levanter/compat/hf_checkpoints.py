@@ -4,7 +4,6 @@ import os
 import shutil
 import tempfile
 import urllib.parse
-import sys
 from typing import Optional, Union, cast
 
 import fsspec
@@ -18,14 +17,13 @@ from fsspec import AbstractFileSystem
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
+from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
 
 from haliax import Axis
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
-import levanter
-import levanter.jax_utils
 
 
 logger = logging.getLogger(__name__)
@@ -158,16 +156,7 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     # now that we've moved the model to the CPU, we don't need to do this on all processes
     if jax.process_index() == 0:
         # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-        print("saving", flush=True)
         safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
-        print("done saving", flush=True)
-    else:
-        import time
-        time.sleep(60)
-
-
-    levanter.jax_utils.multihost_broadcast_sync([])
-    print("done syncing")
 
 
 def _is_url_like(path):
@@ -196,18 +185,24 @@ def save_hf_gpt2_checkpoint(model: Gpt2LMHeadModel, path, hf_repo: Optional[str]
     try:
         logger.info(f"Saving HF-compatible checkpoint to {local_path}")
         _save_hf_gpt2_checkpoint_local(cast(Gpt2LMHeadModel, model), local_path)
+        logger.debug(f"Finished saving HF-compatible checkpoint to {local_path}")
 
-        if tmpdir is not None and jax.process_index() == 0:  # we're uploading to GCS or similar
-            logger.info(f"Copying HF-compatible checkpoint to {path}")
-            fs: AbstractFileSystem
-            print("put time", flush=True)
-            fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
-            fs.put(os.path.join(local_path, "*"), path, recursive=True)
-            print("put done", flush=True)
+        sync_global_devices(path)
 
-        if hf_repo is not None and jax.process_index() == 0:
-            logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
-            huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+        if jax.process_index() == 0:
+            if tmpdir is not None:  # we're uploading to GCS or similar
+                logger.info(f"Copying HF-compatible checkpoint to {path}")
+                fs: AbstractFileSystem
+                fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
+                fs.put(os.path.join(local_path, "*"), path, recursive=True)
+                logger.debug(f"Finished copying HF-compatible checkpoint to {path}")
+
+            if hf_repo is not None:
+                logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
+                huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+                logger.debug(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
+
+        sync_global_devices(path + " done")
     finally:
         if tmpdir is not None:
             shutil.rmtree(tmpdir)
