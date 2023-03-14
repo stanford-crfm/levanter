@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import urllib.parse
-from typing import Optional, cast
+from typing import Optional, Union, cast
 
 import fsspec
 import huggingface_hub
@@ -135,8 +135,10 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)
 
-    def get_to_cpu(arr: jnp.ndarray):
-        if arr.device() == "cpu":
+    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
+        if isinstance(arr, np.ndarray):
+            return arr
+        elif arr.device() == "cpu":
             return arr
         elif arr.is_fully_addressable:
             print("get")
