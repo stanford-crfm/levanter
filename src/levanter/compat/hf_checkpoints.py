@@ -139,16 +139,17 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
         if isinstance(arr, np.ndarray):
             return arr
         elif arr.device() == "cpu":
-            return arr
+            print("cpu")
+            return np.ndarray(arr)
         elif arr.is_fully_addressable:
             print("get")
-            return jax.device_get(arr)
+            return np.ndarray(arr)
         else:
             print("all gather")
-            return jax.device_get(multihost_utils.process_allgather(arr, tiled=True))
+            return np.ndarray(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
 
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-    model = jax.tree_map(lambda arr: np.array(get_to_cpu(arr)), model)
+    model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
 
     # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
     state_dict = model.to_state_dict()
