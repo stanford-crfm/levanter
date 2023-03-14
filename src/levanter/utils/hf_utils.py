@@ -17,7 +17,6 @@ def load_tokenizer(model_name_or_path, local_cache_dir=None):
         fs, path = fsspec.core.url_to_fs(model_name_or_path)
         fs.get(path, local_cache_dir, recursive=True)
         base_path = os.path.basename(path)
-        print(os.listdir(os.path.join(local_cache_dir, base_path)))
         return AutoTokenizer.from_pretrained(os.path.join(local_cache_dir, base_path))
     else:
         return AutoTokenizer.from_pretrained(model_name_or_path)
