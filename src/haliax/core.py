@@ -12,9 +12,9 @@ import numpy as np
 
 import haliax
 from haliax.jax_utils import is_jax_array_like
-from haliax.util import ensure_tuple
+from haliax.util import ensure_tuple, index_where
 
-from .types import Axis, AxisSpec, PrecisionLike, Scalar
+from .types import Axis, AxisSelection, AxisSpec, PrecisionLike, Scalar
 
 
 NamedOrNumeric = Union[Scalar, "NamedArray"]
@@ -106,18 +106,43 @@ class NamedArray:
         assert len(tree) == 1
         return cls(tree[0], axes=aux)
 
-    def has_axis(self, axis: AxisSpec) -> bool:
+    def has_axis(self, axis: AxisSelection) -> bool:
         return self._lookup_indices(axis) is not None
 
-    @typing.overload
-    def _lookup_indices(self, axis: Axis) -> Optional[int]:
+    @overload
+    def axis_size(self, axis: Union[Axis, str]) -> int:  # type: ignore
         ...
 
-    @typing.overload
-    def _lookup_indices(self, axis: Sequence[Axis]) -> Tuple[Optional[int], ...]:
+    @overload
+    def axis_size(self, axis: Sequence[Union[Axis, str]]) -> Tuple[int, ...]:  # type: ignore
         ...
 
-    def _lookup_indices(self, axis: AxisSpec) -> Union[Optional[int], Tuple[Optional[int], ...]]:
+    def axis_size(self, axis: AxisSelection) -> Union[int, Tuple[int, ...]]:
+        """
+        Returns the size of the given axis, or a tuple of sizes if given multiple axes.
+        """
+        indices = self._lookup_indices(axis)
+        if isinstance(indices, int):
+            return self.axes[indices].size
+        elif indices is None:
+            raise ValueError(f"Axis {axis} not found")
+        else:
+            result = []
+            for i in indices:
+                if i is None:
+                    raise ValueError(f"Axis {axis} not found")
+                result.append(self.axes[i].size)
+            return tuple(result)
+
+    @overload
+    def _lookup_indices(self, axis: Union[Axis, str]) -> Optional[int]:  # type: ignore
+        ...
+
+    @overload
+    def _lookup_indices(self, axis: Sequence[Union[Axis, str]]) -> Tuple[Optional[int], ...]:
+        ...
+
+    def _lookup_indices(self, axis: AxisSelection) -> Union[Optional[int], Tuple[Optional[int], ...]]:
         """
         For a single axis, returns an int corresponding to the index of the axis.
         For multiple axes, returns a tuple of ints corresponding to the indices of the axes.
@@ -127,6 +152,11 @@ class NamedArray:
         if isinstance(axis, Axis):
             try:
                 return self.axes.index(axis)
+            except ValueError:
+                return None
+        elif isinstance(axis, str):
+            try:
+                return index_where(lambda a: a.name == axis, self.axes)
             except ValueError:
                 return None
         else:
@@ -165,10 +195,10 @@ class NamedArray:
         return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
-    def all(self, axis: Optional[AxisSpec] = None) -> "NamedArray":
+    def all(self, axis: Optional[AxisSelection] = None) -> "NamedArray":
         return haliax.all(self, axis=axis)
 
-    def any(self, axis: Optional[AxisSpec] = None) -> "NamedArray":
+    def any(self, axis: Optional[AxisSelection] = None) -> "NamedArray":
         return haliax.any(self, axis=axis)
 
     # TODO: test
@@ -200,13 +230,13 @@ class NamedArray:
     def copy(self) -> "NamedArray":
         return NamedArray(self.array.copy(), self.axes)
 
-    def cumprod(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
+    def cumprod(self, axis: Optional[AxisSelection] = None, *, dtype=None) -> "NamedArray":
         return haliax.cumprod(self, axis=axis, dtype=dtype)
 
-    def cumsum(self, axis: Optional[AxisSpec] = None, *, dtype=None) -> "NamedArray":
+    def cumsum(self, axis: Optional[AxisSelection] = None, *, dtype=None) -> "NamedArray":
         return haliax.cumsum(self, axis=axis, dtype=dtype)
 
-    def dot(self, axis: AxisSpec, b, *, precision: PrecisionLike = None) -> "NamedArray":
+    def dot(self, axis: AxisSelection, b, *, precision: PrecisionLike = None) -> "NamedArray":
         return dot(axis, self, b, precision=precision)
 
     @property
@@ -215,7 +245,7 @@ class NamedArray:
 
     def max(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         initial=None,
         where=None,
@@ -224,7 +254,7 @@ class NamedArray:
 
     def mean(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         dtype=None,
         where=None,
@@ -233,7 +263,7 @@ class NamedArray:
 
     def min(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         initial=None,
         where=None,
@@ -242,7 +272,7 @@ class NamedArray:
 
     def prod(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         dtype=None,
         initial=None,
@@ -256,7 +286,7 @@ class NamedArray:
             where=where,
         )
 
-    def ptp(self, axis: AxisSpec = None) -> "NamedArray":
+    def ptp(self, axis: AxisSelection = None) -> "NamedArray":
         return haliax.ptp(self, axis=axis)
 
     # TODO: implement ravel. Can only do if we either ask for an axis or add ProductAxis or something
@@ -279,7 +309,7 @@ class NamedArray:
 
     def std(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         dtype=None,
         ddof=0,
@@ -295,7 +325,7 @@ class NamedArray:
 
     def sum(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         *,
         dtype=None,
         initial=None,
@@ -320,7 +350,7 @@ class NamedArray:
 
     def var(
         self,
-        axis: Optional[AxisSpec] = None,
+        axis: Optional[AxisSelection] = None,
         dtype=None,
         ddof=0,
         *,
@@ -503,7 +533,7 @@ def slice(array: NamedArray, axis: Axis, new_axis: Axis, start: int = 0) -> Name
     return NamedArray(sliced, new_axes)
 
 
-def dot(axis: AxisSpec, *arrays: NamedArray, precision: PrecisionLike = None) -> NamedArray:
+def dot(axis: AxisSelection, *arrays: NamedArray, precision: PrecisionLike = None) -> NamedArray:
     """Returns the tensor product of two NamedArrays. The axes `axis` are contracted over,
     and any other axes that are shared between the arrays are batched over. Non-contracted Axes in one
     that are not in the other are preserved.
@@ -529,7 +559,7 @@ def dot(axis: AxisSpec, *arrays: NamedArray, precision: PrecisionLike = None) ->
         array_specs.append(spec)
 
     # now compute the output axes:
-    output_axes = tuple(ax for ax in axis_mappings.keys() if ax not in axis)
+    output_axes = tuple(ax for ax in axis_mappings.keys() if not selects_axis(ax, axis))
     output_spec = " ".join(str(axis_mappings[ax]) for ax in output_axes)
 
     output = jnp.einsum(
@@ -638,7 +668,7 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     return [auto_sharded(NamedArray(a, new_axes)) for a in arrays]
 
 
-def roll(array: NamedArray, shift: Union[int, Tuple[int, ...]], axis: AxisSpec) -> NamedArray:
+def roll(array: NamedArray, shift: Union[int, Tuple[int, ...]], axis: AxisSelection) -> NamedArray:
     """
     Roll an array along an axis or axes. Analogous to np.roll
     """
@@ -699,19 +729,10 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
     return NamedArray(new_array, new_axes)
 
 
-def named(a: jnp.ndarray, axis: AxisSpec) -> NamedArray:
+def named(a: jnp.ndarray, axis: AxisSelection) -> NamedArray:
     """Creates a NamedArray from a numpy array and a list of axes"""
-    if isinstance(axis, Axis):
-        if a.shape != (axis.size,):
-            raise ValueError(f"Shape of array {jnp.shape(a)} does not match size of axis {axis.size}")
-        return NamedArray(a, (axis,))
-    else:
-        shape: Tuple[Axis, ...] = ensure_tuple(axis)
-        # verify the shape is correct
-        if jnp.shape(a) != tuple(x.size for x in shape):
-            raise ValueError(f"Shape of array {jnp.shape(a)} does not match shape of axes {axis}")
-
-        return NamedArray(a, shape)
+    axes = check_shape(a.shape, axis)
+    return NamedArray(a, axes)
 
 
 def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
@@ -899,6 +920,7 @@ def broadcast_arrays_and_return_axes(
     return arrays, full_axes
 
 
+# TODO: convert to AxisSelection?
 def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
     """
     Broadcasts a, ensuring that it has all the axes in axis.
@@ -908,6 +930,91 @@ def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
         return a
 
     return broadcast_to(a, axis, enforce_no_extra_axes=False, ensure_order=True)
+
+
+def check_shape(jnp_shape: Sequence[int], hax_axes: AxisSelection) -> Tuple[Axis, ...]:
+    """Check that the shape of a jax array matches the axes of a NamedArray"""
+    axes: Tuple[Union[str, haliax.Axis], ...] = ensure_tuple(hax_axes)
+    if len(jnp_shape) != len(axes):
+        raise ValueError(f"Shape mismatch: jnp_shape={jnp_shape} hax_axes={hax_axes}")
+    result_axes: List[haliax.Axis] = []
+    for i in range(len(axes)):
+        ax = axes[i]
+        if isinstance(ax, Axis):
+            if ax.size != jnp_shape[i]:
+                raise ValueError(f"Shape mismatch: jnp_shape={jnp_shape} hax_axes={hax_axes}")
+            result_axes.append(ax)  # type: ignore
+        elif isinstance(ax, str):
+            result_axes.append(Axis(ax, jnp_shape[i]))
+        else:
+            raise ValueError(f"Invalid axis spec: {ax}")
+
+    return tuple(result_axes)
+
+
+class _Sentinel:
+    ...
+
+
+def axis_compatible(ax1: Union[str, Axis], ax2: Union[str, Axis]):
+    if isinstance(ax1, str):
+        if isinstance(ax2, str):
+            return ax1 == ax2
+        return ax1 == ax2.name
+    if isinstance(ax2, str):
+        return ax1.name == ax2
+    return ax1.name == ax2.name
+
+
+def selects_axis(selector: AxisSelection, selected: AxisSelection) -> bool:
+    """Returns true if the selector has every axis in selected and, if dims are given, that they match"""
+    if isinstance(selector, Axis) or isinstance(selector, str):
+        selected = ensure_tuple(selected)
+        try:
+            index = index_where(lambda ax: axis_compatible(ax, selector), selected)  # type: ignore
+            return index >= 0
+        except ValueError:
+            return False
+
+    selector_dict = _spec_to_dict(selector)
+
+    selected_tuple = ensure_tuple(selected)  # type: ignore
+    for ax in selected_tuple:
+        if isinstance(ax, Axis):
+            selector_size = selector_dict.get(ax.name, _Sentinel)
+            if selector_size is not None and selector_size != ax.size:
+                return False
+        elif isinstance(ax, str):
+            if ax not in selector_dict:
+                return False
+        else:
+            raise ValueError(f"Invalid axis spec: {ax}")
+
+    return True
+
+
+@overload
+def _spec_to_dict(axis_spec: AxisSpec) -> Mapping[str, int]:
+    ...
+
+
+@overload
+def _spec_to_dict(axis_spec: AxisSelection) -> Mapping[str, Optional[int]]:
+    ...
+
+
+def _spec_to_dict(axis_spec: AxisSelection) -> Mapping[str, Optional[int]]:
+    spec = ensure_tuple(axis_spec)  # type: ignore
+    shape_dict: Dict[str, Optional[int]] = {}
+    for ax in spec:
+        if isinstance(ax, Axis):
+            shape_dict[ax.name] = ax.size
+        elif isinstance(ax, str):
+            shape_dict[ax] = None
+        else:
+            raise ValueError(f"Invalid axis spec: {ax}")
+
+    return shape_dict
 
 
 __all__ = [
@@ -929,4 +1036,5 @@ __all__ = [
     "broadcast_arrays",
     "enable_shape_checks",
     "are_shape_checks_enabled",
+    "check_shape",
 ]

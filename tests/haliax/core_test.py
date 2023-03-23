@@ -30,6 +30,29 @@ def test_dot():
     )
 
 
+def test_dot_string_selection():
+    Height = Axis("Height", 2)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), (Height, Width, Depth))
+    m2 = NamedArray(jnp.ones((Depth.size, Width.size, Height.size)), (Depth, Width, Height))
+
+    assert jnp.all(jnp.equal(hax.dot("Height", m1, m2).array, jnp.einsum("ijk,kji->jk", m1.array, m2.array)))
+    assert jnp.all(
+        jnp.equal(
+            hax.dot(("Height", "Width"), m1, m2).array,
+            jnp.einsum("ijk,kji->k", m1.array, m2.array),
+        )
+    )
+    assert jnp.all(
+        jnp.equal(
+            hax.dot(("Height", "Width", "Depth"), m1, m2).array,
+            jnp.einsum("ijk,kji->", m1.array, m2.array),
+        )
+    )
+
+
 def test_unary_np_functions():
     Height = Axis("Height", 2)
     Width = Axis("Width", 3)
