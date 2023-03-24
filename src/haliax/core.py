@@ -562,8 +562,7 @@ def dot(axis: AxisSelection, *arrays: NamedArray, precision: PrecisionLike = Non
     and any other axes that are shared between the arrays are batched over. Non-contracted Axes in one
     that are not in the other are preserved.
     """
-    if isinstance(axis, Axis):
-        axis = [axis]
+    axis = ensure_tuple(axis)
 
     array_specs = []
 
