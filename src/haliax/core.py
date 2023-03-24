@@ -596,7 +596,8 @@ def dot(axis: AxisSelection, *arrays: NamedArray, precision: PrecisionLike = Non
 
 def split(a: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
     # check the lengths of the new axes
-    if axis not in a.axes:
+    index = a._lookup_indices(axis)
+    if index is None:
         raise ValueError(f"Axis {axis} not found in {a.axes}")
 
     total_len = sum(x.size for x in new_axes)
@@ -606,13 +607,11 @@ def split(a: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequen
                 f"The total length of the new axes {total_len} does not match the length of the axis {axis}"
             )
 
-    index = a._lookup_indices(axis)
-
     # now we can split the array
     offsets = np.cumsum([0] + [x.size for x in new_axes])[1:-1]
 
     new_arrays = np.split(a.array, indices_or_sections=offsets, axis=index)
-    ret_axes = [tuple(ax2 if ax2 is not axis else new_axis for ax2 in a.axes) for new_axis in new_axes]
+    ret_axes = [tuple(ax2 if not selects_axis(axis, ax2) else new_axis for ax2 in a.axes) for new_axis in new_axes]
 
     return [NamedArray(x, ax) for x, ax in zip(new_arrays, ret_axes)]
 

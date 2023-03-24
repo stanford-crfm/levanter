@@ -114,13 +114,13 @@ def test_reduction_functions():
 
 
 def test_reduction_functions_with_where():
-    Height = Axis("Height", 2)
-    Width = Axis("Width", 3)
-    Depth = Axis("Depth", 4)
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
 
-    rand_m = jax.random.uniform(PRNGKey(0), (Height.size, Width.size, Depth.size))
+    rand_m = jax.random.uniform(PRNGKey(0), (H.size, W.size, D.size))
 
-    m1 = NamedArray(rand_m, (Height, Width, Depth))
+    m1 = NamedArray(rand_m, (H, W, D))
 
     mask = m1 > 0.5
     jmask = m1.array > 0.5
@@ -129,32 +129,36 @@ def test_reduction_functions_with_where():
     assert jnp.all(jnp.equal(hax.sum(m1, where=mask).array, jnp.sum(rand_m, where=jmask)))
     # ensure it's a scalar
 
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=Height, where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=Width, where=mask).array, jnp.sum(rand_m, axis=1, where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=H, where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=W, where=mask).array, jnp.sum(rand_m, axis=1, where=jmask)))
+
+    assert jnp.all(jnp.equal(hax.sum(m1, axis="H", where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
 
     # sum out two axes
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(H, W), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(W, H), where=mask).array, jnp.sum(rand_m, axis=(1, 0), where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(H, D), where=mask).array, jnp.sum(rand_m, axis=(0, 2), where=jmask)))
+
     assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Height, Width), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask))
-    )
-    assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Width, Height), where=mask).array, jnp.sum(rand_m, axis=(1, 0), where=jmask))
-    )
-    assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Height, Depth), where=mask).array, jnp.sum(rand_m, axis=(0, 2), where=jmask))
+        jnp.equal(hax.sum(m1, axis=("H", "W"), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask))
     )
 
     # sum out three axes
     assert jnp.all(
         jnp.equal(
-            hax.sum(m1, axis=(Height, Width, Depth), where=mask).array,
+            hax.sum(m1, axis=(H, W, D), where=mask).array,
             jnp.sum(rand_m, axis=(0, 1, 2), where=jmask),
         )
     )
     assert jnp.all(
         jnp.equal(
-            hax.sum(m1, axis=(Width, Height, Depth), where=mask).array,
+            hax.sum(m1, axis=(W, H, D), where=mask).array,
             jnp.sum(rand_m, axis=(1, 0, 2), where=jmask),
         )
+    )
+
+    assert jnp.all(
+        jnp.equal(hax.sum(m1, axis=("H", "W", "D"), where=mask).array, jnp.sum(rand_m, axis=(0, 1, 2), where=jmask))
     )
 
 
@@ -177,6 +181,11 @@ def test_split():
 
     for i in range(10):
         assert jnp.all(jnp.equal(splits[i].array, usplits[i]))
+
+    # double check string axis
+    splits_str = hax.split(rand_m, axis="Depth", new_axes=[Depth] * 10)
+    for i in range(10):
+        assert jnp.all(jnp.equal(splits_str[i].array, usplits[i]))
 
 
 def test_take():
