@@ -199,7 +199,7 @@ class NamedArray:
     def split(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
-    def flatten_axes(self, old_axes: Sequence[AxisSelector], new_axis: Axis) -> "NamedArray":
+    def flatten_axes(self, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> "NamedArray":
         return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
 
     def unflatten_axis(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> "NamedArray":
