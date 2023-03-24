@@ -120,6 +120,24 @@ def test_vmap_mapped_args():
     assert selected.axes == expected_names
 
 
+def test_vmap_str_args():
+    Batch = Axis("Batch", 10)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+    named1 = hax.random.uniform(PRNGKey(0), (Batch, Width, Depth))
+
+    def vmap_fun(x):
+        return x.sum(Width)
+
+    selected = hax.vmap(vmap_fun, "Batch")(named1)
+
+    expected_jax = jnp.array([named1.sum(Width).array for _ in range(Batch.size)])
+    expected_names = (Batch, Depth)
+
+    assert jnp.all(jnp.equal(selected.array, expected_jax))
+    assert selected.axes == expected_names
+
+
 def test_vmap_mapped_kwarg():
     Batch = Axis("Batch", 10)
     Width = Axis("Width", 3)
