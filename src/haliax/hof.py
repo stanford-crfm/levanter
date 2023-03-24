@@ -23,7 +23,7 @@ Y = TypeVar("Y")
 
 def scan(
     f: Callable[[Carry, X], Tuple[Carry, Y]],
-    axis: Axis,
+    axis: AxisSelector,
     *,
     reverse=False,
     unroll=1,
@@ -48,7 +48,7 @@ def scan(
 
     def is_scanned_with_axis(leaf):
         if is_named_array(leaf):
-            return axis in leaf.axes and is_scanned(leaf)
+            return selects_axis(leaf.axes, axis) and is_scanned(leaf)
         else:
             return is_scanned(leaf)
 
@@ -85,7 +85,8 @@ def scan(
 
         leaves = jax.tree_util.tree_leaves(axis_first_xs)
         carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-        ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
+        true_axis = _infer_axis_size_from_result(ys, axis)
+        ys = jax.tree_util.tree_map(_prepend_named_batch_axis(true_axis), ys, is_leaf=_is_passive_array)
 
         return carry, ys
 
@@ -94,7 +95,7 @@ def scan(
 
 def fold(
     fn: Callable[[Carry, X], Carry],
-    axis: Axis,
+    axis: AxisSelector,
     *,
     reverse: bool = False,
     unroll: int = 1,
@@ -248,20 +249,27 @@ def vmap(
         )(args, kwargs)
 
         # if we were passed in a string arg, we need to get its axis size out from some result
-        if isinstance(axis, str):
-            result_leaves = jax.tree_util.tree_leaves(result, is_leaf=_is_passive_array)
-            if len(result_leaves) == 0:
-                # this really shouldn't happen
-                raise ValueError(f"vmap returned no leaves with str axis {axis}")
-            true_axis_size = result_leaves[0].array.shape[0]  # batch axis is defined to be 0 above
-            true_axis = Axis(axis, true_axis_size)
-        else:
-            true_axis = axis
+        true_axis = _infer_axis_size_from_result(result, axis)
+        if true_axis is None:
+            raise ValueError("vmap failed to infer axis size from result")
 
         result = jax.tree_util.tree_map(_prepend_named_batch_axis(true_axis), result, is_leaf=_is_passive_array)
         return result
 
     return wrapped_vmap_fn
+
+
+def _infer_axis_size_from_result(result, axis):
+    if isinstance(axis, str):
+        result_leaves = jax.tree_util.tree_leaves(result, is_leaf=_is_passive_array)
+        if len(result_leaves) == 0:
+            # this really shouldn't happen
+            return None
+        true_axis_size = result_leaves[0].array.shape[0]  # batch axis is defined to be 0 above
+        true_axis = Axis(axis, true_axis_size)
+    else:
+        true_axis = axis
+    return true_axis
 
 
 @jax.tree_util.register_pytree_node_class
