@@ -13,7 +13,8 @@ class Axis:
         return Axis(new_name, self.size)
 
 
-AxisSelection = Union[Union[Axis, str], Sequence[Union[Axis, str]]]
+AxisSelector = Union[Axis, str]
+AxisSelection = Union[AxisSelector, Sequence[AxisSelector]]
 AxisSpec = Union[Axis, Sequence[Axis]]
 Scalar = Union[float, int]
 

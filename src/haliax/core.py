@@ -1,6 +1,7 @@
 import contextlib
 import functools as ft
 import typing
+import warnings
 from dataclasses import dataclass
 from math import prod
 from types import EllipsisType
@@ -14,7 +15,7 @@ import haliax
 from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple, index_where
 
-from .types import Axis, AxisSelection, AxisSpec, PrecisionLike, Scalar
+from .types import Axis, AxisSelection, AxisSelector, AxisSpec, PrecisionLike, Scalar
 
 
 NamedOrNumeric = Union[Scalar, "NamedArray"]
@@ -64,15 +65,30 @@ class NamedArray:
             raise ValueError(f"Axes must be unique, but {self.axes} are not")
 
         if are_shape_checks_enabled():
-            self.ensure_shape_matches_axes()
+            self._ensure_shape_matches_axes()
 
-    def ensure_shape_matches_axes(self):
+    def _ensure_shape_matches_axes(self):
         """This is typically called automatically, but sometimes we need to call it manually if
         are_shape_checks_enabled() is False"""
         if is_jax_array_like(self.array):
             s = jnp.shape(self.array)
             if s != tuple(a.size for a in self.axes):
                 raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
+
+    def resolve_axes(self, axes: AxisSelection) -> Tuple[Axis, ...]:
+        """Returns the axes corresponding to the given axis selection."""
+        indices = self._lookup_indices(axes)
+        if isinstance(indices, int):
+            return (self.axes[indices],)
+        elif indices is None:
+            raise ValueError(f"Axis {axes} not found")
+        else:
+            result = []
+            for i in indices:
+                if i is None:
+                    raise ValueError(f"Axis {axes} not found")
+                result.append(self.axes[i])
+            return tuple(result)
 
     def item(self):
         return self.array.item()
@@ -135,11 +151,11 @@ class NamedArray:
             return tuple(result)
 
     @overload
-    def _lookup_indices(self, axis: Union[Axis, str]) -> Optional[int]:  # type: ignore
+    def _lookup_indices(self, axis: AxisSelector) -> Optional[int]:  # type: ignore
         ...
 
     @overload
-    def _lookup_indices(self, axis: Sequence[Union[Axis, str]]) -> Tuple[Optional[int], ...]:
+    def _lookup_indices(self, axis: Sequence[AxisSelector]) -> Tuple[Optional[int], ...]:
         ...
 
     def _lookup_indices(self, axis: AxisSelection) -> Union[Optional[int], Tuple[Optional[int], ...]]:
@@ -150,10 +166,17 @@ class NamedArray:
         If the axis is not present, returns None for that position
         """
         if isinstance(axis, Axis):
+            ax_name = axis.name
             try:
                 return self.axes.index(axis)
             except ValueError:
-                return None
+                try:
+                    axis_index = index_where(lambda a: a.name == ax_name, self.axes)
+                    if axis_index >= 0:
+                        warnings.warn("Found axis with same name but different size.", UserWarning)
+                    return axis_index
+                except ValueError:
+                    return None
         elif isinstance(axis, str):
             try:
                 return index_where(lambda a: a.name == axis, self.axes)
@@ -173,25 +196,26 @@ class NamedArray:
     def broadcast_axis(self, axis: AxisSpec) -> "NamedArray":
         return haliax.broadcast_axis(self, axis=axis)
 
-    def split(self, axis: Axis, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
+    def split(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
-    def flatten_axes(self, old_axes: Sequence[Axis], new_axis: Axis) -> "NamedArray":
+    def flatten_axes(self, old_axes: Sequence[AxisSelector], new_axis: Axis) -> "NamedArray":
         return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
 
-    def unflatten_axis(self, axis: Axis, new_axes: Sequence[Axis]) -> "NamedArray":
+    def unflatten_axis(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> "NamedArray":
         return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
 
-    def unbind(self, axis: Axis) -> Sequence["NamedArray"]:
+    def unbind(self, axis: AxisSelector) -> Sequence["NamedArray"]:
         return haliax.unbind(self, axis=axis)
 
-    def rename(self, renames: Mapping[Axis, Axis]) -> "NamedArray":
+    def rename(self, renames: Mapping[AxisSelector, AxisSelector]) -> "NamedArray":
         return haliax.rename(self, renames=renames)
 
-    def slice(self, axis: Axis, new_axis: Axis, start: int = 0) -> "NamedArray":
+    # TOOD: AxisSelector-ify new_axis
+    def slice(self, axis: AxisSelector, new_axis: Axis, start: int = 0) -> "NamedArray":
         return haliax.slice(self, axis=axis, new_axis=new_axis, start=start)
 
-    def take(self, axis: Axis, index: Union[int, "NamedArray"]) -> "NamedArray":
+    def take(self, axis: AxisSelector, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
 
     # np.ndarray methods:
@@ -202,13 +226,13 @@ class NamedArray:
         return haliax.any(self, axis=axis)
 
     # TODO: test
-    def argmax(self, axis: Axis) -> "NamedArray":
+    def argmax(self, axis: AxisSelector) -> "NamedArray":
         return haliax.argmax(self, axis=axis)
 
-    def argmin(self, axis: Axis) -> "NamedArray":
+    def argmin(self, axis: AxisSelector) -> "NamedArray":
         return haliax.argmin(self, axis=axis)
 
-    def argsort(self, axis: Axis) -> "NamedArray":
+    def argsort(self, axis: AxisSelector) -> "NamedArray":
         return haliax.argsort(self, axis=axis)
 
     def astype(self, dtype) -> "NamedArray":
@@ -304,7 +328,7 @@ class NamedArray:
     def round(self, decimals=0) -> "NamedArray":
         return haliax.round(self, decimals=decimals)
 
-    def sort(self, axis: Axis, kind="quicksort") -> Any:
+    def sort(self, axis: AxisSelector, kind="quicksort") -> Any:
         return haliax.sort(self, axis=axis, kind=kind)
 
     def std(
@@ -345,7 +369,7 @@ class NamedArray:
     def tolist(self) -> Any:
         return self.array.tolist()
 
-    def trace(self, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> "NamedArray":
+    def trace(self, axis1: AxisSelector, axis2: AxisSelector, offset=0, dtype=None) -> "NamedArray":
         return haliax.trace(self, offset=offset, axis1=axis1, axis2=axis2, dtype=dtype)
 
     def var(
@@ -498,7 +522,7 @@ class NamedArray:
         return float(self.array)
 
 
-def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedArray:
+def take(array: NamedArray, axis: AxisSelector, index: Union[int, NamedArray]) -> NamedArray:
     """
     Selects elements from an array along an axis, by an index or by another named array
 
@@ -518,7 +542,7 @@ def take(array: NamedArray, axis: Axis, index: Union[int, NamedArray]) -> NamedA
     return NamedArray(new_array, new_axes)
 
 
-def slice(array: NamedArray, axis: Axis, new_axis: Axis, start: int = 0) -> NamedArray:
+def slice(array: NamedArray, axis: AxisSelector, new_axis: Axis, start: int = 0) -> NamedArray:
     """
     Selects elements from an array along an axis, by an index or by another named array
     This is somewhat better than take if you want a contiguous slice of an array
@@ -571,14 +595,17 @@ def dot(axis: AxisSelection, *arrays: NamedArray, precision: PrecisionLike = Non
     return NamedArray(output, output_axes)
 
 
-def split(a: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
+def split(a: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence[NamedArray]:
     # check the lengths of the new axes
     if axis not in a.axes:
         raise ValueError(f"Axis {axis} not found in {a.axes}")
 
     total_len = sum(x.size for x in new_axes)
-    if total_len != axis.size:
-        raise ValueError(f"The total length of the new axes {total_len} does not match the length of the axis {axis}")
+    if isinstance(axis, Axis):
+        if total_len != axis.size:
+            raise ValueError(
+                f"The total length of the new axes {total_len} does not match the length of the axis {axis}"
+            )
 
     index = a._lookup_indices(axis)
 
@@ -651,7 +678,7 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]) -> N
     return NamedArray(jnp.transpose(array.array, permute_spec), out_axes)
 
 
-def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
+def unbind(array: NamedArray, axis: AxisSelector) -> List[NamedArray]:
     """
     Unbind an array along an axis, returning a list of NamedArrays. Analogous to torch.unbind or np.rollaxis
     """
@@ -662,7 +689,8 @@ def unbind(array: NamedArray, axis: Axis) -> List[NamedArray]:
     # this implementation maybe triggers an all-gather in pjit so no good
     # arrays = jnp.rollaxis(array.array, axis=axis_index, start=0)
     # instead we just loop over the axes pulling one out at a time
-    arrays = [jnp.take(array.array, i, axis=axis_index) for i in range(axis.size)]
+    axis_size = array.axes[axis_index].size
+    arrays = [jnp.take(array.array, i, axis=axis_index) for i in range(axis_size)]
     from haliax.partitioning import auto_sharded
 
     return [auto_sharded(NamedArray(a, new_axes)) for a in arrays]
@@ -678,15 +706,24 @@ def roll(array: NamedArray, shift: Union[int, Tuple[int, ...]], axis: AxisSelect
     return NamedArray(jnp.roll(array.array, shift, axis_indices), array.axes)
 
 
-def rename(array: NamedArray, renames: Mapping[Axis, Axis]) -> NamedArray:
+def rename(array: NamedArray, renames: Mapping[AxisSelector, AxisSelector]) -> NamedArray:
     for old, new in renames.items():
-        if old.size != new.size:
+        if isinstance(old, Axis) and isinstance(new, Axis) and old.size != new.size:
             raise ValueError(f"Cannot rename axis {old} to {new}: size mismatch")
-    new_axes = tuple(renames.get(ax, ax) for ax in array.axes)
+
+    def _rename(ax: Axis) -> Axis:
+        new_axis = renames.get(ax, ax)
+        if isinstance(new_axis, Axis):
+            return new_axis
+        else:
+            assert isinstance(new_axis, str)
+            return Axis(new_axis, ax.size)
+
+    new_axes = tuple(_rename(ax) for ax in array.axes)
     return NamedArray(array.array, new_axes)
 
 
-def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) -> NamedArray:
+def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> NamedArray:
     """
     Merge a sequence of axes into a single axis. The new axis must have the same size as the product of the old axes.
     For now the new axis will always be the last axis
@@ -694,8 +731,14 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) ->
     if len(old_axes) == 0:
         raise ValueError("Must specify at least one axis to merge")
 
-    if new_axis.size != prod(ax.size for ax in old_axes):
-        raise ValueError(f"Cannot merge {old_axes} into {new_axis}: size mismatch")
+    old_axes = array.resolve_axes(old_axes)
+
+    if isinstance(new_axis, Axis):
+        if new_axis.size != prod(array.axis_size(ax) for ax in old_axes):
+            raise ValueError(f"Cannot merge {old_axes} into {new_axis}: size mismatch")
+    else:
+        assert isinstance(new_axis, str)
+        new_axis = Axis(new_axis, prod(ax.size for ax in old_axes))
 
     # TODO: might want to do something more clever here when the old_axes aren't at the end
     array = rearrange(array, (...,) + tuple(old_axes))
@@ -704,7 +747,7 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[Axis], new_axis: Axis) ->
     return NamedArray(raw_array, new_axes)
 
 
-def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> NamedArray:
+def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> NamedArray:
     """
     Split an axis into a sequence of axes. The old axis must have the same size as the product of the new axes.
     """
@@ -712,21 +755,25 @@ def unflatten_axis(array: NamedArray, axis: Axis, new_axes: Sequence[Axis]) -> N
     if old_index is None:
         raise ValueError(f"Axis {axis} not found in {array}")
 
+    axis_size = array.axes[old_index].size
+
+    resolved_new_axes = array.resolve_axes(new_axes)
+
     if len(new_axes) == 0:
-        if axis.size == 1:
+        if axis_size == 1:
             # just remove the old axis, akin to squeeze
             new_array = jnp.squeeze(array.array, axis=old_index)
-            new_axes = array.axes[:old_index] + array.axes[old_index + 1 :]
-            return NamedArray(new_array, new_axes)
+            resolved_new_axes = array.axes[:old_index] + array.axes[old_index + 1 :]
+            return NamedArray(new_array, resolved_new_axes)
         else:
             raise ValueError("Must specify at least one axis to split")
 
-    if axis.size != prod(ax.size for ax in new_axes):
+    if axis_size != prod(ax.size for ax in resolved_new_axes):
         raise ValueError(f"Cannot split {axis} into {new_axes}: size mismatch")
 
-    new_axes = array.axes[:old_index] + tuple(new_axes) + array.axes[old_index + 1 :]
+    resolved_new_axes = array.axes[:old_index] + tuple(resolved_new_axes) + array.axes[old_index + 1 :]
     new_array = jnp.reshape(array.array, [ax.size for ax in new_axes])
-    return NamedArray(new_array, new_axes)
+    return NamedArray(new_array, resolved_new_axes)
 
 
 def named(a: jnp.ndarray, axis: AxisSelection) -> NamedArray:
