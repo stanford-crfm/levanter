@@ -246,15 +246,23 @@ def test_cumsum_etc():
 
 
 def test_rearrange():
-    H = Axis("Height", 2)
-    W = Axis("Width", 3)
-    D = Axis("Depth", 4)
-    C = Axis("Channel", 5)
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
+    C = Axis("C", 5)
 
     named1 = hax.random.uniform(PRNGKey(0), (H, W, D, C))
 
     assert jnp.all(jnp.equal(hax.rearrange(named1, (C, W, D, H)).array, jnp.transpose(named1.array, (3, 1, 2, 0))))
     assert hax.rearrange(named1, (C, W, D, H)).axes == (C, W, D, H)
+
+    # test str args
+    assert jnp.all(
+        jnp.equal(hax.rearrange(named1, ("C", "W", "D", "H")).array, jnp.transpose(named1.array, (3, 1, 2, 0)))
+    )
+    assert hax.rearrange(named1, ("C", "W", "D", "H")).axes == (C, W, D, H)
+    # test mixed str and Axis args
+    assert jnp.all(jnp.equal(hax.rearrange(named1, ("C", W, "D", H)).array, jnp.transpose(named1.array, (3, 1, 2, 0))))
 
     # test ellipsis
     assert jnp.all(jnp.equal(hax.rearrange(named1, (C, ..., D)).array, jnp.transpose(named1.array, (3, 0, 1, 2))))

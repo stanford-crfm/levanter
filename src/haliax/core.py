@@ -186,7 +186,7 @@ class NamedArray:
             return tuple(self._lookup_indices(a) for a in axis)
 
     # Axis rearrangement
-    def rearrange(self, axis: Sequence[Union[Axis, EllipsisType]]) -> "NamedArray":
+    def rearrange(self, axis: Sequence[Union[AxisSelector, EllipsisType]]) -> "NamedArray":
         return rearrange(self, axis)
 
     def broadcast_to(self, axes: AxisSpec) -> "NamedArray":
@@ -622,7 +622,7 @@ def split(a: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequen
 # e.g. we'd like something like rearrange(array, (..., new_axis), merge_axes={new_axis: (old_axis1, old_axis2)})
 # or rearrange(array, (new_axis1, ..., new_axis2), split_axes={old_axis: (new_axis1, new_axis2)})
 # or even rearrange(array, (x, ..., b, a), map_axes={old_axis: (a, b), x: (old1, old2)})
-def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]) -> NamedArray:
+def rearrange(array: NamedArray, axes: Sequence[Union[AxisSelector, EllipsisType]]) -> NamedArray:
     """
     Rearrange an array so that its underlying storage conforms to axes.
     axes may include up to 1 ellipsis, indicating that the remaining axes should be
@@ -655,7 +655,7 @@ def rearrange(array: NamedArray, axes: Sequence[Union[Axis, EllipsisType]]) -> N
             permute_spec.append(Ellipsis)  # will revisit
             ellipsis_pos = len(permute_spec) - 1
         else:
-            assert isinstance(ax, Axis)  # please mypy
+            assert isinstance(ax, Axis) or isinstance(ax, str)  # please mypy
             index = array._lookup_indices(ax)
             if index is None:
                 raise ValueError(f"Axis {ax} not found in {array}")
