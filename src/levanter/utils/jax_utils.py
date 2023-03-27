@@ -162,10 +162,10 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
         serialized = json.dumps(obj)
         client.key_value_set(key, serialized)
 
-    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=timeout * 1000.0)
+    client.wait_at_barrier(f"multihost_broadcast_sync{_sync_counter}", timeout_in_ms=int(timeout * 1000.0))
 
     if not is_source:
-        serialized = client.blocking_key_value_get(key, timeout_in_ms=timeout * 1000.0)
+        serialized = client.blocking_key_value_get(key, timeout_in_ms=int(timeout * 1000.0))
         obj = json.loads(serialized)
 
     _sync_counter += 1
