@@ -59,11 +59,11 @@ def test_local_batched_data_loading_model_axis_2():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_batch_shard_consistency(mesh, batch)
+            check_batch_shard_consistency(dataset, batch)
 
 
-def check_batch_shard_consistency(mesh, batch):
-    model_axis_size = mesh.devices.shape[1]
+def check_batch_shard_consistency(dataset: LocalBatchDataset, batch):
+    model_axis_size = dataset.mesh.devices.shape[1]
     for i, shard_i in enumerate(batch.global_shards):
         data_axis_pos_i = shard_i.device.id // model_axis_size
         model_axis_pos_i = shard_i.device.id % model_axis_size
@@ -71,8 +71,8 @@ def check_batch_shard_consistency(mesh, batch):
             data_axis_pos_j = shard_j.device.id // model_axis_size
             model_axis_pos_j = shard_j.device.id % model_axis_size
 
-            data_is_sharded = any(q == ResourceAxis.DATA for q in batch.sharding.spec)
-            model_is_sharded = any(q == ResourceAxis.MODEL for q in batch.sharding.spec)
+            data_is_sharded = any(q == ResourceAxis.DATA for q in dataset._pspec_for(batch))
+            model_is_sharded = any(q == ResourceAxis.MODEL for q in dataset._pspec_for(batch))
 
             should_be_same = (not data_is_sharded or data_axis_pos_i == data_axis_pos_j) and (
                 not model_is_sharded or model_axis_pos_i == model_axis_pos_j
@@ -106,7 +106,7 @@ def test_local_batched_data_loading_model_axis_1():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_batch_shard_consistency(mesh, batch)
+            check_batch_shard_consistency(dataset, batch)
 
 
 class StructuredDataset(ShardableDataset):
@@ -164,7 +164,7 @@ def test_structured_batches_model_axis_1():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch, mesh)
+            check_structured_batch(dataset, batch)
 
 
 @skip_if_not_enough_devices(2)
@@ -254,7 +254,7 @@ def test_structured_batches_model_axis_1_with_names():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch, mesh)
+            check_structured_batch(dataset, batch)
 
 
 @skip_if_not_enough_devices(2)
@@ -297,12 +297,12 @@ def test_structured_batches_model_axis_2_subsharded():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch, mesh)
+            check_structured_batch(dataset, batch)
 
 
-def check_structured_batch(dataset: LocalBatchDataset, batch, mesh):
+def check_structured_batch(dataset: LocalBatchDataset, batch):
     assert levanter.shapes.conforms(dataset.item_shape, batch)
     shard_i: Shard
     leaves = jax.tree_util.tree_leaves(batch)
     for leaf in leaves:
-        check_batch_shard_consistency(mesh, leaf)
+        check_batch_shard_consistency(dataset, leaf)
