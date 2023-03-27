@@ -14,7 +14,7 @@ from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
@@ -41,7 +41,7 @@ def main(config: EvalGpt2Config):
 
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
-    eval_dataset = GlobalBatchDataset(
+    eval_dataset = LocalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         EvalBatch,
@@ -55,7 +55,6 @@ def main(config: EvalGpt2Config):
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         key = jax.random.PRNGKey(0)
-
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)

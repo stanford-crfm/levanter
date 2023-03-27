@@ -10,7 +10,6 @@ import tqdm
 from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
-import haliax
 import haliax as hax
 import levanter
 from haliax import Axis
@@ -19,7 +18,7 @@ from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
@@ -52,7 +51,7 @@ def main(config: EvalGpt2Config):
     else:
         raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
 
-    eval_dataset = GlobalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
+    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
@@ -62,7 +61,6 @@ def main(config: EvalGpt2Config):
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         key = jax.random.PRNGKey(0)
-
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
