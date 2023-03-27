@@ -74,7 +74,7 @@ def check_batch_shard_consistency(
             data_axis_pos_j = shard_j.device.id // model_axis_size
             model_axis_pos_j = shard_j.device.id % model_axis_size
 
-            item_shape = item_shape or shape_spec_of(batch.shape)
+            item_shape = item_shape or shape_spec_of(batch)
 
             if isinstance(item_shape, ShapeSpec):  # type: ignore
                 pspec = PartitionSpec(ResourceAxis.DATA, *((None,) * (len(item_shape.shape) - 1)))
