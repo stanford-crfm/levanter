@@ -1,0 +1,13 @@
+train_urls:
+  - "/files/lakhmidi-data/train-orig.txt"
+validation_urls:
+  - "/files/lakhmidi-data/valid-orig.txt"
+cache_dir: "/files/lakhmidi-data/orig-cache"
+tokenizer: passthrough
+plaintext: true
+
+num_train_shards: 64
+num_val_shards: 32
+
+train_group_size: 1
+val_group_size: 1

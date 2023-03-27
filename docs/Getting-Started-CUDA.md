@@ -6,7 +6,7 @@
 ```bash
 # 3.11 is too new for tensorstore
 # this doesn't actually install pytorch, but it bundles cuda dependencies nicely
-conda create --name levanter -c pytorch -c nvidia pytorch-cuda=11.7 python~=3.10
+conda create --name levanter -c pytorch -c nvidia pytorch-cuda=11.7 python=3.10
 conda activate levanter
 pip install "jax[cuda11_cudnn82]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 pip install -r requirements.txt

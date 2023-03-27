@@ -1,0 +1,33 @@
+data:
+  train_urls:
+      - "/nlp/scr/dlwh/lakhmidi/train.txt"
+  validation_urls:
+      - "/nlp/scr/dlwh/lakhmidi/test.txt"
+  cache_dir: "/nlp/scr/dlwh/lakhmidi/cache/"
+  tokenizer: "passthrough"
+  plaintext: True
+  enforce_eos: False
+model:
+  hidden_dim: 768
+  num_heads: 12
+  num_layers: 12
+  seq_len: 1024
+  scale_attn_by_inverse_layer_idx: true
+trainer:
+  mp: p=f32,c=bfloat16
+  learning_rate: 6E-4
+  warmup_ratio: 0.05
+  weight_decay: 0.1
+  model_axis_size: 1
+  num_train_steps: 50000
+  per_device_parallelism: 16
+
+  checkpointer:
+    keep:
+       - every: 1000
+
+  axis_resources:
+    batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"

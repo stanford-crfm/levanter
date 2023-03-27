@@ -35,6 +35,7 @@ class LevanterSlurmCluster:
         return int(os.environ[_LOCAL_PROCESS_ID])
 
     # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
+    # TODO: upstream this
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]

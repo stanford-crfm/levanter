@@ -135,6 +135,11 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
     return update_pbar
 
 
+def defragment():
+    """Use if you're getting OOM errors after training has been running a while"""
+    jax.lib.xla_bridge.get_backend().defragment()
+
+
 def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool = False):
     """
     Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.

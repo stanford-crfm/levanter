@@ -49,11 +49,11 @@ class ConvertGpt2Config:
 @levanter.config.main()
 def main(config: ConvertGpt2Config):
     logger.setLevel(logging.INFO)
-    tokenizer: GPT2Tokenizer = config.the_tokenizer
+    tokenizer: GPT2Tokenizer = config.the_tokenizer  # noqa
 
     key = jax.random.PRNGKey(0)
 
-    vocab_size = config.override_vocab_size or len(tokenizer)
+    vocab_size = 55028  # len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):

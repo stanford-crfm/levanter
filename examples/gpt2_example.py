@@ -52,6 +52,7 @@ class TrainGpt2Config:
 @levanter.config.main()
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
+    print("qq")
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
@@ -227,6 +228,7 @@ def main(config: TrainGpt2Config):
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        engine.add_hook(lambda x: callbacks.defragment(), every=100)
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
             from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint_callback

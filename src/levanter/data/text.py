@@ -18,17 +18,18 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Iterator, List, Optional, Sequence, Union
+from typing import Callable, Iterator, List, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
 import fsspec
+import numpy
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import BatchEncoding, PreTrainedTokenizerFast
+from transformers import BatchEncoding, PreTrainedTokenizer
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.utils import batched
@@ -423,11 +424,15 @@ class LMDatasetConfig:
     validation_urls: List[str] = ()  # type:ignore
 
     tokenizer: str = "gpt2"
+    plaintext: bool = False
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.tokenizer)
+    def the_tokenizer(self):
+        if self.tokenizer == "passthrough":
+            return PassthroughTokenizer(55028)  # hard-coding the vocab size for now
+        else:
+            return load_tokenizer(self.tokenizer)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -448,7 +453,11 @@ class LMDatasetConfig:
             for file in files:
                 with file as f:
                     for line in f.readlines():
-                        yield json.loads(line)[self.text_key]
+                        if self.plaintext:
+                            text = line  # .decode("utf-8")
+                        else:
+                            text = json.loads(line)[self.text_key]
+                        yield text
 
     # def __post_init__(self):
     #     if self.id is None and len(self.train_urls) == 0 and len(self.validation_urls) == 0:
@@ -482,3 +491,36 @@ class CachedLMDatasetConfig(LMDatasetConfig):
         num_shards = self.num_train_shards if split == "train" else self.num_val_shards
 
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
+
+
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        super().__init__(**kwargs)
+        self._vocab_size = vocab_size
+        self._eos = self._vocab_size - 1
+        self._eos_token = str(self._eos)
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    @property
+    def eos_token(self) -> str:
+        return self._eos_token
+
+    @property
+    def eos_token_id(self) -> Optional[int]:
+        return self._eos
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
+
+    def _tokenize(self, text, **kwargs):
+        tokens = numpy.fromstring(text, dtype=int, sep=" ")
+        return tokens
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)
