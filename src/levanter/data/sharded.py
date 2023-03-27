@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import process_allgather
+from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
@@ -230,7 +231,8 @@ class LocalBatchDataset(Dataset[PyTree[jax.Array]]):
 
         def _shard_leaf(leaf):
             pspec = _pspec_for(leaf)
-            return jax.device_put(leaf, jax.sharding.MeshPspecSharding(self.mesh, pspec))
+            # return jax.device_put(leaf, jax.sharding.MeshPspecSharding(self.mesh, pspec))
+            return pjit(lambda x: x, in_axis_resources=None, out_axis_resources=pspec)(leaf)
 
         return jax.tree_map(_shard_leaf, batch, is_leaf=is_named_array)
 
