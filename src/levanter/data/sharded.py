@@ -222,15 +222,8 @@ class LocalBatchDataset(Dataset[PyTree[jax.Array]]):
             return np.stack(leaves)
 
     def _shard(self, batch):
-        def _pspec_for(leaf) -> PartitionSpec:
-            if not isinstance(leaf, hax.NamedArray):
-                batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
-                return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
-            else:
-                return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
-
         def _shard_leaf(leaf):
-            pspec = _pspec_for(leaf)
+            pspec = self._pspec_for(leaf)
             with self.mesh:
                 return pjit(lambda x: x, in_axis_resources=None, out_axis_resources=pspec)(leaf)
 
@@ -239,6 +232,13 @@ class LocalBatchDataset(Dataset[PyTree[jax.Array]]):
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return _batchify_item_shape(self.local_dataset.item_shape, self.Batch)
+
+    def _pspec_for(self, leaf) -> PartitionSpec:
+        if not isinstance(leaf, hax.NamedArray):
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+            return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
+        else:
+            return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
 
     def __len__(self):
         return len(self.local_dataset) // self.Batch.size
