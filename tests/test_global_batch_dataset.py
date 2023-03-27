@@ -59,11 +59,11 @@ def test_sharded_data_loading_model_axis_2():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_batch_shard_consistency(batch)
+            check_batch_shard_consistency(mesh, batch)
 
 
-def check_batch_shard_consistency(batch):
-    model_axis_size = batch.sharding.mesh.devices.shape[1]
+def check_batch_shard_consistency(mesh, batch):
+    model_axis_size = mesh.devices.shape[1]
     for i, shard_i in enumerate(batch.global_shards):
         data_axis_pos_i = shard_i.device.id // model_axis_size
         model_axis_pos_i = shard_i.device.id % model_axis_size
@@ -106,7 +106,7 @@ def test_sharded_data_loading_model_axis_1():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_batch_shard_consistency(batch)
+            check_batch_shard_consistency(mesh, batch)
 
 
 def test_sharded_data_loading_model_axis_1_override_process_indices():
@@ -137,8 +137,8 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
             assert b1.shape == b2.shape
             assert jnp.all(b1._value != b2._value)
             shard_i: Shard
-            check_batch_shard_consistency(b1)
-            check_batch_shard_consistency(b2)
+            check_batch_shard_consistency(mesh, b1)
+            check_batch_shard_consistency(mesh, b2)
 
 
 class StructuredDataset(ShardableDataset):
@@ -337,4 +337,4 @@ def check_structured_batch(dataset: GlobalBatchDataset, batch, mesh):
     shard_i: Shard
     leaves = jax.tree_util.tree_leaves(batch)
     for leaf in leaves:
-        check_batch_shard_consistency(leaf)
+        check_batch_shard_consistency(mesh, leaf)
