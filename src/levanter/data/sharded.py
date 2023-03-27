@@ -1,6 +1,6 @@
 import itertools
 from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
@@ -28,7 +28,7 @@ Ex = TypeVar("Ex")
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
+class GlobalBatchDataset(Dataset[Ex]):
     """
     GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
@@ -50,7 +50,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def __init__(
         self,
-        local_dataset: ShardableDataset[Sequence[int]],
+        local_dataset: ShardableDataset[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
@@ -180,7 +180,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
             return np.stack(leaves)
 
 
-class LocalBatchDataset(Dataset[PyTree[jax.Array]]):
+class LocalBatchDataset(Dataset[Ex]):
     """A dataset that creates batches without sharded data loading. All examples are loaded on all machines and then
     sharded. This is useful if you have a small dataset and want to use a large number of devices.
 
@@ -190,7 +190,7 @@ class LocalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def __init__(
         self,
-        local_dataset: Dataset[PyTree[jax.Array]],
+        local_dataset: Dataset[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
