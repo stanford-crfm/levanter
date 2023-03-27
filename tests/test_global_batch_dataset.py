@@ -1,5 +1,5 @@
 import itertools
-from typing import Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -62,7 +62,9 @@ def test_sharded_data_loading_model_axis_2():
             check_batch_shard_consistency(dataset, batch)
 
 
-def check_batch_shard_consistency(dataset: GlobalBatchDataset, batch):
+def check_batch_shard_consistency(
+    dataset: GlobalBatchDataset, batch, item_shape: Optional[Union[ShapeSpec, NamedShapeSpec]] = None
+):
     model_axis_size = dataset.mesh.devices.shape[1]
     for i, shard_i in enumerate(batch.global_shards):
         data_axis_pos_i = shard_i.device.id // model_axis_size
@@ -71,7 +73,8 @@ def check_batch_shard_consistency(dataset: GlobalBatchDataset, batch):
             data_axis_pos_j = shard_j.device.id // model_axis_size
             model_axis_pos_j = shard_j.device.id % model_axis_size
 
-            item_shape = shape_spec_of(batch)
+            if item_shape is None:
+                item_shape = shape_spec_of(batch)
 
             data_is_sharded = any(q == ResourceAxis.DATA for q in dataset._pspec_for(item_shape))
             model_is_sharded = any(q == ResourceAxis.MODEL for q in dataset._pspec_for(item_shape))
@@ -336,7 +339,8 @@ def test_structured_batches_model_axis_2_subsharded():
 
 def check_structured_batch(dataset: GlobalBatchDataset, batch):
     assert levanter.shapes.conforms(dataset.item_shape, batch)
-    shard_i: Shard
+    shape = shape_spec_of(batch)
     leaves = jax.tree_util.tree_leaves(batch)
-    for leaf in leaves:
-        check_batch_shard_consistency(dataset, leaf)
+    shape_leaves = jax.tree_util.tree_leaves(shape)
+    for leaf, shape_leaf in zip(leaves, shape_leaves):
+        check_batch_shard_consistency(dataset, leaf, shape_leaf)
