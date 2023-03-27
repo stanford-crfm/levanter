@@ -184,7 +184,7 @@ def test_structured_batches_model_axis_2():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch, mesh)
+            check_structured_batch(dataset, batch)
 
 
 class StructuredDatasetWithNames(ShardableDataset):
@@ -275,7 +275,7 @@ def test_structured_batches_model_axis_2_with_names():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch, mesh)
+            check_structured_batch(dataset, batch)
 
 
 @skip_if_not_enough_devices(4)
