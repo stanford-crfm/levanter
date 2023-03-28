@@ -1,12 +1,13 @@
 import itertools
 from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import process_allgather
+from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
@@ -27,7 +28,7 @@ Ex = TypeVar("Ex")
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
+class GlobalBatchDataset(Dataset[Ex]):
     """
     GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
@@ -49,7 +50,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def __init__(
         self,
-        local_dataset: ShardableDataset[Sequence[int]],
+        local_dataset: ShardableDataset[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
@@ -70,10 +71,10 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
-        self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+        self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
-        one_item_generator = iter(self.local_dataset)
+        one_item_generator = iter(self.item_dataset)
 
         for _ in range(self._global_min_length):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
@@ -160,15 +161,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
-            shape = shape_spec.shape
-            assert shape is not None, "item_shape must have a fully determined shape to work with batching"
-            if isinstance(shape_spec, NamedShapeSpec):
-                return NamedShapeSpec((self.Batch,) + shape, shape_spec.dtype)
-            else:
-                return ShapeSpec((self.Batch.size,) + shape, shape_spec.dtype)
-
-        return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape)
+        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
     def __len__(self):
         return self._global_min_length
@@ -187,7 +180,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
     def _global_min_length(self):
         # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
         # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.local_dataset) // self.local_batch_size
+        local_len = len(self.item_dataset) // self.local_batch_size
         all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
@@ -200,3 +193,79 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
                 return hax.stack(self.Batch, leaves)
         else:
             return np.stack(leaves)
+
+
+class LocalBatchDataset(Dataset[Ex]):
+    """A dataset that creates batches without sharded data loading. All examples are loaded on all machines and then
+    sharded. This is useful if you have a small dataset and want to use a large number of devices.
+
+    Note: this class discards remainder batches
+
+    """
+
+    def __init__(
+        self,
+        item_dataset: Dataset[Ex],
+        mesh: Mesh,
+        Batch: hax.Axis,
+        axis_resources: Optional[ResourceMapping] = None,
+    ):
+        self.local_dataset = item_dataset
+        self.mesh = mesh
+        self.Batch = Batch
+        self.axis_resources = axis_resources
+
+    def __iter__(self):
+        item_iter = iter(self.local_dataset)
+        for batch in self._batched(item_iter):
+            stacked = jax.tree_map(lambda *leaves: self._stack_leaves(*leaves), *batch, is_leaf=is_named_array)
+            yield self._shard(stacked)
+
+    def _batched(self, item_iter):
+        batch = []
+        for item in item_iter:
+            batch.append(item)
+            if len(batch) == self.Batch.size:
+                yield batch
+
+    def _stack_leaves(self, *leaves):
+        assert len(leaves) == self.Batch.size
+
+        if is_named_array(leaves[0]):
+            return hax.stack(self.Batch, leaves)
+        else:
+            return np.stack(leaves)
+
+    def _shard(self, batch):
+        def _shard_leaf(leaf):
+            pspec = self._pspec_for(leaf)
+            with self.mesh:
+                return pjit(lambda x: x, in_axis_resources=None, out_axis_resources=pspec)(leaf)
+
+        return jax.tree_map(_shard_leaf, batch, is_leaf=is_named_array)
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return _batchify_item_shape(self.local_dataset.item_shape, self.Batch)
+
+    def _pspec_for(self, leaf) -> PartitionSpec:
+        if not isinstance(leaf, hax.NamedArray):
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+            return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
+        else:
+            return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
+
+    def __len__(self):
+        return len(self.local_dataset) // self.Batch.size
+
+
+def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
+    def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
+        shape = shape_spec.shape
+        assert shape is not None, "item_shape must have a fully determined shape to work with batching"
+        if isinstance(shape_spec, NamedShapeSpec):
+            return NamedShapeSpec((Batch,) + shape, shape_spec.dtype)
+        else:
+            return ShapeSpec((Batch.size,) + shape, shape_spec.dtype)
+
+    return jax.tree_map(_batchify_shape_spec, item_shape)
