@@ -67,6 +67,9 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
 
+        self.num_data_process_groups = num_data_process_groups
+        assert self.Batch.size % num_data_process_groups == 0
+
         self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
@@ -85,14 +88,17 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
             local_batch_leaves: Dict[Tuple[int, int], List[Array]] = {}  # batch indices -> list of items
             batch_tree_structure = None
 
+            total_examples_accessed_this_step = 0
+
             def get_local_batch(begin: int, end: int) -> List[Array]:
-                nonlocal batch_tree_structure
+                nonlocal batch_tree_structure, total_examples_accessed_this_step
 
                 key = (begin, end)
                 if key in local_batch_leaves:
                     return local_batch_leaves[key]
 
                 num_examples_for_this_device = end - begin
+                total_examples_accessed_this_step += num_examples_for_this_device
                 individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
 
                 local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
@@ -130,6 +136,9 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
                 )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
+
+            assert total_examples_accessed_this_step == self.local_batch_size
+
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
             yield gda_tree  # type: ignore
 
@@ -167,13 +176,19 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     @property
     def batch_size(self) -> int:
+        """Returns the 'global' batch size: the effective number of examples in a batch across all devices/hosts"""
         return self.Batch.size
+
+    @property
+    def local_batch_size(self) -> int:
+        """Returns the 'local' batch size: the number of examples in a batch on this host"""
+        return self.batch_size // self.num_data_process_groups
 
     @cached_property
     def _global_min_length(self):
         # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
         # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.local_dataset) // self.batch_size
+        local_len = len(self.local_dataset) // self.local_batch_size
         all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
