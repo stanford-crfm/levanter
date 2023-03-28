@@ -4,7 +4,6 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.global_device_array import Shard
 from jax.experimental.maps import Mesh
 from jaxtyping import PyTree
 from transformers import BatchEncoding
@@ -60,7 +59,6 @@ def test_sharded_data_loading_model_axis_2():
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
-            shard_i: Shard
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
@@ -82,7 +80,6 @@ def test_sharded_data_loading_model_axis_1():
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
-            shard_i: Shard
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
