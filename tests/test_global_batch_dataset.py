@@ -83,7 +83,7 @@ def test_sharded_data_loading_model_axis_1():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
+            check_sharded_consistency(dataset, batch, check_disjoint_indices_are_different=True)
 
 
 #
