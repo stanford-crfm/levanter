@@ -20,9 +20,12 @@ from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
-def _small_dataset(seq_len=128) -> TokenSeqDataset:
+NUM_SHARDS_TINY = 16
+
+
+def _small_dataset(seq_len=128, num_sequences=200) -> TokenSeqDataset:
     def token_iter():
-        for i in range(200):
+        for i in range(num_sequences):
             yield BatchEncoding(
                 {
                     "input_ids": np.tile(np.arange(seq_len, dtype=np.int32) + i * 1000, (1, 1)),
@@ -32,7 +35,7 @@ def _small_dataset(seq_len=128) -> TokenSeqDataset:
     cache = TokenizedDocumentCache.build_or_load(
         token_iter(),
         cache_dir=f"test_cache/{seq_len}",
-        num_shards=128,
+        num_shards=NUM_SHARDS_TINY,
         flatten_docs=True,
     )
 
@@ -109,7 +112,8 @@ def test_sharded_data_loading_model_axis_1():
             check_batch_shard_consistency(batch)
 
 
-def test_sharded_data_loading_model_axis_1_override_process_indices():
+#
+def test_sharded_data_loading_len_impact():
     devices = jax.devices()
     model_axis_size = 1
 
@@ -118,27 +122,22 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-        datasets = []
-        for process_index in range(2):
-            seq_len = 128
-            cache = _small_dataset(seq_len)
-            Batch = Axis("batch", len(devices))
+        cache = _small_dataset(64, num_sequences=NUM_SHARDS_TINY * 8)
+        # 6400 tokens split across NUM_SHARDS_TINY shards
+        Batch = Axis("batch", 8 * len(devices))
+        process_1_len = len(
+            GlobalBatchDataset(cache, mesh, Batch=Batch, override_process_data_pos=0, override_process_data_groups=1)
+        )
+        for process_count in [2, 4, 8]:
             dataset = GlobalBatchDataset(
                 cache,
                 mesh,
                 Batch=Batch,
-                override_process_data_pos=process_index,
-                override_process_data_groups=2,
+                override_process_data_pos=0,
+                override_process_data_groups=process_count,
             )
-            datasets.append(dataset)
-
-        batches = [list(itertools.islice(dataset, 10)) for dataset in datasets]
-        for (b1, b2) in zip(*batches):
-            assert b1.shape == b2.shape
-            assert jnp.all(b1._value != b2._value)
-            shard_i: Shard
-            check_batch_shard_consistency(b1)
-            check_batch_shard_consistency(b2)
+            # we create this dataset with even numbers of shards, so we are guaranteed that the length won't change
+            assert len(dataset) == process_1_len
 
 
 class StructuredDataset(ShardableDataset):
