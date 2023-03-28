@@ -80,7 +80,7 @@ def test_sharded_data_loading_model_axis_1():
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
             shard_i: Shard
-            check_sharded_consistency(dataset, batch, check_disjoint_indices_are_different=True)
+            check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
 def test_sharded_data_loading_model_axis_1_override_process_indices():
@@ -111,8 +111,8 @@ def test_sharded_data_loading_model_axis_1_override_process_indices():
             assert b1.shape == b2.shape
             assert jnp.all(b1._value != b2._value)
             shard_i: Shard
-            check_sharded_consistency(dataset, b1, check_disjoint_indices_are_different=True)
-            check_sharded_consistency(dataset, b2, check_disjoint_indices_are_different=True)
+            check_sharded_consistency(b1, check_disjoint_indices_are_different=True)
+            check_sharded_consistency(b2, check_disjoint_indices_are_different=True)
 
 
 class StructuredDataset(ShardableDataset):

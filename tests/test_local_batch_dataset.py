@@ -77,7 +77,7 @@ def test_local_batched_data_loading_model_axis_1():
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
             assert batch.shape == dataset.item_shape.shape
-            check_sharded_consistency(dataset, batch, check_disjoint_indices_are_different=True)
+            check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
 class StructuredDataset(ShardableDataset):
