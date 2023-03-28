@@ -19,7 +19,7 @@ from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
 from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
@@ -67,7 +67,7 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    dataset = LocalBatchDataset(
+    dataset = GlobalBatchDataset(
         TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
         Batch,
