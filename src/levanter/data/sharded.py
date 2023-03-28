@@ -313,5 +313,5 @@ def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_ar
                                 "Shard data is the same as another shard with disjoint indices", shard, other_array
                             )
 
-        for leaf in jax.tree_util.tree_leaves(array):
-            check_array(leaf)
+    for leaf in jax.tree_util.tree_leaves(tree):
+        check_array(leaf)
