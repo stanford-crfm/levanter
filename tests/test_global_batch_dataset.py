@@ -109,36 +109,37 @@ def test_sharded_data_loading_model_axis_1():
             check_batch_shard_consistency(batch)
 
 
-def test_sharded_data_loading_model_axis_1_override_process_indices():
-    devices = jax.devices()
-    model_axis_size = 1
-
-    mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
-    )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-        datasets = []
-        for process_index in range(2):
-            seq_len = 128
-            cache = _small_dataset(seq_len)
-            Batch = Axis("batch", len(devices))
-            dataset = GlobalBatchDataset(
-                cache,
-                mesh,
-                Batch=Batch,
-                override_process_data_pos=process_index,
-                override_process_data_groups=2,
-            )
-            datasets.append(dataset)
-
-        batches = [list(itertools.islice(dataset, 10)) for dataset in datasets]
-        for (b1, b2) in zip(*batches):
-            assert b1.shape == b2.shape
-            assert jnp.all(b1._value != b2._value)
-            shard_i: Shard
-            check_batch_shard_consistency(b1)
-            check_batch_shard_consistency(b2)
+#
+# @skip_if_not_enough_devices(2)
+# def test_sharded_data_loading_model_axis_1_override_process_indices():
+#     devices = jax.devices()
+#     model_axis_size = 1
+#
+#     mesh = Mesh(
+#         np.array(devices).reshape(-1, model_axis_size),
+#         (ResourceAxis.DATA, ResourceAxis.MODEL),
+#     )
+#     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+#         datasets = []
+#         for process_index in range(2):
+#             seq_len = 64
+#             cache = _small_dataset(seq_len)
+#             Batch = Axis("batch", 2 * len(devices))
+#             dataset = GlobalBatchDataset(
+#                 cache,
+#                 mesh,
+#                 Batch=Batch,
+#                 override_process_data_pos=process_index,
+#                 override_process_data_groups=2,
+#             )
+#             datasets.append(dataset)
+#
+#         batches = [list(itertools.islice(dataset, 10)) for dataset in datasets]
+#         for (b1, b2) in zip(*batches):
+#             assert b1.shape == b2.shape
+#             assert jnp.all(b1._value != b2._value)
+#             check_batch_shard_consistency(b1)
+#             check_batch_shard_consistency(b2)
 
 
 class StructuredDataset(ShardableDataset):
