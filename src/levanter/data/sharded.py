@@ -1,11 +1,14 @@
 import itertools
+import logging
+from collections import defaultdict
 from functools import cached_property
 from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.global_device_array import GlobalDeviceArray
+from jax._src.array import ArrayImpl
+from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import process_allgather
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import Mesh, PartitionSpec
@@ -20,8 +23,9 @@ from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 
 
-In = TypeVar("In")
 Ex = TypeVar("Ex")
+
+logger = logging.getLogger(__name__)
 
 # TODO: write tests to verify this works when data spans multiple processes
 
@@ -73,7 +77,7 @@ class GlobalBatchDataset(Dataset[Ex]):
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
         one_item_generator = iter(self.local_dataset)
 
-        for _ in range(self._global_min_length):
+        for i in range(self._global_min_length):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -118,20 +122,25 @@ class GlobalBatchDataset(Dataset[Ex]):
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
-                # jax.make_array_from_callback(
-                #     to_raw_shape(shape),
-                #     jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
-                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
-                # )
-                GlobalDeviceArray.from_callback(
+                jax.make_array_from_callback(
                     to_raw_shape(shape),
-                    self.mesh,
-                    self._pspec_for(shape),
+                    jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
+                # GlobalDeviceArray.from_callback(
+                #     to_raw_shape(shape),
+                #     self.mesh,
+                #     self._pspec_for(shape),
+                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                # )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
+
+            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
+                for leaf in gda_leaves:
+                    check_sharded_consistency(leaf, True)
+
             yield gda_tree  # type: ignore
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
@@ -254,3 +263,55 @@ def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], B
             return ShapeSpec((Batch.size,) + shape, shape_spec.dtype)
 
     return jax.tree_map(_batchify_shape_spec, item_shape)
+
+
+def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_are_different: bool = False):
+    """Checks the following consistency conditions on an array:
+    - all replicas have the same data
+    - if check_disjoint_indices_are_different is True, then all shards with disjoint indices have different data
+    """
+    # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
+    def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
+        return tuple((s.start, s.stop) for s in index)
+
+    def check_array(array: ArrayImpl):
+        replicas_by_index = defaultdict(list)
+        for shard in array.global_shards:
+            replicas_by_index[_to_tuple(shard.index)].append(shard)
+
+        # ok now get canonical versions of each index
+        replica_0_arrays = {}
+        for index, shards in replicas_by_index.items():
+            try:
+                leader = next(s for s in shards if s.replica_id == 0)
+            except StopIteration:
+                raise ValueError("No replica 0 for index", index)
+
+            data = leader.data
+            if data is None:
+                shard_shape = [s.stop - s.start for s in leader.index]
+                data = jnp.zeros(shard_shape, dtype=array.dtype)
+
+            replica_0_array = multihost_utils.broadcast_one_to_all(data, is_source=leader.data is not None)
+            replica_0_arrays[index] = replica_0_array
+
+        for shard in array.addressable_shards:
+            replica_0_array = replica_0_arrays[_to_tuple(shard.index)]
+            assert shard.data is not None
+
+            if not jnp.array_equal(shard.data, replica_0_array, equal_nan=True):
+                raise ValueError("Shard data does not match replica 0 data", shard, replica_0_array)
+
+            if check_disjoint_indices_are_different:
+                for other_index, other_array in replica_0_arrays.items():
+                    if other_index == _to_tuple(shard.index):
+                        continue
+
+                    if shard.index != other_index:
+                        if jnp.array_equal(shard.data, other_array, equal_nan=True):
+                            raise ValueError(
+                                "Shard data is the same as another shard with disjoint indices", shard, other_array
+                            )
+
+        for leaf in jax.tree_util.tree_leaves(array):
+            check_array(leaf)
