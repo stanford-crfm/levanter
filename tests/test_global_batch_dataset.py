@@ -190,7 +190,7 @@ def test_structured_batches_model_axis_2():
 
         batches = list(itertools.islice(dataset, 10))
         for batch in batches:
-            check_structured_batch(dataset, batch)
+            check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
 class StructuredDatasetWithNames(ShardableDataset):
