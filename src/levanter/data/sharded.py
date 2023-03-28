@@ -71,10 +71,10 @@ class GlobalBatchDataset(Dataset[Ex]):
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
-        self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+        self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
-        one_item_generator = iter(self.local_dataset)
+        one_item_generator = iter(self.item_dataset)
 
         for _ in range(self._global_min_length):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
@@ -161,7 +161,7 @@ class GlobalBatchDataset(Dataset[Ex]):
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return _batchify_item_shape(self.local_dataset.item_shape, self.Batch)
+        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
     def __len__(self):
         return self._global_min_length
@@ -180,7 +180,7 @@ class GlobalBatchDataset(Dataset[Ex]):
     def _global_min_length(self):
         # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
         # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.local_dataset) // self.local_batch_size
+        local_len = len(self.item_dataset) // self.local_batch_size
         all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
@@ -205,12 +205,12 @@ class LocalBatchDataset(Dataset[Ex]):
 
     def __init__(
         self,
-        local_dataset: Dataset[Ex],
+        item_dataset: Dataset[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
     ):
-        self.local_dataset = local_dataset
+        self.local_dataset = item_dataset
         self.mesh = mesh
         self.Batch = Batch
         self.axis_resources = axis_resources
