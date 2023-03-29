@@ -39,10 +39,7 @@ def next_token_loss(
 def cross_entropy_and_logsumexp_penalty(
     pred_y: NamedArray, Vocab: hax.Axis, target_y: NamedArray, logsumexp_weight=0.0
 ) -> NamedArray:
-    """A loss function that combines cross entropy loss with a logsumexp penalty.
-
-    This loss function is useful for preventing the model from predicting the same token over and over again.
-    """
+    """A loss function that combines cross entropy loss with a logsumexp penalty."""
     if logsumexp_weight == 0.0:
         return cross_entropy_loss(pred_y, Vocab, target_y)
 
