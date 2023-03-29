@@ -146,7 +146,7 @@ class GlobalBatchDataset(Dataset[Ex]):
 
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
 
-            if True:#i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
+            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
                 for leaf in gda_leaves:
                     check_sharded_consistency(leaf, True)
 
