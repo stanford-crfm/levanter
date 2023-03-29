@@ -165,6 +165,14 @@ def test_vmap_str_args():
     assert jnp.all(jnp.equal(selected.array, expected_jax))
     assert selected.axes == expected_names
 
+    # also ensure that this works when we return a non-haliax array
+    def vmap_fun(x):
+        return x.sum(Width).array
+
+    selected = hax.vmap(vmap_fun, "Batch")(named1)
+
+    assert jnp.all(jnp.equal(selected, expected_jax))
+
 
 def test_vmap_mapped_kwarg():
     Batch = Axis("Batch", 10)

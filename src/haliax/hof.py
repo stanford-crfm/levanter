@@ -265,8 +265,12 @@ def _infer_axis_size_from_result(result, axis):
         if len(result_leaves) == 0:
             # this really shouldn't happen
             return None
-        true_axis_size = result_leaves[0].array.shape[0]  # batch axis is defined to be 0 above
-        true_axis = Axis(axis, true_axis_size)
+        if isinstance(result_leaves[0], _PassiveNamedArray):
+            true_axis_size = result_leaves[0].array.shape[0]  # batch axis is defined to be 0 above
+            true_axis = Axis(axis, true_axis_size)
+        else:
+            true_axis_size = result_leaves[0].shape[0]  # batch axis is defined to be 0 above
+            true_axis = Axis(axis, true_axis_size)
     else:
         true_axis = axis
     return true_axis
@@ -323,7 +327,7 @@ def _prepend_named_batch_axis(leading_axis: Axis):
     return to_active_named_array
 
 
-def _to_unbatched_named_array(axis_to_strip: Axis):
+def _to_unbatched_named_array(axis_to_strip: AxisSelector):
     def to_unbatched_named_array(leaf):
         if isinstance(leaf, _PassiveNamedArray):
             if selects_axis(leaf.main_axes, axis_to_strip):
