@@ -276,13 +276,15 @@ def _cached_filter_eval_shape(fun, *args, **kwargs):
     return _eval_shape_cache[static]
 
 
-def physical_axis_name(axis: AxisSelector, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxis]:
+def physical_axis_name(axis: AxisSelector, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxisSpec]:
     """Get the physical axis name for a logical axis from the mapping. Returns none if the axis is not mapped."""
     mapping = mapping or _mapping_holder.thread_data.resource_mapping
     if mapping is None:
         return None
     else:
-        return mapping.get(axis.name, None)  # type: ignore
+        if isinstance(axis, str):
+            return mapping.get(axis, None)
+        return mapping.get(axis.name, None)
 
 
 def physical_axis_size(axis: AxisSelector, mapping: Optional[ResourceMapping] = None) -> Optional[int]:
