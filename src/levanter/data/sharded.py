@@ -146,7 +146,7 @@ class GlobalBatchDataset(Dataset[Ex]):
 
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
 
-            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
+            if True:#i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
                 for leaf in gda_leaves:
                     check_sharded_consistency(leaf, True)
 
@@ -286,17 +286,27 @@ def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_ar
     - if check_disjoint_indices_are_different is True, then all shards with disjoint indices have different data
     """
     # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
-    def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
-        return tuple((s.start, s.stop) for s in index)
 
     def check_array(array: ArrayImpl):
+        def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
+            my_indices: Tuple[Tuple[int, int], ...] = tuple(
+                s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index)
+            )
+
+            return my_indices
+
         replicas_by_index = defaultdict(list)
         for shard in array.global_shards:
             replicas_by_index[_to_tuple(shard.index)].append(shard)
 
+        # global shards is not necessarily sorted consistently, so we have to sort the indices
+        sorted_indices = sorted(replicas_by_index.keys())
+
         # ok now get canonical versions of each index
         replica_0_arrays = {}
-        for index, shards in replicas_by_index.items():
+
+        for index in sorted_indices:
+            shards = replicas_by_index[index]
             try:
                 leader = next(s for s in shards if s.replica_id == 0)
             except StopIteration:
@@ -304,7 +314,7 @@ def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_ar
 
             data = leader.data
             if data is None:
-                shard_shape = [s.stop - s.start for s in leader.index]
+                shard_shape = [s[1] - s[0] for s in index]
                 data = jnp.zeros(shard_shape, dtype=array.dtype)
 
             replica_0_array = multihost_utils.broadcast_one_to_all(data, is_source=leader.data is not None)
