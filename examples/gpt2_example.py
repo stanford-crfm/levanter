@@ -156,13 +156,12 @@ def main(config: TrainGpt2Config):
                 return loss.scalar()
 
         def train_batch_loss(model, input_ids, attn_mask, key):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
+            return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False))
 
         # training loop
         # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
-
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -255,7 +254,7 @@ def main(config: TrainGpt2Config):
                 masked = loss * loss_mask
                 # roll forward to get the loss for each token
                 masked = haliax.roll(masked, 1, SeqLen)
-                return masked.rearrange((EvalBatch, SeqLen)).array
+                return masked.rearrange(("batch", SeqLen)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
