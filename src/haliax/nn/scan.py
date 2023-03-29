@@ -33,16 +33,23 @@ class Stacked(eqx.Module, Generic[M]):
         self.gradient_checkpointing = gradient_checkpointing
 
     def scan(self, init, *extra_args, **extra_kwargs):
-        return haliax.scan(self._do_block, self.Block)(init, self.stacked, *extra_args, **extra_kwargs)
+        if self.gradient_checkpointing:
+            do_block = jax.checkpoint(self._do_block)
+        else:
+            do_block = self._do_block
+        return haliax.scan(do_block, self.Block)(init, self.stacked, *extra_args, **extra_kwargs)
 
     def fold(self, init, *args, **kwargs):
-        return haliax.fold(self._do_block, self.Block)(init, self.stacked, *args, **kwargs)
-
-    def _do_block(self, carry, block, *extra_args, **extra_kwargs):
         if self.gradient_checkpointing:
-            return jax.checkpoint(block)(carry, *extra_args, **extra_kwargs)
+            do_block = jax.checkpoint(self._do_block)
         else:
-            return block(carry, *extra_args, **extra_kwargs)
+            do_block = self._do_block
+
+        return haliax.fold(do_block, self.Block)(init, self.stacked, *args, **kwargs)
+
+    @staticmethod
+    def _do_block(carry, block, *extra_args, **extra_kwargs):
+        return block(carry, *extra_args, **extra_kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.fold(*args, **kwargs)

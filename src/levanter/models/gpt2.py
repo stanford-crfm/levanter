@@ -296,20 +296,19 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         self.config = config
 
         # vectorize the blocks
-        self.blocks = Stacked(self.Layers, Gpt2Block, config, key=shaped_rng_split(key, config.num_layers),
-                              gradient_checkpointing=config.gradient_checkpointing)
+        self.blocks = Stacked(
+            self.Layers,
+            Gpt2Block,
+            config,
+            key=shaped_rng_split(key, config.num_layers),
+            gradient_checkpointing=config.gradient_checkpointing,
+        )
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
-        def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, attn_mask, inference=inference, layer_idx=layer_idx, key=key)
-
-        if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block, prevent_cse=False)
-
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference=inference, key=keys)
+        hidden_states = self.blocks(hidden_states, attn_mask, hax.arange(self.Layers), inference=inference, key=keys)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
