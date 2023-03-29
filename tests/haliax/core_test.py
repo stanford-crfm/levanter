@@ -342,3 +342,27 @@ def test_stack():
             hax.stack(B, (named1, named3)).array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)
         )
     )
+
+
+def test_unflatten_axis():
+    H = Axis("Height", 2)
+    W = Axis("Width", 3)
+    D = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+    flattened_HW = named1.flatten_axes((H, W), "Z")
+
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (H, W)).array, named1.array))
+    assert hax.unflatten_axis(flattened_HW, "Z", (H, W)).axes == (H, W, D)
+
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (H, W)).array, named1.array))
+
+    # test that we can unflatten to a different order
+    # in general, this won't be equivalent to the original array
+    assert not jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (W, H)).array, named1.array.transpose(1, 0, 2)))
+    assert hax.unflatten_axis(flattened_HW, "Z", (W, H)).axes == (W, H, D)
+
+    # flatten non-consecutive axes
+    flattened_HD = named1.flatten_axes((H, D), "Z")
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HD, "Z", (H, D)).array, named1.array.transpose(0, 2, 1)))
+    assert hax.unflatten_axis(flattened_HD, "Z", (H, D)).axes == (H, D, W)

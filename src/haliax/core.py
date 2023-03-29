@@ -738,11 +738,26 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: 
         assert isinstance(new_axis, str)
         new_axis = Axis(new_axis, prod(ax.size for ax in old_axes))
 
-    # TODO: might want to do something more clever here when the old_axes aren't at the end
-    array = rearrange(array, (...,) + tuple(old_axes))
-    new_axes = array.axes[: -len(old_axes)] + (new_axis,)
-    raw_array = array.array.reshape(array.array.shape[: -len(old_axes)] + (new_axis.size,))
-    return NamedArray(raw_array, new_axes)
+    # ensure that the old_axes are contiguous
+    # we basically ensure that the old_axes occur after the index of the first old_axis
+    intermediate_axes: List[Axis] = []
+    new_axes: List[Axis] = []
+    index_of_first_old_axis = None
+    for i, ax in enumerate(array.axes):
+        if ax in old_axes:
+            if index_of_first_old_axis is None:
+                index_of_first_old_axis = i
+                intermediate_axes.extend(old_axes)
+                new_axes.append(new_axis)
+            else:
+                continue
+        else:
+            intermediate_axes.append(ax)
+            new_axes.append(ax)
+
+    array = array.rearrange(intermediate_axes)
+    raw_array = array.array.reshape([ax.size for ax in new_axes])
+    return NamedArray(raw_array, tuple(new_axes))
 
 
 def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> NamedArray:
@@ -755,8 +770,6 @@ def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axi
 
     axis_size = array.axes[old_index].size
 
-    resolved_new_axes = array.resolve_axes(new_axes)
-
     if len(new_axes) == 0:
         if axis_size == 1:
             # just remove the old axis, akin to squeeze
@@ -766,11 +779,11 @@ def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axi
         else:
             raise ValueError("Must specify at least one axis to split")
 
-    if axis_size != prod(ax.size for ax in resolved_new_axes):
+    if axis_size != prod(ax.size for ax in new_axes):
         raise ValueError(f"Cannot split {axis} into {new_axes}: size mismatch")
 
-    resolved_new_axes = array.axes[:old_index] + tuple(resolved_new_axes) + array.axes[old_index + 1 :]
-    new_array = jnp.reshape(array.array, [ax.size for ax in new_axes])
+    resolved_new_axes = array.axes[:old_index] + tuple(new_axes) + array.axes[old_index + 1 :]
+    new_array = jnp.reshape(array.array, [ax.size for ax in resolved_new_axes])
     return NamedArray(new_array, resolved_new_axes)
 
 
