@@ -28,7 +28,7 @@ from .core import (
 from .hof import fold, scan, vmap
 from .ops import clip, isclose, pad_left, trace, tril, triu, where
 from .partitioning import auto_sharded, axis_mapping, shard_with_axis_mapping
-from .types import Axis, AxisSelection, AxisSpec
+from .types import Axis, AxisSelection, AxisSelector, AxisSpec
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -153,12 +153,14 @@ trunc = wrap_elemwise_unary(jnp.trunc)
 
 
 class ReductionFunction(Protocol):
-    def __call__(self, array: NamedArray, axis: Optional[AxisSpec] = None, where: Optional[NamedArray] = None, **kwargs) -> NamedArray:
+    def __call__(
+        self, array: NamedArray, axis: Optional[AxisSelection] = None, where: Optional[NamedArray] = None, **kwargs
+    ) -> NamedArray:
         ...
 
 
 class SimpleReductionFunction(Protocol):
-    def __call__(self, array: NamedArray, axis: Optional[Axis] = None, **kwargs) -> NamedArray:
+    def __call__(self, array: NamedArray, axis: Optional[AxisSelector] = None, **kwargs) -> NamedArray:
         ...
 
 
@@ -229,6 +231,7 @@ __all__ = [
     "NamedArray",
     "AxisSpec",
     "AxisSelection",
+    "AxisSelector",
     "broadcast_to",
     "broadcast_axis",
     "named",

@@ -1,7 +1,6 @@
 import logging
 import os
 from dataclasses import dataclass
-from functools import partial
 from typing import Optional
 
 import equinox as eqx
@@ -25,7 +24,7 @@ from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.models.loss import cross_entropy_and_logsumexp_penalty, next_token_loss
+from levanter.models.loss import next_token_loss
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -43,7 +42,6 @@ class TrainGpt2Config:
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 
-    log_z_regularization: float = 0.0
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
@@ -141,22 +139,14 @@ def main(config: TrainGpt2Config):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                if not inference and config.log_z_regularization > 0:
-                    logsumexp_weight = config.log_z_regularization
-                    loss_fn = partial(cross_entropy_and_logsumexp_penalty, logsumexp_weight=logsumexp_weight)
-                else:
-                    loss_fn = cross_entropy_loss
-
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, loss_mask, loss_fn=loss_fn)
-                return loss
+                return next_token_loss(SeqLen, Vocab, pred_y, input_ids, loss_mask, loss_fn=cross_entropy_loss)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
-            return hax.mean(
-                hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
-            ).scalar().scalar()
+            per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
+            return hax.mean(per_ex_loss).scalar()
 
         # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
@@ -164,8 +154,10 @@ def main(config: TrainGpt2Config):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
 
+            grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
             loss, grads = accumulate_gradients_sharded(
-                eqx.filter_value_and_grad(train_batch_loss),
+                grad_loss,
                 Batch,
                 model,
                 input_ids,
