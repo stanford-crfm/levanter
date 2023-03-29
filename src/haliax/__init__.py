@@ -155,12 +155,14 @@ trunc = wrap_elemwise_unary(jnp.trunc)
 
 
 class ReductionFunction(Protocol):
-    def __call__(self, array: NamedArray, axis: Optional[AxisSpec] = None, where: Optional[NamedArray] = None, **kwargs) -> NamedArray:
+    def __call__(
+        self, array: NamedArray, axis: Optional[AxisSelection] = None, where: Optional[NamedArray] = None, **kwargs
+    ) -> NamedArray:
         ...
 
 
 class SimpleReductionFunction(Protocol):
-    def __call__(self, array: NamedArray, axis: Optional[Axis] = None, **kwargs) -> NamedArray:
+    def __call__(self, array: NamedArray, axis: Optional[AxisSelector] = None, **kwargs) -> NamedArray:
         ...
 
 

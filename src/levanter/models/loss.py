@@ -8,19 +8,22 @@ from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 
 
 def next_token_loss(
-    SeqLen: hax.Axis,
-    Vocab: hax.Axis,
+    SeqLen: hax.AxisSelector,
+    Vocab: hax.AxisSelector,
     pred_ids: NamedArray,
     true_ids: NamedArray,
     loss_mask: Optional[NamedArray] = None,
-    loss_fn: Callable[[NamedArray, hax.Axis, NamedArray], NamedArray] = cross_entropy_loss,
+    loss_fn: Callable[[NamedArray, hax.AxisSelector, NamedArray], NamedArray] = cross_entropy_loss,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
 ):
+
+    SeqLen, Vocab = pred_ids.resolve_axis((SeqLen, Vocab))
     # need to roll the target tokens back by one so that each token is predicting the next token
     target_y = hax.roll(true_ids, -1, SeqLen)
-    target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_ids.dtype)
+    target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_ids.dtype)  # type: ignore
 
-    not_last_loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
+    # one everywhere except the last token
+    not_last_loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # type: ignore
     if loss_mask is not None:
         loss_mask = loss_mask * not_last_loss_mask
     else:
@@ -33,7 +36,9 @@ def next_token_loss(
     return loss
 
 
-def cross_entropy_and_logsumexp_penalty(pred_y: NamedArray, Vocab: hax.Axis, target_y: NamedArray, logsumexp_weight = 0.0) -> NamedArray:
+def cross_entropy_and_logsumexp_penalty(
+    pred_y: NamedArray, Vocab: hax.Axis, target_y: NamedArray, logsumexp_weight=0.0
+) -> NamedArray:
     """A loss function that combines cross entropy loss with a logsumexp penalty.
 
     This loss function is useful for preventing the model from predicting the same token over and over again.
@@ -43,4 +48,4 @@ def cross_entropy_and_logsumexp_penalty(pred_y: NamedArray, Vocab: hax.Axis, tar
 
     loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
 
-    return loss + logsumexp_weight * (log_normalizers ** 2)
+    return loss + logsumexp_weight * (log_normalizers**2)
