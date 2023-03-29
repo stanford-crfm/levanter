@@ -326,9 +326,10 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
 
         tensors_to_vectorize: Dict[str, List[Optional[Any]]] = {}
         prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
-        other_keys_prefix = cast(str, apply_prefix(prefix, ""))
         escaped = re.escape(prefix_to_vectorize)
         pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
+
+        other_keys_prefix = cast(str, apply_prefix(prefix, ""))
         for k, v in state_dict.items():
             match = pattern.match(k)
             if match:
