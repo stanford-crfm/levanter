@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, TypeVar, Union
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -550,6 +550,39 @@ class LMDatasetConfig:
             # TODO: this is doable now in a reasonable-ish way but it's not implemented yet
             raise ValueError("Cannot currently create sharded cache for HF datasets")
 
+    def get_shard_source(self, split) -> ShardedDataSource[str]:
+        return TextDataSource(self, split)
+
+
+class TextDataSource(ShardedDataSource[str]):
+
+    def __init__(self, config: LMDatasetConfig, split: str):
+        self.config = config
+        self.split = split
+
+        self._shard_name_to_url_mapping = {}
+
+        urls = config.urls_for_split(split)
+
+        # remove common prefix
+        common_prefix = os.path.commonprefix(urls)
+        if common_prefix:
+            urls = [url[len(common_prefix):] for url in urls]
+
+        for url in urls:
+            # escape the url for the shard name
+            shard_name = url.replace(".", "_")
+
+            self._shard_name_to_url_mapping[shard_name] = url
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard(self, shard_name: str) -> Iterator[str]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        return self.config.generate_texts_from_urls([url])
+
 
 def build_or_load_document_cache(config: LMDatasetConfig, split: str):
     cache_dir = os.path.join(config.cache_dir, f"{split}")
@@ -590,23 +623,7 @@ def build_or_load_document_cache(config: LMDatasetConfig, split: str):
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
 
 
-    def get_shard_source(self, split) -> ShardedDataSource[str]:
 
-
-class TextDataSource(ShardedDataSource[str]):
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-    def get_shard(self, shard_idx: int) -> Iterable[str]:
-        return self.config.doc_iterator(self.split)
-
-    def get_num_shards(self) -> int:
-        return 1
-
-    @classmethod
-    def build_or_load(cls, config: LMDatasetConfig, split: str):
-        return cls(config, split)
 
 T = TypeVar("T")
 

@@ -49,7 +49,7 @@ class ShardedDataSource(Protocol[T_co]):
         raise NotImplementedError
 
     def open_shard(self, shard_name: str) -> Iterator[T]:
-        ...
+        raise NotImplementedError
 
     # TODO: seek to row?
 

@@ -9,8 +9,7 @@ import equinox as eqx
 import jax
 from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
-from jax.experimental.global_device_array import GlobalDeviceArray
-from jax.experimental.pjit import FROM_GDA, pjit, with_sharding_constraint
+from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
 from jaxtyping import PyTree
 
@@ -18,7 +17,6 @@ from .core import NamedArray
 from .jax_utils import filter_eval_shape, is_jax_array_like
 from .types import Axis, AxisSpec
 from .util import StringHolderEnum, ensure_tuple, is_named_array
-
 
 LogicalAxisName = str
 PhysicalAxis = str
@@ -131,8 +129,8 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
                 PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
                 node.axes,
             )
-        elif isinstance(node, GlobalDeviceArray):
-            return FROM_GDA
+        # elif isinstance(node, GlobalDeviceArray):
+        #     return FROM_GDA
         elif hasattr(node, "sharding"):
             return node.sharding
         else:
