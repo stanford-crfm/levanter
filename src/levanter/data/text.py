@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Iterator, List, Optional, Sequence, TypeVar, Union
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -32,9 +32,10 @@ import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import BatchEncoding, PreTrainedTokenizerFast
+from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
+from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
@@ -373,6 +374,35 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
 
     return tokenize
 
+def _cpu_count():
+    """Returns the number of CPUs in the system."""
+    try:
+        return os.cpu_count()
+    except NotImplementedError:
+        return 1
+
+
+class BatchTokenizer(BatchProcessor[List[str]]):
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, batch_size: int, enforce_eos=True):
+        self.tokenizer = tokenizer
+        self.tokenize = batch_tokenizer(tokenizer, enforce_eos)
+        self._batch_size = batch_size
+
+    def call(self, batch: List[str]) -> BatchEncoding:
+        return self.tokenize(batch)
+
+    def resources(self) -> Dict[str, float]:
+        if isinstance(self.tokenizer, PreTrainedTokenizerFast):
+            # these are auto-parallelized, so use all but 1 CPU
+            return {"cpu": max(1, _cpu_count() - 1), "gpu": 0}
+        else:
+            return {"cpu": 1, "gpu": 0}
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+
 
 def concatenate_and_group_texts(
     encoding: BatchEncoding,
@@ -559,6 +589,24 @@ def build_or_load_document_cache(config: LMDatasetConfig, split: str):
 
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
 
+
+    def get_shard_source(self, split) -> ShardedDataSource[str]:
+
+
+class TextDataSource(ShardedDataSource[str]):
+    def __init__(self, config: LMDatasetConfig, split: str):
+        self.config = config
+        self.split = split
+
+    def get_shard(self, shard_idx: int) -> Iterable[str]:
+        return self.config.doc_iterator(self.split)
+
+    def get_num_shards(self) -> int:
+        return 1
+
+    @classmethod
+    def build_or_load(cls, config: LMDatasetConfig, split: str):
+        return cls(config, split)
 
 T = TypeVar("T")
 
