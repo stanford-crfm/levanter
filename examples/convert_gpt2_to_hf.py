@@ -6,17 +6,16 @@ from typing import Optional
 import fsspec
 import jax
 import jax.numpy as jnp
-import pyrallis
 from equinox import default_deserialise_filter_spec
-from huggingface_hub import Repository
 from jaxtyping import PyTree
 from transformers import GPT2Tokenizer
 
 import haliax as hax
+import levanter
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
-from levanter.compat.hf_checkpoints import _save_hf_gpt2_checkpoint_local
+from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 from levanter.utils.hf_utils import load_tokenizer
@@ -47,7 +46,7 @@ class ConvertGpt2Config:
         return load_tokenizer(self.tokenizer)
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(config: ConvertGpt2Config):
     logger.setLevel(logging.INFO)
     tokenizer: GPT2Tokenizer = config.the_tokenizer
@@ -58,6 +57,9 @@ def main(config: ConvertGpt2Config):
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
+        # we want to call this in case we're on a TPU node
+        jax.process_index()
+
         model = Gpt2LMHeadModel(Vocab, config.model, key=key)
 
         if config.old_style_model:
@@ -74,21 +76,7 @@ def main(config: ConvertGpt2Config):
 
             model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
 
-        if config.hf_checkpoint is not None:
-            repo: Repository = Repository(
-                config.output_dir, clone_from=config.hf_checkpoint, use_auth_token=False, skip_lfs_files=True
-            )
-            commit_and_upload_manager = repo.commit("convert to hf checkpoint", branch=config.hf_revision)
-            with commit_and_upload_manager:
-                # commit_and_upload_manager will automatically upload the checkpoint to the hub
-                # it also cd's into the repo, so we can just save the checkpoint to the current directory
-                _save_hf_gpt2_checkpoint_local(model, ".")
-                if config.save_tokenizer:
-                    tokenizer.save_pretrained(".")
-        else:
-            _save_hf_gpt2_checkpoint_local(model, config.output_dir)
-            if config.save_tokenizer:
-                tokenizer.save_pretrained(config.output_dir)
+        save_hf_gpt2_checkpoint(model, config.output_dir, hf_repo=config.hf_checkpoint, hf_revision=config.hf_revision)
 
 
 def deserialize_checkpoint_and_patch_vocab_dim(

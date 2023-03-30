@@ -1,10 +1,9 @@
-import pyrallis
-
+import levanter
 from levanter.data.text import LMDatasetConfig
 from levanter.logging import init_logger
 
 
-@pyrallis.wrap()
+@levanter.config.main()
 def main(args: LMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
     init_logger("cache_dataset.log")

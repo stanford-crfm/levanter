@@ -2,68 +2,7 @@
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
-# Args we want
-# VM name
-# rest are flags:
-# zone (default us-east1-d)
-# type of box (default: v3-32
-# vm image (default: tpu-vm-base)
-# preemptible (default: false)
-# autodelete (default: true)
-# setup script (default: infra/setup-tpu-vm.sh)
-
-
-# set defaults
-ZONE="us-east1-d"
-TYPE="v3-32"
-VM_IMAGE="tpu-vm-base"
-PREEMPTIBLE=false
-AUTODELETE=true
-SETUP_SCRIPT="$SCRIPT_DIR/setup-tpu-vm.sh"
-
-# parse args
-while [[ $# -gt 0 ]]; do
-  key="$1"
-  case $key in
-    -z|--zone)
-      ZONE="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    -t|--type)
-      TYPE="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    -i|--image)
-      VM_IMAGE="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    -p|--preemptible)
-      PREEMPTIBLE="true"
-      shift # past argument
-      ;;
-    -a|--autodelete)
-      AUTODELETE="false"
-      shift # past argument
-      ;;
-    -s|--setup)
-      SETUP_SCRIPT="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    *)    # unknown option, assume it's the vm name
-      # error out if we already set a name
-      if [ -n "$VM_NAME" ]; then
-        echo "Error: VM name already set to $VM_NAME"
-        exit 1
-      fi
-      VM_NAME="$1"
-      shift # past argument
-      ;;
-  esac
-done
+. "${SCRIPT_DIR}"/helpers/parse-tpu-creation-args.sh "$@"
 
 # error out if we didn't set a name
 if [ -z "$VM_NAME" ]; then
@@ -80,6 +19,8 @@ if [ "$AUTODELETE" = "true" ]; then
     gcloud compute tpus tpu-vm delete --zone $ZONE $VM_NAME
   fi
 fi
+
+
 
 # create the vm
 # spin loop until we get a good error code
@@ -116,7 +57,7 @@ for i in {1..5}; do
   if gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="ls ~/$SETUP_SCRIPT_NAME" --worker=all; then
     break
   fi
-  if 5 == $i; then
+  if [ 5 -eq $i ]; then
     echo "Error uploading ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
     exit 1
   fi
@@ -125,7 +66,18 @@ for i in {1..5}; do
 done
 
 # run the setup script
-gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME" --worker=all
+for i in {1..5}; do
+  gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME > setup.out" --worker=all
+  if [ $? -eq 0 ]; then
+    break
+  fi
+  if [ 5 -eq $i ]; then
+    echo "Error running ${SETUP_SCRIPT_NAME}, giving up. Note that the machine is still (probably) running"
+    exit 1
+  fi
+  echo "Error running ${SETUP_SCRIPT_NAME}, retrying in 5 seconds"
+  sleep 5
+done
 
 # print out the IP addresses
 echo "VM $VM_NAME IP addresses:"

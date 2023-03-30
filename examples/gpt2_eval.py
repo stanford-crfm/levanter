@@ -5,18 +5,20 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import jmp
-import pyrallis
+import numpy
+import tqdm
 from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
 import haliax as hax
+import levanter
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
@@ -33,28 +35,32 @@ class EvalGpt2Config:
     data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
 
+    compare_torch: bool = False
+    eval_on_train: bool = False
 
-@pyrallis.wrap()
+
+@levanter.config.main()
 def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("eval_batch", config.trainer.eval_batch_size)
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
-        config.trainer.device_mesh,
-        EvalBatch,
-    )
+    if config.eval_on_train:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len)
+    else:
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
+
+    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
     SeqLen = config.model.SeqLen
 
-    with config.trainer.device_mesh:
-        key = jax.random.PRNGKey(0)
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-        compute_axis_mapping = config.trainer.compute_axis_mapping
-        parameter_axis_mapping = config.trainer.parameter_axis_mapping
+    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+        key = jax.random.PRNGKey(0)
 
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
@@ -63,54 +69,56 @@ def main(config: EvalGpt2Config):
 
         mp: jmp.Policy = config.trainer.mp
 
-        prepare_model_for_compute = named_pjit(
-            mp.cast_to_compute,
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-
         # don't want to compute the mask w.r.t. the final token
         loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
 
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
-            input_ids = hax.named(input_ids, SeqLen)
-            pred_y = model(input_ids, inference=False, key=None)
-            pred_y = mp.cast_to_output(pred_y)
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+                pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
+                pred_y = mp.cast_to_output(pred_y)
 
-            # need to roll the target tokens back by one so that each token is predicting the next token
-            target_y = hax.roll(input_ids, -1, SeqLen)
-            target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
+                # need to roll the target tokens back by one so that each token is predicting the next token
+                target_y = hax.roll(input_ids, -1, SeqLen)
+                target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
-            loss = cross_entropy_loss(pred_y, Vocab, target_y)
-            loss = hax.mean(loss, where=loss_mask)
+                loss = cross_entropy_loss(pred_y, Vocab, target_y)
+                loss = hax.mean(loss, where=loss_mask)
 
             return loss.scalar()
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids, key, inference):
+        def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
             compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            return jnp.mean(compute_loss_vmap(model, input_ids, key, inference))
+            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            return jnp.mean(compute_loss_vmap(model, input_ids))
 
         compute_loss_pjit = named_pjit(
             mean_loss,
-            in_axis_mapping=parameter_axis_mapping,
+            in_axis_resources=parameter_axis_mapping,
+            out_axis_resources=compute_axis_mapping,
             axis_resources=compute_axis_mapping,
         )
 
+        total = config.trainer.max_eval_batches
+
         def evaluate(model):
-            model_inf = prepare_model_for_compute(model)
 
             # standard evaluation loop
             loss = 0.0
             n = 0
 
-            for batch in eval_dataset:
-                loss += compute_loss_pjit(model_inf, batch).item()
-                n += 1
+            with hax.axis_mapping(compute_axis_mapping):
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
+                    loss += compute_loss_pjit(model, batch).item()
+                    n += 1
+                    if total is not None and n >= total:
+                        break
 
-        def eval_dataloader():
-            for batch in eval_dataset:
-                yield (batch,)
+            return loss / n
 
         # initialize the model
         if config.checkpoint_path is not None:
@@ -133,12 +141,30 @@ def main(config: EvalGpt2Config):
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
                 hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
-            jax.lib.xla_bridge.get_backend().defragment()
-            hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
-            jax.lib.xla_bridge.get_backend().defragment()
+            # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
             loss = evaluate(hf_model)
 
             print("Loss from HF model: ", loss)
+
+            if config.compare_torch:
+                import torch
+                from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
+
+                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(config.hf_checkpoint)
+                torch_model.eval()
+                torch_model.to("cpu")
+
+                loss = 0.0
+                n = 0
+                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
+                    torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
+                    with torch.no_grad():
+                        loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
+                    n += 1
+                    if total is not None and n >= total:
+                        break
+
+                print("Loss from Torch model: ", loss / n)
 
 
 if __name__ == "__main__":

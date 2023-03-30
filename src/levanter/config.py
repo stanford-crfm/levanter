@@ -1,25 +1,30 @@
 # Various Pyrallis configs
 import atexit
 import dataclasses
+import inspect
 import logging
 import os
 import sys
 import tempfile
+import typing
+import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
 from typing import List, Mapping, Optional, Union
 
+import fsspec
 import jax
 import jmp
 import numpy as np
 import optax
 import pyrallis
+from fsspec import AbstractFileSystem
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
 from jax.experimental.maps import Mesh
-from pyrallis import field
+from pyrallis import field, parse
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
@@ -30,6 +35,9 @@ from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
+
+M = typing.TypeVar("M")
+S = typing.TypeVar("S")
 
 
 @dataclass
@@ -167,10 +175,13 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
+    def expanded_path(self, run_name):
+        return os.path.expanduser(os.path.join(self.base_path, run_name))
+
     def create(self, run_name) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=os.path.join(self.base_path, run_name),
+            base_path=self.expanded_path(run_name),
             save_interval=self.save_interval,
             step_policies=keeps,
         )
@@ -210,6 +221,8 @@ class DistributedConfig:
         # since it depends on the jax internals, but it's the best we can do
         if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
             return True
+
+        return False
 
     def initialize(self):
         if self._is_distributed():
@@ -258,11 +271,13 @@ class TrainerConfig:
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
-    load_last_checkpoint: bool = True
+    load_checkpoint: Optional[bool] = None  # if None, we'll load a checkpoint if it exists
     load_checkpoint_path: Optional[str] = None
+    """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
 
     # Config related to optimizer (always adam for now)
     learning_rate: float = 6e-4
+    min_lr_ratio: float = 0.0
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.999
@@ -300,7 +315,7 @@ class TrainerConfig:
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
-        self._validate()
+        self._validate_and_set_defaults()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
@@ -378,28 +393,51 @@ class TrainerConfig:
 
         return optimizer
 
+    def maybe_load_checkpoint(self, model: M, training_state: S) -> typing.Tuple[M, S, Optional[int]]:
+        """Loads a checkpoint if one exists and we're supposed to load it,
+        otherwise returns the model and training state as is"""
+        if self.load_checkpoint is not False:
+            checkpointer = self.checkpointer.create(self.run_name)
+            assert (
+                self.load_checkpoint_path is not None
+            ), "load_checkpoint_path should have been set during initialization"
+            ckpt = checkpointer.load_checkpoint(model, training_state, self.load_checkpoint_path)
+
+            if ckpt is None:
+                if self.load_checkpoint is True:
+                    raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
+                logger.info("No checkpoint found. Starting from scratch")
+                return (model, training_state, None)
+            else:
+                model, training_state, step = ckpt
+                return (model, training_state, step)
+        else:
+            return (model, training_state, None)
+
     def lr_scheduler(self):
         warmup_steps = int(self.warmup_ratio * self.num_train_steps)
         lr_decay_steps = self.num_train_steps - warmup_steps
-        if warmup_steps == 0 and self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        else:
-            if self.lr_schedule == "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            elif self.lr_schedule == "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps - warmup_steps)
-            elif self.lr_schedule == "linear":
-                schedule = optax.linear_schedule(self.learning_rate, 0.0, lr_decay_steps - warmup_steps)
-            else:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+        min_lr = self.learning_rate * self.min_lr_ratio
 
-            if warmup_steps != 0:
-                warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-                schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+        if self.lr_schedule == "constant":
+            schedule = optax.constant_schedule(self.learning_rate)
+        elif self.lr_schedule == "cosine":
+            schedule = optax.cosine_decay_schedule(
+                self.learning_rate, lr_decay_steps - warmup_steps, min_lr / self.learning_rate
+            )
+        elif self.lr_schedule == "linear":
+            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+        else:
+            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+
+        if warmup_steps != 0:
+            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
+            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+
         return schedule
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
-    def _validate(self):
+    def _validate_and_set_defaults(self):
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
@@ -423,6 +461,9 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        if self.load_checkpoint_path is None:
+            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_name)
 
 
 def register_codecs():
@@ -449,3 +490,54 @@ def register_codecs():
 
 
 register_codecs()
+
+
+def main(args: list = None):
+    """
+    Like levanter.config.main_decorator but can handle config paths that are urls loadable by fsspec.
+    This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
+    """
+    _cmdline_args = args
+    if args is None:
+        _cmdline_args = sys.argv[1:]
+
+    def wrapper_outer(fn):
+        @wraps(fn)
+        def wrapper_inner(*args, **kwargs):
+            config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
+            argspec = inspect.getfullargspec(fn)
+            argtype = argspec.annotations[argspec.args[0]]
+            cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
+            response = fn(cfg, *args, **kwargs)
+            return response
+
+        return wrapper_inner
+
+    return wrapper_outer
+
+
+def _maybe_get_config_path_and_cmdline_args(args):
+    """
+    We want to accept ... --config_path <config> ... where config could be a path or url.
+    If URL, we need to download it and save it to a temp file. We then want to remove --config_path
+    from the cmdline args so that pyrallis doesn't try to load it as a config path and return it separately here
+    along with the modified cmdline args.
+    """
+    if "--config_path" not in args:
+        return None, args
+    else:
+        config_path_index = args.index("--config_path")
+        config_path = args[config_path_index + 1]
+
+        if urllib.parse.urlparse(config_path).scheme:
+            fs: AbstractFileSystem
+            fs, fs_path = fsspec.core.url_to_fs(config_path)
+            temp_file = tempfile.NamedTemporaryFile(prefix="config", suffix=".yaml", delete=False)
+            atexit.register(lambda: os.unlink(temp_file.name))
+            fs.get(fs_path, temp_file.name)
+            config_path = temp_file.name
+
+        args = args.copy()
+        del args[config_path_index]
+        del args[config_path_index]
+        return config_path, args

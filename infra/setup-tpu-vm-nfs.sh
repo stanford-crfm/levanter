@@ -14,14 +14,29 @@ retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
 
 # install python 3.10, latest git, and nfs
-sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo add-apt-repository -y ppa:git-core/ppa
-sudo apt-get update
-sudo apt-get install -y python3.10-full python3.10-dev nfs-common git golang
-sudo systemctl start unattended-upgrades
+#sudo apt-get install -y software-properties-common
+#sudo add-apt-repository -y ppa:deadsnakes/ppa
+#sudo add-apt-repository -y ppa:git-core/ppa
+#sudo apt-get update
+#sudo apt-get install -y python3.10-full python3.10-dev nfs-common git golang
 
+sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
+sudo systemctl disable unattended-upgrades
+sudo apt remove -y unattended-upgrades
+# if it's still running somehow, kill it
+if [ $(ps aux | grep unattended-upgrade | wc -l) -gt 1 ]; then
+  sudo kill -9 $(ps aux | grep unattended-upgrade | awk '{print $2}')
+fi
+# sometimes apt-get update fails, so retry a few times
+for i in {1..5}; do
+  sudo apt-get install -y software-properties-common \
+  && sudo add-apt-repository -y ppa:deadsnakes/ppa \
+  && sudo add-apt-repository -y ppa:git-core/ppa \
+  && sudo apt-get update \
+  && sudo apt-get install -y python3.10-full python3.10-dev nfs-common git \
+  && break
+done
+sudo systemctl start unattended-upgrades
 
 # set up nfs
 NFS_SERVER=10.5.220.250

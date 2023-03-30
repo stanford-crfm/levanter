@@ -2,7 +2,6 @@ from typing import Any, Dict, Optional, Tuple, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
-import numpy as onp
 from jaxtyping import PyTree
 
 from haliax import NamedArray
@@ -85,11 +84,11 @@ def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix:
     elif isinstance(tree, NamedArray):
         # TODO: where's the best place to put this logic for NamedArrays
         assert prefix is not None
-        state_dict[prefix] = onp.array(tree.array)
+        state_dict[prefix] = tree.array
     else:
         if prefix is not None:
             if tree is not None:
-                state_dict[prefix] = onp.array(tree)  # type: ignore
+                state_dict[prefix] = tree  # type: ignore
         else:
             raise ValueError("Cannot update torch dict with a leaf value.")
 
@@ -143,6 +142,7 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
+# needs to be jitted because we can't do reshape
 def reshape_linear_layer(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:

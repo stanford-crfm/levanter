@@ -1,12 +1,16 @@
 import itertools
+import logging
+from collections import defaultdict
 from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.global_device_array import GlobalDeviceArray
+from jax._src.array import ArrayImpl
+from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import process_allgather
+from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
@@ -19,15 +23,16 @@ from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 
 
-In = TypeVar("In")
 Ex = TypeVar("Ex")
+
+logger = logging.getLogger(__name__)
 
 # TODO: write tests to verify this works when data spans multiple processes
 
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
+class GlobalBatchDataset(Dataset[Ex]):
     """
     GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
@@ -49,7 +54,7 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     def __init__(
         self,
-        local_dataset: ShardableDataset[Sequence[int]],
+        local_dataset: ShardableDataset[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
@@ -67,12 +72,15 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
 
-        self.local_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+        self.num_data_process_groups = num_data_process_groups
+        assert self.Batch.size % num_data_process_groups == 0
+
+        self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
-        one_item_generator = iter(self.local_dataset)
+        one_item_generator = iter(self.item_dataset)
 
-        for _ in range(self._global_min_length):
+        for i in range(self._global_min_length):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -85,14 +93,17 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
             local_batch_leaves: Dict[Tuple[int, int], List[Array]] = {}  # batch indices -> list of items
             batch_tree_structure = None
 
+            total_examples_accessed_this_step = 0
+
             def get_local_batch(begin: int, end: int) -> List[Array]:
-                nonlocal batch_tree_structure
+                nonlocal batch_tree_structure, total_examples_accessed_this_step
 
                 key = (begin, end)
                 if key in local_batch_leaves:
                     return local_batch_leaves[key]
 
                 num_examples_for_this_device = end - begin
+                total_examples_accessed_this_step += num_examples_for_this_device
                 individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
 
                 local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
@@ -117,26 +128,33 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
             # TODO: with a bit more fanciness, we can avoid needing the item_shape
             gda_leaves = [
-                # jax.make_array_from_callback(
-                #     to_raw_shape(shape),
-                #     jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
-                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
-                # )
-                GlobalDeviceArray.from_callback(
+                jax.make_array_from_callback(
                     to_raw_shape(shape),
-                    self.mesh,
-                    self._pspec_for(shape),
+                    jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
+                # GlobalDeviceArray.from_callback(
+                #     to_raw_shape(shape),
+                #     self.mesh,
+                #     self._pspec_for(shape),
+                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                # )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
+
+            assert total_examples_accessed_this_step == self.local_batch_size
+
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
+
+            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
+                for leaf in gda_leaves:
+                    check_sharded_consistency(leaf, True)
+
             yield gda_tree  # type: ignore
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
             batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
-            assert batch_name is not None
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
@@ -152,28 +170,26 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
-            shape = shape_spec.shape
-            assert shape is not None, "item_shape must have a fully determined shape to work with batching"
-            if isinstance(shape_spec, NamedShapeSpec):
-                return NamedShapeSpec((self.Batch,) + shape, shape_spec.dtype)
-            else:
-                return ShapeSpec((self.Batch.size,) + shape, shape_spec.dtype)
-
-        return jax.tree_map(_batchify_shape_spec, self.local_dataset.item_shape)
+        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
     def __len__(self):
         return self._global_min_length
 
     @property
     def batch_size(self) -> int:
+        """Returns the 'global' batch size: the effective number of examples in a batch across all devices/hosts"""
         return self.Batch.size
+
+    @property
+    def local_batch_size(self) -> int:
+        """Returns the 'local' batch size: the number of examples in a batch on this host"""
+        return self.batch_size // self.num_data_process_groups
 
     @cached_property
     def _global_min_length(self):
         # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
         # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.local_dataset) // self.batch_size
+        local_len = len(self.item_dataset) // self.local_batch_size
         all_lengths = process_allgather(jnp.array(local_len))
         return int(jnp.min(all_lengths))
 
@@ -186,3 +202,141 @@ class GlobalBatchDataset(Dataset[PyTree[jax.Array]]):
                 return hax.stack(self.Batch, leaves)
         else:
             return np.stack(leaves)
+
+
+class LocalBatchDataset(Dataset[Ex]):
+    """A dataset that creates batches without sharded data loading. All examples are loaded on all machines and then
+    sharded. This is useful if you have a small dataset and want to use a large number of devices.
+
+    Note: this class discards remainder batches
+
+    """
+
+    def __init__(
+        self,
+        item_dataset: Dataset[Ex],
+        mesh: Mesh,
+        Batch: hax.Axis,
+        axis_resources: Optional[ResourceMapping] = None,
+    ):
+        self.local_dataset = item_dataset
+        self.mesh = mesh
+        self.Batch = Batch
+        self.axis_resources = axis_resources
+
+    def __iter__(self):
+        item_iter = iter(self.local_dataset)
+        for batch in self._batched(item_iter):
+            stacked = jax.tree_map(lambda *leaves: self._stack_leaves(*leaves), *batch, is_leaf=is_named_array)
+            yield self._shard(stacked)
+
+    def _batched(self, item_iter):
+        batch = []
+        for item in item_iter:
+            batch.append(item)
+            if len(batch) == self.Batch.size:
+                yield batch
+
+    def _stack_leaves(self, *leaves):
+        assert len(leaves) == self.Batch.size
+
+        if is_named_array(leaves[0]):
+            return hax.stack(self.Batch, leaves)
+        else:
+            return np.stack(leaves)
+
+    def _shard(self, batch):
+        def _shard_leaf(leaf):
+            pspec = self._pspec_for(leaf)
+            with self.mesh:
+                return pjit(lambda x: x, in_axis_resources=None, out_axis_resources=pspec)(leaf)
+
+        return jax.tree_map(_shard_leaf, batch, is_leaf=is_named_array)
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return _batchify_item_shape(self.local_dataset.item_shape, self.Batch)
+
+    def _pspec_for(self, leaf) -> PartitionSpec:
+        if not isinstance(leaf, hax.NamedArray):
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+            return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
+        else:
+            return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
+
+    def __len__(self):
+        return len(self.local_dataset) // self.Batch.size
+
+
+def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
+    def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
+        shape = shape_spec.shape
+        assert shape is not None, "item_shape must have a fully determined shape to work with batching"
+        if isinstance(shape_spec, NamedShapeSpec):
+            return NamedShapeSpec((Batch,) + shape, shape_spec.dtype)
+        else:
+            return ShapeSpec((Batch.size,) + shape, shape_spec.dtype)
+
+    return jax.tree_map(_batchify_shape_spec, item_shape)
+
+
+def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_are_different: bool = False):
+    """Checks the following consistency conditions on an array:
+    - all replicas have the same data
+    - if check_disjoint_indices_are_different is True, then all shards with disjoint indices have different data
+    """
+    # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
+
+    def check_array(array: ArrayImpl):
+        def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
+            my_indices: Tuple[Tuple[int, int], ...] = tuple(
+                s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index)
+            )
+
+            return my_indices
+
+        replicas_by_index = defaultdict(list)
+        for shard in array.global_shards:
+            replicas_by_index[_to_tuple(shard.index)].append(shard)
+
+        # global shards is not necessarily sorted consistently, so we have to sort the indices
+        sorted_indices = sorted(replicas_by_index.keys())
+
+        # ok now get canonical versions of each index
+        replica_0_arrays = {}
+
+        for index in sorted_indices:
+            shards = replicas_by_index[index]
+            try:
+                leader = next(s for s in shards if s.replica_id == 0)
+            except StopIteration:
+                raise ValueError("No replica 0 for index", index)
+
+            data = leader.data
+            if data is None:
+                shard_shape = [s[1] - s[0] for s in index]
+                data = jnp.zeros(shard_shape, dtype=array.dtype)
+
+            replica_0_array = multihost_utils.broadcast_one_to_all(data, is_source=leader.data is not None)
+            replica_0_arrays[index] = replica_0_array
+
+        for shard in array.addressable_shards:
+            replica_0_array = replica_0_arrays[_to_tuple(shard.index)]
+            assert shard.data is not None
+
+            if not jnp.array_equal(shard.data, replica_0_array, equal_nan=True):
+                raise ValueError("Shard data does not match replica 0 data", shard, replica_0_array)
+
+            if check_disjoint_indices_are_different:
+                for other_index, other_array in replica_0_arrays.items():
+                    if other_index == _to_tuple(shard.index):
+                        continue
+
+                    if shard.index != other_index:
+                        if jnp.array_equal(shard.data, other_array, equal_nan=True):
+                            raise ValueError(
+                                "Shard data is the same as another shard with disjoint indices", shard, other_array
+                            )
+
+    for leaf in jax.tree_util.tree_leaves(tree):
+        check_array(leaf)

@@ -1,3 +1,4 @@
+import os
 import tempfile
 from urllib.parse import urlparse
 
@@ -15,6 +16,7 @@ def load_tokenizer(model_name_or_path, local_cache_dir=None):
 
         fs, path = fsspec.core.url_to_fs(model_name_or_path)
         fs.get(path, local_cache_dir, recursive=True)
-        return AutoTokenizer.from_pretrained(local_cache_dir)
+        base_path = os.path.basename(path)
+        return AutoTokenizer.from_pretrained(os.path.join(local_cache_dir, base_path))
     else:
         return AutoTokenizer.from_pretrained(model_name_or_path)
