@@ -1,11 +1,10 @@
-import time
 from dataclasses import dataclass
 from typing import Optional
 
 import ray
 
 import levanter
-from levanter.data.shard_cache import _ShardCacheManager
+from levanter.data.shard_cache import cache_dataset
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 
 
@@ -29,13 +28,9 @@ def main(args: RayCachedLMDatasetConfig):
     for split in ["train", "validation"]:
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer, args.train_group_size)
-        manager = _ShardCacheManager.options(name="cache_manager", get_if_exists=True).remote(  # type: ignore
-            f"{args.cache_dir}/{split}", args.get_shard_source(split), batch_tokenizer
-        )
+        source = args.get_shard_source(split)
 
-        while not ray.get(manager.is_finished.remote()):
-            print("Waiting for cache to be built")
-            time.sleep(5)
+        cache_dataset(f"{args.cache_dir}/{split}", batch_tokenizer, source)
 
         print(f"Finished caching {split}")
 

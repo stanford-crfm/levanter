@@ -69,6 +69,18 @@ class ShardedDataSource(Protocol[T_co]):
     # TODO: seek to row?
 
 
+def cache_dataset(cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T]):
+    manager = _ShardCacheManager.options(name="lev_cache_manager", get_if_exists=True).remote(  # type: ignore
+        cache_dir, input_shards, processor
+    )
+
+    logger.info("Waiting for cache to be built")
+    while not ray.get(manager.is_finished.remote()):
+        pass
+
+    logger.info("Finished caching")
+
+
 @dataclass_json
 @dataclass
 class ChunkMetadata:
