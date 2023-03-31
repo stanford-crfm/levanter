@@ -31,9 +31,11 @@ and you can't just set up one machine, but a whole cluster. We have some scripts
 
 ### Automatic Setup
 
-(CRFM folks: also see below)
+You can use `infra/spin-up-vm.sh` to create a TPU VM instance. In addition to creating the instance, it will set up
+the venv on each worker, and it will clone the repo to `~/levanter/`.
 
-You can use `infra/spin-up-tpu-vm.sh` to create a TPU VM instance:
+**For Public Users**:
+
 ```bash
 bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
 ```
@@ -43,24 +45,23 @@ Defaults are:
 - `type`: `v3-32`
 - `preemptible`: `false`
 
-The command will spam you with a lot of output, sorry.
+**For Stanford CRFM Users**:
 
-In addition to creating the instance, it will set up the venv on each worker, and it will clone the repo to `~/levanter/`
-
-####
-If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
-the VM. That's explained down below in the "Running Levanter GPT-2" section.
-
-
-### CRFM Setup
-
-Stanford CRFM folks can pass a different setup script to `infra/spin-up-tpu-vm.sh` to get our NFS automounted:
+Stanford CRFM folks can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
 ```bash
-bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
 ```
 
 In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
 venv and a copy of the repo.
+
+**Notes**:
+- This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
+path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
+- The command will spam you with a lot of output, sorry.
+- If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
+the VM. That's explained down below in the "Running Levanter GPT-2" section.
+
 
 ## Useful commands
 
