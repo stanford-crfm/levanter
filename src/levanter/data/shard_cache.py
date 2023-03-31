@@ -28,12 +28,6 @@ T_co = TypeVar("T_co", covariant=True)
 T_con = TypeVar("T_con", contravariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
-# tests to write:
-# - test that we can recover from a crash in one writer
-# - test multiple shards, one writer
-# - test multiple shards, multiple writers
-# - test idempotency of writes
-
 
 class BatchProcessor(Generic[T], ABC):  # type: ignore
     @abstractmethod
@@ -69,9 +63,11 @@ class ShardedDataSource(Protocol[T_co]):
     # TODO: seek to row?
 
 
-def cache_dataset(cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T]):
+def cache_dataset(
+    cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T], num_workers: Optional[int] = None
+):
     manager = _ShardCacheManager.options(name="lev_cache_manager", get_if_exists=True).remote(  # type: ignore
-        cache_dir, input_shards, processor
+        cache_dir, input_shards, processor, num_workers
     )
 
     logger.info("Waiting for cache to be built")
@@ -527,7 +523,7 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
     """This should generally be wrapped in a ray.remote, but we don't do that here so that we can
     specify resources in the ray.remote call."""
     try:
-        sources: List[Iterator[T]] = [shard_source.open_shard(shard_name) for shard_name in shard_names]
+        sources: List[Iterator[T]] = [iter(shard_source.open_shard(shard_name)) for shard_name in shard_names]
         writers = [_ShardWriter(cache_dir, name) for name in shard_names]
         # send any finished chunks to the manager
         # TODO: probably better to read from a global list of finished chunks
