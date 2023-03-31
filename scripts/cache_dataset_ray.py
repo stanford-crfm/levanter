@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -5,14 +6,16 @@ import ray
 
 import levanter
 from levanter.data.shard_cache import _ShardCacheManager
-from levanter.data.text import BatchTokenizer, CachedLMDatasetConfig
+from levanter.data.text import BatchTokenizer, LMDatasetConfig
+
 
 @dataclass
 class RayConfig:
     address: Optional[str] = None
 
+
 @dataclass
-class RayCachedLMDatasetConfig(CachedLMDatasetConfig, RayConfig):
+class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
     pass
 
 
@@ -23,14 +26,18 @@ def main(args: RayCachedLMDatasetConfig):
 
     tokenizer = args.the_tokenizer
 
-
     for split in ["train", "validation"]:
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer, args.train_group_size)
-        manager = _ShardCacheManager.options(name="cache_manager", get_if_exists=True)\
-            .remote(f"{args.cache_dir}/{split}", args.get_shard_source(split), batch_tokenizer)
-        # but for pure-url based ones, shouldn't be hard.
-        args.build_or_load_document_cache(split)
+        manager = _ShardCacheManager.options(name="cache_manager", get_if_exists=True).remote(  # type: ignore
+            f"{args.cache_dir}/{split}", args.get_shard_source(split), batch_tokenizer
+        )
+
+        while not ray.get(manager.is_finished.remote()):
+            print("Waiting for cache to be built")
+            time.sleep(5)
+
+        print(f"Finished caching {split}")
 
 
 if __name__ == "__main__":

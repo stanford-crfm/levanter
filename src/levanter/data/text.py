@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, TypeVar, Union
+from typing import Callable, Iterator, List, Optional, Sequence, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -32,7 +32,7 @@ import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
 from jaxtyping import PyTree
 from tqdm import tqdm
-from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
+from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
 from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
@@ -374,6 +374,7 @@ def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncodi
 
     return tokenize
 
+
 def _cpu_count():
     """Returns the number of CPUs in the system."""
     try:
@@ -382,26 +383,23 @@ def _cpu_count():
         return 1
 
 
-class BatchTokenizer(BatchProcessor[List[str]]):
+class BatchTokenizer(BatchProcessor[str]):
     def __init__(self, tokenizer: PreTrainedTokenizerBase, batch_size: int, enforce_eos=True):
         self.tokenizer = tokenizer
         self.tokenize = batch_tokenizer(tokenizer, enforce_eos)
         self._batch_size = batch_size
 
-    def call(self, batch: List[str]) -> BatchEncoding:
-        return self.tokenize(batch)
+    def __call__(self, batch: List[str]) -> pa.RecordBatch:
+        encoding = self.tokenize(batch)
+        return _as_record_batch(encoding)
 
-    def resources(self) -> Dict[str, float]:
-        if isinstance(self.tokenizer, PreTrainedTokenizerFast):
-            # these are auto-parallelized, so use all but 1 CPU
-            return {"cpu": max(1, _cpu_count() - 1), "gpu": 0}
-        else:
-            return {"cpu": 1, "gpu": 0}
+    @property
+    def num_cpus(self) -> int:
+        return max(1, _cpu_count() - 1)
 
     @property
     def batch_size(self) -> int:
         return self._batch_size
-
 
 
 def concatenate_and_group_texts(
@@ -512,7 +510,6 @@ class LMDatasetConfig:
     def doc_iterator(self, split: str):
         if self.id is not None:
             dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
-            # dataset.shard() TODO
             data = dataset[split]
             for doc in data:
                 yield doc[self.text_key]
@@ -520,7 +517,7 @@ class LMDatasetConfig:
             urls = self.urls_for_split(split)
             yield from self.generate_texts_from_urls(urls)
 
-    def generate_texts_from_urls(self, urls):
+    def generate_texts_from_urls(self, urls: Sequence[str]) -> Iterator[str]:
         files = fsspec.open_files(urls, "r", compression="infer")
         for file in files:
             with file as f:
@@ -555,7 +552,6 @@ class LMDatasetConfig:
 
 
 class TextDataSource(ShardedDataSource[str]):
-
     def __init__(self, config: LMDatasetConfig, split: str):
         self.config = config
         self.split = split
@@ -566,12 +562,13 @@ class TextDataSource(ShardedDataSource[str]):
 
         # remove common prefix
         common_prefix = os.path.commonprefix(urls)
-        if common_prefix:
-            urls = [url[len(common_prefix):] for url in urls]
-
         for url in urls:
             # escape the url for the shard name
-            shard_name = url.replace(".", "_")
+            shard_name = url
+            if common_prefix:
+                shard_name = url[len(common_prefix) :]
+
+            shard_name = shard_name.replace(".", "_")
 
             self._shard_name_to_url_mapping[shard_name] = url
 
@@ -621,8 +618,6 @@ def build_or_load_document_cache(config: LMDatasetConfig, split: str):
         token_iter = (btok(batch) for batch in batched(doc_iter, batch_size))
 
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
-
-
 
 
 T = TypeVar("T")
