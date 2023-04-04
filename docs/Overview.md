@@ -359,7 +359,7 @@ some Jax/Haliax idioms.
         self.upcast = upcast
 ```
 
-The basic flow of multi-headed attention in a standard transformer is:
+The basic flow of multi-headed attention in a standard transformer is (note that the `Batch` axis is omitted for simplicity):
 1. For each position, project the input embedding into `Heads` heads, each of which with a query, key, and value vector of dim `HeadDim`. This yields three tensors of shape `[SeqLen, Heads, HeadDim]`.
 2. Compute the attention scores for each `(head, position_in_query, position_in_key)`.  This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
 3. Normalize the attention scores to get the attention weights. This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
@@ -378,7 +378,7 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     k = k.rename({self.SeqLen: self.KeySeqLen})
     v = v.rename({self.SeqLen: self.KeySeqLen})
 
-    # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+    # mistral tweak: scale norms by 1/layer_idx to prevent blowup
     scale = jax.lax.rsqrt(float(self.HeadDim.size))
     if self.scale_by_inverse_layer_idx:
         scale /= layer_idx + 1.0
