@@ -413,11 +413,11 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
 If you're not used to the `tril`-as-a-mask trick, it's a way to create a causal mask so that the attention scores
 for a query can only attend to the past. The `tril` function creates a lower triangular matrix. It's equivalent to:
 ```python
-causal_mask = jnp.zeros(seq_len, key_seq_len)
+causal_mask = jnp.zeros((seq_len, key_seq_len))
 for i in range(seq_len):
     for j in range(key_seq_len):
-        if j >= i:
-            mask[i, j] = 1
+        if j <= i:
+            causal_mask = causal_mask.at[i, j].set(1)
 ```
 
 ### The MLP
