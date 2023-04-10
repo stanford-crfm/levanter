@@ -283,14 +283,13 @@ as far as I'm aware, and don't help with model partitioning.
 You can skip this part if you're familiar with the basics of how Transformers are implemented. You might want to skim at
 least the attention section to see how Haliax is used.
 
-The whole implementation is [here](https://www.github.com/stanford-crfm/levanter/blob/main/levanter/models/gpt2.py),
+The whole implementation is [here](../src/levanter/models/gpt2.py).
 (If you look at the whole thing, I caution you to skip over the torch serialization compatibility parts because they're
 messy and not that interesting for our purposes here.) I'll walk through the more interesting bits. In terms of basic
 structure and grouping of classes it's pretty similar to standard PyTorch implementations.
 
-XXX this comes across as even more defensive than I intended
-If you want, you can compare it with Andrei Karpathy's [mingpt implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py)
-. Ours is a bit longer (even excluding the torch serialization parts) for a few reasons:
+If you want, you can compare it with Andrej Karpathy's [minGPT implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py).
+Ours is a bit longer (even excluding the torch serialization parts) for a few reasons:
 * Boilerplate from declaring fields for modules
 * More type annotations
 * Tricks to improve stability from the [Mistral project](https://crfm.stanford.edu/2021/08/26/mistral.html#eureka/)
@@ -321,9 +320,9 @@ class Gpt2Attention(eqx.Module):
     upcast: bool = eqx.static_field()
 ```
 
-The `static_field` decorator is a way to declare fields that are static, and don't change during training. (They're also
-not parameters, so they don't get updated during training.) `causal` means that this is a causal attention layer, which
-means that the queries can only attend to the past.
+- The `static_field` decorator is a way to declare fields that are static, and don't change during training. (They're also
+not parameters, so they don't get updated during training.)
+- `causal` means that this is a causal attention layer, which means that the queries can only attend to the past.
 
 Here's the `__init__` method. It's just initializing the parameters and setting the static fields, but it illustrates
 some Jax/Haliax idioms.
@@ -360,7 +359,7 @@ some Jax/Haliax idioms.
         self.upcast = upcast
 ```
 
-The basic flow of multi-headed attention in a standard transformer is:
+The basic flow of multi-headed attention in a standard transformer is (note that the `Batch` axis is omitted for simplicity):
 1. For each position, project the input embedding into `Heads` heads, each of which with a query, key, and value vector of dim `HeadDim`. This yields three tensors of shape `[SeqLen, Heads, HeadDim]`.
 2. Compute the attention scores for each `(head, position_in_query, position_in_key)`.  This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
 3. Normalize the attention scores to get the attention weights. This yields a tensor of shape `[SeqLen, Heads, SeqLen]`.
@@ -379,7 +378,7 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     k = k.rename({self.SeqLen: self.KeySeqLen})
     v = v.rename({self.SeqLen: self.KeySeqLen})
 
-    # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+    # mistral tweak: scale norms by 1/layer_idx to prevent blowup
     scale = jax.lax.rsqrt(float(self.HeadDim.size))
     if self.scale_by_inverse_layer_idx:
         scale /= layer_idx + 1.0
@@ -414,11 +413,11 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
 If you're not used to the `tril`-as-a-mask trick, it's a way to create a causal mask so that the attention scores
 for a query can only attend to the past. The `tril` function creates a lower triangular matrix. It's equivalent to:
 ```python
-causal_mask = jnp.zeros(seq_len, key_seq_len)
+causal_mask = jnp.zeros((seq_len, key_seq_len))
 for i in range(seq_len):
     for j in range(key_seq_len):
-        if j >= i:
-            mask[i, j] = 1
+        if j <= i:
+            causal_mask = causal_mask.at[i, j].set(1)
 ```
 
 ### The MLP
