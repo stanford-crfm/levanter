@@ -33,7 +33,7 @@ class TestProcessor(BatchProcessor[List[int]]):
         return 1
 
 
-class TestShardSource(ShardedDataSource[List[int]]):
+class SimpleShardSource(ShardedDataSource[List[int]]):
     def __init__(self, num_shards: int = 4):
         self.num_shards = num_shards
 
@@ -53,20 +53,23 @@ def simple_process(processor, source):
         for batch in source.open_shard(shard_name):
             result.append(processor([batch]))
 
+    return result
+
 
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
 def test_cache_simple(num_workers):
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(tmpdir, TestProcessor(), TestShardSource(), num_workers=num_workers)
+        ray_ds = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
 
-        # simple_processed = simple_process(TestProcessor(), TestShardSource())
-        # TODO: ray cache dataset
+        simple_processed = simple_process(TestProcessor(), SimpleShardSource())
+
+        assert list(ray_ds) == list(simple_processed)
 
 
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
 def test_cache_remembers_its_cached(num_workers):
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(tmpdir, TestProcessor(), TestShardSource(), num_workers=num_workers)
+        ds1 = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
 
         class ThrowingProcessor(BatchProcessor[List[int]]):
             def __call__(self, batch: List[List[int]]) -> pa.RecordBatch:
@@ -81,7 +84,9 @@ def test_cache_remembers_its_cached(num_workers):
                 return 1
 
         # testing this doesn't throw
-        cache_dataset(tmpdir, ThrowingProcessor(), TestShardSource())
+        ds2 = cache_dataset(tmpdir, ThrowingProcessor(), SimpleShardSource())
+
+        assert list(ds1) == list(ds2)
 
 
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
@@ -99,7 +104,8 @@ def test_cache_recover_from_crash(num_workers):
             shard_num = int(shard_name.split("_")[1])
             for i in range(10):
                 if shard_num * 10 + i == self.crash_point:
-                    raise RuntimeError("This is a crash")
+                    print(shard_num, i, self.crash_point)
+                    raise RuntimeError(f"Crashing at {shard_num} {i} {self.crash_point}")
                 yield [shard_num * 10 + i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
@@ -113,9 +119,12 @@ def test_cache_recover_from_crash(num_workers):
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers)
+        reader1 = cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers, batch_size=1)
 
         # compare to the original with no crash
-        cache_dataset(tmpdir2, TestProcessor(), TestShardSource(), num_workers=num_workers)
+        reader2 = cache_dataset(tmpdir2, TestProcessor(), SimpleShardSource(), num_workers=num_workers, batch_size=1)
+
+        assert len(list(reader1)) == 40
 
         # todo: actual comparison
+        assert list(reader1) == list(reader2)

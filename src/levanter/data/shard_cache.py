@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import IO, Dict, Generic, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import IO, Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import fsspec.core
 import pyarrow as pa
@@ -18,8 +18,11 @@ from dataclasses_json import dataclass_json
 from ray.actor import ActorHandle
 
 
+
+
 logger = logging.getLogger(__name__)
 
+# TODO: make chunks in terms of rows?? Maybe less good if data is not uniform
 TARGET_CACHE_SHARD_SIZE = 512 * 1024 * 1024  # 512MB
 LEDGER_FILE_NAME = "ledger.json"
 
@@ -64,17 +67,25 @@ class ShardedDataSource(Protocol[T_co]):
 
 
 def cache_dataset(
-    cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T], num_workers: Optional[int] = None
-):
-    manager = _ShardCacheManager.options(name="lev_cache_manager", get_if_exists=True).remote(  # type: ignore
-        cache_dir, input_shards, processor, num_workers
-    )
+    cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T], num_workers: Optional[int] = None,
+        batch_size: Optional[int] = None
+) -> 'ShardCacheIterable':
+    manager = _get_manager_actor(cache_dir, input_shards, processor, num_workers)
 
     logger.info("Waiting for cache to be built")
     while not ray.get(manager.is_finished.remote()):
         pass
 
     logger.info("Finished caching")
+
+    return ShardCacheIterable(cache_dir, input_shards, processor, batch_size or 1)
+
+
+def _get_manager_actor(cache_dir, input_shards, processor, num_workers):
+    return _ShardCacheManager.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
+        # type: ignore
+        cache_dir, input_shards, processor, num_workers
+    )
 
 
 @dataclass_json
@@ -183,6 +194,52 @@ class _ChunkWriter:
         return _ChunkWriter(cache_dir, name)
 
 
+class ChunkReader:
+    """Reads batches of documents from a chunk"""
+
+    metadata: ChunkMetadata
+    file: pq.ParquetFile
+    batch_size: int
+
+    # TODO: seek by doc
+    # TODO: seek by token etc
+
+    def __init__(self, metadata: ChunkMetadata, file: pq.ParquetFile, batch_size: int):
+        self.metadata = metadata
+        self.file = file
+        self.batch_size = batch_size
+
+    def with_batch_size(self, batch_size):
+        return ChunkReader(self.metadata, self.file, batch_size)
+
+    @property
+    def num_docs(self):
+        return self.metadata.num_rows
+
+    def field_count(self, field, default=None):
+        return self.metadata.field_counts.get(field, default)
+
+    @property
+    def __len__(self):
+        return (self.num_docs + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self) -> Iterator[pa.RecordBatch]:
+        for record_batch in self.file.iter_batches(batch_size=self.batch_size):
+            yield record_batch
+
+    @staticmethod
+    def from_name(cache_dir, name: str, batch_size: int):
+        fs, path = fsspec.core.url_to_fs(cache_dir)
+        with fs.open(f"{path}/{name}.json", "r") as f:
+            metadata = ChunkMetadata.from_json(f.read())  # type: ignore
+        return ChunkReader.from_metadata(cache_dir, metadata, batch_size)
+
+    @staticmethod
+    def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int):
+        file = pq.ParquetFile(fsspec.open(f"{cache_dir}/{metadata.name}.parquet", "rb").open())
+        return ChunkReader(metadata, file, batch_size)
+
+
 class _ShardWriter:
     cache_dir: str
     written_chunk_metadata: List[ChunkMetadata]
@@ -240,11 +297,13 @@ class _ShardWriter:
         with fs.open(f"{path}/{self.shard_name}/metadata.json", "w") as f:
             f.write(self._in_progress_metadata.to_json())
 
-    def finalize(self):
+    def finalize(self) -> Optional[ChunkMetadata]:
+        wrote_last_chunk = False
         if self.current_chunk_writer is not None:
             self.current_chunk_writer.close()
             self.written_chunk_metadata.append(self.current_chunk_writer.metadata)
             self.current_chunk_writer = None
+            wrote_last_chunk = True
 
         try:
             self.is_finished = True
@@ -253,6 +312,9 @@ class _ShardWriter:
             logger.exception("Failed to finalize shard")
             self.is_finished = False
             raise
+
+        # return the last chunk if we wrote one
+        return self.written_chunk_metadata[-1] if wrote_last_chunk else None
 
     def _open_chunk_writer(self):
         fs, path = fsspec.core.url_to_fs(self.cache_dir)
@@ -320,36 +382,13 @@ class _ShardState:
     def ready(self) -> bool:
         return len(self.buffered_chunks) > 0 or self.finished
 
-
-@dataclass
-class _ChunkFinished:
-    shard_name: str
-    chunk_metadata: ChunkMetadata
-
-
-@dataclass
-class _ShardFinished:
-    shard_name: str
-
-
-@dataclass
-class _ShardFailed:
-    shard_name: str
-    exc_info: _ExcInfo
-
-
-@dataclass
-class _OtherFailed:
-    exc_info: _ExcInfo
-
-
-_WriterMessage = Union[_ChunkFinished, _ShardFinished, _ShardFailed, _OtherFailed]
-
 # constraints:
 # can't pass an actor ref to self from within a method
 # so we can't pass the ShardCacheManager to the ShardWriter
 # so we need an intermediate actor to coordinate the writing
 # The ShardCacheManager needs to be able to tell writers to stop
+# Ray doesn't guarantee message ordering, so we need to use a sequence number to ensure that writers send their
+# messages in the correct order
 # Structure:
 # ShardCacheManager <-> CacheMessageHandler <-> ShardWriter
 
@@ -363,12 +402,14 @@ class _CacheMessageHandler:
     exception_source: Optional[str] = None
 
     writer_tasks: List[ray.ObjectRef]
+    reader_promises: Dict[int, asyncio.Future[Optional[ChunkMetadata]]]
 
     def __init__(self, shard_names: List[str]):
         self.shard_states = {name: _ShardState() for name in shard_names}
         self.global_chunks = []
 
         self.writer_tasks = []
+        self.reader_promises = {}
 
     # has to be separate from __init__ because we can't pass an actor ref to self from within a method
     def set_tasks(self, tasks):
@@ -377,6 +418,7 @@ class _CacheMessageHandler:
     def finished_chunk(self, shard_name: str, chunk: ChunkMetadata):
         """Called by a shard writer when it has finished writing a chunk. This will update the global ordering
         of chunks and notify any readers that are waiting for this chunk."""
+        print("chunk" + shard_name)
         logger.debug(f"Finished writing chunk {chunk} for shard {shard_name}")
 
         assert not self.shard_states[shard_name].finished
@@ -389,6 +431,7 @@ class _CacheMessageHandler:
         """Called by a shard writer when it has finished writing a shard. This will update the global ordering
         of chunks and notify any readers that are waiting for this chunk."""
         logger.debug(f"Finished writing shard {shard_name}")
+        print("shard" + shard_name)
         self.shard_states[shard_name].finished = True
         self._check_chunks_ready()
 
@@ -413,10 +456,34 @@ class _CacheMessageHandler:
 
     def _propagate_exceptions(self):
         # send exceptions to all blocked readers, terminate all writers
-        # for future in self.reader_promises.values():
-        #     future.set_exception(self._exception[0].with_traceback(self._exception[1].as_traceback()))
+        for future in self.reader_promises.values():
+            future.set_exception(self._exception[0].with_traceback(self._exception[1].as_traceback()))
         for task in self.writer_tasks:
             ray.cancel(task)
+
+    async def get_chunk(self, global_index: int) -> Optional[ChunkMetadata]:
+        """Called by a shard reader when it is ready for the next chunk. This will return the next chunk
+        in the global ordering, or wait until it is ready."""
+        logger.debug(f"Reader ready for chunk {global_index}")
+        if self.exception is not None:
+            restored = _restore_exc_info(self.exception)
+            if isinstance(restored, Exception):
+                raise restored
+            else:
+                raise RuntimeError().with_traceback(restored[2])
+
+        print(f"global index: {global_index}, global chunks: {self.global_chunks}")
+
+        if global_index < len(self.global_chunks):
+            return self.global_chunks[global_index]
+        elif self._all_done():
+            return None
+        else:
+            # we don't have this chunk yet, so we need to wait
+            if global_index not in self.reader_promises:
+                self.reader_promises[global_index] = asyncio.get_event_loop().create_future()
+            print("await return")
+            return await self.reader_promises[global_index]
 
     def _all_done(self):
         return all(state.finished for state in self.shard_states.values()) or self.exception is not None
@@ -431,7 +498,7 @@ class _CacheMessageHandler:
         while all(state.ready() for state in self.shard_states.values()):
             # get the next chunk for each shard (if it has one)
             # ordering determined by shard_names
-            # old_size = len(self.global_chunks)
+            old_size = len(self.global_chunks)
             next_chunks = []
             for shard_name, state in self.shard_states.items():
                 if len(state.buffered_chunks) > 0:
@@ -441,20 +508,21 @@ class _CacheMessageHandler:
 
             if len(next_chunks) == 0:
                 # all shards are finished, need to notify readers that we are done
-                # for k, v in self.reader_promises.items():
-                #     assert k >= len(self.global_chunks)
-                #     v.set_result(None)
-                # self.reader_promises = {}
+                for k, v in self.reader_promises.items():
+                    assert k >= len(self.global_chunks)
+                    v.set_result(None)
+                self.reader_promises = {}
+
                 break
 
             # add the next chunk for each shard to the global ordering
             self.global_chunks += next_chunks
 
-            # # Notify any readers that are waiting for this chunk
-            # for i in range(old_size, len(self.global_chunks)):
-            #     if i in self.reader_promises:
-            #         self.reader_promises[i].set_result(self.global_chunks[i])
-            #         del self.reader_promises[i]
+            # Notify any readers that are waiting for this chunk
+            for i in range(old_size, len(self.global_chunks)):
+                if i in self.reader_promises:
+                    self.reader_promises[i].set_result(self.global_chunks[i])
+                    del self.reader_promises[i]
 
 
 @ray.remote
@@ -515,6 +583,12 @@ class _ShardCacheManager(Generic[T]):
         """Returns true if all shards have been written."""
         return await self.handler.is_finished.remote()
 
+    async def get_chunk(self, i: int) -> Optional[ChunkMetadata]:
+        """Returns the ith chunk in the global ordering. If the chunk is not ready, this will block until
+        it is ready."""
+        return await self.handler.get_chunk.remote(i)
+
+
 
 # TODO: maybe go back to one task per shard? This is a bit tricky on the scheduler.
 # We can do one task per chunk but that makes maintaining input shard state tricky
@@ -531,10 +605,13 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
         while i < len(writers):
             writer = writers[i]
             try:
+                print(f"sending {len(writer.written_chunk_metadata)} chunks to manager for {writer.shard_name}")
                 for chunk in writer.written_chunk_metadata:
+                    print("is it here?")
                     handler.finished_chunk.remote(writer.shard_name, chunk)
 
                 if writer.is_finished:
+                    print(f"finished shard {writer.shard_name} early")
                     handler.finished_shard.remote(writer.shard_name)
                     del writers[i]
                     del sources[i]
@@ -565,6 +642,7 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
             min_writer = writers[min_chunk_idx]
             min_source = sources[min_chunk_idx]
             shard_name = min_writer.shard_name
+            print(f"writing chunk {min_writer.num_chunks_written} for shard {shard_name}")
             logger.debug(f"Writing chunk {min_writer.num_chunks_written} for shard {min_writer.shard_name}")
             # Our contract is that we always want to make sure we've written chunks evenly from each shard, so we need
             # to wait for the seek to finish before we start writing chunks
@@ -576,25 +654,30 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
                     )
                     seek_futures[min_chunk_idx] = None
 
-                chunk_written = False
-                while not chunk_written:
+                while True:
                     # write until we have a full chunk or the source is exhausted
                     batch = _take(min_source, processor.batch_size)
-                    if len(batch) != 0:
-                        processed = processor(batch)
-                        opt_chunk = min_writer.write(processed)
-                        if opt_chunk is not None:
-                            # we have a full chunk
-                            handler.finished_chunk.remote(shard_name, opt_chunk)
-                            chunk_written = True
-
-                    if len(batch) < processor.batch_size:
-                        # the source is exhausted
-                        min_writer.finalize()
-                        sources.pop(min_chunk_idx)
-                        writers.pop(min_chunk_idx)
-                        handler.finished_shard.remote(shard_name)
+                    if len(batch) == 0:
                         break
+
+                    processed = processor(batch)
+                    opt_chunk = min_writer.write(processed)
+
+                    # Ray doesn't guarantee message order, so we need to serialize the writes ourselves
+                    if opt_chunk is not None:
+                        # we have a full chunk
+                        handler.finished_chunk.remote(shard_name, opt_chunk)
+                        print(f"finished chunk {min_writer.num_chunks_written} for shard {shard_name}")
+
+                # the source is exhausted
+                chunk = min_writer.finalize()
+                if chunk is not None:
+                    print("here")
+                    ray.get(handler.finished_chunk.remote(shard_name, chunk))
+                    print(f"finished final chunk {min_writer.num_chunks_written} for shard {shard_name}")
+                sources.pop(min_chunk_idx)
+                writers.pop(min_chunk_idx)
+                handler.finished_shard.remote(shard_name)
             except Exception:
                 logger.exception(f"Writer process raised an exception while processing shard {min_writer.shard_name}.")
                 ray.get(handler.shard_exception.remote(shard_name, _exc_info()))
@@ -603,3 +686,32 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
         logger.exception("Writer process raised an exception.")
         handler.other_exception.remote(_exc_info())
         raise
+
+
+class ShardCacheIterable(Iterable[pa.RecordBatch]):
+    """An iterable that reads from a shard cache."""
+
+    def __init__(self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int):
+        self.cache_dir = cache_dir
+        self.shard_source = shard_source
+        self.processor = processor
+
+        self._manager = _get_manager_actor(cache_dir, shard_source, processor, None)
+        self._batch_size = batch_size
+
+    def __iter__(self):
+        i = 0
+        while True:
+            try:
+                chunk = ray.get(self._manager.get_chunk.remote(i))
+                i += 1
+                if chunk is None:
+                    break
+                reader = ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+                for batch in reader:
+                    yield batch
+            except Exception as e:
+                logger.exception("Error while reading from shard cache.")
+                raise e
+
+
