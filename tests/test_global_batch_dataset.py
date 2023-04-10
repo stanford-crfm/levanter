@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.maps import Mesh
 from jaxtyping import PyTree
+from test_utils import skip_if_not_enough_devices
 from transformers import BatchEncoding
-from utils import skip_if_not_enough_devices
 
 import haliax
 from haliax import Axis
