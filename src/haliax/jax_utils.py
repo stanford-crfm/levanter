@@ -38,9 +38,7 @@ def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
 
 
 def filter_eval_shape(fun: Callable, *args, **kwargs):
-    """As `jax.eval_shape`, but allows any Python object as inputs and outputs, including
-    GlobalDeviceArrays (which equinox.filter_eval_shape does not support).
-    """
+    """As `jax.eval_shape`, but allows any Python object as inputs and outputs"""
 
     # TODO: file a bug
 
