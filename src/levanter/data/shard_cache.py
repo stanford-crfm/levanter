@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import IO, Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import IO, Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar
 
 import fsspec.core
 import pyarrow as pa
@@ -18,17 +18,13 @@ from dataclasses_json import dataclass_json
 from ray.actor import ActorHandle
 
 
-
-
 logger = logging.getLogger(__name__)
 
-# TODO: make chunks in terms of rows?? Maybe less good if data is not uniform
-TARGET_CACHE_SHARD_SIZE = 512 * 1024 * 1024  # 512MB
+ROWS_PER_CHUNK = 32 * 1024  # if a doc produces ~1200 tokens, this is ~150MB chunks
 LEDGER_FILE_NAME = "ledger.json"
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
-T_con = TypeVar("T_con", contravariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 
@@ -67,9 +63,12 @@ class ShardedDataSource(Protocol[T_co]):
 
 
 def cache_dataset(
-    cache_dir: str, processor: BatchProcessor[T], input_shards: ShardedDataSource[T], num_workers: Optional[int] = None,
-        batch_size: Optional[int] = None
-) -> 'ShardCacheIterable':
+    cache_dir: str,
+    processor: BatchProcessor[T],
+    input_shards: ShardedDataSource[T],
+    num_workers: Optional[int] = None,
+    batch_size: Optional[int] = None,
+) -> "ShardCacheIterable":
     manager = _get_manager_actor(cache_dir, input_shards, processor, num_workers)
 
     logger.info("Waiting for cache to be built")
@@ -84,7 +83,10 @@ def cache_dataset(
 def _get_manager_actor(cache_dir, input_shards, processor, num_workers):
     return _ShardCacheManager.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
-        cache_dir, input_shards, processor, num_workers
+        cache_dir,
+        input_shards,
+        processor,
+        num_workers,
     )
 
 
@@ -107,30 +109,12 @@ class ShardMetadata:
     is_finished: bool
 
 
-def _initialize_cache_ledger(cache_dir, input_shards):
-    fs, path = fsspec.core.url_to_fs(cache_dir)
-    if fs.exists(path):
-        raise ValueError(f"Cache directory {cache_dir} already exists")
-
-    fs.makedirs(path)
-
-    for shard_id, shard in enumerate(input_shards):
-        shard_path = f"{path}/shard_{shard_id}"
-        fs.makedirs(shard_path)
-        shard_ledger = ShardMetadata([], False)
-        shard_ledger_path = f"{shard_path}/ledger.json"
-
-        with fs.open(shard_ledger_path, "w") as f:
-            f.write(shard_ledger.to_json())
-
-
 class _ChunkWriter:
     metadata: ChunkMetadata
     writer: Optional[pq.ParquetWriter]
     file: fsspec.core.OpenFile
     file_stream: Optional[IO[bytes]]
     cache_dir: str
-    bytes_written: int
 
     finalized: bool
 
@@ -140,7 +124,6 @@ class _ChunkWriter:
         self.file_stream = None
         self.metadata = ChunkMetadata.new(name)
         self.cache_dir = cache_dir
-        self.bytes_written = 0
         self.writer = None
         self.finalized = False
 
@@ -155,8 +138,6 @@ class _ChunkWriter:
 
         # update metadata
         self.metadata.num_rows += record_batch.num_rows
-
-        self.bytes_written += record_batch.nbytes
 
         for i in range(record_batch.num_columns):
             name = record_batch.field(i).name
@@ -281,7 +262,7 @@ class _ShardWriter:
 
         self.current_chunk_writer.write(batch)
 
-        if self.current_chunk_writer.bytes_written >= TARGET_CACHE_SHARD_SIZE:
+        if self.current_chunk_writer.metadata.num_rows >= ROWS_PER_CHUNK:
             self.current_chunk_writer.close()
             current_metadata = self.current_chunk_writer.metadata
             self.written_chunk_metadata.append(current_metadata)
@@ -366,6 +347,7 @@ def _restore_exc_info(exc_info):
     exc_value, tb = exc_info
     if exc_value is not None:
         exc_value = exc_value.with_traceback(tb.as_traceback())
+        return (exc_value.__class__, exc_value, tb.as_traceback())
     else:
         return (None, None, tb.as_traceback())
 
@@ -381,6 +363,7 @@ class _ShardState:
 
     def ready(self) -> bool:
         return len(self.buffered_chunks) > 0 or self.finished
+
 
 # constraints:
 # can't pass an actor ref to self from within a method
@@ -589,7 +572,6 @@ class _ShardCacheManager(Generic[T]):
         return await self.handler.get_chunk.remote(i)
 
 
-
 # TODO: maybe go back to one task per shard? This is a bit tricky on the scheduler.
 # We can do one task per chunk but that makes maintaining input shard state tricky
 # handler is a _CacheMessageHandler actor (mypy doesn't know this)
@@ -691,7 +673,9 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
 class ShardCacheIterable(Iterable[pa.RecordBatch]):
     """An iterable that reads from a shard cache."""
 
-    def __init__(self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int):
+    def __init__(
+        self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int
+    ):
         self.cache_dir = cache_dir
         self.shard_source = shard_source
         self.processor = processor
@@ -713,5 +697,3 @@ class ShardCacheIterable(Iterable[pa.RecordBatch]):
             except Exception as e:
                 logger.exception("Error while reading from shard cache.")
                 raise e
-
-

@@ -124,7 +124,5 @@ def test_cache_recover_from_crash(num_workers):
         # compare to the original with no crash
         reader2 = cache_dataset(tmpdir2, TestProcessor(), SimpleShardSource(), num_workers=num_workers, batch_size=1)
 
-        assert len(list(reader1)) == 40
-
-        # todo: actual comparison
         assert list(reader1) == list(reader2)
+        assert len(list(reader1)) == 40
