@@ -18,8 +18,15 @@ class Stacked(eqx.Module, Generic[M]):
     in sequence.
 
     It's similar in spirit to an equinox.nn.Sequential, but it must be homogeneous. In Jax, this is much cheaper
-    to compile than a sequential (or moral equivalent), because jax compiles the module's method once, instead of
-    unrolling the sequential and compiling everything as a giant graph.
+    to compile than a sequential (or moral equivalent), because Jax compiles the module's method once, instead of
+    unrolling the sequential and compiling everything as a giant graph. In Jax, this pattern is often called
+    "scan layers" or "scan over layers".
+
+    Stacked supports both "fold" and "scan" semantics. "fold" is the default, and it's the same as a for loop that
+    accumulates a single output, while "scan" is the same as a for loop that accumulates a list of intermediates
+    as well as the final output.
+
+    Stacked also supports gradient checkpointing, which is useful for very large models that don't fit in memory.
     """
 
     stacked: M
