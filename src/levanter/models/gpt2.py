@@ -308,7 +308,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = self.blocks(hidden_states, attn_mask, hax.arange(self.Layers), inference=inference, key=keys)
+        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference, key=keys)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
