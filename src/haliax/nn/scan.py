@@ -17,14 +17,13 @@ class Stacked(eqx.Module, Generic[M]):
     where you have multiple instances of the same transformer block and the input is applied in a fold/for loop
     in sequence.
 
-    It's similar in spirit to an equinox.nn.Sequential, but it must be homogeneous. In Jax, this is much cheaper
-    to compile than a sequential (or moral equivalent), because Jax compiles the module's method once, instead of
-    unrolling the sequential and compiling everything as a giant graph. In Jax, this pattern is often called
-    "scan layers" or "scan over layers".
+    It's similar in spirit to an equinox.nn.Sequential, but it must be homogeneous. In Jax, this is much cheaper to
+    compile than a sequential (or moral equivalent), because Jax compiles the module's method once, instead of unrolling
+    the sequential and compiling everything as a giant graph. In Jax, this pattern is often called "scan layers" or
+    "scan over layers".
 
-    Stacked supports both "fold" and "scan" semantics. "fold" is the default, and it's the same as a for loop that
-    accumulates a single output, while "scan" is the same as a for loop that accumulates a list of intermediates
-    as well as the final output.
+    Stacked supports both "fold" and "scan" semantics. "fold" is the same as a for loop that accumulates a single
+    output, while "scan" is the same as a for loop that accumulates a list of intermediates as well as the final output.
 
     Stacked also supports gradient checkpointing, which is useful for very large models that don't fit in memory.
     """
@@ -58,9 +57,6 @@ class Stacked(eqx.Module, Generic[M]):
     @staticmethod
     def _do_block(carry, block, *extra_args, **extra_kwargs):
         return block(carry, *extra_args, **extra_kwargs)
-
-    def __call__(self, *args, **kwargs):
-        return self.fold(*args, **kwargs)
 
     # TODO: this is for logic that's in levanter. We should move that logic to haliax I guess?
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
