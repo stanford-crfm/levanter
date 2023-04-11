@@ -1,10 +1,10 @@
-from typing import Generic, Type, TypeVar
+from typing import Dict, Generic, Optional, Type, TypeVar
 
 import equinox as eqx
-import jax
 
 import haliax
 from haliax import Axis
+from haliax.jax_utils import filter_checkpoint
 
 
 M = TypeVar("M", bound=eqx.Module)
@@ -35,14 +35,14 @@ class Stacked(eqx.Module, Generic[M]):
 
     def scan(self, init, *extra_args, **extra_kwargs):
         if self.gradient_checkpointing:
-            do_block = jax.checkpoint(self._do_block)
+            do_block = filter_checkpoint(self._do_block)
         else:
             do_block = self._do_block
         return haliax.scan(do_block, self.Block)(init, self.stacked, *extra_args, **extra_kwargs)
 
     def fold(self, init, *args, **kwargs):
         if self.gradient_checkpointing:
-            do_block = jax.checkpoint(self._do_block)
+            do_block = filter_checkpoint(self._do_block)
         else:
             do_block = self._do_block
 
@@ -54,3 +54,7 @@ class Stacked(eqx.Module, Generic[M]):
 
     def __call__(self, *args, **kwargs):
         return self.fold(*args, **kwargs)
+
+    # TODO: this is for logic that's in levanter. We should move that logic to haliax I guess?
+    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+        return {"stacked": None}

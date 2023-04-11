@@ -1,8 +1,10 @@
-from typing import Any, Dict, Optional, Tuple, TypeVar, cast
+import re
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import PyTree
+from sympy.physics.continuum_mechanics.beam import numpy
 
 from haliax import NamedArray
 
@@ -142,7 +144,6 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
-# needs to be jitted because we can't do reshape
 def reshape_linear_layer(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:
@@ -158,3 +159,65 @@ def reshape_linear_layer(
     new_dict[bias_key] = bias
 
     return new_dict
+
+
+def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+    """
+    Unstack all keys matching prefix in a new state dict, returning a state dict that has all keys matching
+    prefix unstacked, but otherwise the same.
+
+    Unstacked in this case means roughly "compatible with a torch.nn.Sequential", which means that the
+    keys are of the form "<prefix>.0.<key>", "<prefix>.1.<key>", etc.
+    :param state_dict:
+    :param prefix:
+    :return:
+    """
+    new_dict: StateDict = {}
+    prefix = apply_prefix(prefix, "")
+    assert prefix is not None
+
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            for i, v_i in enumerate(v):
+                new_dict[f"{prefix}{i}.{k[len(prefix):]}"] = v_i
+        else:
+            new_dict[k] = v
+
+    return new_dict
+
+
+def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+    """
+    Stack all keys matching prefix in a new state dict, returning a state dict that has all keys matching
+    prefix stacked, but otherwise the same.
+
+    Stacked in this case means roughly "compatible with a torch.nn.Sequential", which means that the
+    keys are of the form "<prefix>.0.<key>", "<prefix>.1.<key>", etc.
+    :param state_dict:
+    :param prefix:
+    :return:
+    """
+    vectorized_dict: StateDict = {}
+
+    tensors_to_vectorize: Dict[str, List[Optional[Any]]] = {}
+    escaped = re.escape(prefix or "")
+    pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
+
+    for k, v in state_dict.items():
+        match = pattern.match(k)
+        if match:
+            block_idx = int(match.group(1))
+            block_key = match.group(2)
+            tensors = tensors_to_vectorize.setdefault(block_key, [])
+            if len(tensors) <= block_idx:
+                tensors.extend([None] * (block_idx - len(tensors) + 1))
+            assert tensors[block_idx] is None, f"Duplicate key {k}"
+            tensors[block_idx] = v
+        else:
+            vectorized_dict[k] = v
+
+    # now we have to vectorize the tensors
+    for k, tensors in tensors_to_vectorize.items():
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
+
+    return vectorized_dict
