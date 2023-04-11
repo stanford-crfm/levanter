@@ -24,6 +24,7 @@ class Stacked(eqx.Module, Generic[M]):
 
     stacked: M
     Block: Axis = eqx.static_field()
+    # TODO: support fancier gradient checkpointing
     gradient_checkpointing: bool = eqx.static_field()
 
     def __init__(self, Block: Axis, module: Type[M], *args, gradient_checkpointing: bool = False, **kwargs):
