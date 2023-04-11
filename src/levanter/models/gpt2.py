@@ -317,55 +317,19 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return {"blocks": "h"}
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
+        # We use a vectorized set of blocks, meaning that we have 1 GptBlock,
         # whereas in hf we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        # first we vectorize the keys for the state dict
         # the individual blocks are named h.0.FOO, h.1.FOO, etc.
         # we want to vectorize them to h.FOO, h.FOO, etc.
-        # vectorized_dict: StateDict = {}
-        #
-        # tensors_to_vectorize: Dict[str, List[Optional[Any]]] = {}
-        # prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
-        # escaped = re.escape(prefix_to_vectorize)
-        # pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
-        #
-        # other_keys_prefix = cast(str, apply_prefix(prefix, ""))
-        # for k, v in state_dict.items():
-        #     match = pattern.match(k)
-        #     if match:
-        #         block_idx = int(match.group(1))
-        #         block_key = match.group(2)
-        #         tensors = tensors_to_vectorize.setdefault(block_key, [None] * self.Layers.size)
-        #         assert tensors[block_idx] is None, f"Duplicate key {k}"
-        #         tensors[block_idx] = v
-        #     elif k.startswith(other_keys_prefix):
-        #         k = k[len(other_keys_prefix) :]
-        #         vectorized_dict[k] = v
-        #
-        # # now we have to vectorize the tensors
-        # for k, tensors in tensors_to_vectorize.items():
-        #     vectorized_dict[cast(str, apply_prefix("h", k))] = numpy.stack(tensors, axis=0)
-
-        # now we can just call the base class. No prefix is needed because we've stripped it
         stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "h"))
         out = super().from_state_dict(stacked, prefix=prefix)
         return out
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # this method is also a bit of a pain for the same reasons
+        # this method needs to "devectorize" the blocks, so that we have a list of blocks h.0.FOO, h.1.FOO, etc.
         # first just do the normal thing with our own dict, which we'll post-process
         my_state_dict: StateDict = {}
         super().update_state_dict(my_state_dict, prefix)
-
-        # now go through and devectorize all the "h" keys
-        # for k, v in my_state_dict.items():
-        #     if k.startswith("h."):
-        #         # this is a vectorized key, we need to devectorize it
-        #         for i, v2 in enumerate(v):
-        #             state_dict[cast(str, apply_prefix(prefix, f"h.{i}.{k[2:]}"))] = v2
-        #     else:
-        #         # other keys just copy over
-        #         state_dict[k] = v
 
         stacked_dict = unstack_state_dict(my_state_dict, apply_prefix(prefix, "h"))
         state_dict.update(stacked_dict)
