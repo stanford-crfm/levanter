@@ -26,6 +26,22 @@ class Stacked(eqx.Module, Generic[M]):
     output, while "scan" is the same as a for loop that accumulates a list of intermediates as well as the final output.
 
     Stacked also supports gradient checkpointing, which is useful for very large models that don't fit in memory.
+
+    Example:
+        >>> import equinox as eqx
+        >>> import haliax as hax
+        >>> import haliax.nn as hnn
+        >>> class MyModule(eqx.Module):
+        ...     def __init__(self, num_layers: int, hidden: hax.Axis, *, key):
+        ...         self.axis = Axis("layer", num_layers)
+        ...         self.layers = Stacked(self.axis, hnn.Linear, In=hidden, Out=hidden, key=key)
+        ...
+        ...     def __call__(self, x):
+        ...         return self.layers.fold(x)  # applies each layer in sequence
+        ...
+        >>> Hidden = Axis("hidden", 10)
+        >>> mod = MyModule(5, Hidden)
+        >>> mod(hax.ones(Hidden))
     """
 
     stacked: M
