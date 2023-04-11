@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy
 from jaxtyping import PyTree
-from sympy.physics.continuum_mechanics.beam import numpy
 
 from haliax import NamedArray
 
