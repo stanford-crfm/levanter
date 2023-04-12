@@ -670,6 +670,62 @@ def _shard_writer_task(handler, processor, cache_dir, shard_source, shard_names)
         raise
 
 
+# @ray.remote(num_returns="dynamic", num_cpus=0)  # type: ignore
+@ray.remote(num_returns="dynamic")  # type: ignore
+def _shard_writer_2(processor, cache_dir, shard_source, shard_name):
+    """Similar to _shard_writer_task, but writes from just a single source"""
+    # TODO: if/when we switch to forking tasks from this task, we can use this
+    # run_batch = ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)(_run_batch)
+
+    try:
+        source = shard_source.open_shard(shard_name)
+        writer = _ShardWriter(cache_dir, shard_name)
+
+        # send any finished chunks to the manager
+        try:
+            print(f"sending {len(writer.written_chunk_metadata)} chunks to manager for {writer.shard_name}")
+            for chunk in writer.written_chunk_metadata:
+                yield chunk
+
+            if writer.is_finished:
+                print(f"finished shard {writer.shard_name} early")
+                yield None
+                return
+        except Exception as e:
+            logger.exception(f"Writer process raised an exception while processing shard {writer.shard_name}.")
+            raise e
+
+        # now, skip to the first unfinished chunk for this shard
+        _seek_to_row(source, writer.rows_written())
+
+        # now, start writing chunks
+        while True:
+            # write until we have a full chunk or the source is exhausted
+            batch = _take(source, processor.batch_size)
+            if len(batch) == 0:
+                break
+
+            processed = processor(batch)
+            # processed = ray.get(run_batch.remote(batch))
+            opt_chunk = writer.write(processed)
+
+            # Ray doesn't guarantee message order, so we need to serialize the writes ourselves
+            if opt_chunk is not None:
+                # we have a full chunk
+                yield opt_chunk
+                print(f"finished chunk {writer.num_chunks_written} for shard {shard_name}")
+
+        # the source is exhausted
+        chunk = writer.finalize()
+        print(f"finished final chunk {writer.num_chunks_written} for shard {shard_name}")
+        yield chunk
+        if chunk is not None:
+            yield None
+    except:
+        logger.exception(f"Writer process raised an exception while processing shard {writer.shard_name}.")
+        raise
+
+
 class ShardCacheIterable(Iterable[pa.RecordBatch]):
     """An iterable that reads from a shard cache."""
 
