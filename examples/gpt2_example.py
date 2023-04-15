@@ -34,80 +34,6 @@ logger = logging.getLogger(__name__)
 
 # cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
 
-class HongOptState(NamedTuple):
-  """State for the Adam algorithm."""
-  count: chex.Array  # shape=(), dtype=jnp.int32.
-  hessian_count: chex.Array  # shape=(), dtype=jnp.int32.
-  mu: base.Updates  # momentum
-  nu: base.Updates  # EMA
-
-def scale_by_adam(
-    b1: float = 0.9,
-    b2: float = 0.999,
-    eps: float = 1e-8,
-    eps_root: float = 0.0,
-    mu_dtype: Optional[Any] = None,
-) -> base.GradientTransformation:
-  """Rescale updates according to the Adam algorithm.
-
-  References:
-    [Kingma et al, 2014](https://arxiv.org/abs/1412.6980)
-
-  Args:
-    b1: Decay rate for the exponentially weighted average of grads.
-    b2: Decay rate for the exponentially weighted average of squared grads.
-    eps: Term added to the denominator to improve numerical stability.
-    eps_root: Term added to the denominator inside the square-root to improve
-      numerical stability when backpropagating gradients through the rescaling.
-    mu_dtype: Optional `dtype` to be used for the first order accumulator; if
-      `None` then the `dtype is inferred from `params` and `updates`.
-
-  Returns:
-    A `GradientTransformation` object.
-  """
-
-  mu_dtype = utils.canonicalize_dtype(mu_dtype)
-
-  def init_fn(params):
-    mu = jax.tree_util.tree_map(  # First moment
-        lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)
-    nu = jax.tree_util.tree_map(jnp.zeros_like, params)  # Second moment
-    return ScaleByAdamState(count=jnp.zeros([], jnp.int32), mu=mu, nu=nu)
-
-  def update_fn(updates, state, params=None):
-    del params
-    mu = update_moment(updates, state.mu, b1, 1)
-    # nu = update_moment_per_elem_norm(updates, state.nu, b2, 2)
-    count_inc = numerics.safe_int32_increment(state.count)
-    mu_hat = bias_correction(mu, b1, count_inc)
-    nu_hat = state.nu
-    # Gamma should be 0.01
-    # eps should be 1E-12
-    # Use slightly lower learning rate for adam, e.g. 0.85 * adam_lr
-    # monitor param norm and momentum norm and trace(hessian) (aka sum of nu_hat)
-    # also track how often hessian is used (per coordinate)
-    # track sum( jnp.abs(m) > gamma * jnp.max(jnp.abs(m)) for m in mu_hat), we expect this to be ~70% later in training
-    # track time for hessian computation
-    # b1 should be 0.95
-    # b2 should be 0.99
-    # 10% update hessian
-    updates = jax.tree_util.tree_map(
-        lambda m, v: m / jnp.max(jnp.max(jnp.max(jnp.abs(m), gamma * jnp.max(v, 0))), eps),
-        mu_hat, nu_hat)
-    mu = utils.cast_tree(mu, mu_dtype)
-    return updates, ScaleByAdamState(count=count_inc, mu=mu, nu=nu)
-
-  def update_hessian(hessian, state, params=None):
-    del params
-    nu = update_moment_per_elem_norm(hessian, state.nu, b2, 2)
-    count_inc = numerics.safe_int32_increment(state.hessian_count)
-    nu_hat = bias_correction(nu, b2, state.hessian_count)
-    # TODO
-    return # state but with nu_hat as nu
-
-  return base.GradientTransformation(init_fn, update_fn, XXX)
-
-
 
 @dataclass
 class TrainGpt2Config:
@@ -259,23 +185,6 @@ def main(config: TrainGpt2Config):
 
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
-
-        def update_hessian_step(xXX, prng_key):
-            # XXX need to split key
-            gaussian = jax.tree_util.tree_map(lambda x: jax.random.normal(prng_key, x.shape), XXX)
-
-            def gaussian_something(XXX):
-                loss_and_grad = eqx.filter_value_and_grad(train_batch_loss)
-                loss, grads = loss_and_grad(model, input_ids, attn_mask, keys)
-                grad_dot = 0.0 # TODO: dot grads with gaussian
-                return grad_dot
-
-            # param vector [Hid, Vocab]
-            hessian = eqx.filter_grad(gaussian_something)(model) * gaussian
-            opt_state = optimizer.update_hessian(hessian, opt_state, params=model) # TODO: EMA
-
-
-
         # evaluation loss and loop
 
         @named_pjit(axis_resources=parameter_axis_mapping)
@@ -393,7 +302,8 @@ def main(config: TrainGpt2Config):
 
                 if config.trainer.update_hessian_steps % 0 == 100:
                     # TODO: fill this in
-                    XXX
+                    pass
+
                 jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jax_step_loss.item()
 
