@@ -1,3 +1,5 @@
+import os
+
 import equinox as eqx
 import equinox.nn as nn
 import jax
@@ -11,7 +13,7 @@ from levanter.optim import stochastic_hessian_diagonal
 def test_hessian_optimizer():
     key = jax.random.PRNGKey(0)
     model = nn.Linear(4, 4, use_bias=False, key=key)
-    data = np.load("data.npy").astype("float32")
+    data = np.load(f"{os.path.dirname(__file__)}/data/hero_data.npy").astype("float32")
     optimizer = levanter.optim.hero(lr=1, b1=0, b2=0.99, gamma=2)
     model = jax.tree_util.tree_map(lambda x: jnp.ones_like(x), model)
 
