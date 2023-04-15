@@ -39,10 +39,10 @@ def test_hessian_optimizer():
     # loss should be 15.74834156036377
     assert jnp.allclose(loss, 15.74834156036377)
 
-    print("Test-model param after 1 step: most coordinates should be very loosely 0.5")
+    # print("Test-model param after 1 step: most coordinates should be very loosely 0.5")
     assert jnp.allclose(model.weight, 0.5, rtol=0.2, atol=0.1)  # this is very approximate
 
-    print("Test-loss: loss should shrink by approximately 75% after each iteration")
+    # print("Test-loss: loss should shrink by approximately 75% after each iteration")
     for i in range(10):
         loss, grad = grad_loss_fn(model, data)
         model, opt_state = optimizer.update(grad, opt_state)

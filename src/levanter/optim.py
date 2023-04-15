@@ -51,6 +51,11 @@ class SecondOrderTransformation(NamedTuple):
 AnySecondOrderTransformation = Union[SecondOrderTransformation, optax.GradientTransformation]
 
 
+# TODO: filter_jvp?
+def hvp(f, x, v):
+    return jax.jvp(eqx.filter_grad(f), (x,), (v,))[1]
+
+
 # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
 # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
 # https://arxiv.org/pdf/2208.03268.pdf
@@ -63,26 +68,9 @@ def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
         g_key: key for the normal distribution
     """
     g = tree_gaussian(g_key, model)
-
-    grad_fn = eqx.filter_grad(fn)
-
-    # todo:use def hvp(f, x, v):
-    #   return jvp(grad(f), (x,), (v,))[1]
     # TODO: consider allowing for n > 1 gaussians
-
-    def gaussian_something(model, *args, **kwargs):
-        grads = grad_fn(model, *args, **kwargs)
-        # dot grads with gaussian
-        leaves = jax.tree_util.tree_leaves(grads)
-        g_leaves = jax.tree_util.tree_leaves(g)
-        grad_dot = sum(
-            [jnp.sum(jnp.multiply(g_leaf, leaf)) for g_leaf, leaf in zip(g_leaves, leaves)],
-            jnp.zeros([], dtype=jnp.float32),
-        )
-        return grad_dot
-
-    grad_g = eqx.filter_grad(gaussian_something)(model, *args, **kwargs)
-    hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, grad_g, g)
+    product = hvp(lambda m: fn(m, *args, **kwargs), model, g)
+    hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
 
     return hessian
 
