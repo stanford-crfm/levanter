@@ -11,6 +11,7 @@ from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
+from jaxlib.xla_client import SingleDeviceSharding
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -133,7 +134,12 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
         # elif isinstance(node, GlobalDeviceArray):
         #     return FROM_GDA
         elif hasattr(node, "sharding"):
-            return node.sharding
+            sharding = node.sharding
+            # these are usually replicated. Is there a better way to tell?
+            if isinstance(sharding, SingleDeviceSharding):
+                return None
+            else:
+                return sharding
         else:
             return None
 
