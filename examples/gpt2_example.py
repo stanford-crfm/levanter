@@ -24,6 +24,7 @@ from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.optim import hero_from_config, stochastic_hessian_diagonal
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -47,6 +48,8 @@ class TrainGpt2Config:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+
+    hessian_update_steps: int = 100
 
 
 @levanter.config.main()
@@ -118,7 +121,8 @@ def main(config: TrainGpt2Config):
 
         # initialize the optimizer
         # This is basically the same as the model.
-        optimizer = config.trainer.optimizer()
+        optimizer = hero_from_config(config.trainer)
+        # optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
@@ -160,7 +164,7 @@ def main(config: TrainGpt2Config):
 
         # training loop
         # donate args to conserve memory
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=(True, True, False, False))
         def train_step(model, opt_state, input_ids, keys):
 
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
@@ -185,6 +189,19 @@ def main(config: TrainGpt2Config):
 
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
+
+        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=(False, True, False, False, False))
+        def update_hessian(model, opt_state, input_ids, keys, g_key):
+            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
+            attn_mask = hax.auto_sharded(attn_mask)
+            # loss, grads = eqx.filter_value_and_grad(train_batch_loss)(model, input_ids, attn_mask, keys)
+            hess = stochastic_hessian_diagonal(train_batch_loss, model, input_ids, attn_mask, keys, g_key=g_key)
+
+            # distribute gradients across the mesh and apply them
+            opt_state = optimizer.hessian_update(hess, opt_state)
+
+            return opt_state
+
         # evaluation loss and loop
 
         @named_pjit(axis_resources=parameter_axis_mapping)
@@ -295,14 +312,14 @@ def main(config: TrainGpt2Config):
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
                     input_ids = hax.named(input_ids, (Batch, SeqLen))
-                    my_key, training_key = jrandom.split(training_key, 2)
-                    example_keys = global_key_array(
-                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
-                    )
 
-                if config.trainer.update_hessian_steps % 0 == 100:
-                    # TODO: fill this in
-                    pass
+                my_key, g_key, training_key = jrandom.split(training_key, 3)
+                example_keys = global_key_array(
+                    my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
+                )
+
+                if step % config.hessian_update_steps == 0:
+                    opt_state = update_hessian(model, opt_state, input_ids, example_keys, g_key)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jax_step_loss.item()
