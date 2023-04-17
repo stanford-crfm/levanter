@@ -144,10 +144,10 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
 
 
 def scale_by_hero(
-    b1: float = 0.95,
+    b1: float = 0.96,
     b2: float = 0.99,
     eps: float = 1e-12,
-    gamma: float = 0.1,
+    gamma: float = 0.01,
     mu_dtype: Optional[Any] = None,
 ) -> SecondOrderTransformation:
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
@@ -229,7 +229,7 @@ def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
         if config.max_grad_norm:
             components.append(optax.clip_by_global_norm(config.max_grad_norm))
 
-        components.append(hero(learning_rate, b1=config.beta1, b2=config.beta2))
+        components.append(scale_by_hero(b1=config.beta1, b2=config.beta2, eps=config.epsilon))
 
         if config.weight_decay > 0:
             # TODO: add weight decay masking??

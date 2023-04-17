@@ -99,7 +99,6 @@ def jittable_wandb_log(data, *, step=None):
 
 
 def _jittable_wandb_log(data, *, step=None):
-    print("logging to wandb", data, step)
     if is_wandb_available():
         wandb.log(data, step=step)
 
