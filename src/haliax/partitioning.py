@@ -202,8 +202,16 @@ def named_pjit(
         dynamic = (dynamic_fun, dynamic_argspec)
 
         if donate_args is not None or donate_kwargs is not None:
-            dargs = donate_args or (False,) * len(args)
+            if donate_args is None:
+                dargs = (False,) * len(args)
+            elif isinstance(donate_args, bool):
+                dargs = (donate_args,) * len(args)
+            elif not isinstance(donate_args, tuple):
+                dargs = tuple(donate_args)
+            else:
+                dargs = donate_args
             dkwargs = donate_kwargs or {k: False for k in kwargs}
+            dkwargs = {k: dkwargs.get(k, False) for k in kwargs}
             dynamic_donated, dynamic_reserved = eqx.partition(dynamic, (False, (dargs, dkwargs)))
         else:
             dynamic_donated = jax.tree_util.tree_map(lambda _: None, dynamic)
