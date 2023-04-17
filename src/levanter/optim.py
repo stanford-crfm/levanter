@@ -166,7 +166,6 @@ def scale_by_hero(
         # TODO: monitor param norm and momentum norm and trace(hessian) (aka sum of h_hat)
         # TODO: also track how often hessian is used (per coordinate)
         # TODO: track sum( jnp.abs(m) > gamma * jnp.max(jnp.abs(m)) for m in mu_hat), we expect this to be ~70% later in training
-        # TODO: track time for hessian computation
         # TODO: 10% update hessian
         updates = jax.tree_util.tree_map(
             lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat

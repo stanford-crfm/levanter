@@ -319,7 +319,8 @@ def main(config: TrainGpt2Config):
                 )
 
                 if step % config.hessian_update_steps == 0:
-                    opt_state = update_hessian(model, opt_state, input_ids, example_keys, g_key)
+                    with log_time_to_wandb("throughput/hessian_time", step=step):
+                        opt_state = update_hessian(model, opt_state, input_ids, example_keys, g_key)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jax_step_loss.item()
