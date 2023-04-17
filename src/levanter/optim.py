@@ -15,6 +15,8 @@ from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
 from levanter.config import TrainerConfig
+from levanter.logging import jittable_wandb_log
+from levanter.utils.jax_utils import parameter_count
 
 
 class ScaleByHeroState(NamedTuple):
@@ -156,7 +158,6 @@ def scale_by_hero(
         return ScaleByHeroState(count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), mu=mu, h=h)
 
     def update_fn(updates, state, params=None):
-        del params
         mu = update_moment(updates, state.mu, b1, 1)
         # nu = update_moment_per_elem_norm(updates, state.nu, b2, 2)
         count_inc = numerics.safe_int32_increment(state.count)
@@ -165,8 +166,34 @@ def scale_by_hero(
         # TODO: Use slightly lower learning rate for adam, e.g. 0.85 * adam_lr
         # TODO: monitor param norm and momentum norm and trace(hessian) (aka sum of h_hat)
         # TODO: also track how often hessian is used (per coordinate)
-        # TODO: track sum( jnp.abs(m) > gamma * jnp.max(jnp.abs(m)) for m in mu_hat), we expect this to be ~70% later in training
+        # TODO: track sum( jnp.abs(m) < gamma * jnp.maximum(v, 0) for m in mu_hat), we expect this to be ~70% later in training
         # TODO: 10% update hessian
+        # track how often hessian is used
+        mu_leaves = jax.tree_util.tree_leaves(mu_hat)
+        h_leaves = jax.tree_util.tree_leaves(h_hat)
+        hessian_use_count = sum(
+            jnp.sum(jnp.abs(mu) < gamma * jnp.maximum(h, 0)) for (mu, h) in zip(mu_leaves, h_leaves)
+        )
+        param_count = parameter_count(updates)
+        hessian_use_ratio = hessian_use_count / param_count
+
+        param_norm = jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params)))
+        momentum_norm = jnp.sqrt(sum(jnp.sum(m**2) for m in mu_leaves))
+        hessian_norm = jnp.sqrt(sum(jnp.sum(h**2) for h in h_leaves))
+
+        # this doesn't work well on CPU, so skip if cpu
+        if jax.lib.xla_bridge.get_backend().platform != "cpu":
+            jax.debug.print("hessian_use_ratio {hessian_use_ratio}", hessian_use_ratio=hessian_use_ratio)
+            jittable_wandb_log(
+                {
+                    "optim/hessian_use_ratio": hessian_use_ratio,
+                    "optim/param_norm": param_norm,
+                    "optim/momentum_norm": momentum_norm,
+                    "optim/hessian_norm": hessian_norm,
+                },
+                step=state.count,
+            )
+
         updates = jax.tree_util.tree_map(
             lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
         )

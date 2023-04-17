@@ -91,3 +91,18 @@ def log_time_to_wandb(name: str, *, step=None):
     with capture_time() as fn:
         yield fn
     wandb.log({name: fn()}, step=step)
+
+
+def jittable_wandb_log(data, *, step=None):
+    """uses jax effect callback to log to wandb from the host"""
+    jax.debug.callback(_jittable_wandb_log, data, step=step)
+
+
+def _jittable_wandb_log(data, *, step=None):
+    print("logging to wandb", data, step)
+    if is_wandb_available():
+        wandb.log(data, step=step)
+
+
+def is_wandb_available():
+    return wandb is not None and wandb.run is not None

@@ -49,7 +49,7 @@ class TrainGpt2Config:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
-    hessian_update_steps: int = 100
+    hessian_update_steps: int = 10
 
 
 @levanter.config.main()
