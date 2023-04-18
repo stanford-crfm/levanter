@@ -22,7 +22,7 @@ import levanter.visualization as viz
 import wandb
 from levanter.config import WandbConfig
 from levanter.data import Dataset
-from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
+from levanter.logging import log_optimizer_hyperparams, log_optimizer_state, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
 
 
@@ -61,6 +61,7 @@ def compute_validation_loss(
 def log_to_wandb(step: StepInfo):
     wandb.log({"train/loss": step.loss, "global_step": step.step}, step=step.step)
     log_optimizer_hyperparams(step.opt_state, step=step.step)
+    log_optimizer_state(step.opt_state, step=step.step)
 
 
 def wandb_xla_logger(config: WandbConfig):

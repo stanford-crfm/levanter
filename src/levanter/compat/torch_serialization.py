@@ -69,6 +69,7 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         return jnp.array(state_dict[prefix])
 
 
+# TODO: switch to keypaths? Will have to convince Eqx to support them
 def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> None:
     if isinstance(tree, eqx.Module):
         if hasattr(tree, "update_state_dict"):
@@ -81,6 +82,13 @@ def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix:
     elif isinstance(tree, dict):
         for k, v in tree.items():
             update_state_dict_with_jax_tree(v, state_dict, prefix=apply_prefix(prefix, k))
+    elif isinstance(tree, tuple):
+        if _is_named_tuple(tree):
+            for k, v in tree._asdict().items():  # type: ignore
+                update_state_dict_with_jax_tree(v, state_dict, prefix=apply_prefix(prefix, k))
+        else:
+            for i, item in enumerate(tree):
+                update_state_dict_with_jax_tree(item, state_dict, prefix=apply_prefix(prefix, str(i)))
     elif isinstance(tree, NamedArray):
         # TODO: where's the best place to put this logic for NamedArrays
         assert prefix is not None
@@ -158,3 +166,15 @@ def reshape_linear_layer(
     new_dict[bias_key] = bias
 
     return new_dict
+
+
+def _is_named_tuple(x: Any) -> bool:
+    # copilot wrote this. seems ok
+    t = type(x)
+    b = t.__bases__
+    if len(b) != 1 or b[0] != tuple:
+        return False
+    f = getattr(t, "_fields", None)
+    if not isinstance(f, tuple):
+        return False
+    return all(type(n) == str for n in f)

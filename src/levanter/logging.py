@@ -4,10 +4,15 @@ import time
 from pathlib import Path
 from typing import List, Optional, Union
 
+import equinox
 import jax
+import jax.numpy as jnp
+from equinox import is_array
 from optax import MultiStepsState
 
 import wandb
+
+from levanter.compat.torch_serialization import _is_named_tuple
 from levanter.utils.jax_utils import jnp_to_python
 
 
@@ -27,6 +32,43 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
         params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
         # print(params)
         wandb.log(params, step=step)
+
+
+def log_optimizer_state(opt_state, prefix: Optional[str] = None, *, step=None):
+    if hasattr(opt_state, "inner_opt_state"):
+        return log_optimizer_state(opt_state.inner_opt_state, prefix=prefix, step=step)
+    elif hasattr(opt_state, "inner_state"):
+        return log_optimizer_state(opt_state.inner_state, prefix=prefix, step=step)
+    elif isinstance(opt_state, tuple) and not _is_named_tuple(opt_state):
+        for substate in opt_state:
+            log_optimizer_state(substate, prefix=prefix, step=step)
+    else:
+        _log_opt_state(opt_state, prefix=prefix, step=step)
+
+
+@equinox.filter_jit
+def _log_opt_state(opt_state, prefix: Optional[str] = None, *, step=None):
+    def wrap_key(key):
+        if prefix:
+            return f"{prefix}/{key.replace('.', '/')}"
+        return key
+
+    from levanter.compat.torch_serialization import jax_tree_to_state_dict
+    state_dict = jax_tree_to_state_dict(opt_state)
+
+    log_dict = {}
+
+    for k, v in state_dict.items():
+        if k.endswith("count"):
+            continue
+        if is_array(v):
+            v = jnp.sum(v ** 2)
+            log_dict[wrap_key(f"norms/{k}")] = v
+        else:
+            log_dict[wrap_key(k)] = v
+
+    jittable_wandb_log(log_dict, step=step)
+
 
 
 def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
