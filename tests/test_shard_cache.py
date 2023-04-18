@@ -1,3 +1,4 @@
+import os
 import tempfile
 from typing import Iterator, List, Sequence
 
@@ -5,7 +6,7 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import BatchProcessor, ShardedDataSource, cache_dataset
+from levanter.data.shard_cache_mk3 import BatchProcessor, ShardedDataSource, cache_dataset
 
 
 def setup_module(module):
@@ -41,10 +42,10 @@ class SimpleShardSource(ShardedDataSource[List[int]]):
     def shard_names(self) -> Sequence[str]:
         return [f"shard_{i}" for i in range(self.num_shards)]
 
-    def open_shard(self, shard_name: str) -> Iterator[List[int]]:
+    def open_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
         # parse the shard name to get the shard number
         shard_num = int(shard_name.split("_")[1])
-        return ([shard_num * 10 + i] * 10 for i in range(10))
+        return ([shard_num * 10 + i] * 10 for i in range(row, 10))
 
 
 def simple_process(processor, source):
@@ -56,19 +57,24 @@ def simple_process(processor, source):
     return result
 
 
-@pytest.mark.parametrize("num_workers", [1, 2, 4])
+@pytest.mark.parametrize("num_workers", [2, 4, 1])
 def test_cache_simple(num_workers):
-    with tempfile.TemporaryDirectory() as tmpdir:
+    td = tempfile.TemporaryDirectory()
+    with td as tmpdir:
+        print(tmpdir)
         ray_ds = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
 
         assert list(ray_ds) == list(simple_processed)
 
+    assert not os.path.exists(tmpdir)
+
 
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
 def test_cache_remembers_its_cached(num_workers):
-    with tempfile.TemporaryDirectory() as tmpdir:
+    directory = tempfile.TemporaryDirectory()
+    with directory as tmpdir:
         ds1 = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
 
         class ThrowingProcessor(BatchProcessor[List[int]]):
@@ -87,6 +93,7 @@ def test_cache_remembers_its_cached(num_workers):
         ds2 = cache_dataset(tmpdir, ThrowingProcessor(), SimpleShardSource())
 
         assert list(ds1) == list(ds2)
+        # ensure we delete tmpdir, since something is holding onto it
 
 
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
