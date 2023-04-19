@@ -90,7 +90,6 @@ class ChunkMetadata:
 @dataclass
 class ShardMetadata:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
-    total_rows_written: int = 0
 
     is_finished: bool = False
 
@@ -149,10 +148,12 @@ def _produce_shard_cache_chunks(
 
     was_finished = shard_metadata.is_finished
 
+    total_rows_written = sum(chunk.num_rows for chunk in shard_metadata.chunks)
+
     if not was_finished:
         # fork off a task to produce new chunks from shard
         new_chunk_iter_future = _produce_shard_cache_chunks_helper.remote(
-            source, shard_name, shard_metadata.total_rows_written, processor, cache_dir
+            source, shard_name, total_rows_written, processor, cache_dir
         )
 
     # yield from existing chunks
@@ -166,18 +167,12 @@ def _produce_shard_cache_chunks(
             chunk = ray.get(chunk)
             logger.info(f"Yielding new chunk {chunk.name} from {shard_name}")
             shard_metadata.chunks.append(chunk)
-            shard_metadata.total_rows_written += chunk.num_rows
             _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
             yield chunk
 
         # mark shard as finished
         shard_metadata.is_finished = True
         _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
-
-
-def _open_and_seek(shard_name, source, total_rows_written):
-    shard = source.open_at_row(shard_name, total_rows_written)
-    return shard
 
 
 @ray.remote(num_cpus=1, num_returns="dynamic", scheduling_strategy="SPREAD")
