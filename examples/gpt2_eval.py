@@ -47,9 +47,9 @@ def main(config: EvalGpt2Config):
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len)
 
     eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
@@ -131,7 +131,8 @@ def main(config: EvalGpt2Config):
 
             model = init_model()
 
-            model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
+            # TODO: switch to throwing isntead of returning None
+            model, _, _ = load_checkpoint(model, None, config.checkpoint_path)  # type: ignore
             loss = evaluate(model)
 
             del model

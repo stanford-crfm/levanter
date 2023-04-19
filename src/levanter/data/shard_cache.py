@@ -2,6 +2,7 @@
 import asyncio
 import dataclasses
 import logging
+import os
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ import pyarrow.parquet as pq
 import ray
 import tblib
 from dataclasses_json import dataclass_json
+from fsspec import AbstractFileSystem
 from ray.exceptions import GetTimeoutError
 
 
@@ -201,8 +203,10 @@ def _index_all_shards(
     source: ShardedDataSource[T], processor: BatchProcessor[T], cache_dir: str
 ) -> Iterator[Optional[ChunkMetadata]]:
     """Indexes all shards in a data source and yield/produce the global chunk order."""
-    # load or create shard ledger (for recovery)
-    cache_ledger = _load_cache_ledger(cache_dir)
+    try:
+        cache_ledger = _load_cache_ledger(cache_dir)
+    except FileNotFoundError:
+        cache_ledger = None
 
     if cache_ledger is None:
         cache_ledger = CacheLedger()
@@ -252,7 +256,8 @@ def _serialize_json_and_commit(path, obj):
     with fsspec.open(f"{path}.tmp", "w") as file:
         file.write(obj.to_json())
     # now copy the old file to a backup
-    fs = fsspec.core.url_to_fs(path)[0]
+    fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]
+    fs.mkdirs(os.path.dirname(path), exist_ok=True)
     if fs.exists(path):
         fs.copy(path, f"{path}.bak")
     fs.rename(f"{path}.tmp", path)
@@ -260,11 +265,12 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir):
     try:
+        print(f"Loading cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
         with fsspec.open(f"{cache_dir}/{LEDGER_FILE_NAME}") as file:
             cache_ledger = CacheLedger.from_json(file.read())
         return cache_ledger
     except FileNotFoundError:
-        return None
+        raise FileNotFoundError(f"Cache ledger not found at {cache_dir}/{LEDGER_FILE_NAME}")
 
 
 @ray.remote(num_cpus=0)
@@ -282,9 +288,13 @@ class ChunkCacheManager:
 
         # initialize writer task
         # first see if we need to do anything: check the ledger for is_finished
-        cache_ledger = _load_cache_ledger(self._cache_dir)
+        try:
+            cache_ledger = _load_cache_ledger(self._cache_dir)
+        except FileNotFoundError:
+            cache_ledger = None
+
         if cache_ledger is not None and cache_ledger.is_finished:
-            self.chunks = cache_ledger.global_chunk_order
+            self.chunks = cache_ledger.chunks
             self._finalize()
         else:
             self.chunks = []
