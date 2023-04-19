@@ -35,7 +35,7 @@ from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache_mk3 import BatchProcessor, ShardedDataSource
+from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
@@ -389,8 +389,8 @@ class BatchTokenizer(BatchProcessor[str]):
         self.tokenize = batch_tokenizer(tokenizer, enforce_eos)
         self._batch_size = batch_size
 
-    def __call__(self, batch: List[str]) -> pa.RecordBatch:
-        encoding = self.tokenize(batch)
+    def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
+        encoding = self.tokenize(batch)  # type: ignore
         return _as_record_batch(encoding)
 
     @property

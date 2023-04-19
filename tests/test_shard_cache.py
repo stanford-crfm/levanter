@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache_mk3 import BatchProcessor, ShardedDataSource, cache_dataset
+from levanter.data.shard_cache import BatchProcessor, ShardedDataSource, cache_dataset
 
 
 def setup_module(module):
@@ -21,8 +21,8 @@ def teardown_module(module):
 # - test idempotency of writes
 
 
-class TestProcessor(BatchProcessor[List[int]]):
-    def __call__(self, batch: List[List[int]]) -> pa.RecordBatch:
+class TestProcessor(BatchProcessor[Sequence[int]]):
+    def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
         return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
 
     @property
@@ -74,8 +74,8 @@ def test_cache_remembers_its_cached(num_workers):
     with directory as tmpdir:
         ds1 = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
 
-        class ThrowingProcessor(BatchProcessor[List[int]]):
-            def __call__(self, batch: List[List[int]]) -> pa.RecordBatch:
+        class ThrowingProcessor(BatchProcessor[Sequence[int]]):
+            def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
                 raise RuntimeError("This should not be called")
 
             @property

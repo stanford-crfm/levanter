@@ -270,7 +270,7 @@ def _load_cache_ledger(cache_dir):
 
 @ray.remote(num_cpus=0)
 class ChunkCacheManager:
-    """Manages the global order on chunks and vends chunk metadata to readers."""
+    """Actor that manages the global order on chunks and vends chunk metadata to readers."""
 
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
 
@@ -301,11 +301,11 @@ class ChunkCacheManager:
             return
         await self._writer_task
 
-    async def get_chunk(self, chunk_idx: int) -> ChunkMetadata:
+    async def get_chunk(self, chunk_idx: int) -> Optional[ChunkMetadata]:
         if chunk_idx < len(self.chunks):
             return self.chunks[chunk_idx]
         elif self._is_finished:
-            raise IndexError(f"chunk index {chunk_idx} out of range")
+            return None
         else:
             # we don't have this chunk yet, so we need to wait
             if chunk_idx not in self._reader_promises:
@@ -325,6 +325,8 @@ class ChunkCacheManager:
         logger.exception("Writer task failed with exception", exc_info=info)
         for future in self._reader_promises.values():
             future.set_exception(info[1])
+
+        self._reader_promises = {}
 
     def _finalize(self):
         self._is_finished = True
@@ -406,12 +408,14 @@ class ShardCache(Iterable[pa.RecordBatch]):
         while True:
             try:
                 chunk = ray.get(self._manager.get_chunk.remote(i))
+                if chunk is None:
+                    break
                 i += 1
                 reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
                 for batch in reader:
                     yield batch
-            except IndexError:
-                break
+            # except IndexError:
+            #     break
             except Exception as e:
                 logger.exception("Error while reading from shard cache.")
                 raise e
