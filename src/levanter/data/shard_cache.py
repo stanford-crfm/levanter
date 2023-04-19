@@ -90,14 +90,13 @@ class ChunkMetadata:
 @dataclass
 class ShardMetadata:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
-
     is_finished: bool = False
 
 
 @dataclass_json
 @dataclass
 class CacheLedger:
-    global_chunk_order: List[ChunkMetadata] = dataclasses.field(default_factory=list)
+    chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
     is_finished: bool = False
 
 
@@ -209,7 +208,7 @@ def _index_all_shards(
         cache_ledger = CacheLedger()
 
     if cache_ledger.is_finished:
-        yield from cache_ledger.global_chunk_order
+        yield from cache_ledger.chunks
         return
 
     # otherwise, we need to index at least some shards
@@ -238,7 +237,7 @@ def _index_all_shards(
 
         # yield the next chunk from each shard
         for shard_name, chunk in next_chunks.items():
-            cache_ledger.global_chunk_order.append(chunk)
+            cache_ledger.chunks.append(chunk)
             _serialize_json_and_commit(f"{cache_dir}/{LEDGER_FILE_NAME}", cache_ledger)
             yield chunk
 

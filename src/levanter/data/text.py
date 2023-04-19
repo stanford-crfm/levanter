@@ -1,16 +1,3 @@
-# Dataset for preprocessing data, tokenizing, and caching to disk
-# The general file format we're going with is an apache parquet file with columns for the output of the tokenizer,
-# A row is a single doc. Parquet files are efficient column stores, which means that we can grab token slices from
-# multiple docs as a single operation, which makes concatenation much faster (and means we don't need to cache slices).
-# (We might add back in file metadata later? though huggingface deletes it)
-# We don't want to have one giant file, so we'll split it up into chunks.
-# In general, an IndexedDataset is a directory of parquet files plus a metadata file called the ledger.
-# The ledger is a json file with the following structure:
-# {
-#   "files": [{ "file_name": <name>, "num_tokens": <num_tokens>}],
-# }
-# We don't currently use the num_tokens field, but it's useful for sanity checking.
-# The ledger is written last, so we can always check to see if we were interrupted.
 import contextlib
 import copy
 import json
@@ -35,7 +22,7 @@ from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
+from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, ShardedDataSource, CacheLedger, _load_cache_ledger
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
@@ -110,7 +97,7 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
-def _load_ledger(cache_dir):
+def _load_old_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
 
     fs = fsspec.core.url_to_fs(ledger_path)[0]
@@ -119,6 +106,24 @@ def _load_ledger(cache_dir):
             return json.load(f)
     else:
         raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+
+def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
+    # The old format looked like {"files": [{"file_name": name, "num_tokens": num_tokens} for name, num_tokens in ledger.items()]}
+    # the new format looks like { "chunks": [{"name": name, "num_rows": rows, field_counts: {"input_ids": num_tokens}} for name, rows, num_tokens in ledger.items()]}
+    # We unfortunately cant't determine num_rows from the old format, so we have to open the chunks to find out
+
+    return CacheLedger(
+        chunks=[
+            ChunkMetadata(
+                name=chunk["file_name"],
+                num_rows=_open_arrow_table(os.path.join(cache_dir, chunk["file_name"])).num_rows,
+                field_counts={"input_ids": chunk["num_tokens"]},
+            )
+            for chunk in ledger["files"]
+        ],
+        is_finished=True
+    )
+
 
 
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
@@ -142,18 +147,19 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     operation, which makes concatenation much faster (and means we don't need to cache slices).
     """
 
-    def __init__(self, cache_dir, cache_files, token_counts, flatten_docs):
+    def __init__(self, cache_dir, ledger: CacheLedger, flatten_docs):
         self.cache_dir = cache_dir
-        self.cache_files = cache_files
+        self.ledger = ledger
+        self.cache_files = [chunk.name for chunk in ledger.chunks]
         self.flatten_docs = flatten_docs
-        self.token_counts = token_counts
-        self.total_tokens = sum(token_counts)
+        self.token_counts = [chunk.field_counts["input_ids"] for chunk in ledger.chunks]
+        self.total_tokens = sum(self.token_counts)
 
     def __len__(self):
         if self.flatten_docs:
-            sum([len(self._load_arrow_table(path).to_batches()) for path in self.cache_files])
+            sum([len(_open_arrow_table(os.path.join(self.cache_dir, path)).to_batches()) for path in self.cache_files])
         else:
-            return sum([self._load_arrow_table(path).num_rows for path in self.cache_files])
+            return sum(chunk.num_rows for chunk in self.ledger.chunks)
 
     def __iter__(self):
         for cache_file in self.cache_files:
@@ -169,9 +175,15 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
         :return:
         """
-        ledger = _load_ledger(cache_dir)
-        token_counts = [entry["num_tokens"] for entry in ledger["files"]]
-        return TokenizedDocumentCache(cache_dir, [e["file_name"] for e in ledger["files"]], token_counts, flatten_docs)
+        try:
+            ledger = _load_old_ledger(cache_dir)
+            ledger = _convert_to_new_ledger(cache_dir, ledger)
+        except FileNotFoundError:
+            try:
+               ledger = _load_cache_ledger(cache_dir)
+            except FileNotFoundError:
+                raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+        return TokenizedDocumentCache(cache_dir, ledger, flatten_docs)
 
     @staticmethod
     def build_or_load(
@@ -198,11 +210,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
 
         return TokenizedDocumentCache(self.cache_dir, shard_files, shard_token_counts, self.flatten_docs)
 
-    def _load_arrow_table(self, path):
-        path = os.path.join(self.cache_dir, path)
-        fs, _, paths = fsspec.get_fs_token_paths(path)
-        return pq.read_table(path, filesystem=fs)
-
     @staticmethod
     def merge(finished_caches, cache_root, flatten_docs=True):
         """
@@ -214,10 +221,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
         :return:
         """
-
         ledger = []
         for cache_dir in finished_caches:
-            cache_files = _load_ledger(cache_dir)["files"]
+            cache_files = _load_old_ledger(cache_dir)["files"]
             # have to relativize the paths from cache_dir to cache_root
             for entry in cache_files:
                 absolute_path = os.path.join(cache_dir, entry["file_name"])
@@ -246,7 +252,8 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
         then the documents returned are actually concatenated documents, where the number is the number of documents
         presented as a batch to the caching process."""
-        for b in self._load_arrow_table(file).to_batches():
+        path = os.path.join(self.cache_dir, file)
+        for b in _open_arrow_table(path).to_batches():
             if self.flatten_docs:
                 # insert a newaxis to the beginning so that it appears to be bs=1
                 yield BatchEncoding(
@@ -259,7 +266,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                 yield BatchEncoding(
                     {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
                 )
-
+def _open_arrow_table(path):
+    fs, _, paths = fsspec.get_fs_token_paths(path)
+    return pq.read_table(path, filesystem=fs)
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     """Converts a document to an arrow-compatible record batch."""
