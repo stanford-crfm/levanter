@@ -1,17 +1,38 @@
+from dataclasses import dataclass
+from typing import Optional
+
+import ray
+
 import levanter
-from levanter.data.text import LMDatasetConfig
-from levanter.logging import init_logger
+from levanter.data.shard_cache import cache_dataset
+from levanter.data.text import BatchTokenizer, LMDatasetConfig
+
+
+@dataclass
+class RayConfig:
+    address: Optional[str] = None
+
+
+@dataclass
+class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
+    pass
 
 
 @levanter.config.main()
-def main(args: LMDatasetConfig):
+def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logger("cache_dataset.log")
+    ray.init(address=args.address)
 
-    for split in ["validation", "train"]:
-        # TODO: think about doing this on apache beam or something fancy. Maybe nothing fancy we can do for HF datasets,
-        # but for pure-url based ones, shouldn't be hard.
-        args.build_or_load_document_cache(split)
+    tokenizer = args.the_tokenizer
+
+    for split in ["train", "validation"]:
+        # connect or start the actor
+        batch_tokenizer = BatchTokenizer(tokenizer)
+        source = args.get_shard_source(split)
+
+        cache_dataset(f"{args.cache_dir}/{split}", batch_tokenizer, source)
+
+        print(f"Finished caching {split} to {args.cache_dir}/{split}.")
 
 
 if __name__ == "__main__":
