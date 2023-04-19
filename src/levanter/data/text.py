@@ -574,6 +574,12 @@ class LMDatasetConfig:
 
 
 class HFDatasetDataSource(ShardedDataSource[str]):
+    """
+    This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
+    Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
+    for all other datasets.
+    """
+
     def __init__(self, config: LMDatasetConfig, split: str):
         self.config = config
         self.split = split
