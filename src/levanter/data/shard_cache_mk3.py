@@ -2,6 +2,7 @@
 import asyncio
 import dataclasses
 import logging
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar
@@ -322,10 +323,12 @@ class ChunkCacheManager:
             self._reader_promises[chunk_idx].set_result(chunk)
             del self._reader_promises[chunk_idx]
 
-    def _writer_exception(self, exc: Exception):
-        logger.error(f"Writer task failed with exception {exc}")
+    def _writer_exception(self, exc_info: _ExcInfo):
+        info = _restore_exc_info(exc_info)
+
+        logger.exception("Writer task failed with exception", exc_info=info)
         for future in self._reader_promises.values():
-            future.set_exception(exc)
+            future.set_exception(info[1])
 
     def _finalize(self):
         self._is_finished = True
@@ -431,3 +434,18 @@ class ChunkReader:
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int):
         file = pq.ParquetFile(fsspec.open(f"{cache_dir}/{metadata.name}.parquet", "rb").open())
         return ChunkReader(metadata, file, batch_size)
+
+
+def _exc_info():
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    tb = tblib.Traceback(exc_traceback)
+    return (exc_value, tb)
+
+
+def _restore_exc_info(exc_info):
+    exc_value, tb = exc_info
+    if exc_value is not None:
+        exc_value = exc_value.with_traceback(tb.as_traceback())
+        return (exc_value.__class__, exc_value, tb.as_traceback())
+    else:
+        return (Exception, Exception("Process failed with no exception"), tb.as_traceback())

@@ -17,91 +17,6 @@ from tqdm import tqdm
 from levanter.data import Dataset
 
 
-# We want to support the following:
-#  1) Deterministic ordering over the data, even for a changing number of readers or writers
-#  2) Sharded reading and writing
-#  3) Simultaneous reading and writing of shards
-#  4) Fast resumption without losing too much progress
-#  5) (eventually) shuffling/random access
-
-# What does consumption look like?
-# There are two or three use cases:
-# 1) We have a larger training dataset, and we want to draw samples from it more or less independently on a large number
-# of machines. We don't really care about "epochs"/"passes", but we do want to be able to handle resumes and be
-# deterministic
-# 2) We have a smaller validation dataset, and we want to do a single pass over it. We don't care about resuming.
-# 3) Like (1) but we want to jump around the dataset. We still care about resuming and determinism, but don't
-# care about epochs.
-#
-#
-# We focus on (1) and (2) for now.
-
-# What does our input look like?
-# We have a smallish number of input shards (though usually >= num machines), each of which is an iterator over documents.
-# We have a function that processes the data (e.g. tokenization) and returns a pytree, which is usually tensors but include some
-# strings for ids and such.
-
-# Let there be K input shards, W writers, R readers. We assume K >= W, and W ≈ R. We also defined an idealized number
-# of readers R*, which defines the global ordering over the data. Typically R* should be the maximum number of readers
-# we expect to actually use.
-
-
-# What does our cache look like?
-# We define a shard cache as a list of "chunks", where each chunk is a parquet file (plus metadata) of roughly equal
-# size (except for the last chunks for each shard.) Each chunk is a list of documents, where each document is a pytree
-# of processed tensors. Chunks are ordered round robin from the input shards, so that the c'th global chunk is the
-# c%K'th chunk of the c/K'th shard, so long as all shards have at least c/K chunks. (After that, we remove shards that
-# have been exhausted.)
-# We keep the following metadata:
-# * For each input shard, we keep a list of chunks written so far and whether or not we are done processing that shard.
-# * For each chunk, we keep the number of documents, token counts/length of various fields, and the number of bytes.
-#   (This metadata can be used for seeking.)
-
-
-# How do we build the cache?
-# We assign each writer to a subset of the input shards. Each writer then builds one chunk from each of its shards
-# in round robin order. Whenever a chunk is finished, we write it and its metadata to disk. We also update
-# the metadata for the input shard and notify the readers that a new chunk is available.
-
-# What is the global ordering of data for sharded reads? (for training data)
-# We pretend the list of data is infinite by cycling.
-# Given a list of chunks and R*, we define the global ordering over data as follows:
-# First define R* iterators over chunks, with chunk_iterator[r] being defined as flatten_chunks(loop(all_chunks)[r::R*])
-# Then the global ordering is defined as:
-# chunk_iterator[0][0], chunk_iterator[1][0], chunk_iterator[2][0], ..., chunk_iterator[R*-1][0],
-# chunk_iterator[0][1], chunk_iterator[1][1], ..., chunk_iterator[R*-1][1], ...
-# that is, example[i] == chunk_iterator[i % R*][i // R*]
-
-# if we have R* readers, then each reader_iterator[r][j] == chunk_iterator[r][j]
-# Moreover, if either R or R* is a multiple of the other, then we still get a nice property where
-# each reader reads from a strided slice of the chunk_iterators:
-
-# (Boring math)
-# If we have R readers, then reader_iterator[r][j] == example[j * R + r] == chunk_iterator[(j * R + r) % R*][(j * R + r) // R*]
-# If we have R == n * R*, then reader_iterator[r][j] == example[j * R + r] == chunk_iterator[(j * R + r) % R*][(j * R + r) // R*]
-#  == chunk_iterator[r % R*][(j * n * R* + r) // R*] == chunk_iterator[r % R*][j * n + r // R*], so each reader reads from
-# a strided slice (specifically islice(..., r//R*, None, n))
-# If we have R* == n * R, then reader_iterator[r][j] == example[j * R + r] == chunk_iterator[(j * R + r) % R*][(j * R + r) // R*]
-# == chunk_iterator[R * (j % n) + r][(j * R + r) // R*] and so each reader reads from n different chunk_iterators.
-# so we round-robin over a slice of the chunk_iterators.
-
-# For other cases (R and R* don't divide each other), there's no simple relationship between the reader and chunk iterators
-# and you end up reading from everywhere, but that's ok.
-
-# What is the global ordering of data for epochal, unsharded reads? (for validation data)
-# When we want to do a single pass over the data, we don't cycle and we don't shuffle. We just read the data in order.
-
-# Coordination
-# We use Ray to coordinate writing. We instantiate one ray task per writer (typically one per machine), and each task
-# is given a list of shards to process. Each task then processes one chunk from each shard in round robin order.
-# When a chunk is finished, we write it to disk and notify that a new chunk is available. There is a single ray actor
-# that is responsible for handling which chunks are available and which are not. This actor exposes a method
-# to get a chunk by index
-
-# Shuffling, random access, and resuming
-# TODO
-
-
 logger = logging.getLogger(__name__)
 
 TARGET_CACHE_SHARD_SIZE = 512 * 1024 * 1024  # 512MB
@@ -688,6 +603,7 @@ class ShardCache:
 
 class ShardedChunkDataset(Dataset[pa.RecordBatch]):
     """Iterates through the chunks of a dataset, reading them from a shard cache."""
+
     # we have an idealized number of readers and an actual number of readers
     # our determinism is b
 
