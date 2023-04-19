@@ -300,6 +300,8 @@ class ChunkCacheManager:
         return self._is_finished
 
     async def finished_sentinel(self):
+        if self._is_finished:
+            return
         await self._writer_task
 
     async def get_chunk(self, chunk_idx: int) -> ChunkMetadata:
