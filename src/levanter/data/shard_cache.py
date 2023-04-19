@@ -52,9 +52,9 @@ class ShardedDataSource(Protocol[T_co]):
         raise NotImplementedError
 
     def open_shard(self, shard_name: str) -> Iterator[T_co]:
-        return self.open_at_row(shard_name, 0)
+        return self.open_shard_at_row(shard_name, 0)
 
-    def open_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
         raise NotImplementedError
 
 
@@ -181,7 +181,7 @@ def _produce_shard_cache_chunks_helper(
 ):
     """Produces chunks of preprocessed data from a single shard."""
     count = 0
-    shard = source.open_at_row(name, rows)
+    shard = source.open_shard_at_row(name, rows)
     batch = []
     for row in shard:
         batch.append(row)

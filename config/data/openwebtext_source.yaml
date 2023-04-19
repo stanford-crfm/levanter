@@ -1,5 +1,2 @@
-train_urls:
-  - ~/corpora/pubmed/data/pubmedAbs_validation.jsonl
-validation_urls:
-  - ~/corpora/pubmed/data/pubmedAbs_validation.jsonl
+id: openwebtext
 cache_dir: "zzz_cache"

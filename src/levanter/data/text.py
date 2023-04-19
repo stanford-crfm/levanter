@@ -384,10 +384,9 @@ def _cpu_count():
 
 
 class BatchTokenizer(BatchProcessor[str]):
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, batch_size: int, enforce_eos=True):
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True):
         self.tokenizer = tokenizer
         self.tokenize = batch_tokenizer(tokenizer, enforce_eos)
-        self._batch_size = batch_size
 
     def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
         encoding = self.tokenize(batch)  # type: ignore
@@ -396,10 +395,6 @@ class BatchTokenizer(BatchProcessor[str]):
     @property
     def num_cpus(self) -> int:
         return max(1, _cpu_count() - 1)
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
 
 
 def concatenate_and_group_texts(
@@ -494,9 +489,6 @@ class LMDatasetConfig:
     num_train_shards: int = 128
     num_val_shards: int = 32
 
-    train_group_size: int = 1000
-    val_group_size: int = 100
-
     create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
@@ -517,12 +509,17 @@ class LMDatasetConfig:
             urls = self.urls_for_split(split)
             yield from self.generate_texts_from_urls(urls)
 
-    def generate_texts_from_urls(self, urls: Sequence[str]) -> Iterator[str]:
+    def generate_texts_from_urls(self, urls: Sequence[str], skip_to_doc: int = 0) -> Iterator[str]:
         files = fsspec.open_files(urls, "r", compression="infer")
+        row = 0
         for file in files:
             with file as f:
+                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                # which is not nothing, but not ideal.
                 for line in f.readlines():
-                    yield json.loads(line)[self.text_key]
+                    if row >= skip_to_doc:
+                        yield json.loads(line)[self.text_key]
+                    row += 1
 
     def urls_for_split(self, split):
         if split == "train":
@@ -548,7 +545,51 @@ class LMDatasetConfig:
             raise ValueError("Cannot currently create sharded cache for HF datasets")
 
     def get_shard_source(self, split) -> ShardedDataSource[str]:
+        if self.id is not None:
+            return HFDatasetDataSource(self, split)
         return TextDataSource(self, split)
+
+
+class HFDatasetDataSource(ShardedDataSource[str]):
+    def __init__(self, config: LMDatasetConfig, split: str):
+        self.config = config
+        self.split = split
+
+        self._shard_names = self._compute_shard_names()
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return self._shard_names
+
+    def _compute_shard_names(self):
+        dataset = self._load_dataset()
+        if isinstance(dataset, datasets.IterableDataset):
+            try:
+                return [str(i) for i in range(dataset.n_shards)]
+            except NotImplementedError:
+                return ["data"]
+        else:
+            return ["data"]
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+        dataset = self._load_dataset()
+        if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
+            shard = dataset._iter_shard(int(shard_name))
+        else:
+            shard = dataset
+
+        idx = 0
+        for _, doc in shard:
+            if idx >= row:
+                yield doc[self.config.text_key]
+            idx += 1
+
+    def _load_dataset(self):
+        # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing and stuff
+        # so we have to do this hacky thing where we load the dataset in the worker
+        return datasets.load_dataset(
+            self.config.id, split=self.split, name=self.config.name, streaming=self.config.stream
+        )
 
 
 class TextDataSource(ShardedDataSource[str]):
@@ -561,12 +602,18 @@ class TextDataSource(ShardedDataSource[str]):
         urls = config.urls_for_split(split)
 
         # remove common prefix
-        common_prefix = os.path.commonprefix(urls)
+        if len(urls) == 1:
+            common_prefix = os.path.dirname(urls[0])
+        else:
+            common_prefix = os.path.commonprefix(urls)
+
         for url in urls:
             # escape the url for the shard name
             shard_name = url
             if common_prefix:
                 shard_name = url[len(common_prefix) :]
+                if shard_name.startswith("/"):
+                    shard_name = shard_name[1:]
 
             shard_name = shard_name.replace(".", "_")
 
@@ -576,15 +623,14 @@ class TextDataSource(ShardedDataSource[str]):
     def shard_names(self) -> Sequence[str]:
         return list(self._shard_name_to_url_mapping.keys())
 
-    def open_shard(self, shard_name: str) -> Iterator[str]:
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
-        return self.config.generate_texts_from_urls([url])
+        return self.config.generate_texts_from_urls([url], row)
 
 
 def build_or_load_document_cache(config: LMDatasetConfig, split: str):
     cache_dir = os.path.join(config.cache_dir, f"{split}")
     num_shards = config.num_train_shards if split == "train" else config.num_val_shards
-    batch_size = config.train_group_size if split == "train" else config.val_group_size
 
     btok = batch_tokenizer(config.the_tokenizer, config.enforce_eos)
 
@@ -608,14 +654,14 @@ def build_or_load_document_cache(config: LMDatasetConfig, split: str):
 
         def tokenize_shard(urls_for_shard):
             texts_iter = config.generate_texts_from_urls(urls_for_shard)
-            for batch in batched(texts_iter, batch_size):
+            for batch in batched(texts_iter, 1000):
                 yield btok(batch)
 
         return _create_sharded_cache(cache_dir, shard_urls, tokenize_shard, shards_per_group)
 
     else:
         doc_iter = config.doc_iterator(split)
-        token_iter = (btok(batch) for batch in batched(doc_iter, batch_size))
+        token_iter = (btok(batch) for batch in batched(doc_iter, 1000))
 
         return TokenizedDocumentCache.build_or_load(token_iter, cache_dir, num_shards, flatten_docs=True)
 
