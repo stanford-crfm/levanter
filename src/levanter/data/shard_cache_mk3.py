@@ -17,18 +17,19 @@ from ray.exceptions import GetTimeoutError
 
 
 T = TypeVar("T")
+T_contra = TypeVar("T_contra", contravariant=True)
 T_co = TypeVar("T_co", covariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 logger = logging.getLogger(__name__)
 
 ROWS_PER_CHUNK = 32 * 1024  # if a doc produces ~1200 tokens, this is ~150MB chunks
-LEDGER_FILE_NAME = "ledger.json"
+LEDGER_FILE_NAME = "cache_ledger.json"
 
 
-class BatchProcessor(Generic[T], ABC):  # type: ignore
+class BatchProcessor(Generic[T_contra], ABC):  # type: ignore
     @abstractmethod
-    def __call__(self, batch: List[T]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[T_contra]) -> pa.RecordBatch:
         raise NotImplementedError
 
     @property
@@ -63,7 +64,7 @@ def cache_dataset(
     input_shards: ShardedDataSource[T],
     num_workers: Optional[int] = None,
     batch_size: Optional[int] = None,
-) -> "ShardCacheIterable":
+) -> "ShardCache":
     manager = _get_manager_actor(cache_dir, input_shards, processor, num_workers)
 
     logger.debug(f"Waiting for cache {cache_dir} to be built")
@@ -74,7 +75,7 @@ def cache_dataset(
         except GetTimeoutError:
             pass
 
-    return ShardCacheIterable(cache_dir, input_shards, processor, batch_size or 1)
+    return ShardCache(cache_dir, input_shards, processor, batch_size or 1)
 
 
 @dataclass_json
@@ -110,7 +111,7 @@ def _mk_process_task(processor: BatchProcessor[T]):
 
 
 @ray.remote(num_cpus=0)
-def produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
+def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
@@ -134,8 +135,8 @@ def produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, 
 
 # NB: "dynamic" num_returns implies that you return a (future of a) generator that itself returns futures
 @ray.remote(num_cpus=0, num_returns="dynamic", scheduling_strategy="SPREAD")  # type: ignore
-def produce_shard_cache_chunks(
-    source: ShardedDataSource[T], processor: BatchProcessor[T], cache_dir: str, shard_name: str
+def _produce_shard_cache_chunks(
+    source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str
 ):
     """Produces chunks of preprocessed data from a single shard."""
     # load or create shard metadata (for recovery)
@@ -150,7 +151,7 @@ def produce_shard_cache_chunks(
 
     if not was_finished:
         # fork off a task to produce new chunks from shard
-        new_chunk_iter_future = produce_shard_cache_chunks_helper.remote(
+        new_chunk_iter_future = _produce_shard_cache_chunks_helper.remote(
             source, shard_name, shard_metadata.total_rows_written, processor, cache_dir
         )
 
@@ -166,12 +167,12 @@ def produce_shard_cache_chunks(
             logger.info(f"Yielding new chunk {chunk.name} from {shard_name}")
             shard_metadata.chunks.append(chunk)
             shard_metadata.total_rows_written += chunk.num_rows
-            serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
+            _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
             yield chunk
 
         # mark shard as finished
         shard_metadata.is_finished = True
-        serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
+        _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
 
 
 def _open_and_seek(shard_name, source, total_rows_written):
@@ -180,7 +181,7 @@ def _open_and_seek(shard_name, source, total_rows_written):
 
 
 @ray.remote(num_cpus=1, num_returns="dynamic", scheduling_strategy="SPREAD")
-def produce_shard_cache_chunks_helper(
+def _produce_shard_cache_chunks_helper(
     source: ShardedDataSource[T], name: str, rows: int, processor: BatchProcessor[T], cache_dir: str
 ):
     """Produces chunks of preprocessed data from a single shard."""
@@ -193,16 +194,16 @@ def produce_shard_cache_chunks_helper(
             # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
             # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
             # other shards since we want to stream them round-robin
-            yield ray.get(produce_chunk.remote(batch, processor, cache_dir, f"{name}/chunk-{count}"))
+            yield ray.get(_produce_chunk.remote(batch, processor, cache_dir, f"{name}/chunk-{count}"))
             batch = []
             count += 1
 
     if batch:
-        yield ray.get(produce_chunk.remote(batch, processor, cache_dir, f"{name}/chunk-{count}"))
+        yield ray.get(_produce_chunk.remote(batch, processor, cache_dir, f"{name}/chunk-{count}"))
 
 
 @ray.remote(num_cpus=0, num_returns="dynamic")  # type: ignore
-def index_all_shards(
+def _index_all_shards(
     source: ShardedDataSource[T], processor: BatchProcessor[T], cache_dir: str
 ) -> Iterator[Optional[ChunkMetadata]]:
     """Indexes all shards in a data source and yield/produce the global chunk order."""
@@ -219,8 +220,8 @@ def index_all_shards(
     # otherwise, we need to index at least some shards
     shard_iterator_futures = {}
     for shard_name in source.shard_names:
-        shard_iterator_futures[shard_name] = produce_shard_cache_chunks.remote(
-            source, processor, cache_dir, shard_name
+        shard_iterator_futures[shard_name] = _produce_shard_cache_chunks.remote(
+            source, shard_name, processor, cache_dir
         )
 
     shard_iterators: Dict[str, Iterator[ray.ObjectRef]] = {}
@@ -243,15 +244,15 @@ def index_all_shards(
         # yield the next chunk from each shard
         for shard_name, chunk in next_chunks.items():
             cache_ledger.global_chunk_order.append(chunk)
-            serialize_json_and_commit(f"{cache_dir}/cache_ledger.json", cache_ledger)
+            _serialize_json_and_commit(f"{cache_dir}/{LEDGER_FILE_NAME}", cache_ledger)
             yield chunk
 
         # mark shard ledger as finished
         cache_ledger.is_finished = True
-        serialize_json_and_commit(f"{cache_dir}/cache_ledger.json", cache_ledger)
+        _serialize_json_and_commit(f"{cache_dir}/{LEDGER_FILE_NAME}", cache_ledger)
 
 
-def serialize_json_and_commit(path, obj):
+def _serialize_json_and_commit(path, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
     with fsspec.open(f"{path}.tmp", "w") as file:
@@ -265,7 +266,7 @@ def serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir):
     try:
-        with fsspec.open(f"{cache_dir}/cache_ledger.json") as file:
+        with fsspec.open(f"{cache_dir}/{LEDGER_FILE_NAME}") as file:
             cache_ledger = CacheLedger.from_json(file.read())
         return cache_ledger
     except FileNotFoundError:
@@ -293,7 +294,7 @@ class ChunkCacheManager:
             self._finalize()
         else:
             self.chunks = []
-            chunk_generator_future = index_all_shards.remote(self._source, self._processor, self._cache_dir)
+            chunk_generator_future = _index_all_shards.remote(self._source, self._processor, self._cache_dir)
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             self._writer_task = _inject_chunks.remote(self_ref, chunk_generator_future)
 
@@ -361,8 +362,39 @@ def _get_manager_actor(cache_dir, input_shards, processor, num_workers):
     )
 
 
-class ShardCacheIterable(Iterable[pa.RecordBatch]):
-    """An iterable that reads from a shard cache."""
+class ShardCache(Iterable[pa.RecordBatch]):
+    """A cache which is backed by a collection of chunks of preprocessed documents. These chunks
+    are produced by tokenizing/preprocessing a ShardedDataSource.
+
+        This is the main interface for building and reading from a shard cache.
+
+        ShardCache has the following objectives:
+
+        1) Deterministic ordering over the data
+        2) Sharded reading
+        3) Sharded writing
+        4) Simultaneous reading and writing of shards
+        5) Fast resumption of writing
+        6) Fast resumption of reading
+
+        ShardCache achieves (1), (2), and (3) maintaining a reproducible global ordering over "chunks" created from shards.
+        The global ordering is defined by taking chunks round-robin from each shard. This allows us to read shards
+        in parallel and deterministically.
+
+        # TODO: (2) isn't implemented just yet
+
+        ShardCache achieves (4) also via the chunking mechanism. As soon as all shards have written a chunk, the next
+        chunk can be read. This allows us to read and write in parallel.
+
+        ShardCache achieves (5) by writing chunks to disk as soon as they are completed and serializing a ledger
+        of the chunks that have been written for each shard. This allows us to resume from the last chunk that was written.
+
+        # TODO (6) isn't implemented just yet
+
+        ShardCache achieves (6) by storing metadata about the chunks that have been written in a ledger. In addition
+        to the global ordering, the ledger also stores the number of documents in each chunk as well as the number
+        of tokens.
+    """
 
     def __init__(
         self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int
@@ -380,7 +412,7 @@ class ShardCacheIterable(Iterable[pa.RecordBatch]):
             try:
                 chunk = ray.get(self._manager.get_chunk.remote(i))
                 i += 1
-                reader = ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+                reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
                 for batch in reader:
                     yield batch
             except IndexError:
@@ -390,7 +422,7 @@ class ShardCacheIterable(Iterable[pa.RecordBatch]):
                 raise e
 
 
-class ChunkReader:
+class _ChunkReader:
     """Reads batches of documents from a chunk"""
 
     metadata: ChunkMetadata
@@ -406,7 +438,7 @@ class ChunkReader:
         self.batch_size = batch_size
 
     def with_batch_size(self, batch_size):
-        return ChunkReader(self.metadata, self.file, batch_size)
+        return _ChunkReader(self.metadata, self.file, batch_size)
 
     @property
     def num_docs(self):
@@ -428,12 +460,12 @@ class ChunkReader:
         fs, path = fsspec.core.url_to_fs(cache_dir)
         with fs.open(f"{path}/{name}.json", "r") as f:
             metadata = ChunkMetadata.from_json(f.read())  # type: ignore
-        return ChunkReader.from_metadata(cache_dir, metadata, batch_size)
+        return _ChunkReader.from_metadata(cache_dir, metadata, batch_size)
 
     @staticmethod
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int):
         file = pq.ParquetFile(fsspec.open(f"{cache_dir}/{metadata.name}.parquet", "rb").open())
-        return ChunkReader(metadata, file, batch_size)
+        return _ChunkReader(metadata, file, batch_size)
 
 
 def _exc_info():
