@@ -93,6 +93,10 @@ def test_cache_remembers_its_cached(num_workers):
         # ensure we delete tmpdir, since something is holding onto it
 
 
+class _CustomException(Exception):
+    pass
+
+
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
 def test_cache_recover_from_crash(num_workers):
     class CrashingShardSource(ShardedDataSource[List[int]]):
@@ -108,17 +112,17 @@ def test_cache_recover_from_crash(num_workers):
             shard_num = int(shard_name.split("_")[1])
             for i in range(10):
                 if shard_num * 10 + i == self.crash_point:
-                    raise RuntimeError(f"Crashing at {shard_num} {i} {self.crash_point}")
+                    raise _CustomException(f"Crashing at {shard_num} {i} {self.crash_point}")
                 if i >= row:
                     yield [shard_num * 10 + i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(_CustomException):
             cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers)
 
         source = CrashingShardSource(5)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(_CustomException):
             cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers)
 
         # testing this doesn't throw
