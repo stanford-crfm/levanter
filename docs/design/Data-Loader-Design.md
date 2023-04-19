@@ -43,7 +43,7 @@ We produce N chunks. We also define an idealized number of readers R*, which def
 Typically R* should be the maximum number of readers we expect to actually use.
 
 
-## What does our cache look like?
+## Cache structure
 We define a shard cache as a list of "chunks", where each chunk is a parquet file (plus metadata) with an equal
 number of documents (except for the last chunks for each shard.)
 Each chunk is a list of processed documents. Chunks are ordered round robin from the input shards, so that the c'th global chunk is the
@@ -55,10 +55,19 @@ We keep the following metadata:
   (This metadata can be used for seeking.)
 * For the cache overall, we keep the global ordering of chunks, the number of chunks, and the number of documents.
 
+### Chunk format
+
+A Chunk is an Apache Parquet file with schema dependent on the task. For example, for language modeling, we might have
+just a sequence of input_ids per document. We use Apache Parquet because it's compact and doesn't require us to know
+much about the datatypes we're using.
+
+Chunks also have metadata stored in a separate json file. This metadata includes the total number of documents in the
+chunk, as well as token counts/lengths of various fields. This metadata is used for seeking.
+
 ## Cache construction
 
 We use Ray to manage the writers. Readers are managed by the main processes (though call into Ray to get the data).
-At a high level, we create a writer process for each shard, which produce chunks one by one. There is a central
+At a high level, we create a writer process for each shard, which produce chunks one by one. T is a central
 writer coordinator process that receives chunks from each shard and adds them to the global ordering round robin.
 When chunks are added, we make them available to an actor that readers can access to get chunks.
 
@@ -96,7 +105,7 @@ so we round-robin over a slice of the chunk_exampless.
 For other cases (R and R* don't divide each other), there's no simple relationship between the reader and chunk iterators
 and you end up reading from everywhere, but that's ok.
 
-# Epochal Reading for Evaluation
+# Single-Pass Reading for Evaluation
 When we want to do a single pass over the data, we don't cycle and we don't shuffle. We just read the data in order. Boring
 and simple.
 
@@ -130,12 +139,15 @@ If our metadata includes token counts, then we can skip chunks until we pass `ba
 
 ## Shuffling
 
-A brief digression on why we shuffle in machine learning. Shuffling reduces variance in the gradients. If we have batches
+### A brief digression
+Why do we shuffle in machine learning Shuffling reduces variance in the gradients. If we have batches
 where every example is from the same document/domain, then the gradients for those batches will be correlated.
 
 That said, in our setting where we use moving windows from documents, if we round-robin from chunks (which are produced
 from different documents), and R* is roughly equal to the batch size, then we will read from a different chunk for every
-example in a batch, which reduces correlation within a batch. However, we still have correlation between batches: if we
+example in a batch, which reduces correlation within a batch.
+
+However, we still have (undesirable) correlation between batches: if we
 read from chunks consecutively and our documents are long, then many examples in the next batch will be from the
 same document as an example in the previous batch. Ideally this wouldn't happen. I'm not convinced that it matters
 that much.
@@ -148,9 +160,7 @@ Proper shuffling is incompatible with streaming at a fundamental level. Our choi
 * No shuffling in the first pass, but shuffle in subsequent passes.
 * Shuffle within a range of chunks that grows as the run progresses.
 
-My hunch is that we can skip this for now,
-
-
+My hunch is that we can skip this for now, and revisit if we find that it's a problem.
 
 
 ## Current Status as of 2022-10-10
