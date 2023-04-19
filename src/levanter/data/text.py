@@ -35,7 +35,7 @@ from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
+from levanter.data.shard_cache_mk3 import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
