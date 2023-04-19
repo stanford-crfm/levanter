@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 import ray
 import tblib
 from dataclasses_json import dataclass_json
+from ray.exceptions import GetTimeoutError
 
 
 T = TypeVar("T")
@@ -64,11 +65,13 @@ def cache_dataset(
 ) -> "ShardCacheIterable":
     manager = _get_manager_actor(cache_dir, input_shards, processor, num_workers)
 
-    print("Waiting for cache to be built", flush=True)
-    while not ray.get(manager.is_finished.remote()):
-        pass
-
-    print("Finished caching")
+    logger.debug(f"Waiting for cache {cache_dir} to be built")
+    while True:
+        try:
+            _ = ray.get(manager.finished_sentinel.remote(), timeout=4)
+            break
+        except GetTimeoutError:
+            pass
 
     return ShardCacheIterable(cache_dir, input_shards, processor, batch_size or 1)
 
@@ -105,15 +108,11 @@ def _mk_process_task(processor: BatchProcessor[T]):
     return process_task
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=0)
 def produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
-    print("hi")
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
-    print(
-        f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}",
-        flush=True,
-    )
+    logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
     with fsspec.open(f"{cache_dir}/{chunk_name}.parquet", "wb") as file:
         with pq.ParquetWriter(file, record_batch.schema, version="2.6", compression="ZSTD") as writer:
             writer.write_batch(record_batch)
@@ -133,7 +132,7 @@ def produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, 
 
 
 # NB: "dynamic" num_returns implies that you return a (future of a) generator that itself returns futures
-@ray.remote(num_cpus=1, num_returns="dynamic", scheduling_strategy="SPREAD")  # type: ignore
+@ray.remote(num_cpus=0, num_returns="dynamic", scheduling_strategy="SPREAD")  # type: ignore
 def produce_shard_cache_chunks(
     source: ShardedDataSource[T], processor: BatchProcessor[T], cache_dir: str, shard_name: str
 ):
@@ -149,13 +148,10 @@ def produce_shard_cache_chunks(
     was_finished = shard_metadata.is_finished
 
     if not was_finished:
-        print(f"Producing chunks for {shard_name} to {cache_dir}", flush=True)
         # fork off a task to produce new chunks from shard
         new_chunk_iter_future = produce_shard_cache_chunks_helper.remote(
             source, shard_name, shard_metadata.total_rows_written, processor, cache_dir
         )
-    else:
-        print(f"Skipping {shard_name} because it's already finished for {cache_dir}", flush=True)
 
     # yield from existing chunks
     logger.info(f"Yielding {len(shard_metadata.chunks)} chunks from {shard_name}")
@@ -204,14 +200,13 @@ def produce_shard_cache_chunks_helper(
         yield ray.get(produce_chunk.remote(batch, processor, cache_dir, f"{name}/chunk-{count}"))
 
 
-@ray.remote(num_cpus=0, num_returns="dynamic")
+@ray.remote(num_cpus=0, num_returns="dynamic")  # type: ignore
 def index_all_shards(
     source: ShardedDataSource[T], processor: BatchProcessor[T], cache_dir: str
 ) -> Iterator[Optional[ChunkMetadata]]:
     """Indexes all shards in a data source and yield/produce the global chunk order."""
     # load or create shard ledger (for recovery)
     cache_ledger = _load_cache_ledger(cache_dir)
-    print("hello" + str(cache_dir))
 
     if cache_ledger is None:
         cache_ledger = CacheLedger()
@@ -304,6 +299,9 @@ class ChunkCacheManager:
     def is_finished(self):
         return self._is_finished
 
+    async def finished_sentinel(self):
+        await self._writer_task
+
     async def get_chunk(self, chunk_idx: int) -> ChunkMetadata:
         if chunk_idx < len(self.chunks):
             return self.chunks[chunk_idx]
@@ -329,7 +327,7 @@ class ChunkCacheManager:
 
     def _finalize(self):
         self._is_finished = True
-        for future in self.reader_promises.values():
+        for future in self._reader_promises.values():
             future.set_result(None)
 
         self._reader_promises = {}
@@ -341,7 +339,6 @@ def _inject_chunks(manager_ref, generator):
     try:
         for chunk in generator:
             chunk = ray.get(chunk)
-            print(f"Injecting chunk {chunk} into cache")
             ray.get(manager_ref._append_chunk.remote(chunk))
 
         ray.get(manager_ref._finalize.remote())
@@ -351,8 +348,6 @@ def _inject_chunks(manager_ref, generator):
 
 
 def _get_manager_actor(cache_dir, input_shards, processor, num_workers):
-    print("zz")
-    print("lev_cache_manager::" + cache_dir)
     return ChunkCacheManager.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
         cache_dir,
