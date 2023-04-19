@@ -22,7 +22,14 @@ from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import BatchProcessor, CacheLedger, ChunkMetadata, ShardedDataSource, _load_cache_ledger
+from levanter.data.shard_cache import (
+    BatchProcessor,
+    CacheLedger,
+    ChunkMetadata,
+    ShardedDataSource,
+    _load_cache_ledger,
+    _serialize_json_and_commit,
+)
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
@@ -178,13 +185,15 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         :return:
         """
         try:
-            ledger = _load_old_ledger(cache_dir)
-            ledger = _convert_to_new_ledger(cache_dir, ledger)
+            ledger = _load_cache_ledger(cache_dir)
         except FileNotFoundError:
             try:
-                ledger = _load_cache_ledger(cache_dir)
+                ledger = _load_old_ledger(cache_dir)
+                ledger = _convert_to_new_ledger(cache_dir, ledger)
+                _serialize_json_and_commit(ledger, os.path.join(cache_dir, LEDGER_FILE))
             except FileNotFoundError:
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+
         return TokenizedDocumentCache(cache_dir, ledger, flatten_docs)
 
     @staticmethod
