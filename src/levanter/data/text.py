@@ -22,7 +22,7 @@ from tqdm import tqdm
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, ShardedDataSource, CacheLedger, _load_cache_ledger
+from levanter.data.shard_cache import BatchProcessor, CacheLedger, ChunkMetadata, ShardedDataSource, _load_cache_ledger
 from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.hf_utils import load_tokenizer
@@ -107,6 +107,7 @@ def _load_old_ledger(cache_dir):
     else:
         raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
+
 def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
     # The old format looked like {"files": [{"file_name": name, "num_tokens": num_tokens} for name, num_tokens in ledger.items()]}
     # the new format looks like { "chunks": [{"name": name, "num_rows": rows, field_counts: {"input_ids": num_tokens}} for name, rows, num_tokens in ledger.items()]}
@@ -121,9 +122,8 @@ def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
             )
             for chunk in ledger["files"]
         ],
-        is_finished=True
+        is_finished=True,
     )
-
 
 
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
@@ -157,7 +157,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
 
     def __len__(self):
         if self.flatten_docs:
-            sum([len(_open_arrow_table(os.path.join(self.cache_dir, path)).to_batches()) for path in self.cache_files])
+            return sum(
+                [len(_open_arrow_table(os.path.join(self.cache_dir, path)).to_batches()) for path in self.cache_files]
+            )
         else:
             return sum(chunk.num_rows for chunk in self.ledger.chunks)
 
@@ -180,7 +182,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             ledger = _convert_to_new_ledger(cache_dir, ledger)
         except FileNotFoundError:
             try:
-               ledger = _load_cache_ledger(cache_dir)
+                ledger = _load_cache_ledger(cache_dir)
             except FileNotFoundError:
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
         return TokenizedDocumentCache(cache_dir, ledger, flatten_docs)
@@ -266,9 +268,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                 yield BatchEncoding(
                     {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
                 )
+
+
 def _open_arrow_table(path):
     fs, _, paths = fsspec.get_fs_token_paths(path)
     return pq.read_table(path, filesystem=fs)
+
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     """Converts a document to an arrow-compatible record batch."""
@@ -506,7 +511,7 @@ class LMDatasetConfig:
         return load_tokenizer(self.tokenizer)
 
     def build_or_load_document_cache(self, split: str):
-        build_or_load_document_cache(self, split)
+        return build_or_load_document_cache(self, split)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
