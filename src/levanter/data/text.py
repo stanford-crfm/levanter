@@ -417,7 +417,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def num_cpus(self) -> int:
-        return max(1, _cpu_count() - 1)
+        return max(1, _cpu_count() - 4)
 
 
 def concatenate_and_group_texts(
