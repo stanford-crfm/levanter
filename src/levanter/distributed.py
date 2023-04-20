@@ -1,9 +1,15 @@
+import logging
 import os
 import re
 import subprocess
 from typing import List, Optional
 
 import jax
+import ray
+from jax._src.clusters import TpuCluster
+
+
+logger = logging.getLogger(__name__)
 
 
 _JOBID_PARAM = "SLURM_JOB_ID"
@@ -38,7 +44,8 @@ class LevanterSlurmCluster:
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
-        port = int(os.environ[_JOBID_PARAM]) % 2**12 + (65535 - 2**12 + 1)
+        id = os.environ[_JOBID_PARAM]
+        port = _choose_port(id)
 
         # Parse the first hostname of the job
         # If we are looking for 'node001',
@@ -127,3 +134,46 @@ class LevanterSlurmCluster:
         # select contiguous devices for this process
         begin = local_process_id * num_devices_per_local_process
         return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+
+def _choose_port(id):
+    port = int(id) % 2**12 + (65535 - 2**12 + 1)
+    return port
+
+
+def auto_ray_init(address: Optional[str] = None, **kwargs):
+    """Initializes ray, automatically discovering the address if it is not provided.
+    Currently supports slurm and TPU.
+
+    NB that Ray has Slurm support: https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html
+
+    We don't use that because it's more geared towards submitting jobs to a ray cluster that is backed by slurm.
+    """
+
+    def _munge_address_port(address: str):
+        # the coordinator address typically includes a port that jax wants to use. we want to use our own port
+        # we add a deterministic number to the chosen port and then cycle through the ephemeral range
+        # this is a hack, but it works
+        host, port_str = address.split(":")
+        port = int(port_str)
+        return host + ":" + str(_choose_port(port + 10234))
+
+    if address is None:
+        # Ray automatically looks at RAY_ADDRESS. We don't want to use our defaulting logic if that is set
+        if os.getenv("RAY_ADDRESS") is not None:
+            address = os.getenv("RAY_ADDRESS")
+            logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
+        elif LevanterSlurmCluster.is_env_present():
+            address = LevanterSlurmCluster.get_coordinator_address()
+            address = _munge_address_port(address)
+            logger.info("Auto-discovered ray address using slurm: %s", address)
+        elif TpuCluster.is_env_present():
+            address = TpuCluster.get_coordinator_address()
+            address = _munge_address_port(address)
+            logger.info("Auto-discovered ray address using TPU: %s", address)
+        else:
+            logger.info("No auto-discovered ray address found. Using default ray.init()")
+
+    logger.info(f"ray.init(address={address}, **{kwargs})")
+    # Ray has retry logic, so we don't need to retry here :fingers-crossed:
+    ray.init(address=address, **kwargs)

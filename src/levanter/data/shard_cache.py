@@ -210,7 +210,7 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     try:
-        logger.info(f"Loading cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
+        logger.info(f"Attempting to load cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
         with fsspec.open(f"{cache_dir}/{LEDGER_FILE_NAME}") as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
         return cache_ledger

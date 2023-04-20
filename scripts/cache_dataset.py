@@ -1,11 +1,11 @@
 from dataclasses import dataclass
 from typing import Optional
 
-import ray
-
 import levanter
 from levanter.data.shard_cache import cache_dataset
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
+from levanter.distributed import auto_ray_init
+from levanter.logging import init_logger
 
 
 @dataclass
@@ -21,7 +21,8 @@ class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    ray.init(address=args.address)
+    auto_ray_init(address=args.address)
+    init_logger("cache_dataset.log")
 
     tokenizer = args.the_tokenizer
 
