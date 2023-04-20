@@ -64,10 +64,9 @@ def cache_dataset(
     cache_dir: str,
     processor: BatchProcessor[T],
     input_shards: ShardedDataSource[T],
-    num_workers: Optional[int] = None,
     batch_size: Optional[int] = None,
 ) -> "ShardCache":
-    manager = _get_manager_actor(cache_dir, input_shards, processor, num_workers)
+    manager = _get_manager_actor(cache_dir, input_shards, processor)
 
     logger.debug(f"Waiting for cache {cache_dir} to be built")
     while True:
@@ -359,7 +358,7 @@ def _inject_chunks(manager_ref, generator):
         raise e
 
 
-def _get_manager_actor(cache_dir, input_shards, processor, num_workers):
+def _get_manager_actor(cache_dir, input_shards, processor):
     return ChunkCacheManager.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
         cache_dir,
@@ -409,7 +408,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         self.shard_source = shard_source
         self.processor = processor
 
-        self._manager = _get_manager_actor(cache_dir, shard_source, processor, None)
+        self._manager = _get_manager_actor(cache_dir, shard_source, processor)
         self._batch_size = batch_size
 
     def __iter__(self):

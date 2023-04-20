@@ -1,11 +1,20 @@
-from typing import Callable, List, Optional
+from functools import reduce
+from typing import Callable, List, Optional, Sequence, TypeVar
 
 import equinox as eqx
 import jax
+import pyarrow as pa
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
+from transformers import BatchEncoding
+
+from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
+from levanter.data.text import _as_record_batch, _stack_batch_encodings
+
+
+T = TypeVar("T")
 
 
 def skip_if_not_enough_devices(count: int):
@@ -110,3 +119,37 @@ def has_torch():
 
 def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
+
+
+class IdentityProcessor(BatchProcessor[BatchEncoding]):
+    def __call__(self, batch: Sequence[BatchEncoding]) -> pa.RecordBatch:
+        stacked = reduce(_stack_batch_encodings, batch)
+        return _as_record_batch(stacked)
+
+    @property
+    def num_cpus(self) -> int:
+        return 0
+
+
+class ShardsDataSource(ShardedDataSource[T]):
+    def __init__(self, docs: List[List[T]]):
+        self.docs = docs
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return [str(i) for i in range(len(self.docs))]
+
+    def open_shard_at_row(self, shard_name: str, row: int):
+        return self.docs[int(shard_name)][row:]
+
+
+class SimpleDocumentSource(ShardedDataSource[T]):
+    def __init__(self, docs: List[T]):
+        self.docs = docs
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return ["0"]
+
+    def open_shard_at_row(self, shard_name: str, row: int):
+        return self.docs[row:]

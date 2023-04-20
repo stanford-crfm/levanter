@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Callable, Iterator, List, Optional, Sequence, Union
+from typing import Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
@@ -128,26 +128,41 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
     """
 
-    def __init__(self, cache_dir, ledger: CacheLedger, flatten_docs):
+    def __init__(self, cache_dir, chunks: Sequence[ChunkMetadata], flatten_docs):
         self.cache_dir = cache_dir
-        self.ledger = ledger
-        self.cache_files = [chunk.name for chunk in ledger.chunks]
+        # self.cache_files = [chunk.name for chunk in ledger.chunks]
+        self.chunks = chunks
         self.flatten_docs = flatten_docs
-        self.token_counts = [chunk.field_counts["input_ids"] for chunk in ledger.chunks]
+        self.token_counts = [chunk.field_counts["input_ids"] for chunk in chunks]
         self.total_tokens = sum(self.token_counts)
 
     def __len__(self):
         if self.flatten_docs:
             return sum(
-                [len(_open_arrow_table(os.path.join(self.cache_dir, path)).to_batches()) for path in self.cache_files]
+                [
+                    len(_open_arrow_table(os.path.join(self.cache_dir, f"{c.name}.parquet")).to_batches())
+                    for c in self.chunks
+                ]
             )
         else:
-            return sum(chunk.num_rows for chunk in self.ledger.chunks)
+            return sum(chunk.num_rows for chunk in self.chunks)
 
     def __iter__(self):
-        for cache_file in self.cache_files:
-            for entry in self._read_cache_file(cache_file):
+        for chunk in self.chunks:
+            for entry in self._read_cache_file(chunk):
                 yield entry
+
+    @staticmethod
+    def build_or_load(
+        cache_dir,
+        source: ShardedDataSource[str],
+        tokenizer: PreTrainedTokenizerBase,
+        flatten_docs=True,
+        enforce_eos=True,
+    ):
+        bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
+        cache_dataset(cache_dir, bt, source)
+        return TokenizedDocumentCache.load(cache_dir, flatten_docs=flatten_docs)
 
     @staticmethod
     def load(cache_dir, flatten_docs=True):
@@ -164,25 +179,22 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             try:
                 ledger = _load_old_ledger(cache_dir)
                 ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(ledger, os.path.join(cache_dir, LEDGER_FILE))
+                _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE), ledger)
             except FileNotFoundError:
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
-        return TokenizedDocumentCache(cache_dir, ledger, flatten_docs)
+        return TokenizedDocumentCache(cache_dir, ledger.chunks, flatten_docs)
 
     def shard(self, shard_index, num_shards):
         if num_shards <= shard_index:
             raise ValueError(f"Shard index {shard_index} is out of range")
-        if len(self.cache_files) % num_shards != 0:
-            raise ValueError(f"Number of shards {num_shards} does not divide evenly into the number of files")
 
         if num_shards == 1:
             return self
 
-        shard_files = self.cache_files[shard_index::num_shards]
-        shard_token_counts = self.token_counts[shard_index::num_shards]
+        shard_chunks = self.chunks[shard_index::num_shards]
 
-        return TokenizedDocumentCache(self.cache_dir, shard_files, shard_token_counts, self.flatten_docs)
+        return TokenizedDocumentCache(self.cache_dir, shard_chunks, self.flatten_docs)
 
     @staticmethod
     def merge(finished_caches, cache_root, flatten_docs=True):
@@ -221,24 +233,26 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             "input_ids": ShapeSpec((None,), dtype=np.int32),
         }
 
-    def _read_cache_file(self, file) -> Iterator[BatchEncoding]:
+    def _read_cache_file(self, chunk) -> Iterator[BatchEncoding]:
         """Reads the cache files produced by cache_and_group and yields tokenized sequences.
         If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
         then the documents returned are actually concatenated documents, where the number is the number of documents
         presented as a batch to the caching process."""
-        path = os.path.join(self.cache_dir, file + ".parquet")
+        path = os.path.join(self.cache_dir, f"{chunk.name}.parquet")
         for b in _open_arrow_table(path).to_batches():
             if self.flatten_docs:
                 # insert a newaxis to the beginning so that it appears to be bs=1
                 yield BatchEncoding(
                     {
-                        b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=True)[np.newaxis, :]
+                        b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
                         for i in range(b.num_columns)
-                    }
+                    },
+                    n_sequences=1,
                 )
             else:
                 yield BatchEncoding(
-                    {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)}
+                    {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
+                    n_sequences=b.num_rows,
                 )
 
 
@@ -259,27 +273,8 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
             return pa.array(x)
 
     names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
+
     return pa.RecordBatch.from_arrays(list(columns), names)
-
-
-def batch_tokenizer(tokenizer, enforce_eos) -> Callable[[List[str]], BatchEncoding]:
-    # see if the tokenizer appends eos
-    # HF's BPE-based tokenizers do not, but the bert and roberta ones do
-    # TODO: this doesn't necessarily ensure it, I guess, but eh
-    if enforce_eos:
-        input_ids = tokenizer("hi there")["input_ids"]
-        should_append_eos = input_ids[-1] != tokenizer.eos_token_id
-    else:
-        should_append_eos = False
-
-    if should_append_eos:
-        tokenize = lambda x: tokenizer(  # noqa: E731
-            [d + " " + tokenizer.eos_token for d in x], return_attention_mask=False
-        )
-    else:
-        tokenize = lambda x: tokenizer(x, return_attention_mask=False)  # noqa: E731
-
-    return tokenize
 
 
 def _cpu_count():
@@ -301,10 +296,23 @@ class BatchTokenizer(BatchProcessor[str]):
     def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
-        self.tokenize = batch_tokenizer(tokenizer, enforce_eos)
+
+        # see if the tokenizer appends eos
+        # HF's BPE-based tokenizers do not, but the bert and roberta ones do
+        # TODO: this doesn't necessarily ensure it, I guess, but eh
+        if enforce_eos:
+            input_ids = tokenizer("hi there")["input_ids"]
+            should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+        else:
+            should_append_eos = False
+
+        self._need_to_add_eos = should_append_eos
 
     def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
-        encoding = self.tokenize(batch)  # type: ignore
+        if self._need_to_add_eos:
+            encoding = self.tokenizer([d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False)
+        else:
+            encoding = self.tokenizer(batch, return_attention_mask=False)  # type: ignore
         return _as_record_batch(encoding)
 
     @property

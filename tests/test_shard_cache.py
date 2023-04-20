@@ -57,22 +57,20 @@ def simple_process(processor, source):
     return result
 
 
-@pytest.mark.parametrize("num_workers", [2, 4, 1])
-def test_cache_simple(num_workers):
+def test_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
-        ray_ds = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
+        ray_ds = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource())
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
 
         assert list(ray_ds) == list(simple_processed)
 
 
-@pytest.mark.parametrize("num_workers", [1, 2, 4])
-def test_cache_remembers_its_cached(num_workers):
+def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
-        ds1 = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource(), num_workers=num_workers)
+        ds1 = cache_dataset(tmpdir, TestProcessor(), SimpleShardSource())
 
         class ThrowingProcessor(BatchProcessor[Sequence[int]]):
             def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
@@ -97,8 +95,7 @@ class _CustomException(Exception):
     pass
 
 
-@pytest.mark.parametrize("num_workers", [1, 2, 4])
-def test_cache_recover_from_crash(num_workers):
+def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[List[int]]):
         def __init__(self, crash_point: int):
             self.crash_point = crash_point
@@ -119,18 +116,18 @@ def test_cache_recover_from_crash(num_workers):
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers)
+            cache_dataset(tmpdir, TestProcessor(), source)
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
-            cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers)
+            cache_dataset(tmpdir, TestProcessor(), source)
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        reader1 = cache_dataset(tmpdir, TestProcessor(), source, num_workers=num_workers, batch_size=1)
+        reader1 = cache_dataset(tmpdir, TestProcessor(), source, batch_size=1)
 
         # compare to the original with no crash
-        reader2 = cache_dataset(tmpdir2, TestProcessor(), SimpleShardSource(), num_workers=num_workers, batch_size=1)
+        reader2 = cache_dataset(tmpdir2, TestProcessor(), SimpleShardSource(), batch_size=1)
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
