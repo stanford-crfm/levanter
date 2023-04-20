@@ -16,6 +16,6 @@ humanfriendly
 requests
 safetensors[numpy]
 matplotlib
-filelock
 tblib
 dataclasses_json
+ray[default]
