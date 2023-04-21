@@ -105,7 +105,7 @@ def _load_old_ledger(cache_dir):
 def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
     # The old format looked like {"files": [{"file_name": name, "num_tokens": num_tokens} for name, num_tokens in ledger.items()]}
     # the new format looks like { "chunks": [{"name": name, "num_rows": rows, field_counts: {"input_ids": num_tokens}} for name, rows, num_tokens in ledger.items()]}
-    # We unfortunately cant't determine num_rows from the old format, so we have to open the chunks to find out
+    # We unfortunately can't determine num_rows from the old format, so we have to open the chunks to find out
 
     return CacheLedger(
         chunks=[
@@ -116,7 +116,6 @@ def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
             )
             for chunk in ledger["files"]
         ],
-        is_finished=True,
     )
 
 
