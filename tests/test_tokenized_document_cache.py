@@ -59,7 +59,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", IdentityProcessor(), source)
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
@@ -81,7 +81,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
 
     source = ShardsDataSource([[b] for b in batches])
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", IdentityProcessor(), source)
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=True)
 
         result = list(cache)
@@ -117,7 +117,7 @@ def test_doc_cache_sharding():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         source = ShardsDataSource(doc_shards)
-        cache_dataset(f"{tmpdir}/cache", IdentityProcessor(), source)
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
 
         # must evenly divide num_shards
         num_shards_rebuild = [1, 2, 3, 4, 6, 12]
@@ -154,7 +154,7 @@ def test_token_seq_dataset_len_is_correct(flatten_docs, num_docs, seq_len, doc_l
     source = SimpleDocumentSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", IdentityProcessor(), source)
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=flatten_docs)
 
         ds = TokenSeqDataset(cache, seq_len)

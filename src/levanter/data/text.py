@@ -160,7 +160,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         enforce_eos=True,
     ):
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
-        cache_dataset(cache_dir, bt, source)
+        cache_dataset(cache_dir, source, bt)
         return TokenizedDocumentCache.load(cache_dir, flatten_docs=flatten_docs)
 
     @staticmethod
@@ -421,7 +421,7 @@ class LMDatasetConfig:
     def build_or_load_cache(self, split: str):
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
-        cache_dataset(f"{self.cache_dir}/{split}", batch_tokenizer, source)
+        cache_dataset(f"{self.cache_dir}/{split}", source, batch_tokenizer)
         return TokenizedDocumentCache.load(f"{self.cache_dir}/{split}", flatten_docs=True)
 
     def doc_iterator(self, split: str):

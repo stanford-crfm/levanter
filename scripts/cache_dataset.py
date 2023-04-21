@@ -30,7 +30,7 @@ def main(args: RayCachedLMDatasetConfig):
         batch_tokenizer = BatchTokenizer(tokenizer)
         source = args.get_shard_source(split)
 
-        cache_dataset(f"{args.cache_dir}/{split}", batch_tokenizer, source)
+        cache_dataset(f"{args.cache_dir}/{split}", source, batch_tokenizer)
 
         print(f"Finished caching {split} to {args.cache_dir}/{split}.")
 

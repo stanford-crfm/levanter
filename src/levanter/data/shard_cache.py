@@ -62,10 +62,7 @@ class ShardedDataSource(Protocol[T_co]):
 
 
 def cache_dataset(
-    cache_dir: str,
-    processor: BatchProcessor[T],
-    input_shards: ShardedDataSource[T],
-    batch_size: Optional[int] = None,
+    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: Optional[int] = None
 ) -> "ShardCache":
     # first see if we need to do anything
     cache = ShardCache(cache_dir, input_shards, processor, batch_size or 1)
