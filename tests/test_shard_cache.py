@@ -119,13 +119,13 @@ def test_cache_recover_from_crash():
             cache_dataset(tmpdir, source, TestProcessor())
 
         # kill the broker actor so that we can test recovery
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()))
+        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
             cache_dataset(tmpdir, source, TestProcessor())
 
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()))
+        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
