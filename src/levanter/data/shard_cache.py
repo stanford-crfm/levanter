@@ -270,7 +270,7 @@ class ChunkCacheBuilder:
 
         # if there are no more active shards, we're done
         if len(self.current_shard_tasks) == 0:
-            assert len(self.buffered_shard_chunks) == 0
+            assert len(self.buffered_shard_chunks) == 0, f"Buffered chunks: {self.buffered_shard_chunks}"
             # we're done, so tell the broker to finalize
             self._finish()
 
@@ -285,9 +285,8 @@ class ChunkCacheBuilder:
         chunks_to_send = []
         done = False
         while not done:
-            if len(self.current_shard_tasks) == 0:
-                # we're done with all shards, so we can stop
-                done = True
+            if all(len(self.buffered_shard_chunks.get(name, [])) == 0 for name in self.source.shard_names):
+                # we're done
                 break
             for name in self.source.shard_names:
                 assert not done
