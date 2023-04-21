@@ -15,6 +15,7 @@ import ray
 import tblib
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
+from ray.actor import ActorHandle
 from ray.exceptions import GetTimeoutError
 
 
@@ -66,10 +67,10 @@ def cache_dataset(
     input_shards: ShardedDataSource[T],
     batch_size: Optional[int] = None,
 ) -> "ShardCache":
-    broker = _get_broker_actor(cache_dir, input_shards, processor)
+    # first see if we need to do anything
+    cache = ShardCache(cache_dir, input_shards, processor, batch_size or 1)
 
-    logger.debug(f"Waiting for cache {cache_dir} to be built")
-    sentinel_remote = broker.finished_sentinel.remote()
+    sentinel_remote = cache.finished_sentinel()
     while True:
         try:
             _ = ray.get(sentinel_remote, timeout=4)
@@ -77,7 +78,7 @@ def cache_dataset(
         except GetTimeoutError:
             pass
 
-    return ShardCache(cache_dir, input_shards, processor, batch_size or 1)
+    return cache
 
 
 @dataclass_json
@@ -212,20 +213,27 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     try:
-        print(f"Loading cache state from {cache_dir}/{LEDGER_FILE_NAME}")
+        logger.info(f"Loading cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
         with fsspec.open(f"{cache_dir}/{LEDGER_FILE_NAME}") as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
         return cache_ledger
     except FileNotFoundError:
-        raise FileNotFoundError(f"Cache state not found at {cache_dir}/{LEDGER_FILE_NAME}")
+        raise FileNotFoundError(f"Cache ledger not found at {cache_dir}/{LEDGER_FILE_NAME}")
+
+
+def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T]):
+    try:
+        return _load_cache_ledger(cache_dir)
+    except FileNotFoundError:
+        return _get_broker_actor(cache_dir, input_shards, processor)
 
 
 @ray.remote(num_cpus=0)
 class ChunkCacheBuilder:
     """
     Actor that manages the in-progress global ordering on chunks.
-    ChunkCacheWriter's job is to hold the list of all chunks as well as active shards and update
-    the cache state as new chunks are produced.
+    ChunkCacheWriter's job is to hold the list of all chunks as well as chunks from each shard while
+    caching is running.
 
     This is a separate actor from the ChunkCacheBroker because
     we need something that gets messages from shards in-order, and async methods make actors
@@ -233,7 +241,6 @@ class ChunkCacheBuilder:
     """
 
     def __init__(self, broker_ref, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
-
         self.broker_ref = broker_ref
         self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
         self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
@@ -339,20 +346,16 @@ class ChunkCacheBroker:
         self._source = source
         self._processor = processor
         self._cache_dir = cache_dir
+        self._finished_promise = asyncio.Future()
 
         # initialize writer task
-        # first see if we need to do anything: check the state for is_finished
+        # first see if we need to do anything: check the ledger for is_finished
         try:
             cache_ledger = _load_cache_ledger(self._cache_dir)
-        except FileNotFoundError:
-            cache_ledger = None
-
-        self._finished_promise = asyncio.Future()
-        if cache_ledger is not None:
             self.chunks = cache_ledger.chunks
             self._is_finished = True
             self._finished_promise.set_result(None)
-        else:
+        except FileNotFoundError:
             self.chunks = []
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, self._source, self._processor)  # type: ignore
@@ -448,6 +451,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
         of tokens.
     """
 
+    _ledger: Optional[CacheLedger]
+    _broker: Optional[ActorHandle]
+
     def __init__(
         self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int
     ):
@@ -455,25 +461,44 @@ class ShardCache(Iterable[pa.RecordBatch]):
         self.shard_source = shard_source
         self.processor = processor
 
-        self._broker = _get_broker_actor(cache_dir, shard_source, processor)
+        ledger_or_broker = _ledger_or_broker(cache_dir, shard_source, processor)
+        if isinstance(ledger_or_broker, CacheLedger):
+            self._ledger = ledger_or_broker
+            self._broker = None
+        else:
+            self._ledger = None
+            self._broker = ledger_or_broker
+
         self._batch_size = batch_size
 
+    def finished_sentinel(self):
+        """Returns a Ray-awaitable object that will be set when the cache is finished"""
+        if self._broker is None:
+            return ray.remote(lambda: None).remote()
+        else:
+            return self._broker.finished_sentinel.remote()
+
     def __iter__(self):
-        i = 0
-        while True:
-            try:
-                chunk = ray.get(self._broker.get_chunk.remote(i))
-                if chunk is None:
-                    break
-                i += 1
+        if self._ledger is not None:
+            for i in range(len(self._ledger.chunks)):
+                chunk = self._ledger.chunks[i]
                 reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
                 for batch in reader:
                     yield batch
-            # except IndexError:
-            #     break
-            except Exception as e:
-                logger.exception("Error while reading from shard cache.")
-                raise e
+        else:
+            i = 0
+            while True:
+                try:
+                    chunk = ray.get(self._broker.get_chunk.remote(i))
+                    if chunk is None:
+                        break
+                    i += 1
+                    reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+                    for batch in reader:
+                        yield batch
+                except Exception as e:
+                    logger.exception("Error while reading from shard cache.")
+                    raise e
 
 
 class _ChunkReader:
