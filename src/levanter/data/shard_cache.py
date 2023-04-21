@@ -282,19 +282,22 @@ class ChunkCacheBuilder:
         # The global order on chunks is defined as "round robin" over shards, until one shard is done.
         # after that, that shard is removed from the round robin and the process continues.
         # round robin order is determined by self.source.shard_names
+        # So we loop over the shards in order. If we find a shard that has buffered chunks, we send
+        # the first chunk to the broker. If we find a shard that has no buffered chunks, we check
+        # if it's done. If it's done, we remove it from the list of buffered shards. If it's not done,
         chunks_to_send = []
         done = False
         while not done:
-            if all(len(self.buffered_shard_chunks.get(name, [])) == 0 for name in self.source.shard_names):
-                # we're done
-                break
+            found_one = False
             for name in self.source.shard_names:
                 assert not done
                 if name not in self.buffered_shard_chunks:
                     continue
 
+                shard_is_finished = name not in self.current_shard_tasks
+
                 if len(self.buffered_shard_chunks[name]) == 0:
-                    if name not in self.current_shard_tasks:
+                    if shard_is_finished:
                         # we're done with this shard, so we can remove it
                         del self.buffered_shard_chunks[name]
                     else:
@@ -302,15 +305,17 @@ class ChunkCacheBuilder:
                         done = True
                         break
 
-                # we can send the chunk to the broker
                 chunk = self.buffered_shard_chunks[name].pop(0)
                 chunks_to_send.append(chunk)
+                found_one = True
 
                 # check again
                 if len(self.buffered_shard_chunks[name]) == 0:
-                    if name not in self.current_shard_tasks:
+                    if shard_is_finished:
                         # we're done with this shard, so we can remove it
                         del self.buffered_shard_chunks[name]
+
+            done = done or not found_one
 
         if len(chunks_to_send) > 0:
             logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
