@@ -1,3 +1,4 @@
+import atexit
 import logging
 import os
 import re
@@ -134,7 +135,9 @@ def _choose_port(id):
     return port
 
 
-def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, **kwargs):
+def auto_ray_cluster(
+    address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
+):
     """Initializes ray, automatically discovering the address if it is not provided.
     Currently supports slurm and TPU.
 
@@ -180,6 +183,8 @@ def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, 
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     os.system(f"ray start --head --port {ray_port}")
+                    # install an atexit handler to kill the head when we exit
+                    atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
                     logger.info(
                         f"Starting ray worker and connecting to {address}."
@@ -189,4 +194,4 @@ def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, 
 
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
-    ray.init(address=address, **kwargs)
+    ray.init(address=address, namespace=namespace, **kwargs)
