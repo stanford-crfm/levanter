@@ -175,7 +175,7 @@ def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, 
                 host, port = _munge_address_port(coord_address)
 
                 ray_port = _choose_port(port + 10234)
-                address = f"ray://{host}:{ray_port}"
+                address = f"{host}:{ray_port}"
 
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
@@ -187,6 +187,6 @@ def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, 
                     )
                     os.system(f"ray start --address {address}")
 
-    logger.info(f"ray.init(address={address}, **{kwargs})")
+    logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, **kwargs)

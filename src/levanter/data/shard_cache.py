@@ -245,12 +245,17 @@ class ChunkCacheBuilder:
 
         self_ref = ray.runtime_context.get_runtime_context().current_actor
 
-        for shard_name in source.shard_names:
-            self.buffered_shard_chunks[shard_name] = []
+        if len(source.shard_names) == 0:
+            logger.warning("No shards to index?!?")
+            self._finish()
+        else:
+            for shard_name in source.shard_names:
+                self.buffered_shard_chunks[shard_name] = []
 
-            self.current_shard_tasks[shard_name] = _produce_cache_for_shard.remote(
-                self_ref, source, shard_name, processor, cache_dir
-            )
+                self.current_shard_tasks[shard_name] = _produce_cache_for_shard.remote(
+                    self_ref, source, shard_name, processor, cache_dir
+                )
+
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         assert shard_name in self.current_shard_tasks

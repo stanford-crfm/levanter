@@ -505,7 +505,7 @@ class HFDatasetDataSource(ShardedDataSource[str]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         dataset = self._load_dataset()
         if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
-            shard = dataset._iter_shard(int(shard_name))
+            shard = dataset._ex_iterable.shard_data_sources([int(shard_name)])
         else:
             shard = dataset
 
