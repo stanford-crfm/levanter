@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import jax
 import ray
+from jax._src import clusters
 from jax._src.clusters import TpuCluster
 
 
@@ -23,7 +24,7 @@ _VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 _NODE_NAME = "SLURM_TOPOLOGY_ADDR"
 
 
-class LevanterSlurmCluster:
+class LevanterSlurmCluster(clusters.SlurmCluster):
     """
     This class is a copy-paste and modification of the original SlurmCluster class in jax, with a few differences:
     - It uses the SLURM_LOCAL_PROCESS_COUNT to determine how many devices to use
@@ -31,14 +32,6 @@ class LevanterSlurmCluster:
     depending on how you run
     # TODO: upstream this
     """
-
-    @classmethod
-    def is_env_present(cls) -> bool:
-        return _JOBID_PARAM in os.environ
-
-    @classmethod
-    def get_local_process_id(cls) -> Optional[int]:
-        return int(os.environ[_LOCAL_PROCESS_ID])
 
     # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
     @classmethod
@@ -141,13 +134,14 @@ def _choose_port(id):
     return port
 
 
-def auto_ray_init(address: Optional[str] = None, **kwargs):
+def auto_ray_cluster(address: Optional[str] = None, start_workers: bool = True, **kwargs):
     """Initializes ray, automatically discovering the address if it is not provided.
     Currently supports slurm and TPU.
 
     NB that Ray has Slurm support: https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html
 
     We don't use that because it's more geared towards submitting jobs to a ray cluster that is backed by slurm.
+    Instead, we have our machines already.
     """
 
     def _munge_address_port(address: str):
@@ -156,23 +150,42 @@ def auto_ray_init(address: Optional[str] = None, **kwargs):
         # this is a hack, but it works
         host, port_str = address.split(":")
         port = int(port_str)
-        return host + ":" + str(_choose_port(port + 10234))
+        return host, port
 
     if address is None:
         # Ray automatically looks at RAY_ADDRESS. We don't want to use our defaulting logic if that is set
         if os.getenv("RAY_ADDRESS") is not None:
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
-        elif LevanterSlurmCluster.is_env_present():
-            address = LevanterSlurmCluster.get_coordinator_address()
-            address = _munge_address_port(address)
-            logger.info("Auto-discovered ray address using slurm: %s", address)
-        elif TpuCluster.is_env_present():
-            address = TpuCluster.get_coordinator_address()
-            address = _munge_address_port(address)
-            logger.info("Auto-discovered ray address using TPU: %s", address)
         else:
-            logger.info("No auto-discovered ray address found. Using default ray.init()")
+            cluster_types = [LevanterSlurmCluster, TpuCluster]
+            found = False
+            for cluster_type in cluster_types:
+                if cluster_type.is_env_present():
+                    found = True
+                    break
+
+            if not found:
+                logger.info("No auto-discovered ray address found. Using default ray.init()")
+                address = None
+            else:
+                logger.info(f"Auto-discovered ray address using {cluster_type.__name__}")
+
+                coord_address = cluster_type.get_coordinator_address()
+                host, port = _munge_address_port(coord_address)
+
+                ray_port = _choose_port(port + 10234)
+                address = f"ray://{host}:{ray_port}"
+
+                if cluster_type.get_process_id() == 0:
+                    logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
+                    os.system(f"ray start --head --port {ray_port}")
+                elif start_workers:
+                    logger.info(
+                        f"Starting ray worker and connecting to {address}."
+                        f" We are process {cluster_type.get_process_id()}."
+                    )
+                    os.system(f"ray start --address {address}")
 
     logger.info(f"ray.init(address={address}, **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
