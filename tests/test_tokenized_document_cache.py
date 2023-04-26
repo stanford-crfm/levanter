@@ -16,7 +16,7 @@ T = TypeVar("T")
 
 
 def setup_module(module):
-    ray.init(num_cpus=10)
+    ray.init("local", num_cpus=10)
 
 
 def teardown_module(module):

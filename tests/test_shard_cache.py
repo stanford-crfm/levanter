@@ -10,7 +10,7 @@ from levanter.data.shard_cache import BatchProcessor, ShardedDataSource, _get_br
 
 
 def setup_module(module):
-    ray.init(num_cpus=min(20, 2 * os.cpu_count()))  # 2x cpu count is faster on my m1
+    ray.init("local", num_cpus=min(20, 2 * os.cpu_count()))  # 2x cpu count is faster on my m1
 
 
 def teardown_module(module):
@@ -136,3 +136,17 @@ def test_cache_recover_from_crash():
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
+
+
+def test_no_hang_if_empty_shard_source():
+    class EmptyShardSource(ShardedDataSource[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return []
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            raise RuntimeError("This should not be called")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reader = cache_dataset(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
+        assert list(reader) == []
