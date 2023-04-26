@@ -423,7 +423,7 @@ class TrainerConfig:
             schedule = optax.constant_schedule(self.learning_rate)
         elif self.lr_schedule == "cosine":
             schedule = optax.cosine_decay_schedule(
-                self.learning_rate, lr_decay_steps - warmup_steps, min_lr / self.learning_rate
+                self.learning_rate, lr_decay_steps, self.min_lr_ratio
             )
         elif self.lr_schedule == "linear":
             schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
