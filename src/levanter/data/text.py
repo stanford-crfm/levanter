@@ -150,7 +150,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
 
     def __len__(self):
         if self.flatten_docs:
-            sum([len(self._load_arrow_table(path).to_batches()) for path in self.cache_files])
+            return sum([len(self._load_arrow_table(path).to_batches()) for path in self.cache_files])
         else:
             return sum([self._load_arrow_table(path).num_rows for path in self.cache_files])
 
@@ -477,7 +477,7 @@ class LMDatasetConfig:
         return load_tokenizer(self.tokenizer)
 
     def build_or_load_document_cache(self, split: str):
-        build_or_load_document_cache(self, split)
+        return build_or_load_document_cache(self, split)
 
     def doc_iterator(self, split: str):
         if self.id is not None:

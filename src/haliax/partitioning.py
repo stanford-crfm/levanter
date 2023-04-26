@@ -11,6 +11,7 @@ from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
+from jaxlib.xla_client import SingleDeviceSharding
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -133,7 +134,12 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
         # elif isinstance(node, GlobalDeviceArray):
         #     return FROM_GDA
         elif hasattr(node, "sharding"):
-            return node.sharding
+            sharding = node.sharding
+            # these are usually replicated. Is there a better way to tell?
+            if isinstance(sharding, SingleDeviceSharding):
+                return None
+            else:
+                return sharding
         else:
             return None
 
@@ -202,8 +208,16 @@ def named_pjit(
         dynamic = (dynamic_fun, dynamic_argspec)
 
         if donate_args is not None or donate_kwargs is not None:
-            dargs = donate_args or (False,) * len(args)
+            if donate_args is None:
+                dargs = (False,) * len(args)
+            elif isinstance(donate_args, bool):
+                dargs = (donate_args,) * len(args)
+            elif not isinstance(donate_args, tuple):
+                dargs = tuple(donate_args)
+            else:
+                dargs = donate_args
             dkwargs = donate_kwargs or {k: False for k in kwargs}
+            dkwargs = {k: dkwargs.get(k, False) for k in kwargs}
             dynamic_donated, dynamic_reserved = eqx.partition(dynamic, (False, (dargs, dkwargs)))
         else:
             dynamic_donated = jax.tree_util.tree_map(lambda _: None, dynamic)
