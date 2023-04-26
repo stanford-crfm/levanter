@@ -30,8 +30,11 @@ class Linear(eqx.Module):
     @jax.named_scope(name="linear")
     def __call__(self, inputs):
         q = inputs.dot(self.In, self.weight)
+        q = hax.auto_sharded(q)
 
         if self.bias is not None:
             q = q + self.bias
+
+        q = hax.auto_sharded(q)
 
         return q
