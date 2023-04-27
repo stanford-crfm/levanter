@@ -83,7 +83,7 @@ Given a list of chunks and the idealized number of readers R*, we define the glo
 First define R* iterators over chunks, with `chunk_iterators[r]` being defined as `loop(all_chunks)[r::R*]`.
 
 Next, define a function `mk_examples(chunk_iterator)` that takes a list of iterators over chunks and returns
-a list of examples. Define `chunk_examples[r] = mk_examples(chunk_examples[r])`.
+a list of examples. Define `chunk_examples[r] = mk_examples(chunk_iterators[r])`.
 This function depends on our sequence length, etc. Then the ordering over examples is:
 
 `chunk_examples[0][0], chunk_examples[1][0], ..., chunk_examples[R*-1][0], ..., chunk_examples[0][1], chunk_examples[1][1], ..., chunk_examples[R*-1][1], ...`
@@ -94,11 +94,11 @@ Moreover, if either R or R* is a multiple of the other, then we still get a nice
 each reader reads from a strided slice of the chunk_iterators:
 
 (Boring math)
-If we have R readers, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]`
-If we have `R == n * R*`, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]
+* If we have R readers, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]`
+* If we have `R == n * R*`, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]
  == chunk_examples[r % R*][(j * n * R* + r) // R*] == chunk_examples[r % R*][j * n + r // R*],` so each reader reads from
 a strided slice (specifically `islice(..., r//R*, None, n)`)
-If we have `R* == n * R`, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]
+* If we have `R* == n * R`, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]
 == chunk_examples[R * (j % n) + r][(j * R + r) // R*]` and so each reader reads from n different chunk_exampless.
 so we round-robin over a slice of the chunk_exampless.
 
