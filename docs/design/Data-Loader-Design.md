@@ -109,7 +109,7 @@ each reader reads from a strided slice of the chunk_iterators:
 a strided slice (specifically `islice(..., r//R*, None, n)`)
 * If we have `R* == n * R`, then `reader_iterator[r][j] == example[j * R + r] == chunk_examples[(j * R + r) % R*][(j * R + r) // R*]
 == chunk_examples[R * (j % n) + r][(j * R + r) // R*]` and so each reader reads from n different chunk_exampless.
-so we round-robin over a slice of the chunk_exampless.
+so we round-robin over a slice of the chunk_examples.
 
 For other cases (R and R* don't divide each other), there's no simple relationship between the reader and chunk iterators
 and you end up reading from everywhere, but that's ok.
