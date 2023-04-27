@@ -609,7 +609,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     raise e
 
     def await_finished(self, timeout: Optional[float] = None):
-        return ray.get(self.finished_sentinel().remote(), timeout=timeout)
+        return ray.get(self.finished_sentinel(), timeout=timeout)
 
     def attach_metrics_monitor(self, monitor: MetricsMonitor):
         if self._broker is None:
