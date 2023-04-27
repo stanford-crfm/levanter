@@ -27,6 +27,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+import wandb
+
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -288,6 +290,29 @@ class RichMetricsMonitor(MetricsMonitor):
             "Shards", total=self.num_shards, completed=metrics.shards_finished, **dataclasses.asdict(metrics)
         )
         self.progress.start()
+
+
+class WandbMetricsMonitor(MetricsMonitor):
+    def __init__(self, prefix: str = "preprocessing", commit=False):
+        """
+        :param prefix:
+        :param commit: Forwarded to wandb.log. Use False (default) if it's part of a simultaneous training run,
+        and True if you're running standalone.
+        """
+        self.prefix = prefix
+        self.commit = commit
+
+    def __call__(self, metrics: InProgressCacheMetrics):
+        to_log = {}
+
+        to_log[f"{self.prefix}/shards_finished"] = metrics.shards_finished
+        to_log[f"{self.prefix}/chunks_finished"] = metrics.chunks_finished
+        to_log[f"{self.prefix}/rows_finished"] = metrics.rows_finished
+
+        for field, count in metrics.field_counts.items():
+            to_log[f"{self.prefix}/{field}"] = count
+
+        wandb.log(to_log, commit=self.commit)
 
 
 def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T]):
