@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import os
 import sys
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Generic, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar
@@ -16,7 +17,15 @@ import tblib
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
-from ray.exceptions import GetTimeoutError
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskID,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 
 T = TypeVar("T")
@@ -54,6 +63,10 @@ class ShardedDataSource(Generic[T_co]):
     def shard_names(self) -> Sequence[str]:
         raise NotImplementedError
 
+    @property
+    def num_shards(self) -> int:
+        return len(self.shard_names)
+
     def open_shard(self, shard_name: str) -> Iterator[T_co]:
         return self.open_shard_at_row(shard_name, 0)
 
@@ -62,17 +75,20 @@ class ShardedDataSource(Generic[T_co]):
 
 
 def cache_dataset(
-    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int = 1
+    cache_dir: str,
+    input_shards: ShardedDataSource[T],
+    processor: BatchProcessor[T],
+    batch_size: int = 1,
+    await_finished: bool = True,
 ) -> "ShardCache":
     # first see if we need to do anything
-    cache = ShardCache(cache_dir, input_shards, processor, batch_size=batch_size)
+    cache = ShardCache(cache_dir, input_shards, processor, batch_size)
 
-    sentinel_remote = cache.finished_sentinel()
-    while True:
+    while await_finished:
         try:
-            _ = ray.get(sentinel_remote, timeout=4)
+            cache.await_finished(4.0)
             break
-        except GetTimeoutError:
+        except TimeoutError:
             pass
 
     return cache
@@ -219,6 +235,59 @@ def _load_cache_ledger(cache_dir) -> CacheLedger:
         return cache_ledger
     except FileNotFoundError:
         raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
+
+
+class MetricsMonitor(Protocol):
+    def __call__(self, metrics: InProgressCacheMetrics):
+        ...
+
+
+class RichMetricsMonitor(MetricsMonitor):
+
+    progress: Optional[Progress]  # type: ignore
+    task: Optional[TaskID]
+
+    def __init__(self, num_shards, **kwargs):
+        """kwargs are passed to rich.progress.Progress"""
+        self.kwargs = kwargs
+        self.progress: Optional[Progress] = None
+        self.task = None
+        self.num_shards = num_shards
+
+    def __call__(self, metrics: InProgressCacheMetrics):
+        if self.progress is None:
+            self._init_progress(metrics)
+
+        self.progress.update(self.task, completed=metrics.shards_finished, **dataclasses.asdict(metrics))  # type: ignore
+
+        self.progress.refresh()  # type: ignore
+
+        if metrics.is_finished:
+            self.progress.stop()  # type: ignore
+
+    def _init_progress(self, metrics):
+        columns = [
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("{task.fields[chunks_finished]} chunks", justify="center"),
+            TextColumn("{task.fields[rows_finished]} docs", justify="center"),
+        ]
+
+        for field in metrics.field_counts:
+            columns.append(TextColumn(f"{{task.fields[field_counts][{field}]}} {field}", justify="center"))
+
+        columns.append(TimeElapsedColumn())
+        columns.append(TimeRemainingColumn())
+
+        self.progress = Progress(
+            *columns,
+            **self.kwargs,
+        )
+
+        self.task = self.progress.add_task(
+            "Shards", total=self.num_shards, completed=metrics.shards_finished, **dataclasses.asdict(metrics)
+        )
+        self.progress.start()
 
 
 def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T]):
@@ -460,6 +529,10 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     _ledger: Optional[CacheLedger]
     _broker: Optional[ActorHandle]
+    # We use a thread here instead of an actor because we want to ensure it's on the same process as the ShardCache
+    # object.
+    _monitor_thread: Optional[threading.Thread]
+    _metrics_monitors: List[MetricsMonitor]
 
     def __init__(
         self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int
@@ -477,6 +550,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
             self._broker = ledger_or_broker
 
         self._batch_size = batch_size
+
+        self._metrics_monitors = []
+        self._monitor_thread = None
 
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
@@ -506,6 +582,36 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 except Exception as e:
                     logger.exception("Error while reading from shard cache.")
                     raise e
+
+    def await_finished(self, timeout: Optional[float] = None):
+        """Blocks until the cache is finished"""
+        if self._broker is None:
+            return
+
+        ray.get(self._broker.finished_sentinel.remote(), timeout=timeout)
+
+    def attach_metrics_monitor(self, monitor: MetricsMonitor):
+        if self._broker is None:
+            # TODO: decide what to do about attaching if the cache is already finished
+            # maybe get the final metrics?
+            return
+
+        self._metrics_monitors.append(monitor)
+        if self._monitor_thread is None:
+            self._monitor_thread = threading.Thread(target=self._monitor_metrics)
+            self._monitor_thread.start()
+
+    def _monitor_metrics(self):
+        while True:
+            try:
+                metrics = ray.get(self._broker.updated_metrics.remote())
+                for monitor in self._metrics_monitors:
+                    monitor(metrics)
+                if metrics.is_finished:
+                    break
+            except Exception as e:
+                logger.exception("Error while reading metrics from shard cache.")
+                raise e
 
 
 class _ChunkReader:

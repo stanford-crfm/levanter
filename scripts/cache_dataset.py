@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import levanter
 from levanter.config import RayConfig
-from levanter.data.shard_cache import cache_dataset
+from levanter.data.shard_cache import RichMetricsMonitor, cache_dataset
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.logging import init_logger
 
@@ -25,7 +25,11 @@ def main(args: RayCachedLMDatasetConfig):
         batch_tokenizer = BatchTokenizer(tokenizer)
         source = args.get_shard_source(split)
 
-        cache_dataset(f"{args.cache_dir}/{split}", source, batch_tokenizer)
+        cache = cache_dataset(f"{args.cache_dir}/{split}", source, batch_tokenizer, await_finished=False)
+
+        cache.attach_metrics_monitor(RichMetricsMonitor(source.num_shards))
+
+        cache.await_finished()
 
         print(f"Finished caching {split} to {args.cache_dir}/{split}.")
 
