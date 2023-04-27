@@ -36,7 +36,7 @@ class TestProcessor(BatchProcessor[Sequence[int]]):
 
 class SimpleShardSource(ShardedDataSource[List[int]]):
     def __init__(self, num_shards: int = 4):
-        self.num_shards = num_shards
+        self._num_shards = num_shards
 
     @property
     def shard_names(self) -> Sequence[str]:
