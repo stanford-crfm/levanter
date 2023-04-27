@@ -40,7 +40,7 @@ class SimpleShardSource(ShardedDataSource[List[int]]):
 
     @property
     def shard_names(self) -> Sequence[str]:
-        return [f"shard_{i}" for i in range(self.num_shards)]
+        return [f"shard_{i}" for i in range(self._num_shards)]
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
         # parse the shard name to get the shard number
