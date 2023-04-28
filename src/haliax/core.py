@@ -126,11 +126,11 @@ class NamedArray:
         return self._lookup_indices(axis) is not None
 
     @overload
-    def axis_size(self, axis: Union[Axis, str]) -> int:  # type: ignore
+    def axis_size(self, axis: AxisSelector) -> int:  # type: ignore
         ...
 
     @overload
-    def axis_size(self, axis: Sequence[Union[Axis, str]]) -> Tuple[int, ...]:  # type: ignore
+    def axis_size(self, axis: Sequence[AxisSelector]) -> Tuple[int, ...]:  # type: ignore
         ...
 
     def axis_size(self, axis: AxisSelection) -> Union[int, Tuple[int, ...]]:
@@ -992,7 +992,7 @@ def broadcast_axis(a: NamedArray, axis: AxisSpec) -> NamedArray:
 
 def check_shape(jnp_shape: Sequence[int], hax_axes: AxisSelection) -> Tuple[Axis, ...]:
     """Check that the shape of a jax array matches the axes of a NamedArray"""
-    axes: Tuple[Union[str, haliax.Axis], ...] = ensure_tuple(hax_axes)
+    axes: Tuple[AxisSelector, ...] = ensure_tuple(hax_axes)
     if len(jnp_shape) != len(axes):
         raise ValueError(f"Shape mismatch: jnp_shape={jnp_shape} hax_axes={hax_axes}")
     result_axes: List[haliax.Axis] = []
@@ -1014,7 +1014,7 @@ class _Sentinel:
     ...
 
 
-def axis_compatible(ax1: Union[str, Axis], ax2: Union[str, Axis]):
+def is_axis_compatible(ax1: AxisSelector, ax2: AxisSelector):
     if isinstance(ax1, str):
         if isinstance(ax2, str):
             return ax1 == ax2
@@ -1029,7 +1029,7 @@ def selects_axis(selector: AxisSelection, selected: AxisSelection) -> bool:
     if isinstance(selector, Axis) or isinstance(selector, str):
         selected = ensure_tuple(selected)
         try:
-            index = index_where(lambda ax: axis_compatible(ax, selector), selected)  # type: ignore
+            index = index_where(lambda ax: is_axis_compatible(ax, selector), selected)  # type: ignore
             return index >= 0
         except ValueError:
             return False
