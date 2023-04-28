@@ -21,11 +21,3 @@ trainer:
   weight_decay: 0.1
   model_axis_size: 1
   per_device_parallelism: 16
-
-  axis_resources:
-    batch: "data"
-    vocab: "model"
-    mlp: "model"
-    heads: "model"
-  parameter_axis_resources:
-    embed: "data"
