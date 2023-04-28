@@ -294,9 +294,9 @@ def physical_axis_name(axis: AxisSelector, mapping: Optional[ResourceMapping] = 
     mapping = mapping or _mapping_holder.thread_data.resource_mapping
     if mapping is None:
         return None
+    elif isinstance(axis, str):
+        return mapping.get(axis, None)
     else:
-        if isinstance(axis, str):
-            return mapping.get(axis, None)
         return mapping.get(axis.name, None)
 
 
