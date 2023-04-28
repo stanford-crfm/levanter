@@ -202,7 +202,7 @@ def test_take():
     named2 = hax.take(named1, Height, indices)
     assert named2.axes == (Index, Width, Depth)
 
-    named2 = hax.take(named1, Width, indices)
+    named2 = hax.take(named1, "Width", indices)
     assert named2.axes == (Height, Index, Depth)
 
     named2 = hax.take(named1, Depth, indices)
@@ -215,7 +215,7 @@ def test_take():
     named2 = hax.take(named1, Height, indices2)
     assert named2.axes == (Index, Index2, Width, Depth)
 
-    named2 = hax.take(named1, Width, indices2)
+    named2 = hax.take(named1, "Width", indices2)
     assert named2.axes == (Height, Index, Index2, Depth)
 
     named2 = hax.take(named1, Depth, indices2)
@@ -326,22 +326,19 @@ def test_arange():
 
 
 def test_stack():
-    B = Axis("Batch", 2)
-    H = Axis("Height", 4)
-    W = Axis("Width", 3)
+    H = Axis("H", 4)
+    W = Axis("W", 3)
 
     named1 = hax.random.uniform(PRNGKey(0), (H, W))
     named2 = hax.random.uniform(PRNGKey(1), (H, W))
 
-    assert jnp.all(jnp.equal(hax.stack(B, (named1, named2)).array, jnp.stack((named1.array, named2.array), axis=0)))
+    assert jnp.all(jnp.equal(hax.stack("B", (named1, named2)).array, jnp.stack((named1.array, named2.array), axis=0)))
 
     named3 = hax.random.uniform(PRNGKey(2), (W, H))
     # test that this rearranges fine
-    assert jnp.all(
-        jnp.equal(
-            hax.stack(B, (named1, named3)).array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)
-        )
-    )
+    reord_stack = hax.stack("B", (named1, named3))
+    assert jnp.all(jnp.equal(reord_stack.array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)))
+    assert reord_stack.axes == (Axis("B", 2), H, W)
 
 
 def test_unflatten_axis():
