@@ -19,7 +19,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
-from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
@@ -32,7 +32,7 @@ class EvalGpt2Config:
     hf_checkpoint: Optional[str] = None
     hf_revision: Optional[str] = None
     trainer: TrainerConfig = TrainerConfig()
-    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
+    data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
 
     compare_torch: bool = False

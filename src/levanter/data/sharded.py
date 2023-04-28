@@ -133,12 +133,6 @@ class GlobalBatchDataset(Dataset[Ex]):
                     jax.sharding.NamedSharding(self.mesh, self._pspec_for(shape)),
                     lambda indices: get_local_data_for_leaf(indices, leaf_index),
                 )
-                # GlobalDeviceArray.from_callback(
-                #     to_raw_shape(shape),
-                #     self.mesh,
-                #     self._pspec_for(shape),
-                #     lambda indices: get_local_data_for_leaf(indices, leaf_index),
-                # )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
 
