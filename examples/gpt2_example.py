@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
 from jax.interpreters.pxla import PartitionSpec
@@ -15,7 +14,6 @@ import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
@@ -131,9 +129,6 @@ def main(config: TrainGpt2Config):
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
-        # don't want to compute the loss w.r.t. the final token
-        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
-
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
@@ -142,11 +137,11 @@ def main(config: TrainGpt2Config):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids, loss_mask, loss_fn=cross_entropy_loss)
+                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
-            return hax.mean(per_ex_loss).scalar()
+            return hax.mean(per_ex_loss, "batch").scalar()
 
         # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
@@ -234,17 +229,11 @@ def main(config: TrainGpt2Config):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
-                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                loss *= -1.0  # negate because we want log probs
-                masked = loss * loss_mask
+                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, loss_mask, reduction=None)
+                logprobs = -loss
                 # roll forward to get the loss for each predicted token
-                masked = haliax.roll(masked, 1, SeqLen)
-                return masked.rearrange(("batch", SeqLen)).array
+                logprobs = haliax.roll(logprobs, 1, SeqLen)
+                return logprobs.rearrange(("batch", SeqLen)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
