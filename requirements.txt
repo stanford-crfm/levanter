@@ -16,3 +16,4 @@ humanfriendly
 requests
 safetensors[numpy]
 matplotlib
+filelock

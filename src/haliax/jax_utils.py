@@ -38,9 +38,7 @@ def maybe_rng_split(key: Optional[PRNGKey], num: int = 2):
 
 
 def filter_eval_shape(fun: Callable, *args, **kwargs):
-    """As `jax.eval_shape`, but allows any Python object as inputs and outputs, including
-    GlobalDeviceArrays (which equinox.filter_eval_shape does not support).
-    """
+    """As `jax.eval_shape`, but allows any Python object as inputs and outputs"""
 
     # TODO: file a bug
 
@@ -53,6 +51,28 @@ def filter_eval_shape(fun: Callable, *args, **kwargs):
     dynamic, static = eqx.partition((args, kwargs), is_jax_array_like)
     dynamic_out, static_out = jax.eval_shape(ft.partial(_fn, static), dynamic)
     return eqx.combine(dynamic_out, static_out.value)
+
+
+def filter_checkpoint(fun: Callable, *, prevent_cse: bool = True, policy: Optional[Callable[..., bool]] = None):
+    """As `jax.checkpoint`, but allows any Python object as inputs and outputs"""
+
+    @ft.wraps(fun)
+    def _fn(_static, _dynamic):
+        _args, _kwargs = eqx.combine(_static, _dynamic)
+        _out = fun(*_args, **_kwargs)
+        _dynamic_out, _static_out = eqx.partition(_out, is_jax_array_like)
+        return _dynamic_out, Static(_static_out)
+
+    checkpointed_fun = jax.checkpoint(_fn, prevent_cse=prevent_cse, policy=policy, static_argnums=(0,))
+
+    @ft.wraps(fun)
+    def wrapper(*args, **kwargs):
+        dynamic, static = eqx.partition((args, kwargs), is_jax_array_like)
+        dynamic_out, static_out = checkpointed_fun(static, dynamic)
+
+        return eqx.combine(dynamic_out, static_out.value)
+
+    return wrapper
 
 
 def is_jax_array_like(x):

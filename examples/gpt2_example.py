@@ -20,7 +20,7 @@ from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partiti
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
-from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainGpt2Config:
-    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
+    data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 

@@ -2,7 +2,7 @@ import contextlib
 import logging as pylogging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import jax
 from optax import MultiStepsState
@@ -29,7 +29,7 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
         wandb.log(params, step=step)
 
 
-def init_logger(path: Path, level: int = pylogging.INFO) -> None:
+def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
     """
     Initialize logging.Logger with the appropriate name, console, and file handlers.
 
@@ -91,3 +91,13 @@ def log_time_to_wandb(name: str, *, step=None):
     with capture_time() as fn:
         yield fn
     wandb.log({name: fn()}, step=step)
+
+
+def jittable_wandb_log(data, *, step=None):
+    """uses jax effect callback to log to wandb from the host"""
+    if is_wandb_available():
+        jax.debug.callback(wandb.log, data, step=step)
+
+
+def is_wandb_available():
+    return wandb is not None and wandb.run is not None
