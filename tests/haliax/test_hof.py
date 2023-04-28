@@ -20,6 +20,11 @@ def test_scan():
     assert jnp.all(jnp.isclose(total, jnp.sum(named1.array, axis=(0, 1, 2))))
     assert jnp.all(jnp.equal(selected.array, named1.take(Width, 2).array))
 
+    total, selected = hax.scan(scan_fun, "Height")(0.0, named1)
+
+    assert jnp.all(jnp.isclose(total, jnp.sum(named1.array, axis=(0, 1, 2))))
+    assert jnp.all(jnp.equal(selected.array, named1.take("Width", 2).array))
+
 
 def test_scan_not_0th_axis():
     Height = Axis("Height", 10)
