@@ -336,11 +336,9 @@ def test_stack():
 
     named3 = hax.random.uniform(PRNGKey(2), (W, H))
     # test that this rearranges fine
-    assert jnp.all(
-        jnp.equal(
-            hax.stack("B", (named1, named3)).array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)
-        )
-    )
+    reord_stack = hax.stack("B", (named1, named3))
+    assert jnp.all(jnp.equal(reord_stack.array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)))
+    assert reord_stack.axes == (Axis("B", 2), H, W)
 
 
 def test_unflatten_axis():
