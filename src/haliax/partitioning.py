@@ -16,7 +16,7 @@ from jaxtyping import PyTree
 
 from .core import NamedArray
 from .jax_utils import filter_eval_shape, is_jax_array_like
-from .types import Axis, AxisSpec
+from .types import Axis, AxisSelection, AxisSelector
 from .util import StringHolderEnum, ensure_tuple, is_named_array
 
 
@@ -289,16 +289,18 @@ def _cached_filter_eval_shape(fun, *args, **kwargs):
     return _eval_shape_cache[static]
 
 
-def physical_axis_name(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxis]:
+def physical_axis_name(axis: AxisSelector, mapping: Optional[ResourceMapping] = None) -> Optional[PhysicalAxisSpec]:
     """Get the physical axis name for a logical axis from the mapping. Returns none if the axis is not mapped."""
     mapping = mapping or _mapping_holder.thread_data.resource_mapping
     if mapping is None:
         return None
+    elif isinstance(axis, str):
+        return mapping.get(axis, None)
     else:
-        return mapping.get(axis.name, None)  # type: ignore
+        return mapping.get(axis.name, None)
 
 
-def physical_axis_size(axis: Axis, mapping: Optional[ResourceMapping] = None) -> Optional[int]:
+def physical_axis_size(axis: AxisSelector, mapping: Optional[ResourceMapping] = None) -> Optional[int]:
     """Get the physical axis size for a logical axis. This is the product of the size of all physical axes
     that this logical axis is mapped to."""
     # TODO: shouldn't be accessing this internal api, but...
@@ -318,7 +320,7 @@ def physical_axis_size(axis: Axis, mapping: Optional[ResourceMapping] = None) ->
     return prod([mesh_shape[n] for n in name])
 
 
-def pspec_for_axis(axis: AxisSpec, mapping: Optional[ResourceMapping] = None) -> PartitionSpec:
+def pspec_for_axis(axis: AxisSelection, mapping: Optional[ResourceMapping] = None) -> PartitionSpec:
     """Get the PartitionSpec for a single axis"""
     axis = ensure_tuple(axis)
     return PartitionSpec(*(physical_axis_name(a, mapping) for a in axis))

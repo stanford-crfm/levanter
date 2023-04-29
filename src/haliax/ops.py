@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 
 from .core import NamedArray, NamedOrNumeric, broadcast_arrays, broadcast_arrays_and_return_axes
-from .types import Axis
+from .types import Axis, AxisSelector
 
 
-def trace(array: NamedArray, axis1: Axis, axis2: Axis, offset=0, dtype=None) -> NamedArray:
+def trace(array: NamedArray, axis1: AxisSelector, axis2: AxisSelector, offset=0, dtype=None) -> NamedArray:
     """Compute the trace of an array along two named axes."""
     a1_index = array._lookup_indices(axis1)
     a2_index = array._lookup_indices(axis2)
