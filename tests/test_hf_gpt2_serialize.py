@@ -15,10 +15,10 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
 import haliax as hax
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint, save_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.loss import next_token_loss
 
 
 @skip_if_no_torch
@@ -102,23 +102,12 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
         return model(input_ids, labels=input_ids)[0]
 
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
-
-    # don't want to compute the mask w.r.t. the final token
-    loss_mask = hax.nn.one_hot(-1, model.SeqLen, dtype=jnp.float32)
-    loss_mask = 1 - loss_mask  # one everywhere except the last token
-
     causal_mask = hax.nn.attention.causal_mask(model.config.SeqLen, model.config.KeySeqLen)
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, inference=True, attn_mask=causal_mask)
 
-        # need to roll the target tokens back by one so that each token is predicting the next token
-        target_y = hax.roll(input_ids, -1, model.SeqLen)
-        target_y = hax.nn.one_hot(target_y, model.Vocab, dtype=pred_y.dtype)
-
-        token_loss = hax.mean(cross_entropy_loss(pred_y, model.Vocab, target_y), where=loss_mask)
-
-        return token_loss.scalar()
+        return next_token_loss(model.SeqLen, model.Vocab, pred_y, input_ids).scalar()
 
     jax_compute_grad = jax.value_and_grad(compute_loss)
     jax_loss, jax_grad = jax_compute_grad(model, input)

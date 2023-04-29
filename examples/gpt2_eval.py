@@ -3,17 +3,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy
 import tqdm
-from equinox import filter_vmap
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
@@ -21,6 +18,7 @@ from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.loss import next_token_loss
 
 
 logger = logging.getLogger(__name__)
@@ -69,9 +67,6 @@ def main(config: EvalGpt2Config):
 
         mp: jmp.Policy = config.trainer.mp
 
-        # don't want to compute the mask w.r.t. the final token
-        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
-
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
@@ -79,22 +74,12 @@ def main(config: EvalGpt2Config):
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = hax.roll(input_ids, -1, SeqLen)
-                target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                loss = hax.mean(loss, where=loss_mask)
-
-            return loss.scalar()
+                return next_token_loss(SeqLen, Vocab, pred_y, input_ids).scalar()
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
-            compute_loss_vmap = filter_vmap(compute_loss, args=(None,))
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            return jnp.mean(compute_loss_vmap(model, input_ids))
 
         compute_loss_pjit = named_pjit(
             mean_loss,

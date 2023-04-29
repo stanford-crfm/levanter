@@ -72,6 +72,7 @@ class GlobalBatchDataset(Dataset[Ex]):
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
 
+        self.process_data_pos = process_data_pos
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
@@ -91,23 +92,22 @@ class GlobalBatchDataset(Dataset[Ex]):
             # because more than one device can get the same data, we need to make sure we only load it once since we're
             # streaming. This is the cache
             local_batch_leaves: Dict[Tuple[int, int], List[Array]] = {}  # batch indices -> list of items
+
+            batch_offset = self.process_data_pos * self.local_batch_size
+            local_batch = list(itertools.islice(one_item_generator, self.local_batch_size))
             batch_tree_structure = None
 
-            total_examples_accessed_this_step = 0
-
             def get_local_batch(begin: int, end: int) -> List[Array]:
-                nonlocal batch_tree_structure, total_examples_accessed_this_step
+                nonlocal batch_tree_structure
 
                 key = (begin, end)
                 if key in local_batch_leaves:
                     return local_batch_leaves[key]
 
-                num_examples_for_this_device = end - begin
-                total_examples_accessed_this_step += num_examples_for_this_device
-                individual_datums = list(itertools.islice(one_item_generator, num_examples_for_this_device))
+                individual_datums = local_batch[(begin - batch_offset) : (end - batch_offset)]
 
-                local_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
-                batch_leaves, _batch_structure = jax.tree_util.tree_flatten(local_batch)
+                device_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+                batch_leaves, _batch_structure = jax.tree_util.tree_flatten(device_batch)
 
                 if batch_tree_structure is None:
                     batch_tree_structure = _batch_structure
@@ -135,8 +135,6 @@ class GlobalBatchDataset(Dataset[Ex]):
                 )
                 for leaf_index, shape in enumerate(shape_leaves)
             ]
-
-            assert total_examples_accessed_this_step == self.local_batch_size
 
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
 

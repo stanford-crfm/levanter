@@ -237,6 +237,12 @@ def test_choice():
         lambda k, s: hax.random.choice(k, s, digits, Digit, p=weights),
     )
 
+    # test str selector
+    check_gen_is_equal(
+        lambda k, s: jax.random.choice(k, digits.array, shape=s, p=weights.array),
+        lambda k, s: hax.random.choice(k, s, digits, "Digit", p=weights),
+    )
+
 
 def test_categorical():
     logits = hax.random.uniform(
@@ -273,18 +279,27 @@ def test_categorical():
         lambda k, s: hax.random.categorical(k, s, logits, Digit),
     )
 
+    # check str arg for selector
+    check_gen_is_equal(
+        lambda k, s: jax.random.categorical(k, raw_logits, shape=s, axis=-1),
+        lambda k, s: hax.random.categorical(k, s, logits, "Digit"),
+    )
+
 
 def test_permutation():
     data = hax.random.uniform(jax.random.PRNGKey(0), (Width, Height))
 
     hax_perm = hax.random.permutation(jax.random.PRNGKey(0), data, Height)
     jax_perm = jax.random.permutation(jax.random.PRNGKey(0), data.array, 1)
-
     assert jnp.all(hax_perm.array == jax_perm)
 
     hax_perm = hax.random.permutation(jax.random.PRNGKey(0), data, Width)
     jax_perm = jax.random.permutation(jax.random.PRNGKey(0), data.array, 0)
+    assert jnp.all(hax_perm.array == jax_perm)
 
+    # test str arg for selector
+    hax_perm = hax.random.permutation(jax.random.PRNGKey(0), data, "Height")
+    jax_perm = jax.random.permutation(jax.random.PRNGKey(0), data.array, 1)
     assert jnp.all(hax_perm.array == jax_perm)
 
 

@@ -2,14 +2,12 @@ import logging
 from dataclasses import dataclass
 
 import jax
-import jax.numpy as jnp
 import jmp
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
@@ -17,6 +15,7 @@ from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.loss import next_token_loss
 from levanter.trainer_hooks import StepInfo
 
 
@@ -71,25 +70,13 @@ def main(config: EvalGpt2Config):
             attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
             attn_mask = hax.auto_sharded(attn_mask)
 
-            # don't want to compute the loss w.r.t. the final token
-            loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
-
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
 
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = hax.roll(input_ids, -1, SeqLen)
-                target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                loss *= -1.0  # negate because we want log probs
-                masked = loss * loss_mask
-                # roll forward to get the loss for each token
-                masked = hax.roll(masked, 1, SeqLen)
-                return masked.rearrange((EvalBatch, SeqLen)).array
+                return next_token_loss(model.SeqLen, model.Vocab, pred_y, input_ids).scalar()
 
         # initialize the model
         @named_pjit(axis_resources=parameter_axis_mapping)
