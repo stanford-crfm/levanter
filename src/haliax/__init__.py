@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Optional, Protocol, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -153,21 +153,36 @@ tanh = wrap_elemwise_unary(jnp.tanh)
 trunc = wrap_elemwise_unary(jnp.trunc)
 
 # Reduction functions
-all = wrap_reduction_call(jnp.all)
-amax = wrap_reduction_call(jnp.amax)
-any = wrap_reduction_call(jnp.any)
-argmax = wrap_reduction_call(jnp.argmax, single_axis_only=True, supports_where=False)
-argmin = wrap_reduction_call(jnp.argmin, single_axis_only=True, supports_where=False)
-max = wrap_reduction_call(jnp.max)
-mean = wrap_reduction_call(jnp.mean)
-min = wrap_reduction_call(jnp.min)
-prod = wrap_reduction_call(jnp.prod)
-ptp = wrap_reduction_call(jnp.ptp)
-product = wrap_reduction_call(jnp.product)
-sometrue = wrap_reduction_call(jnp.sometrue)
-std = wrap_reduction_call(jnp.std)
-sum = wrap_reduction_call(jnp.sum)
-var = wrap_reduction_call(jnp.var)
+
+
+class ReductionFunction(Protocol):
+    def __call__(
+        self, array: NamedArray, axis: Optional[AxisSelection] = None, where: Optional[NamedArray] = None, **kwargs
+    ) -> NamedArray:
+        ...
+
+
+class SimpleReductionFunction(Protocol):
+    def __call__(self, array: NamedArray, axis: Optional[AxisSelector] = None, **kwargs) -> NamedArray:
+        ...
+
+
+all: ReductionFunction = wrap_reduction_call(jnp.all)
+amax: ReductionFunction = wrap_reduction_call(jnp.amax)
+any: ReductionFunction = wrap_reduction_call(jnp.any)
+argmax: SimpleReductionFunction = wrap_reduction_call(jnp.argmax, single_axis_only=True, supports_where=False)
+argmin: SimpleReductionFunction = wrap_reduction_call(jnp.argmin, single_axis_only=True, supports_where=False)
+max: ReductionFunction = wrap_reduction_call(jnp.max)
+mean: ReductionFunction = wrap_reduction_call(jnp.mean)
+min: ReductionFunction = wrap_reduction_call(jnp.min)
+prod: ReductionFunction = wrap_reduction_call(jnp.prod)
+ptp: ReductionFunction = wrap_reduction_call(jnp.ptp)
+product: ReductionFunction = wrap_reduction_call(jnp.product)
+sometrue: ReductionFunction = wrap_reduction_call(jnp.sometrue)
+std: ReductionFunction = wrap_reduction_call(jnp.std)
+sum: ReductionFunction = wrap_reduction_call(jnp.sum)
+var: ReductionFunction = wrap_reduction_call(jnp.var)
+
 
 # "Normalization" functions that use an axis but don't change the shape
 cumsum = wrap_axiswise_call(jnp.cumsum, True)
