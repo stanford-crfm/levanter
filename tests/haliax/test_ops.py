@@ -14,9 +14,17 @@ def test_trace():
     assert jnp.all(jnp.isclose(trace1.array, jnp.trace(named1.array)))
     assert len(trace1.axes) == 0
 
+    trace1 = hax.trace(named1, "Width", "Depth")
+    assert jnp.all(jnp.isclose(trace1.array, jnp.trace(named1.array)))
+    assert len(trace1.axes) == 0
+
     Height = Axis("Height", 10)
     named2 = hax.random.uniform(PRNGKey(0), (Height, Width, Depth))
     trace2 = hax.trace(named2, Width, Depth)
+    assert jnp.all(jnp.isclose(trace2.array, jnp.trace(named2.array, axis1=1, axis2=2)))
+    assert trace2.axes == (Height,)
+
+    trace2 = hax.trace(named2, "Width", "Depth")
     assert jnp.all(jnp.isclose(trace2.array, jnp.trace(named2.array, axis1=1, axis2=2)))
     assert trace2.axes == (Height,)
 

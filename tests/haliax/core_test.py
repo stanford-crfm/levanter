@@ -30,6 +30,29 @@ def test_dot():
     )
 
 
+def test_dot_string_selection():
+    Height = Axis("Height", 2)
+    Width = Axis("Width", 3)
+    Depth = Axis("Depth", 4)
+
+    m1 = NamedArray(jnp.ones((Height.size, Width.size, Depth.size)), (Height, Width, Depth))
+    m2 = NamedArray(jnp.ones((Depth.size, Width.size, Height.size)), (Depth, Width, Height))
+
+    assert jnp.all(jnp.equal(hax.dot("Height", m1, m2).array, jnp.einsum("ijk,kji->jk", m1.array, m2.array)))
+    assert jnp.all(
+        jnp.equal(
+            hax.dot(("Height", "Width"), m1, m2).array,
+            jnp.einsum("ijk,kji->k", m1.array, m2.array),
+        )
+    )
+    assert jnp.all(
+        jnp.equal(
+            hax.dot(("Height", "Width", "Depth"), m1, m2).array,
+            jnp.einsum("ijk,kji->", m1.array, m2.array),
+        )
+    )
+
+
 def test_unary_np_functions():
     Height = Axis("Height", 2)
     Width = Axis("Width", 3)
@@ -91,13 +114,13 @@ def test_reduction_functions():
 
 
 def test_reduction_functions_with_where():
-    Height = Axis("Height", 2)
-    Width = Axis("Width", 3)
-    Depth = Axis("Depth", 4)
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
 
-    rand_m = jax.random.uniform(PRNGKey(0), (Height.size, Width.size, Depth.size))
+    rand_m = jax.random.uniform(PRNGKey(0), (H.size, W.size, D.size))
 
-    m1 = NamedArray(rand_m, (Height, Width, Depth))
+    m1 = NamedArray(rand_m, (H, W, D))
 
     mask = m1 > 0.5
     jmask = m1.array > 0.5
@@ -106,32 +129,36 @@ def test_reduction_functions_with_where():
     assert jnp.all(jnp.equal(hax.sum(m1, where=mask).array, jnp.sum(rand_m, where=jmask)))
     # ensure it's a scalar
 
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=Height, where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
-    assert jnp.all(jnp.equal(hax.sum(m1, axis=Width, where=mask).array, jnp.sum(rand_m, axis=1, where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=H, where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=W, where=mask).array, jnp.sum(rand_m, axis=1, where=jmask)))
+
+    assert jnp.all(jnp.equal(hax.sum(m1, axis="H", where=mask).array, jnp.sum(rand_m, axis=0, where=jmask)))
 
     # sum out two axes
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(H, W), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(W, H), where=mask).array, jnp.sum(rand_m, axis=(1, 0), where=jmask)))
+    assert jnp.all(jnp.equal(hax.sum(m1, axis=(H, D), where=mask).array, jnp.sum(rand_m, axis=(0, 2), where=jmask)))
+
     assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Height, Width), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask))
-    )
-    assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Width, Height), where=mask).array, jnp.sum(rand_m, axis=(1, 0), where=jmask))
-    )
-    assert jnp.all(
-        jnp.equal(hax.sum(m1, axis=(Height, Depth), where=mask).array, jnp.sum(rand_m, axis=(0, 2), where=jmask))
+        jnp.equal(hax.sum(m1, axis=("H", "W"), where=mask).array, jnp.sum(rand_m, axis=(0, 1), where=jmask))
     )
 
     # sum out three axes
     assert jnp.all(
         jnp.equal(
-            hax.sum(m1, axis=(Height, Width, Depth), where=mask).array,
+            hax.sum(m1, axis=(H, W, D), where=mask).array,
             jnp.sum(rand_m, axis=(0, 1, 2), where=jmask),
         )
     )
     assert jnp.all(
         jnp.equal(
-            hax.sum(m1, axis=(Width, Height, Depth), where=mask).array,
+            hax.sum(m1, axis=(W, H, D), where=mask).array,
             jnp.sum(rand_m, axis=(1, 0, 2), where=jmask),
         )
+    )
+
+    assert jnp.all(
+        jnp.equal(hax.sum(m1, axis=("H", "W", "D"), where=mask).array, jnp.sum(rand_m, axis=(0, 1, 2), where=jmask))
     )
 
 
@@ -155,6 +182,11 @@ def test_split():
     for i in range(10):
         assert jnp.all(jnp.equal(splits[i].array, usplits[i]))
 
+    # double check string axis
+    splits_str = hax.split(rand_m, axis="Depth", new_axes=[Depth] * 10)
+    for i in range(10):
+        assert jnp.all(jnp.equal(splits_str[i].array, usplits[i]))
+
 
 def test_take():
     Height = Axis("Height", 2)
@@ -170,7 +202,7 @@ def test_take():
     named2 = hax.take(named1, Height, indices)
     assert named2.axes == (Index, Width, Depth)
 
-    named2 = hax.take(named1, Width, indices)
+    named2 = hax.take(named1, "Width", indices)
     assert named2.axes == (Height, Index, Depth)
 
     named2 = hax.take(named1, Depth, indices)
@@ -183,7 +215,7 @@ def test_take():
     named2 = hax.take(named1, Height, indices2)
     assert named2.axes == (Index, Index2, Width, Depth)
 
-    named2 = hax.take(named1, Width, indices2)
+    named2 = hax.take(named1, "Width", indices2)
     assert named2.axes == (Height, Index, Index2, Depth)
 
     named2 = hax.take(named1, Depth, indices2)
@@ -223,15 +255,23 @@ def test_cumsum_etc():
 
 
 def test_rearrange():
-    H = Axis("Height", 2)
-    W = Axis("Width", 3)
-    D = Axis("Depth", 4)
-    C = Axis("Channel", 5)
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
+    C = Axis("C", 5)
 
     named1 = hax.random.uniform(PRNGKey(0), (H, W, D, C))
 
     assert jnp.all(jnp.equal(hax.rearrange(named1, (C, W, D, H)).array, jnp.transpose(named1.array, (3, 1, 2, 0))))
     assert hax.rearrange(named1, (C, W, D, H)).axes == (C, W, D, H)
+
+    # test str args
+    assert jnp.all(
+        jnp.equal(hax.rearrange(named1, ("C", "W", "D", "H")).array, jnp.transpose(named1.array, (3, 1, 2, 0)))
+    )
+    assert hax.rearrange(named1, ("C", "W", "D", "H")).axes == (C, W, D, H)
+    # test mixed str and Axis args
+    assert jnp.all(jnp.equal(hax.rearrange(named1, ("C", W, "D", H)).array, jnp.transpose(named1.array, (3, 1, 2, 0))))
 
     # test ellipsis
     assert jnp.all(jnp.equal(hax.rearrange(named1, (C, ..., D)).array, jnp.transpose(named1.array, (3, 0, 1, 2))))
@@ -286,19 +326,40 @@ def test_arange():
 
 
 def test_stack():
-    B = Axis("Batch", 2)
-    H = Axis("Height", 4)
-    W = Axis("Width", 3)
+    H = Axis("H", 4)
+    W = Axis("W", 3)
 
     named1 = hax.random.uniform(PRNGKey(0), (H, W))
     named2 = hax.random.uniform(PRNGKey(1), (H, W))
 
-    assert jnp.all(jnp.equal(hax.stack(B, (named1, named2)).array, jnp.stack((named1.array, named2.array), axis=0)))
+    assert jnp.all(jnp.equal(hax.stack("B", (named1, named2)).array, jnp.stack((named1.array, named2.array), axis=0)))
 
     named3 = hax.random.uniform(PRNGKey(2), (W, H))
     # test that this rearranges fine
-    assert jnp.all(
-        jnp.equal(
-            hax.stack(B, (named1, named3)).array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)
-        )
-    )
+    reord_stack = hax.stack("B", (named1, named3))
+    assert jnp.all(jnp.equal(reord_stack.array, jnp.stack((named1.array, named3.array.transpose(1, 0)), axis=0)))
+    assert reord_stack.axes == (Axis("B", 2), H, W)
+
+
+def test_unflatten_axis():
+    H = Axis("Height", 2)
+    W = Axis("Width", 3)
+    D = Axis("Depth", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+    flattened_HW = named1.flatten_axes((H, W), "Z")
+
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (H, W)).array, named1.array))
+    assert hax.unflatten_axis(flattened_HW, "Z", (H, W)).axes == (H, W, D)
+
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (H, W)).array, named1.array))
+
+    # test that we can unflatten to a different order
+    # in general, this won't be equivalent to the original array
+    assert not jnp.all(jnp.equal(hax.unflatten_axis(flattened_HW, "Z", (W, H)).array, named1.array.transpose(1, 0, 2)))
+    assert hax.unflatten_axis(flattened_HW, "Z", (W, H)).axes == (W, H, D)
+
+    # flatten non-consecutive axes
+    flattened_HD = named1.flatten_axes((H, D), "Z")
+    assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HD, "Z", (H, D)).array, named1.array.transpose(0, 2, 1)))
+    assert hax.unflatten_axis(flattened_HD, "Z", (H, D)).axes == (H, D, W)

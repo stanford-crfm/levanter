@@ -8,12 +8,12 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax
-from haliax.core import NamedArray, NamedOrNumeric, broadcast_to
+from haliax.core import NamedArray, NamedOrNumeric, broadcast_to, selects_axis
 from haliax.util import ensure_tuple
 
 from .jax_utils import named_call
 from .partitioning import auto_sharded, physical_axis_name, physical_axis_size, pspec_for_axis
-from .types import Axis, AxisSpec
+from .types import Axis, AxisSelector, AxisSpec
 
 
 @named_call
@@ -129,7 +129,7 @@ _enforce_sharded_generate = False
 """ mostly for testing: enforces shard generation for all random functions even if not running distributed"""
 
 
-def generate_sharded(fn, axis: Optional[Axis] = None):
+def generate_sharded(fn, axis: Optional[AxisSelector] = None):
     """
     Create a wrapped version of fn (which should be a random generator) that generates the random array in a sharded
     manner, using vmap over the provided axis, or inferring the "best" one if not provided.
@@ -205,7 +205,9 @@ def ball(key, shape: AxisSpec, D: Axis, p: float = 2.0, dtype=jnp.float_):
 
 
 @named_call
-def choice(key, shape: AxisSpec, a: NamedArray, axis: Axis, replace: bool = True, p: Optional[NamedArray] = None):
+def choice(
+    key, shape: AxisSpec, a: NamedArray, axis: AxisSelector, replace: bool = True, p: Optional[NamedArray] = None
+):
     """
     Selects random elements from an array along the given axis. If p is provided, the elements are selected
     with probability proportional to their weights and it must be a 1-d array with its only axis being the axis.
@@ -219,7 +221,7 @@ def choice(key, shape: AxisSpec, a: NamedArray, axis: Axis, replace: bool = True
 
     shape = ensure_tuple(shape)
     if p is not None:
-        assert p.axes == (axis,), f"p must have axis {axis} or be None"
+        assert p.resolve_axes(axis) == p.axes, f"p must be 1D with axis {axis} or be None"
 
     jax_shape = _to_jax_shape(shape)
     jax_p = p.array if p is not None else None
@@ -232,7 +234,7 @@ def choice(key, shape: AxisSpec, a: NamedArray, axis: Axis, replace: bool = True
 
 
 @named_call
-def categorical(key, shape: AxisSpec, logits: NamedArray, axis: Axis):
+def categorical(key, shape: AxisSpec, logits: NamedArray, axis: AxisSelector):
     """Sample random values from categorical distributions.
 
     Args:
@@ -248,7 +250,7 @@ def categorical(key, shape: AxisSpec, logits: NamedArray, axis: Axis):
     shape = ensure_tuple(shape)
 
     # TODO: could alias the axis and rename at end
-    if axis in shape:
+    if selects_axis(shape, axis):
         raise ValueError(f"axis {axis} cannot be in shape {shape}")
 
     logits = logits.broadcast_axis(shape)
@@ -271,7 +273,7 @@ def gumbel(key, shape: AxisSpec, dtype=jnp.float_):
 
 
 @named_call
-def permutation(key, x: NamedArray, axis: Axis, independent: bool = False):
+def permutation(key, x: NamedArray, axis: AxisSelector, independent: bool = False):
     axis_index = x._lookup_indices(axis)
     jax_array = jrandom.permutation(key, x.array, axis_index, independent=independent)
     return auto_sharded(NamedArray(jax_array, x.axes))

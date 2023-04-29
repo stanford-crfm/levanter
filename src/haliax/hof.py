@@ -9,11 +9,11 @@ import jax.lax as lax
 from equinox.custom_types import BoolAxisSpec
 from jaxtyping import PyTree
 
-from .core import NamedArray
+from .core import NamedArray, selects_axis
 from .jax_utils import broadcast_prefix, combine, is_jax_array_like
 from .partitioning import physical_axis_name
-from .types import Axis
-from .util import is_jax_or_hax_array_like, is_named_array
+from .types import Axis, AxisSelector
+from .util import index_where, is_jax_or_hax_array_like, is_named_array
 
 
 Carry = TypeVar("Carry")
@@ -23,7 +23,7 @@ Y = TypeVar("Y")
 
 def scan(
     f: Callable[[Carry, X], Tuple[Carry, Y]],
-    axis: Axis,
+    axis: AxisSelector,
     *,
     reverse=False,
     unroll=1,
@@ -48,7 +48,7 @@ def scan(
 
     def is_scanned_with_axis(leaf):
         if is_named_array(leaf):
-            return axis in leaf.axes and is_scanned(leaf)
+            return selects_axis(leaf.axes, axis) and is_scanned(leaf)
         else:
             return is_scanned(leaf)
 
@@ -85,7 +85,8 @@ def scan(
 
         leaves = jax.tree_util.tree_leaves(axis_first_xs)
         carry, ys = lax.scan(wrapped_fn, init, leaves, reverse=reverse, unroll=unroll)
-        ys = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), ys, is_leaf=_is_passive_array)
+        true_axis = _infer_axis_size_from_result(ys, axis)
+        ys = jax.tree_util.tree_map(_prepend_named_batch_axis(true_axis), ys, is_leaf=_is_passive_array)
 
         return carry, ys
 
@@ -94,7 +95,7 @@ def scan(
 
 def fold(
     fn: Callable[[Carry, X], Carry],
-    axis: Axis,
+    axis: AxisSelector,
     *,
     reverse: bool = False,
     unroll: int = 1,
@@ -136,7 +137,7 @@ def _zero_if_array_else_none(x: Any) -> ResolvedUnnamedAxisSpec:
 
 def vmap(
     fn,
-    axis: Axis,
+    axis: AxisSelector,
     *,
     default: PyTree[UnnamedAxisSpec] = _zero_if_array_else_none,
     args: PyTree[UnnamedAxisSpec] = (),
@@ -243,14 +244,36 @@ def vmap(
             wrapped_fn,
             in_axes=(arg_axis_specs, kwarg_axis_specs),
             out_axes=0,
-            axis_size=axis.size,
+            axis_size=axis.size if isinstance(axis, Axis) else None,
             spmd_axis_name=spmd_axis_name,
         )(args, kwargs)
 
-        result = jax.tree_util.tree_map(_prepend_named_batch_axis(axis), result, is_leaf=_is_passive_array)
+        # if we were passed in a string arg, we need to get its axis size out from some result
+        true_axis = _infer_axis_size_from_result(result, axis)
+        if true_axis is None:
+            raise ValueError("vmap failed to infer axis size from result")
+
+        result = jax.tree_util.tree_map(_prepend_named_batch_axis(true_axis), result, is_leaf=_is_passive_array)
         return result
 
     return wrapped_vmap_fn
+
+
+def _infer_axis_size_from_result(result, axis):
+    if isinstance(axis, str):
+        result_leaves = jax.tree_util.tree_leaves(result, is_leaf=_is_passive_array)
+        if len(result_leaves) == 0:
+            # this really shouldn't happen
+            return None
+        if isinstance(result_leaves[0], _PassiveNamedArray):
+            true_axis_size = result_leaves[0].array.shape[0]  # batch axis is defined to be 0 above
+            true_axis = Axis(axis, true_axis_size)
+        else:
+            true_axis_size = result_leaves[0].shape[0]  # batch axis is defined to be 0 above
+            true_axis = Axis(axis, true_axis_size)
+    else:
+        true_axis = axis
+    return true_axis
 
 
 @jax.tree_util.register_pytree_node_class
@@ -271,8 +294,11 @@ class _PassiveNamedArray:
     def as_scanned_result(self, scan_axis: Axis):
         return NamedArray(self.array, (scan_axis,) + self.main_axes)
 
-    def strip_axis(self, axis: Axis):
-        index = self.main_axes.index(axis)
+    def strip_axis(self, axis: AxisSelector):
+        if isinstance(axis, Axis):
+            index = self.main_axes.index(axis)
+        else:
+            index = index_where(lambda a: a.name == axis, self.main_axes)
         return NamedArray(self.array, self.main_axes[:index] + self.main_axes[index + 1 :])
 
     def to_named_array(self):
@@ -291,7 +317,7 @@ def _is_passive_array(arr):
     return isinstance(arr, _PassiveNamedArray)
 
 
-def _prepend_named_batch_axis(leading_axis):
+def _prepend_named_batch_axis(leading_axis: Axis):
     def to_active_named_array(leaf):
         if isinstance(leaf, _PassiveNamedArray):
             return leaf.as_scanned_result(leading_axis)
@@ -301,10 +327,10 @@ def _prepend_named_batch_axis(leading_axis):
     return to_active_named_array
 
 
-def _to_unbatched_named_array(axis_to_strip: Axis):
+def _to_unbatched_named_array(axis_to_strip: AxisSelector):
     def to_unbatched_named_array(leaf):
         if isinstance(leaf, _PassiveNamedArray):
-            if axis_to_strip in leaf.main_axes:
+            if selects_axis(leaf.main_axes, axis_to_strip):
                 return leaf.strip_axis(axis_to_strip)
             else:
                 return leaf.to_named_array()
