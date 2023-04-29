@@ -9,7 +9,7 @@ import haliax as hax
 import haliax.nn.attention as attention
 
 from ..core import NamedArray
-from ..types import Axis, AxisSpec
+from ..types import Axis, AxisSelector, AxisSpec
 from ..wrap import unwrap_namedarrays, wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
@@ -80,7 +80,7 @@ def one_hot(x: Union[NamedArray, int], class_axis: Axis, *, dtype=jnp.float_) ->
 
 def cross_entropy_loss(
     pred_y: NamedArray,
-    Label: Axis,
+    Label: AxisSelector,
     target_y: NamedArray,
 ) -> NamedArray:
     loss, _ = cross_entropy_loss_and_log_normalizers(pred_y, Label, target_y)
@@ -89,7 +89,7 @@ def cross_entropy_loss(
 
 def cross_entropy_loss_and_log_normalizers(
     pred_y: NamedArray,
-    Label: Axis,
+    Label: AxisSelector,
     target_y: NamedArray,
 ) -> Tuple[NamedArray, NamedArray]:
     """

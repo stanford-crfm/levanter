@@ -221,7 +221,7 @@ def choice(
 
     shape = ensure_tuple(shape)
     if p is not None:
-        assert p.resolve_axes(axis) == p.axes, f"p must be 1D with axis {axis} or be None"
+        assert p.resolve_axis(ensure_tuple(axis)) == p.axes, f"p must be 1D with axis {axis} or be None"
 
     jax_shape = _to_jax_shape(shape)
     jax_p = p.array if p is not None else None
