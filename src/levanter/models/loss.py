@@ -17,7 +17,7 @@ def next_token_loss(
     reduction: Optional[hax.ReductionFunction] = hax.mean,
 ):
 
-    SeqLen, Vocab = pred_ids.resolve_axes((SeqLen, Vocab))
+    SeqLen, Vocab = pred_ids.resolve_axis((SeqLen, Vocab))
     # need to roll the target tokens back by one so that each token is predicting the next token
     target_y = hax.roll(true_ids, -1, SeqLen)
     target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_ids.dtype)  # type: ignore
