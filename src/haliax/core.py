@@ -75,6 +75,21 @@ class NamedArray:
             if s != tuple(a.size for a in self.axes):
                 raise ValueError(f"Shape of underlying array {s} does not match shape of axes {self.axes}")
 
+    def resolve_axes(self, axes: AxisSelection) -> Tuple[Axis, ...]:
+        """Returns the axes corresponding to the given axis selection."""
+        indices = self._lookup_indices(axes)
+        if isinstance(indices, int):
+            return (self.axes[indices],)
+        elif indices is None:
+            raise ValueError(f"Axis {axes} not found")
+        else:
+            result = []
+            for i in indices:
+                if i is None:
+                    raise ValueError(f"Axis {axes} not found")
+                result.append(self.axes[i])
+            return tuple(result)
+
     def item(self):
         return self.array.item()
 
@@ -136,29 +151,6 @@ class NamedArray:
             return tuple(result)
 
     @overload
-    def resolve_axis(self, axis: AxisSelector) -> Axis:  # type: ignore
-        ...
-
-    @overload
-    def resolve_axis(self, axis: Sequence[AxisSelector]) -> Tuple[Axis, ...]:  # type: ignore
-        ...
-
-    def resolve_axis(self, axes: AxisSelection) -> AxisSpec:  # type: ignore
-        """Returns the axes corresponding to the given axis selection."""
-        indices = self._lookup_indices(axes)
-        if isinstance(indices, int):
-            return self.axes[indices]
-        elif indices is None:
-            raise ValueError(f"Axis {axes} not found")
-        else:
-            result = []
-            for i in indices:
-                if i is None:
-                    raise ValueError(f"Axis {axes} not found")
-                result.append(self.axes[i])
-            return tuple(result)
-
-    @overload
     def _lookup_indices(self, axis: AxisSelector) -> Optional[int]:  # type: ignore
         ...
 
@@ -177,6 +169,17 @@ class NamedArray:
             ax_name = axis.name
             try:
                 return self.axes.index(axis)
+            except ValueError:
+                try:
+                    axis_index = index_where(lambda a: a.name == ax_name, self.axes)
+                    if axis_index >= 0:
+                        warnings.warn("Found axis with same name but different size.", UserWarning)
+                    return axis_index
+                except ValueError:
+                    return None
+        elif isinstance(axis, str):
+            try:
+                return index_where(lambda a: a.name == axis, self.axes)
             except ValueError:
                 try:
                     axis_index = index_where(lambda a: a.name == ax_name, self.axes)
@@ -724,7 +727,7 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: 
     if len(old_axes) == 0:
         raise ValueError("Must specify at least one axis to merge")
 
-    old_axes = array.resolve_axis(old_axes)
+    old_axes = array.resolve_axes(old_axes)
 
     if isinstance(new_axis, Axis):
         if new_axis.size != prod(array.axis_size(ax) for ax in old_axes):
