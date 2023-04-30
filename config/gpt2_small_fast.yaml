@@ -24,11 +24,3 @@ trainer:
 
   train_batch_size: 256
   num_train_steps: 20000
-
-  axis_resources:
-    batch: "data"
-    vocab: "model"
-    mlp: "model"
-    heads: "model"
-  parameter_axis_resources:
-    embed: "data"

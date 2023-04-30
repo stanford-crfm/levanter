@@ -6,7 +6,8 @@ import pytest
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 import levanter.config
-from levanter.config import WandbConfig
+from haliax.partitioning import ResourceAxis
+from levanter.config import TrainerConfig, WandbConfig
 
 
 def test_infer_experiment_git_root():
@@ -49,3 +50,22 @@ def test_main_wrapper_loads_from_fsspec():
         assert config.x == 2
 
     main()
+
+
+def test_new_style_axis_mapping():
+    config = TrainerConfig(
+        tensor_parallel_axes=["a1", "a2"],
+    )
+
+    assert config.tensor_parallel_axes == ["a1", "a2"]
+    assert config.compute_axis_mapping == {
+        "batch": ResourceAxis.DATA,
+        "a1": ResourceAxis.MODEL,
+        "a2": ResourceAxis.MODEL,
+    }
+    assert config.parameter_axis_mapping == {
+        "embed": ResourceAxis.DATA,
+        "a1": ResourceAxis.MODEL,
+        "a2": ResourceAxis.MODEL,
+        "batch": ResourceAxis.DATA,
+    }
