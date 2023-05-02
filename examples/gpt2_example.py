@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
 from jax.interpreters.pxla import PartitionSpec
@@ -15,7 +14,6 @@ import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
@@ -24,6 +22,7 @@ from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.loss import next_token_loss
 from levanter.optim import hero_from_config, stochastic_hessian_diagonal
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
@@ -42,7 +41,6 @@ class TrainGpt2Config:
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
 
-    log_z_regularization: float = 0.0
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
@@ -135,9 +133,6 @@ def main(config: TrainGpt2Config):
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
-        # don't want to compute the loss w.r.t. the final token
-        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
-
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
@@ -146,32 +141,22 @@ def main(config: TrainGpt2Config):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
-                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
-                loss = hax.mean(loss, where=loss_mask)
-
-                if not inference and config.log_z_regularization > 0:
-                    logz_mse = hax.mean((log_normalizers**2))
-                    loss += config.log_z_regularization * logz_mse
-
-                return loss.scalar()
+                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
-            return hax.mean(hax.vmap(compute_loss, Batch)(model, input_ids, attn_mask, key, inference=False))
+            per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
+            return hax.mean(per_ex_loss, "batch").scalar()
 
         # training loop
-        # donate args to conserve memory
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=(True, True, False, False))
         def train_step(model, opt_state, input_ids, keys):
-
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
 
+            grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
             loss, grads = accumulate_gradients_sharded(
-                eqx.filter_value_and_grad(train_batch_loss),
+                grad_loss,
                 Batch,
                 model,
                 input_ids,
@@ -207,9 +192,8 @@ def main(config: TrainGpt2Config):
         @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            # just use causal mask for evaluation
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            return compute_loss(model, input_ids, mask, None, True)
+            return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
@@ -264,17 +248,11 @@ def main(config: TrainGpt2Config):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-
-                # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
-                target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
-
-                loss = cross_entropy_loss(pred_y, Vocab, target_y)
-                loss *= -1.0  # negate because we want log probs
-                masked = loss * loss_mask
-                # roll forward to get the loss for each token
-                masked = haliax.roll(masked, 1, SeqLen)
-                return masked.rearrange((EvalBatch, SeqLen)).array
+                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, reduction=None)
+                logprobs = -loss
+                # roll forward to get the loss for each predicted token
+                logprobs = haliax.roll(logprobs, 1, SeqLen)
+                return logprobs.rearrange(("batch", SeqLen)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(

@@ -1,24 +1,25 @@
-import re
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from typing import Callable, Dict, Optional, Union, cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-import numpy
 
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.nn.scan import Stacked
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
     reshape_linear_layer,
+    stack_state_dict,
+    unstack_state_dict,
 )
 
 
@@ -99,7 +100,6 @@ class Gpt2Mlp(eqx.Module):
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
-        hidden_states = hax.auto_sharded(hidden_states)
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.c_proj(hidden_states)
@@ -268,10 +268,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], inference, layer_idx, *, key):
+    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        hidden_states = hax.auto_sharded(hidden_states)
         attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
         hidden_states = hidden_states + attn_output
@@ -285,7 +284,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
-    blocks: Gpt2Block
+    blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
 
     @property
@@ -297,22 +296,19 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         self.config = config
 
         # vectorize the blocks
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
+        self.blocks = Stacked(
+            self.Layers,
+            Gpt2Block,
+            config,
+            key=shaped_rng_split(key, config.num_layers),
+            gradient_checkpointing=config.gradient_checkpointing,
+        )
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
-        def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, attn_mask, inference=inference, layer_idx=layer_idx, key=key)
-
-        if self.config.gradient_checkpointing:
-            do_block = jax.checkpoint(do_block, prevent_cse=False)
-
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = hax.fold(do_block, self.Layers)(  # type: ignore
-            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
-        )
-        hidden_states = hax.auto_sharded(hidden_states)
+        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference, key=keys)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
@@ -321,53 +317,22 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return {"blocks": "h"}
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # this method is a bit of a pain because we use a vectorized set of blocks, meaning that we have 1 GptBlock,
+        # We use a vectorized set of blocks, meaning that we have 1 GptBlock,
         # whereas in hf we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        # first we vectorize the keys for the state dict
         # the individual blocks are named h.0.FOO, h.1.FOO, etc.
         # we want to vectorize them to h.FOO, h.FOO, etc.
-        vectorized_dict: StateDict = {}
-
-        tensors_to_vectorize: Dict[str, List[Optional[Any]]] = {}
-        prefix_to_vectorize = cast(str, apply_prefix(prefix, "h"))
-        other_keys_prefix = cast(str, apply_prefix(prefix, ""))
-        escaped = re.escape(prefix_to_vectorize)
-        pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
-        for k, v in state_dict.items():
-            match = pattern.match(k)
-            if match:
-                block_idx = int(match.group(1))
-                block_key = match.group(2)
-                tensors = tensors_to_vectorize.setdefault(block_key, [None] * self.Layers.size)
-                assert tensors[block_idx] is None, f"Duplicate key {k}"
-                tensors[block_idx] = v
-            elif k.startswith(other_keys_prefix):
-                k = k[len(other_keys_prefix) :]
-                vectorized_dict[k] = v
-
-        # now we have to vectorize the tensors
-        for k, tensors in tensors_to_vectorize.items():
-            vectorized_dict[cast(str, apply_prefix("h", k))] = numpy.stack(tensors, axis=0)
-
-        # now we can just call the base class. No prefix is needed because we've stripped it
-        out = super().from_state_dict(vectorized_dict, prefix=None)
+        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "h"))
+        out = super().from_state_dict(stacked, prefix=prefix)
         return out
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # this method is also a bit of a pain for the same reasons
+        # this method needs to "devectorize" the blocks, so that we have a list of blocks h.0.FOO, h.1.FOO, etc.
         # first just do the normal thing with our own dict, which we'll post-process
         my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=None)
+        super().update_state_dict(my_state_dict, prefix)
 
-        # now go through and devectorize all the "h" keys
-        for k, v in my_state_dict.items():
-            if k.startswith("h."):
-                # this is a vectorized key, we need to devectorize it
-                for i, v2 in enumerate(v):
-                    state_dict[cast(str, apply_prefix(prefix, f"h.{i}.{k[2:]}"))] = v2
-            else:
-                # other keys just copy over
-                state_dict[k] = v
+        stacked_dict = unstack_state_dict(my_state_dict, apply_prefix(prefix, "h"))
+        state_dict.update(stacked_dict)
 
         return state_dict
 

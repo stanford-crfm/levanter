@@ -253,25 +253,44 @@ class TrainerConfig:
     run_base_dir: Path = Path("runs/")
 
     # config related to partitioning
+
+    batch_axis: Optional[
+        str
+    ] = (  # if set, we'll use this as the batch axis. (You can achieve the same thing with axis_resources, but this is simpler)
+        "batch"
+    )
+    fsdp_axis: Optional[
+        Union[str, List[str]]
+    ] = (  # if set, we'll use fsdp for model sharding. (You can achieve the same thing with parameter_axis_resources, but this is simpler)
+        "embed"
+    )
+    tensor_parallel_axes: Optional[
+        List[str]
+    ] = None  # axes to use tensor parallelism on. If None, we won't use tensor parallelism
+
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
-    axis_resources: Mapping[str, str] = field(default_factory=dict)  # mapping from logical axis to physical axis
+    axis_resources: Mapping[str, str] = field(default_factory=dict)
+    """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
     parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
-    # and optimizer sharding
+    """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
+    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
 
     # Config related to batch sizes
     train_batch_size: int = 512
     per_device_parallelism: int = -1
+    """how many examples to process in parallel on each device. -1 (default) means train_batch_size/num_devices"""
 
     per_device_eval_parallelism: int = -1
+    """how many examples to process in parallel on each device. -1 (default) means same as per_device_parallelism"""
 
     # Config related to duration
     num_train_steps: int = 400_000
-    steps_per_eval: int = 1_000
+    steps_per_eval: int = 1_000  # how often to evaluate
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
     checkpointer: CheckpointerConfig = CheckpointerConfig()
-    load_checkpoint: Optional[bool] = None  # if None, we'll load a checkpoint if it exists
+    load_checkpoint: Optional[bool] = None
+    """if None (default), we'll load a checkpoint if it exists. If true, we must load a checkpoint"""
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
 
@@ -345,15 +364,34 @@ class TrainerConfig:
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 
-    @property
+    @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:
-        return self.axis_resources
+        """Mapping from logical axis to physical axis for compute."""
+        axes_to_return = dict(self.axis_resources)
 
-    @property
+        tp_axes = self.tensor_parallel_axes or []
+        if tp_axes and len(axes_to_return) > 0:
+            logger.warning(f"tensor parallelism axes {tp_axes} will override axis_resources {axes_to_return}")
+        for axis in tp_axes:
+            axes_to_return[axis] = ResourceAxis.MODEL
+
+        if self.batch_axis is not None:
+            axes_to_return[self.batch_axis] = ResourceAxis.DATA
+
+        return axes_to_return
+
+    @cached_property
     def parameter_axis_mapping(self) -> ResourceMapping:
-        mapping = dict(self.axis_resources)
-        if self.parameter_axis_resources:
-            mapping.update(self.parameter_axis_resources)
+        mapping = dict(self.compute_axis_mapping)
+
+        for axis, resource in self.parameter_axis_resources.items():
+            mapping[axis] = resource
+
+        if isinstance(self.fsdp_axis, str):
+            mapping[self.fsdp_axis] = ResourceAxis.DATA
+        elif isinstance(self.fsdp_axis, list):
+            for axis in self.fsdp_axis:
+                mapping[axis] = ResourceAxis.DATA
 
         return mapping
 
@@ -422,9 +460,7 @@ class TrainerConfig:
         if self.lr_schedule == "constant":
             schedule = optax.constant_schedule(self.learning_rate)
         elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(
-                self.learning_rate, lr_decay_steps - warmup_steps, min_lr / self.learning_rate
-            )
+            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
         elif self.lr_schedule == "linear":
             schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
         else:

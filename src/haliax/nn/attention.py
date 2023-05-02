@@ -9,7 +9,7 @@ from jax.random import PRNGKey
 import haliax
 import haliax.random as hrandom
 from haliax.core import NamedArray
-from haliax.types import Axis, AxisSpec, PrecisionLike
+from haliax.types import Axis, AxisSelection, AxisSpec, PrecisionLike
 
 
 # With attention we usually distinguish between the mask and the bias, though the former is just a special case of the
@@ -24,7 +24,7 @@ from haliax.types import Axis, AxisSpec, PrecisionLike
 
 def dot_product_attention_weights(
     Head: Axis,
-    KSeqLen: AxisSpec,
+    KSeqLen: AxisSelection,
     query: NamedArray,
     key: NamedArray,
     mask: Optional[NamedArray] = None,
@@ -50,7 +50,7 @@ def dot_product_attention_weights(
     import haliax.nn as hnn
 
     orig_dtype = query.dtype
-    query = query / jnp.sqrt(Head.size)
+    query = query / jnp.sqrt(query.axis_size(Head))
 
     if attention_dtype is not None:
         query = query.astype(attention_dtype)

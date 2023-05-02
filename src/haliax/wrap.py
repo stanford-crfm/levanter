@@ -4,10 +4,10 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 
-from haliax.core import NamedArray, _broadcast_order, broadcast_to
+from haliax.core import NamedArray, _broadcast_order, broadcast_to, selects_axis
 from haliax.util import ensure_tuple
 
-from .types import AxisSpec
+from .types import AxisSelection
 
 
 def wrap_elemwise_unary(f):
@@ -25,7 +25,7 @@ def wrap_elemwise_unary(f):
 
 def wrap_reduction_call(fn, single_axis_only: bool = False, supports_where: bool = True):
     @functools.wraps(fn)
-    def wrapper(a, axis: Optional[AxisSpec] = None, where: NamedArray = None, **kwargs):
+    def wrapper(a, axis: Optional[AxisSelection] = None, where: NamedArray = None, **kwargs):
         kwargs = dict(kwargs)
         if where is not None and not supports_where:
             raise ValueError(f"where is not supported by {fn.__name__}")
@@ -57,7 +57,7 @@ def wrap_reduction_call(fn, single_axis_only: bool = False, supports_where: bool
                     indices = a._lookup_indices(axis)
                     if indices is None or any(x is None for x in indices):
                         raise ValueError(f"axis {axis} is not in {a.axes}")
-                    new_axes = [ax for ax in a.axes if ax not in axis]
+                    new_axes = [ax for ax in a.axes if not selects_axis(axis, ax)]
                     if single_axis_only:
                         result = fn(a.array, axis=indices[0], **kwargs)
                     else:
@@ -86,7 +86,7 @@ def wrap_reduction_call(fn, single_axis_only: bool = False, supports_where: bool
 
 def wrap_axiswise_call(fn, single_axis_only: bool):
     @functools.wraps(fn)
-    def wrapper(a, axis: Optional[AxisSpec] = None, **kwargs):
+    def wrapper(a, axis: Optional[AxisSelection] = None, **kwargs):
         if isinstance(a, NamedArray):
             if axis is None:
                 return NamedArray(fn(a.array, axis=None, **kwargs), a.axes)
@@ -134,4 +134,14 @@ def wrap_elemwise_binary(op):
     return binop
 
 
-__all__ = ["wrap_elemwise_unary", "wrap_reduction_call", "wrap_axiswise_call", "wrap_elemwise_binary"]
+def unwrap_namedarrays(*a):
+    return tuple(x.array if isinstance(x, NamedArray) else x for x in a)
+
+
+__all__ = [
+    "wrap_elemwise_unary",
+    "wrap_reduction_call",
+    "wrap_axiswise_call",
+    "wrap_elemwise_binary",
+    "unwrap_namedarrays",
+]
