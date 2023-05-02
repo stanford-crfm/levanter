@@ -189,13 +189,7 @@ class NamedArray:
             try:
                 return index_where(lambda a: a.name == axis, self.axes)
             except ValueError:
-                try:
-                    axis_index = index_where(lambda a: a.name == axis, self.axes)
-                    if axis_index >= 0:
-                        warnings.warn("Found axis with same name but different size.", UserWarning)
-                    return axis_index
-                except ValueError:
-                    return None
+                return None
         elif isinstance(axis, str):
             try:
                 return index_where(lambda a: a.name == axis, self.axes)
