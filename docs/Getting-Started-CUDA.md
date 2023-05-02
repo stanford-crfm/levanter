@@ -1,4 +1,4 @@
-# Getting Started with CUDA
+# Getting Started on CUDA
 
 **Note** that right now CUDA support is very preliminary and Levanter does not work on a multi-machine setup.
 

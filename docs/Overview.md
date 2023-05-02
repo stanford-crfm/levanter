@@ -1,5 +1,5 @@
 
-# Levanter
+# Levanter Architecture
 
 This is a detailed introduction to the Levanter project, including the motivation, design, and implementation.
 
