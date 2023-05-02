@@ -12,3 +12,5 @@ To get started, please refer to the User Guide's chapters:
 - [Getting Started with TPU](Getting-Started-TPU-VM.md)
 
 For a more detailed dive into how Levanter works, please refer to the [Overview](Overview.md).
+
+To contribute, please refer to the [Contributing Guide](CONTRIBUTING.md).
