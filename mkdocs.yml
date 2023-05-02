@@ -50,7 +50,7 @@ nav:
     - 'Getting-Started-CUDA.md'
     - 'Overview.md'
   - 'Haliax':
-      - 'haliax.md'
+      - 'Haliax.md'
   - 'Reference':
     - 'models.md'
     - 'metrics.md'

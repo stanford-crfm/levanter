@@ -13,32 +13,23 @@ on Foundation Models (CRFM)](https://crfm.stanford.edu/).
 
 ## Haliax
 
+<!--haliax-intro-start-->
+
 > Though you don’t seem to be much for listening, it’s best to be careful. If you managed to catch hold of even just a piece of my name, you’d have all manner of power over me.<br/>
 > — Patrick Rothfuss, *The Name of the Wind*
 
 Haliax is a module (currently) inside Levanter for named tensors, modeled on Alexander Rush's [Tensor Considered Harmful](https://arxiv.org/abs/1803.09868).
 It's designed to work with Jax and Equinox to make constructing distributed models easier.
 
+<!--haliax-intro-end-->
 
 ## Getting Started with Levanter
 
 ### Installation
 
-First install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
-as it varies from platform to platform.
+<!--levanter-installation-start-->
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md).
 
-Now clone this repository and install it with pip:
-
-```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-wandb login  # optional, we use wandb for logging
-```
-
-TODO: put things on pypi, etc
 
 
 ### Training a GPT2-nano
