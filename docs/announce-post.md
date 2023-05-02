@@ -44,12 +44,11 @@ strong guarantees for reproducibility; using Jax, we are able to offer bitwise d
 the same compute), which is important for debugging and reproducibility.
 
 That leaves the question of why not [T5X](https://github.com/google-research/t5x), which is Google's own Jax-based
-codebase for training LLMs. XXX wandb, HF ecosystem, learning, flexibility, more like pytorch(?)
-We found that T5X was not a great fit for our use cases. T5X is pretty deeply integrated into the Google ecosystem,
-which makes it less suitable to the Hugging Face-oriented ecosystem that we and many others use. We also wanted to
-develop a code base that felt a bit lighter weight and more flexible than T5X, with an emphasis on allowing graduate
-students to iterate on new ideas quickly. Finally, we wanted to learn more about training large foundation models, and
-we felt that building our own codebase would be a good way to do that.
+codebase for training LLMs. We found that T5X was not a great fit for our use cases. T5X is pretty deeply integrated
+into the Google ecosystem, which makes it less suitable to the Hugging Face-oriented ecosystem that we and many others
+use. We also wanted to develop a code base that felt a bit lighter weight and more flexible than T5X, with an emphasis
+on allowing graduate students to iterate on new ideas quickly. Finally, we wanted to learn more about training large
+foundation models, and we felt that building our own codebase would be a good way to do that.
 
 
 ## Levanter Rises
@@ -67,8 +66,20 @@ Levanter offers:
 * Built-in integrations with Wandb and Hugging Face Datasets and Hugging Face Tokenizers
 * Export of models to PyTorch State Dicts, Hugging Face's new safetensors library (XXX), and the HF model hub
 
-XXX
+Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will
+be useful to others who are interested in training foundation models using Jax. We also hope that Levanter will be
 
+
+### Improvements over Mistral
+
+Levanter is a successor to Mistral, and we have made a number of improvements over Mistral. In particular, Levanter
+offers:
+
+* TPU support (naturally)
+* Bitwise reproducibility
+* Fancy visualization of token probabilities integrated into Wandb during training to understand how models are learning and identify issues in the data
+* Flexible tensor parallelism support
+* Improved support for resuming from preemption
 
 ### Under the hood: Haliax
 
@@ -100,8 +111,11 @@ be releasing them as they become available.
 XXX TODO: verify this is the one we're releasing
 - GPT-2-1536 (1.45B parameters) XXX, including checkpoints every 10,000 gradient steps
 - XXX music model
+- Backpacks?
 
 ## Future and Conclusion
+
+This is just the beginning for Levanter
 
 In the future, look for:
 * more models on interesting problem domains
@@ -113,8 +127,6 @@ In the future, look for:
 
 In addition to the generous support of Google, we would like to thank the following people for their help and support:
 
-* Sidd Karamcheti
-* Yifan Mai
-* Roy Froystig
-* Sholto Douglas
-XXX
+* Sidd Karamcheti for support and XXX
+* Yifan Mai, Tony Lee, Jason Bolton, Ivan Zhou, and the rest of the CRFM engineering team for support and discussions.
+* Roy Froystig, Sholto Douglas, and the rest Jax team for help with debugging and just for making JAx.
