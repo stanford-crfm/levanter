@@ -50,6 +50,12 @@ if [ -z "$VM_NAME" ]; then
   exit 1
 fi
 
+# if ssh-agent isn't running, complain
+if [ -z "$SSH_AUTH_SOCK" ]; then
+  echo "Error: ssh-agent not running. This script needs to be run from a machine with ssh-agent running. Please run ssh-add ~/.ssh/google_compute_engine and try again"
+  exit 1
+fi
+
 # check if the VM is running
 # if not, spin it up
 # if it is, just run the command
