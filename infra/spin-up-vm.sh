@@ -21,6 +21,12 @@ if [ "$AUTODELETE" = "true" ]; then
 fi
 
 
+# if ssh-agent isn't running, complain
+if [ -z "$SSH_AUTH_SOCK" ]; then
+  echo "Error: ssh-agent not running"
+  exit 1
+fi
+
 
 # create the vm
 # spin loop until we get a good error code

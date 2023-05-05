@@ -70,10 +70,13 @@ def cumsum(arr):
     return jax.lax.scan(body, 0, arr)[1]
 ```
 
-Scan returns both the final result of the scan and the intermediate results. In this case, we only care about the
-intermediates results, so we index into the tuple with `[1]`. In Haliax we have `haliax.reduce` which is a wrapper
+`scan` returns both the final result of the loop and the intermediate results. In this case, we only care about the
+intermediates results, so we index into the tuple with `[1]`.
+
+In Haliax we have `haliax.reduce` which is a wrapper
 around `scan` that makes it easier to use and works with the NamedAxes system. Levanter also has a `reduce` function
-that doesn't know about names, if you want to use it with plain Jax.
+that doesn't know about names, if you want to use it with plain Jax. We also have `haliax.nn.Stacked` which is
+like `torch.nn.ModuleList` but requires that all modules are the same. It uses `scan` (and `vmap`) under the hood.
 
 #### PyTrees
 
@@ -95,8 +98,8 @@ foo(a, b) # 2x3 @ 3x4 = 2x4
 jax.tree_util.tree_map(foo, [a] * 5, [b] * 5) # [2x3 @ 3x4] * 5
 ```
 
-Many methods in Jax are PyTree-aware, though the numpy-like API is usually not. Many methods (though for some
-reason not `tree_map`) can operate on "PyTree prefixes", where the first argument is a PyTree and the rest are
+Many methods in Jax are PyTree-aware, though the numpy-like API is usually not. Many methods
+can operate on "PyTree prefixes", where the first argument is a PyTree and the rest are
 prefixes of that PyTree, meaning they have the same structure up to some depth. This is used with `vmap`:
 
 ```python
@@ -120,8 +123,9 @@ foo_vmap_0 = jax.vmap(foo, in_axes=((0, None),))
 ```
 
 #### PRNG
-Randomness in Jax is carefully controlled: the "state" of a random number generator (called a `PRNGKey` in Jax) has to be passed into every invocation of an RNG or a function that calls an RNG. This adds a lot of ceremony but ensures that your code is always reproducible *and* that it
-can be JIT-compiled. That looks like this:
+Randomness in Jax is carefully controlled: the "state" of a random number generator (called a `PRNGKey` in Jax) has to
+be passed into every invocation of an RNG or a function that calls an RNG. This adds a lot of ceremony but ensures that
+your code is always reproducible *and* that it can be JIT-compiled. That looks like this:
 
 ```python
 import jax.random as jrandom
@@ -146,9 +150,9 @@ There's an [official pjit tutorial](https://jax.readthedocs.io/en/latest/jax-101
 ### Equinox: Low-magic Neural Net Library
 
 [Equinox](https://github.com/patrick-kidger/equinox) is a neural network library for Jax that is somehow simultaneously
-both less "magical" than many other neural net libraries for Jax *and* the most PyTorch-like of the bunch. It's built around
-a few key ideas, but the one we're most interested in is the `Module` class. A `Module` is just a class that
-has been registered with Jax as a PyTree node, which makes all of the Pytree machinery (like tree_map) work for it.
+both less "magical" than many other neural net libraries for Jax *and* (in my opinion) the most PyTorch-like of the
+bunch. It's built around a few key ideas, but the one we're most interested in is the `Module` class. A `Module` is just
+a class that has been registered with Jax as a PyTree node, which makes all of the Pytree machinery (like tree_map) work for it.
 Here's a simple example:
 
 ```python
@@ -171,7 +175,7 @@ class MyModule2(eqx.Module):
         return self.submodule(x) @ self.param
 ```
 
-There's nothing magic about the `forward` method, or even `__init__`.
+There's nothing magic about the `forward` method, or even `__init__`. They're just methods you can call.
 
 ### Optax: Optimization
 
@@ -202,7 +206,7 @@ def update(model, opt_state, x, y):
 
 It's so simple that Copilot wrote all that for me... Thanks Copilot!
 
-### Haliax: Named Tensors
+## Haliax: Named Tensors
 
 Haliax is a library for named tensors in Jax. It wraps Jax's APIs (especially the numpy-like ones, along with
 the core transformations like vmap, pjit, etc) to make them work with named tensors. It also builds on top of
@@ -242,7 +246,7 @@ foo_vmap = hax.vmap(foo, axis=Batch)
 By convention, we capitalize the names of axes. This is because it makes it easier to visually distinguish them.
 
 
-#### Why Named Arrays?
+### Why Named Arrays?
 
 I get really confused when reading tensor code that uses axes like `0`, `1`, `2`, etc. It's not clear what
 those axes are, and it's especially unclear when you have multiple tensors with different shapes. I've also been
@@ -261,7 +265,7 @@ easier, more semantic-y partitioning if you use NamedArrays as the fields in you
 and access the underlying array and use it like normal.
 
 
-#### Named Axes in Jax
+### Named Axes in Jax
 Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
@@ -270,7 +274,7 @@ and it makes it harder to play with different partitioning strategies.
 
 XXX Flax names
 
-#### Named Tensors Elsewhere
+### Named Tensors Elsewhere
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh), and I think
 I basically reimplemented it in Jax without really meaning to.
@@ -289,9 +293,9 @@ messy and not that interesting for our purposes here.) I'll walk through the mor
 structure and grouping of classes it's pretty similar to standard PyTorch implementations.
 
 If you want, you can compare it with Andrej Karpathy's [minGPT implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py).
-Ours is a bit longer (even excluding the torch serialization parts) for a few reasons:
-* Boilerplate from declaring fields for modules
-* More type annotations
+Ours is a bit longer  for a few reasons:
+* We have to do some work to be compatible with HF's GPT-2 checkpoint serialization. (This is about half of the LoC difference.)
+* Boilerplate from declaring fields for modules and type annotations (a third or so)
 * Tricks to improve stability from the [Mistral project](https://crfm.stanford.edu/2021/08/26/mistral.html#eureka/)
 
 
@@ -348,6 +352,7 @@ some Jax/Haliax idioms.
         self.KeySeqLen = SeqLen.alias("key_" + SeqLen.name)
 
         k_c, k_proj = jrandom.split(key, 2)  # splitting random keys is how you get different random numbers from different calls
+
         # Haliax's Linear allows you to specify multiple input and output axes, and it will do the right thing
         # I find this clearer than the reshape heavy code you usually see
         self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
@@ -448,7 +453,7 @@ class Gpt2Mlp(eqx.Module):
 The block is the basic unit of the transformer. It's just a multi-headed attention layer, followed by a layer norm, followed by an MLP, followed by another layer norm.
 
 ```python
-class Gpt2Block(TorchSerializationMixin, eqx.Module):
+class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     ln_1: hnn.LayerNorm
     attn: Gpt2Attention
     ln_2: hnn.LayerNorm
@@ -480,18 +485,18 @@ don't use dropout.
 
 ### The Transformer
 
-The transformer conceptually is just a stack of these blocks (plus a final layer norm). In Jax, we can use `jax.vmap` to
-create a vectorized block stack, and then use `jax.lax.scan` to apply the blocks in sequence. We use Haliax named
-variants of these functions: `hax.vmap` and `hax.fold`. (Jax doesn't have `fold` per se, but instead uses `scan` for both.
-Haliax also has a `hax.scan` function that's equivalent to `jax.lax.scan`.)
+The transformer conceptually is just a stack of these blocks (plus a final layer norm). In PyTorch, you
+would usually use a `torch.nn.ModuleList` for this. Here, we use a module from Haliax called `haliax.nn.Stacked`. It's
+like a `ModuleList`, but it must be homogeneous (all the same type, with the same Python control flow). It also
+`vmap`s (vectorizes) the parameters of the inner module.
 
-This can be a bit hard to understand, so let's break it down. First, we create a vectorized block stack:
 ```python
-class Gpt2Transformer(eqx.Module):
+class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
-    blocks: Gpt2Block
+    blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
 
+    # this is the number of layers. This axis gets prepended to every parameter in Gpt2Block
     @property
     def Layers(self) -> Axis:
         return self.config.Layers
@@ -500,52 +505,39 @@ class Gpt2Transformer(eqx.Module):
         super().__init__()
         self.config = config
 
-        self.blocks = hax.vmap(Gpt2Block, self.Layers)(config, key=shaped_rng_split(key, config.num_layers))
-        self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
-```
-
-Recall that `vmap` inserts a new axis into the function. So, `hax.vmap(Gpt2Block)` creates a function that takes
-a "batch" of keys (meaning a key array with a leading axis for the number of layers) and returns a "batch" of blocks
-(meaning a single Block object whose arrays have a leading axis for the number of layers).
-
-Next, we create a function that applies the blocks in sequence:
-
-```python
-    def __call__(self, hidden_states: NamedArray, inference, *, key) -> NamedArray:
-        def do_block(hidden_states, block, layer_idx, key):
-            return block(hidden_states, inference=inference, layer_idx=layer_idx, key=key)
-
-        keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = hax.fold(do_block, axis=self.Layers)(  # type: ignore
-            hidden_states, self.blocks, hax.arange(self.Layers), key=keys  # type: ignore
+        # vectorize the blocks
+        self.blocks = Stacked(
+            self.Layers,
+            Gpt2Block,
+            config,
+            key=shaped_rng_split(key, config.num_layers),
+            gradient_checkpointing=config.gradient_checkpointing,
         )
+        self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+
+    @named_call
+    def __call__(self, hidden_states: NamedArray, *, inference, key) -> NamedArray:
+        keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        # fold is like a for loop that repeatedly applies a function to an accumulator
+        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference, key=keys)
         hidden_states = self.ln_f(hidden_states)
 
         return hidden_states
 ```
 
-If you're not used to functional programming, this might be a bit hard to follow at first. The `fold` function is
-equivalent to a `for` loop. It takes a function `do_block` and applies it to each element of the `self.blocks` array,
-accumulating the result. The `axis` argument tells it which axis to iterate over. This invocation is equivalent to the
-following Python:
-
-```python
-hidden_states = hidden_states
-for layer_idx, block in enumerate(self.blocks):
-    key = keys[layer_idx] if keys is not None else None
-    hidden_states = do_block(hidden_states, block, layer_idx, key)
-```
-
-The reason to use `fold`/`scan` in Jax is that it makes compilation much faster, and it also works with non-constant
-lengths. We're mostly using it for compilation speed. Eventually we'll add support for fancy gradient checkpointing
-strategies to Haliax `fold` and `scan`.
+The reason to use `Stacked` and `fold`/`scan` in Jax is that it makes compilation much faster, and it also works with
+non-constant lengths. We're mostly using it for compilation speed. Eventually we'll add support for fancier gradient
+checkpointing strategies to Haliax `fold` and `scan` and for pipeline parallelism.
 
 ## Data Parallel Training via `pjit`
 
 With all that, let's go ahead and implement data parallel training. As a reminder, data parallel training is the
-"obvious" way to do distributed training: Jax has a few ways of doing data-parallel distributed training: `pmap`,
-`xmap`, and `pjit`. `pjit` is the most flexible one, and it's what we'll be using. However, `pjit` is also the most complicated.
+"obvious" way to do distributed training: you just split the data across multiple devices, and then you run the
+same model on each device, and then you total up the gradients and do an update. This is the simplest way to do
+distributed training, but it's not the most efficient way. We'll talk about improving efficiency later.
 
+Jax has a few ways of doing data-parallel distributed training: `pmap`, `xmap`, and `pjit`.
+`pjit` is the most flexible one, and it's what we'll be using. However, `pjit` is also the most complicated.
 We'll start with the comparatively simple use case of data parallelism, and then graduate up to the more complicated
 case of model (activation) parallelism.
 
@@ -592,7 +584,7 @@ can see where this is going:
 
 ```python
 from jax.experimental.pjit import pjit
-from jax.experimental.pjit import PartitionSpec
+from jax.sharding import Mesh, PartitionSpec
 import jax
 import jax.numpy as jnp
 import numpy as onp
@@ -630,8 +622,71 @@ with `num_devices` devices, and then we'll add a `with mesh:` block to our train
 block, we'll add a `pjit` call to our `training_step` function, specifying that the `input_ids` and the keys should be
 partitioned along the `data` axis of the mesh, and that the output should not be partitioned. We'll also add a XXX
 
+XXX
 
-## Model Parallelism with Activation Sharding
+## Reducing Memory Usage with Fully-Sharded Data Parallelism
+
+Fully-Sharded Data Parallelism (FSDP), also known as [ZeRO](https://arxiv.org/abs/1910.02054), is a technique for doing data parallel training that
+reduces the memory footprint of training by sharding the model parameters and optimizer states across multiple devices.
+This is distinct from the tensor parallelism that we'll cover later, which shards the matrix multiplies for individual
+examples across multiple devices.
+
+When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
+and its kin, the optimizer state is another two copies of the parameters. If you store the parameters
+and optimizer states in float32, then you need at a minimum `16 * num_params` bytes of memory,
+without including the memory needed for activations. (For LLMs, the data for a batch is typically trivial in comparison.) I
+Without FSDP, you'll need to store all of these on every TPU/GPU. It's generally recommended to store all of these
+(maybe not the gradients) in float32 for training. We'll talke about mixed-precision training later.
+
+### FSDP, Conceptually
+
+To get started, let's talk about what ZeRO does. Conceptually, ZeRO assigns each device a slice of the model. The device
+holds the parameters, optimizer states, and gradient accumulation buffers for that slice. When computing gradients,
+each device has to:
+
+1. just-in-time receive the relevant parameters from all other devices ;
+2. compute the forward and backward pass;
+3. distribute the gradients to the relevant devices;
+4. and finally update its slice of the parameters and optimizer states.
+
+The first step is called the "all-gather" operation, and the third step is called the "reduce-scatter" operation. The
+second and fourth steps are the same as in normal data parallel training. Once all devices have finished, the process repeats.
+
+
+### FSDP in Jax and Haliax
+
+So we basically have two ways we need to partition the model: once for "compute" and once for "parameters." "Compute"
+is the "normal" and (for now) fully replicated model we use for compute. For "parameters," we want our model and optimizer states to be fully sharded.
+
+To do that, we are going to have two mappings from axes to our mesh: one for "compute" and one for "parameters."
+The "compute" mapping will shard our *training data* across the mesh, and the "parameter" mapping will instead
+shard our *parameters and optimizer states*.
+
+Jax won't (easily) allow you to shard entire tensors across a mesh. You instead need to shard along an axis.
+So we need to find an axis that shows up in all of our parameters. Luckily, we have one `Axis` that consistently shows
+up in nearly all of our parameters: `Embed`. So what we're going to do is partition the `Embed` axis along the `data`
+axis of our device mesh. This will give us a fully sharded model, modulo a few bias terms.
+
+Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
+device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
+device mesh. Schematically, this looks like:
+
+![ZeRO partitioning of `c_fc`, as described above](figures/device_mesh_1d_zero.png)
+
+Now, to do our forward pass, we repartition our parameters just-in-time so that each device has the parameters it needs:
+we go from the parameter partitioning to the compute partitioning. We then do our forward pass. During the backward pass,
+we repartition our gradients from the compute partitioning to the parameter partitioning, reducing them as we go. Finally,
+we do the optimizer updates, and then we're ready for the next batch.
+
+In Haliax, that looks like this:
+
+XXX
+
+
+
+
+
+## Tensor Parallelism with Activation Sharding
 
 XXX Transition
 
@@ -692,6 +747,9 @@ When we do the next computation, where we matrix-multiply `intermediate: [Batch,
 Jax will "do the right thing" so that the `Batch` axis is partitioned along the `data` axis, and the `Embed` axis
 is replicated, so that the final result `output: [Batch, SeqLen, Embed]` is also partitioned in the same way as the original
 `input: [Batch, SeqLen, Embed]`.
+
+
+
 
 
 ### `pjit` for Activation Sharding
@@ -780,22 +838,20 @@ Now that we've covered the basics of `pjit` and our named variant, let's see how
 GPT-2 model. XXX
 
 
-## Reducing Memory Usage
 
-When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
-and its kin, the optimizer state is another two copies of the parameters. If you store your parameters in float32, you
-need at a minimum `16 * num_params` bytes of memory, without including the memory needed for activations. (For LLMs, the
-data for a batch is typically trivial in comparison.) If you don't use ZeRO (XXX cite) or some other technique, you'll
-need to store all of these on every TPU/GPU. (It's generally recommended to store all of these (maybe not the gradients)
-in float32 for training.)
-
-While we'll get to ZeRO/FSDP in a bit, in the meantime we can use mixed precision training to reduce the memory footprint
-of the model.
 
 A single v3 or v4 TPU core has 16GB of memory. This means that, for a 345M parameter model, we've already committed
 to using 5.5GB of memory for the parameters and optimizer states alone. This is plenty of space, but if we go to
 a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
 can be nontrivial.
+
+### Combining FSDP and Activation Sharding
+
+XXX
+
+Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
+device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
+device mesh. Schematically, this looks like:
 
 ### Mixed Precision Training via `jmp`
 
@@ -835,42 +891,9 @@ XXX
 
 ### ZeRO: Parameter Partitioning
 
-[ZeRO](https://arxiv.org/abs/1910.02054) (short for ZEro-Redundancy Optimizer) is a set of techniques for optimizing large-scale training
+[ZeRO] (short for ZEro-Redundancy Optimizer) is a set of techniques for optimizing large-scale training
 by partitioning model parameters, gradient accumulation buffers, and optimizer states across multiple devices, so that no
 device has any overlap with any other device in terms of what parameters it stores.
-
-In PyTorch-land, there are two main implementations of ZeRO: DeepSpeed and Fully Sharded Data Parallel (FSDP). These are
-complex software libraries that have a lot of moving parts. With Jax, we'll get most of the benefit in a few lines of code.
-
-To get started, let's talk about what ZeRO does. Conceptually, ZeRO assigns each device a slice of the model. The device
-holds the parameters, optimizer states, and gradient accumulation buffers for that slice. When computing gradients,
-each device has to receive the parameters for the entire model (but just in time), compute the forward and backward
-pass, and then scatter the gradients to the relevant devices. Afterwards, each device will update its slice of the
-parameters, and then the next batch can be processed.
-
-So we basically have two ways we need to partition the model: once for "compute" and once for "parameters." "Compute"
-is how we've been doing things so far: sharding our model and activations along the `model` axis. For "parameters,"
-we want our model to be fully sharded. To do that, we need to partition our model along the `data` axis too. Luckily,
-we have one `Axis` that consistently shows up in nearly all of our parameters: `Embed`. So what we're going to do is
-partition the `Embed` axis along the `data` axis of our device mesh. This will give us a fully sharded model, modulo a few
-bias terms.
-
-Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
-device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
-device mesh. Schematically, this looks like:
-
-![ZeRO partitioning of `c_fc`, as described above](figures/device_mesh_2d_zero.png)
-
-
-Now, to do our forward pass, we repartition our parameters just-in-time so that each device has the parameters it needs:
-we go from the parameter partitioning to the compute partitioning. We then do our forward pass. During the backward pass,
-we repartition our gradients from the compute partitioning to the parameter partitioning. We then do our backward pass,
-accumulating the gradients into the gradient accumulation buffers that are also partitioned along the `data` axis. Finally,
-we do our gradient updates, and then we're ready for the next batch.
-
-In Haliax, that looks like this:
-
-XXX
 
 ### Other Techniques
 #### Gradient Checkpointing
@@ -912,7 +935,7 @@ my_shard = whole_matrix[4096/4 * 1: 4096/4 * 2, :]
 
 This is pretty expensive and, more importantly, ends up using a whole lot of precious TPU RAM, to the extent that I've had models that should fit in RAM run out of memory during initialization.
 
-A somewhat ugly way to work around this is to use the "split" property of  something a bit less attractive like:
+A somewhat ugly way to work around this is to `split` the key and then `vmap` the random number generation:
 ```python
 key = PRNGKey(0)
 
@@ -921,13 +944,9 @@ my_matrix = vmap_normal(jax.random.split(key, 4096))
 
 def make_matrix(key): return jax.random.normal(key, (4096, 8192))
 ```
-**This changes the result from the "naive" version**, but as long as you're consistent, It's fine.
+**This changes the result from the "naive" version**, but as long as you're consistent, it's fine.
 
-
-XXX when we do Haliax's new partitioning, we should show that
-
-Haliax actually automatically does this under the hood along the biggest partitioned axis:
-
+Haliax actually supports doing this operation with a wrapper called `generate_sharded`:
 ```python
 import haliax as hax
 
@@ -935,7 +954,7 @@ Hidden = hax.Axis("Hidden", 4096)
 Mlp = hax.Axis("Mlp", 8192)
 
 key = PRNGKey(0)
-my_matrix = hax.random.normal(key, (Hidden, Mlp))
+my_matrix = hax.random.generate_sharded(hax.random.normal, axis=Hidden)(key, (Hidden, Mlp))
 ```
 
 **Note that this means that random number generation changes if you change the partitioning**, which isn't ideal, but it sometimes makes things work that didn't work before.
