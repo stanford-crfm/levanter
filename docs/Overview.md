@@ -271,7 +271,9 @@ and 2) ultimately `xmap` can be confusing because you write non-named code for p
 of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated,
 and it makes it harder to play with different partitioning strategies.
 
-XXX Flax names
+Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax, but the arrays don't carry around
+their axis names so you have to remember them and pass them in manually when doing partitioning for data parallelism,
+tensor parallism and FSDP. I think this is a bit of a missed opportunity (relative to what we have in Haliax, but it's still useful.
 
 ### Named Tensors Elsewhere
 
@@ -682,8 +684,6 @@ block, we'll add a `pjit` call to our `training_step` function, specifying that 
 partitioned along the `data` axis of the mesh, and that the output should not be partitioned.
 
 ```python
-import optax
-
 training_data = load_training_data()
 model_config = Gpt2Config()
 
@@ -892,12 +892,73 @@ insert the necessary `all-gather` and `reduce-scatter` operations to make this w
 
 ### FSDP with Haliax's `named_pjit`
 
-Now that we have `named_pjit`, we can easily partition our model. We just need to specify the two axis mappings:
+Now that we have `named_pjit`, we can partition our model. We just need to specify the two axis mappings:
 one for "compute" and one for "parameters." The "compute" mapping will shard our *training data* across the mesh,
 and the "parameter" mapping will instead shard our *parameters and optimizer states*.
 
-xxx extend the training example to show how to do this
+```python
+import haliax as hax
+training_data = load_training_data()
+model_config = Gpt2Config()
 
+key = jax.random.PRNGKey(0)
+
+model_key, training_key = jax.random.split(key, 2)
+
+Vocab = Axis("vocab", len(tokenizer))
+Batch = Axis("batch", 8)
+SeqLen = Axis("seq_len", 128)
+
+# NEW: specify the axis mappings
+compute_mapping = {"batch": "data"}
+param_mapping = {"embed": "data"}
+
+with Mesh(jax.devices(), ("data",)):
+    # NEW: partition the model and optimizer state when we instantiate it
+    model = hax.named_pjit(Gpt2LMHeadModel, axis_resources=param_mapping)(SeqLen, model_config, key=model_key)
+
+    optimizer = optax.adamw(learning_rate=1e-4)
+    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+
+    # loss of a single example
+    def compute_loss(model, input_ids, key, inference):
+        # NEW: use a context axis mapping for compute
+        with hax.axis_mapping(compute_mapping):
+            pred_y = model(input_ids, key=key, inference=inference)
+            return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+
+    # loss of a batch
+    def train_batch_loss(model, input_ids, key):
+        per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
+        return hax.mean(per_ex_loss, "batch").scalar()
+
+    # return value and gradient of loss
+    grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
+    def train_step(model, opt_state, input_ids, keys):
+       loss, grads = grad_loss(model, input_ids, keys)
+
+       # distribute gradients across the mesh and apply them
+       updates, opt_state = optimizer.update(grads, opt_state, params=model)
+       model = eqx.apply_updates(model, updates)
+
+       return loss, model, opt_state
+
+    # NEW: use named pjit to partition the train step
+    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+
+    for batch_input_ids in training_data:
+        my_key, training_key = jrandom.split(training_key, 2)
+        batch_key = jrandom.split(my_key, Batch.size)
+
+        jax_step_loss, model, opt_state = train_step_pjit(model, opt_state, batch_input_ids, batch_key)
+        step_loss = jax_step_loss.item()
+        print(f"step loss: {step_loss:.4f}")
+```
+
+Congrats, you've just implemented FSDP! The big changes are the addition of the two axis mappings, and the use of
+`named_pjit` to partition the model and optimizer state, and the conversion of the old `train_step` function to
+`named_pjit` as well. The rest of the code is the same as the prior example.
 
 #### Details: `with_sharding_constraint` and Haliax's `Linear` Layer
 
@@ -973,16 +1034,80 @@ To plug this into our trainer, we need to make just two changes. First, when we 
 param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
 
 Here's what that looks like in our training code:
+
 ```python
+training_data = load_training_data()
+model_config = Gpt2Config()
 
+# NEW: initialize a policy. Ordinarily we'd get this from config
+# ordinarily we'd get this from config
+policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
 
-XXX
+key = jax.random.PRNGKey(0)
+
+model_key, training_key = jax.random.split(key, 2)
+
+Vocab = Axis("vocab", len(tokenizer))
+Batch = Axis("batch", 8)
+SeqLen = Axis("seq_len", 128)
+
+compute_mapping = {"batch": "data"}
+param_mapping = {"embed": "data"}
+
+with Mesh(jax.devices(), ("data",)):
+    # NEW: cast the model to the param dtype
+    @hax.named_pjit(axis_resources=param_mapping)
+    def init_model():
+        model = Gpt2LMHeadModel(model_config, key=model_key)
+        return policy.cast_to_param(model)
+
+    model = init_model()
+
+    optimizer = optax.adamw(learning_rate=1e-4)
+    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+
+    # loss of a single example
+    def compute_loss(model, input_ids, key, inference):
+        with hax.axis_mapping(compute_mapping):
+            # NEW: cast the model to the compute dtype
+            model = policy.cast_to_compute(model)
+            pred_y = model(input_ids, key=key, inference=inference)
+            # NEW: cast the output to the output dtype
+            pred_y = policy.cast_to_output(pred_y)
+            return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+
+    # loss of a batch
+    def train_batch_loss(model, input_ids, key):
+        per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
+        return hax.mean(per_ex_loss, "batch").scalar()
+
+    # return value and gradient of loss
+    grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
+    def train_step(model, opt_state, input_ids, keys):
+        loss, grads = grad_loss(model, input_ids, keys)
+
+        # distribute gradients across the mesh and apply them
+        updates, opt_state = optimizer.update(grads, opt_state, params=model)
+        model = eqx.apply_updates(model, updates)
+
+        return loss, model, opt_state
+
+    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+
+    for batch_input_ids in training_data:
+        my_key, training_key = jrandom.split(training_key, 2)
+        batch_key = jrandom.split(my_key, Batch.size)
+
+        jax_step_loss, model, opt_state = train_step_pjit(model, opt_state, batch_input_ids, batch_key)
+        step_loss = jax_step_loss.item()
+        print(f"step loss: {step_loss:.4f}")
 ```
 
 ## Tensor Parallelism with Activation Sharding
 
-We now have everything we need to train models of 10-20B parameters. So what follows is not totally necessary for training,
-but it is helpful for inference and good for pedagogy.
+We now have everything we need to train models of 10-20B parameters (except for gradient checkpointing, which we discuss at the very end).
+So what follows is not all that necessary for training, but it is helpful for inference and good for pedagogy.
 
 Activation partitioning is a technique that allows you to split up the activations of a model across multiple devices.
 Typically, this is accompanied by model partitioning, which splits up the parameters of the model across multiple devices.
@@ -1082,16 +1207,113 @@ pjit_matmul = named_pjit(matmul,
 ### Model-Partitioned GPT-2 Training
 
 Now that we've covered the basics of `pjit` and our named variant, let's see how we can use it to train a model-parallel
-GPT-2 model.
+GPT-2 model. The basic idea is to create the two-dimensional mesh we saw above, and then use `named_pjit` to partition
+the right axes of the model across the `model` axis.
 
-XXXX
+```python
+training_data = load_training_data()
+model_config = Gpt2Config()
 
+policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
+
+key = jax.random.PRNGKey(0)
+
+model_key, training_key = jax.random.split(key, 2)
+
+Vocab = Axis("vocab", len(tokenizer))
+Batch = Axis("batch", 8)
+SeqLen = Axis("seq_len", 128)
+
+# NEW: specify axes to do model parallelism on
+compute_mapping = {"batch": "data", "mlp": "model", "head": "model"}
+param_mapping = {"embed": "data", "mlp": "model", "head": "model"}
+
+# NEW: specify a 2D mesh with model_axis_size
+model_axis_size = 2
+mesh = Mesh(onp.array(jax.devices()).reshape((-1, model_axis_size)), ("data", "model"))
+
+with mesh:
+    @hax.named_pjit(axis_resources=param_mapping)
+    def init_model():
+        model = Gpt2LMHeadModel(model_config, key=model_key)
+        return policy.cast_to_param(model)
+
+    model = init_model()
+
+    optimizer = optax.adamw(learning_rate=1e-4)
+    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+
+    # loss of a single example
+    def compute_loss(model, input_ids, key, inference):
+        with hax.axis_mapping(compute_mapping):
+            model = policy.cast_to_compute(model)
+            pred_y = model(input_ids, key=key, inference=inference)
+            pred_y = policy.cast_to_output(pred_y)
+            return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+
+    # loss of a batch
+    def train_batch_loss(model, input_ids, key):
+        per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
+        return hax.mean(per_ex_loss, "batch").scalar()
+
+    # return value and gradient of loss
+    grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
+    def train_step(model, opt_state, input_ids, keys):
+        loss, grads = grad_loss(model, input_ids, keys)
+
+        # distribute gradients across the mesh and apply them
+        updates, opt_state = optimizer.update(grads, opt_state, params=model)
+        model = eqx.apply_updates(model, updates)
+
+        return loss, model, opt_state
+
+    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+
+    for batch_input_ids in training_data:
+        my_key, training_key = jrandom.split(training_key, 2)
+        batch_key = jrandom.split(my_key, Batch.size)
+
+        jax_step_loss, model, opt_state = train_step_pjit(model, opt_state, batch_input_ids, batch_key)
+        step_loss = jax_step_loss.item()
+        print(f"step loss: {step_loss:.4f}")
+```
+
+And that's tensor parallelism!
 
 ## Other Techniques
 ### Gradient Checkpointing
 
+Gradient checkpointing is a technique for reducing memory consumption when training deep models. The basic idea is to
+trade compute for memory: instead of storing all of the activations of a layer, we recompute them on the backward pass.
+
+In Jax, you can use `jax.checkpoint` to do this. If you're using Haliax and `Stacked`, then you can instead
+just pass `gradient_checkpointing=True` to `Stacked` and it will automatically checkpoint. Typically this is where
+you want checkpointing to happen, since it's the most memory-intensive part of the model.
+
 ### Argument Donation
 
+Another technique for reducing memory consumption is argument donation. The basic idea is that if you have a function
+that takes a large argument that you won't need after the function returns, you can donate that argument to the function
+and then delete it after the function returns. You usually use this for thing you're planning on updating and don't need
+to keep around, like optimizer state or the model parameters.
+
+In Jax, you can use `jax.jit` (or `pjit`) to do this. If you're using Haliax's `named_pjit`, you can specify which
+arguments to donate with the `donate` argument, which takes a PyTree-prefix of the arguments to donate. For instance,
+this will donate the model and opt_state to the train step:
+
+```python
+def train_step(model, opt_state, input_ids, keys):
+    loss, grads = grad_loss(model, input_ids, keys)
+
+    # distribute gradients across the mesh and apply them
+    updates, opt_state = optimizer.update(grads, opt_state, params=model)
+    model = eqx.apply_updates(model, updates)
+
+    return loss, model, opt_state
+
+train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping, donate=(True, True, False, False))
+```
 
 ## Random Gotchas
 ### Pjit's SPMD partitioner gets confused
