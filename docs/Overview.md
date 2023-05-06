@@ -652,8 +652,7 @@ each device has to:
 The first step is called the "all-gather" operation, and the third step is called the "reduce-scatter" operation. The
 second and fourth steps are the same as in normal data parallel training. Once all devices have finished, the process repeats.
 
-
-### FSDP in Jax and Haliax
+### FSDP with Jax and Haliax, Conceptually
 
 So we basically have two ways we need to partition the model: once for "compute" and once for "parameters." "Compute"
 is the "normal" and (for now) fully replicated model we use for compute. For "parameters," we want our model and optimizer states to be fully sharded.
@@ -664,36 +663,31 @@ shard our *parameters and optimizer states*.
 
 Jax won't (easily) allow you to shard entire tensors across a mesh. You instead need to shard along an axis.
 So we need to find an axis that shows up in all of our parameters. Luckily, we have one `Axis` that consistently shows
-up in nearly all of our parameters: `Embed`. So what we're going to do is partition the `Embed` axis along the `data`
-axis of our device mesh. This will give us a fully sharded model, modulo a few bias terms.
+up in nearly all of our parameters: `Embed`. So what we're going to do is partition the `Embed` axis across
+our device mesh. This will give us a fully sharded model, modulo a few bias terms.
 
-Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
-device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
-device mesh. Schematically, this looks like:
+Consider a matrix like `c_fc: [Embed, Mlp]`. For the "parameter" mapping, `c_fc` is partitioned so that one `1/num_devices`
+of the rows (the `Embed` axis)
+are on each device. For "compute," `c_fc` will be all-gathered onto all devices. Schematically, this looks like:
 
-![ZeRO partitioning of `c_fc`, as described above](figures/device_mesh_1d_zero.png)
+![FSDP partitioning of `c_fc`, as described above and below](figures/device_mesh_1d_zero.png)
 
-Now, to do our forward pass, we repartition our parameters just-in-time so that each device has the parameters it needs:
+In the figure, the <span style="color: #06A77D">green</span> box (color-coordinated with <span style="color: #06A77D">`Embed`</span>)
+around the device mesh indicates that the `Embed` axis is partitioned across the mesh. The <span style="color: #871D5D">magenta</span>-esque
+boxes around each device indicate that the <span style="color: #871D5D">`Mlp`</span> axis is replicated. Meanwhile, for
+"compute", the dashed <span style="color: #06A77D">green</span> and <span style="color: #871D5D">magenta</span>-esque
+boxes indicate that the <span style="color: #06A77D">`Embed`</span> and <span style="color: #871D5D">`Mlp`</span> axes
+are replicated across the mesh: each device has a copy of the entire tensor.
+
+It is important to emphasize that we're never keeping the entire model on a single device. Instead, we copy just the
+parameters we need for each operation.
+
+So, to put it together, to do our forward pass, we repartition our parameters just-in-time so that each device has the parameters it needs:
 we go from the parameter partitioning to the compute partitioning. We then do our forward pass. During the backward pass,
 we repartition our gradients from the compute partitioning to the parameter partitioning, reducing them as we go. Finally,
 we do the optimizer updates, and then we're ready for the next batch.
 
-In Haliax, that looks like this:
-
-XXX
-
-
-
-
-
-## Tensor Parallelism with Activation Sharding
-
-XXX Transition
-
-Activation partitioning is a technique that allows you to split up the activations of a model across multiple devices.
-Typically, this is accompanied by model partitioning, which splits up the parameters of the model across multiple devices.
-(This is distinct from ZeRO, which also splits up the model parameters and associated states. We'll cover the difference
-later.)
+### `pjit` for Distributed Matrix Multiplication
 
 Jax has a principle that computation follows data: if you want to do a distributed matrix multiplication, you can split
 your matrix up across multiple devices, do the appropriate local matrix multiplications, and then aggregate the results.
@@ -701,22 +695,198 @@ As an example, if I have a 1024x512 matrix and I want to do a distributed matrix
 dimension 512, I can split the matrix up into 4 256x512 matrices, do 4 local matrix multiplies each against the vector,
 and then sum up the resulting 1024 vectors.
 
-This is the principle behind `pjit`, except it's all done automatically under the hood. `pjit` will let us write our model
+This is the principle behind `pjit`, except it's all done automatically under the hood. `pjit` will let us write our training
 code as if it were running on a single device, but then we specify how we want our parameters and data to be partitioned
 across devices, and `pjit` and the [XLA SPMD partitioner](https://arxiv.org/pdf/2105.04663.pdf) will do the rest.
 
+Now let's see how to do a similar distributed matrix multiply using `pjit`. `pjit` takes a function and a `PartitionSpec` for each
+input (or None to indicate that the input should be fully replicated across the mesh) and for each output,
+and returns a function that runs the function after partitioning the data across the mesh (if they need to be).
+
+Here's an example:
+
+```python
+from jax.experimental.pjit import pjit
+from jax.experimental.pjit import PartitionSpec
+import jax
+import jax.numpy as jnp
+import numpy as onp
+
+inputs = jnp.ones((256, 4096))  # [batch, embed]
+weights = jnp.ones((4096, 512))  # [embed, intermediate]
+
+devices = onp.array(jax.devices())
+mesh = Mesh(devices, ("data",))  # devices, axis names
+
+with mesh:
+    def matmul(weights, inputs):
+        return inputs @ weights
+
+
+    pjit_matmul = pjit(matmul,
+                       in_axis_resources=(PartitionSpec(None, "data"), PartitionSpec("data", None)),
+                       out_axis_resources=(PartitionSpec(None, None)))
+    print(pjit_matmul(weights, inputs))
+```
+
+This will partition the `weights`'s second axis along the `model` axis, and the `inputs`'s first axis along the `data` axis, and then do a
+distributed matrix multiply. The result will be partitioned along both axes, so that no device shares any data with another device.
+
+### Haliax's `named_pjit`
+
+We just saw the `pjit` operator, which is/was the main way to partition computation and data in Jax.
+However, `pjit` can be a bit of a pain to use when you have a lot of inputs and outputs. For example, if you
+have a complex nested model hierarchy (e.g. our GPT-2) it can be difficult to specify the partitioning for each
+parameter, especially for fairly opaque objects like `optax` optimizer states.
+
+This is where named axes come in. With Haliax, you can specify a "physical" (i.e. mesh) axis name for each
+named axis in your model. Then, you just call `named_pjit` with the name of the function you want to partition, and
+the `dict` containing those mappings. That's it! As an example, here's a simple distributed matrix multiply:
+
+```python
+import jax
+from jax.experimental.maps import Mesh
+import numpy as onp
+
+import haliax as hax
+from haliax import Axis
+
+Batch = Axis("Batch", 256)
+Embed = Axis("Embed", 4096)
+Mlp = Axis("Mlp", 512)
+
+axis_mapping = {"Embed": "data"}
+
+devices = onp.array(jax.devices())
+key = jax.random.PRNGKey(0)
+
+with Mesh(devices, ("data",)) as mesh:
+    @hax.named_pjit(axis_resources=axis_mapping)
+    def matmul(y, x):
+        return hax.dot("Embed", x, y)
+
+    inputs = jax.random.normal(key, (Batch, Embed))
+    weights = jax.random.normal(key, (Embed, Mlp))
+    z = matmul(weights, inputs)
+```
+
+This will partition the `Embed` axis across the mesh, and replicate the `Batch` and `Mlp` axes. Jax will automatically
+insert the necessary `all-gather` and `reduce-scatter` operations to make this work, and the result `z` with shape
+`(Batch, Mlp)` will be fully replicated across the mesh.
+
+### FSDP with Haliax's `named_pjit`
+
+Now that we have `named_pjit`, we can easily partition our model. We just need to specify the two axis mappings:
+one for "compute" and one for "parameters." The "compute" mapping will shard our *training data* across the mesh,
+and the "parameter" mapping will instead shard our *parameters and optimizer states*.
+
+xxx extend the training example to show how to do this
+
+
+#### Details: `with_sharding_constraint` and Haliax's `Linear` Layer
+
+The only real magic here, beyond XLA's GSPMD partitioning, is that the `Linear` layer in Haliax knows to use Jax's
+`with_sharding_constraint` to ensure that the `Embed` axis is partitioned across the mesh. XLA typically automatically
+inserts the necessary `all-gather` and `reduce-scatter` operations to make this work, but sometimes you need to help it
+out, which is what `with_sharding_constraint` does. `with_sharding_constraint` takes a `PartitionSpec` object, just like
+`pjit` does, and tells XLA to partition the tensor along the specified axis. This is what our prior native-Jax example
+would look like:
+
+```python
+with Mesh(devices, ("data",)) as mesh:
+    def matmul(weights, inputs):
+        output = inputs @ weights
+        output = with_sharding_constraint(output, PartitionSpec(None, None))
+        return output
+
+
+    pjit_matmul = pjit(matmul,
+                       in_axis_resources=(PartitionSpec(None, "data"), PartitionSpec("data", None)),
+                       out_axis_resources=(PartitionSpec(None, None)))
+    print(pjit_matmul(weights, inputs))
+```
+
+You wouldn't really need to do this for a simple matrix multiply, but for more complex operations with possibly conflicting
+shardings, you might. In particular, this comes up frequently when dealing FSDP: both `Embed` and `Batch`
+are partitioned across the mesh, and XLA isn't sure which should be partitioned in a `[Batch, Embed]` tensor.
+
+With that in mind, this is what `Linear` looks like:
+
+```python
+    def __call__(self, inputs):
+        q = inputs.dot(self.In, self.weight)
+        if self.bias is not None:
+            q = q + self.bias
+
+        q = hax.auto_sharded(q)
+
+        return q
+```
+
+`auto_sharded` uses the axis mapping made available with the `hax.axis_mapping` context manager (which is the compute
+axis mapping) to create the right call to `with_sharding_constraint`. This is what allows us to do the partitioning of
+the `Embed` axis. Anywhere you have a linear (affine) operation like this, you might want to use `auto_sharded` to ensure
+that the activations are sharded the way you intend.
+
+## Mixed Precision Training with `jmp`
+
+A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
+states) in full precision, but only use half precision (bfloat16) for the activations. This reduces the memory footprint
+of the model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
+significant win, and it's easy to do with Jax and a library called [`jmp`](https://github.com/deepmind/jmp).
+It also dramatically improves speed. A100s advertise a 15x speedup for bfloat16 or float16 over float32.
+
+We could just do everything in bfloat16, but there's been lots of reports that, even when stable, keeping everything in
+bfloat16 can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a
+~.15 nat loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
+parameters and optimizer states in float32, and use bfloat16 for the activations.
+
+[`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
+that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
+has methods for convert an array or pytree of arrays to the appropriate dtype, and for converting back to each
+of these semantic dtypes.
+
+```python
+import jmp
+policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
+
+policy.cast_to_compute(my_model)  # Convert x to bfloat16
+```
+
+To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
+param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
+
+Here's what that looks like in our training code:
+```python
+
+
+XXX
+```
+
+## Tensor Parallelism with Activation Sharding
+
+We now have everything we need to train models of 10-20B parameters. So what follows is not totally necessary for training,
+but it is helpful for inference and good for pedagogy.
+
+Activation partitioning is a technique that allows you to split up the activations of a model across multiple devices.
+Typically, this is accompanied by model partitioning, which splits up the parameters of the model across multiple devices.
+This is distinct from FSDP, which also splits up the model parameters and associated states. The difference is that
+activation partitioning shards intermediate computations for a single example (like attention or the MLP in the transformer)
+across devices, and combines the results through communication, while (by itself) FSDP always performs the entire
+computation for a given example on a single device.
 As a note, there are at least two things people call "model parallelism." The first is activation sharding, which is what
 we're going to cover here. The second is pipeline parallelism, which is a technique for splitting a computation into
 multiple stages, and then running each stage on a different device. We haven't implemented pipeline parallelism in
 Levanter yet, but it's on our roadmap.
 
-### Device Meshes for Model Parallelism
+### Device Meshes for Tensor Parallelism
 
 So far, we've only had device meshes with a single axis. Now, let's add a second axis, and call it `model`:
 
 ![Two Dimensional Device Mesh with Axes data and model](figures/device_mesh_2d.png)
 
-As before we'll use the `data` axis for data parallelism, and the new `model` axis we'll use for model parallelism.
+As before we'll use the `data` axis for data parallelism (as well as storing parameters with FSDP), and the new `model`
+axis we'll use for model parallelism. In this section, we'll ignore FSDP for now and just focus on activation sharding.
 
 Now, if we map our `Batch` axis to the `data` axis, then our data is replicated two times, so that each row of the
 `model` axis gets a copy of the data:
@@ -748,48 +918,9 @@ Jax will "do the right thing" so that the `Batch` axis is partitioned along the 
 is replicated, so that the final result `output: [Batch, SeqLen, Embed]` is also partitioned in the same way as the original
 `input: [Batch, SeqLen, Embed]`.
 
+### Tensor Parallelism with Haliax
 
-
-
-
-### `pjit` for Activation Sharding
-
-
-Now let's see how to do a similar distributed matrix multiply using `pjit`. `pjit` takes a function and a `PartitionSpec` for each
-input (or None to indicate that the input should be fully replicated across the mesh) and for each output,
-and returns a function that runs the function after partitioning the data across the mesh (if they need to be).
-
-Here's an example:
-
-```python
-from jax.experimental.pjit import pjit
-from jax.experimental.pjit import PartitionSpec
-import jax
-import jax.numpy as jnp
-import numpy as onp
-
-inputs = jnp.ones((128, 64))  # [batch, embed]
-weights = jnp.ones((64, 512))  # [embed, intermediate]
-
-devices = onp.array(jax.devices())
-mesh = Mesh(devices, ("data",))  # devices, axis names
-
-with mesh:
-    def matmul(weights, inputs):
-        return inputs @ weights
-
-
-    pjit_matmul = pjit(matmul,
-                       in_axis_resources=(PartitionSpec(None, "model"), PartitionSpec("data", None)),
-                       out_axis_resources=PartitionSpec("data", "model"))
-    print(pjit_matmul(weights, inputs))
-```
-
-This will partition the `weights`'s second axis  along the `model` axis, and the `inputs`'s first axis along the `data` axis, and then do a
-distributed matrix multiply. The result will be partitioned along both axes, so that no device shares any data with another device.
-
-
-### Haliax `named_pjit`
+Now that we've seen how to do activation sharding, let's talk about how to make it easier to use. Jax's
 
 `pjit` is great, but it can be a bit of a pain to use when you have a lot of inputs and outputs. For example, if you
 have a complex nested model hierarchy (e.g. our GPT-2) it can be difficult to specify the partitioning for each
@@ -835,70 +966,15 @@ pjit_matmul = named_pjit(matmul,
 ### Model-Partitioned GPT-2 Training
 
 Now that we've covered the basics of `pjit` and our named variant, let's see how we can use it to train a model-parallel
-GPT-2 model. XXX
+GPT-2 model.
+
+XXXX
 
 
+## Other Techniques
+### Gradient Checkpointing
 
-
-A single v3 or v4 TPU core has 16GB of memory. This means that, for a 345M parameter model, we've already committed
-to using 5.5GB of memory for the parameters and optimizer states alone. This is plenty of space, but if we go to
-a 750M parameter model, we'll need 12GB of memory. This doesn't give us a ton of room for the activations, which
-can be nontrivial.
-
-### Combining FSDP and Activation Sharding
-
-XXX
-
-Consider a matrix like `c_fc: [Embed, Mlp]`. `c_fc`'s `Mlp` axis is always partitioned across the `model` axis of the
-device mesh, for both "compute" and "parameter." For "parameter," the `Embed` axis is also partitioned across the `data` axis of the
-device mesh. Schematically, this looks like:
-
-### Mixed Precision Training via `jmp`
-
-A first easy win is to use mixed precision training. This is a technique where you store the parameters (and optimizer
-states) in full precision, but only use half precision (bfloat16) for the activations. This reduces the memory footprint of the
-model and optimizer states by a factor of 2: so our 750M parameter model would only need 6GB of memory. This is a
-significant win, and it's easy to do with Jax and a library called [`jmp`](https://github.com/deepmind/jmp).
-
-We could just do everything in bfloat16, but there's been lots of reports that, even when stable, keeping everything in bfloat16
-can lead to worse performance. For instance, the [Gopher paper](https://arxiv.org/pdf/2112.11446.pdf) found a ~.15 nat
-loss increase at 417M parameters, which is consistent with what we found in our experiments. So, we'll keep the
-parameters and optimizer states in float32, and use bfloat16 for the activations.
-
-[`jmp`](https://github.com/deepmind/jmp) is a very small library that manages mixed precision. You just make a `Policy`
-that lets you specify the underlying dtype for three "semantic" dtypes: parameter, compute, and output. The policy
-has methods for convert an array or pytree of arrays to the appropriate dtype, and for converting back to each
-of these semantic dtypes.
-
-```python
-import jmp
-policy = jmp.get_policy("compute=bfloat16,parameter=f32,output=f32")
-
-policy.cast_to_compute(my_model)  # Convert x to bfloat16
-```
-
-To plug this into our trainer, we need to make just two changes. First, when we create our model, we cast it to the
-param dtype. Next, when we get ready to compute the loss, we cast the model to the compute dtype.
-
-Here's what that looks like:
-```python
-
-
-XXX
-```
-
-
-
-### ZeRO: Parameter Partitioning
-
-[ZeRO] (short for ZEro-Redundancy Optimizer) is a set of techniques for optimizing large-scale training
-by partitioning model parameters, gradient accumulation buffers, and optimizer states across multiple devices, so that no
-device has any overlap with any other device in terms of what parameters it stores.
-
-### Other Techniques
-#### Gradient Checkpointing
-
-#### Argument Donation
+### Argument Donation
 
 
 ## Random Gotchas
