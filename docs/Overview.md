@@ -1,4 +1,3 @@
-
 # Levanter
 
 This is a detailed introduction to the Levanter project, including the motivation, design, and implementation.
@@ -615,7 +614,7 @@ the input, so the output is also partitioned along the `data` axis.
 If instead we had specified that the output should not be sharded, then Jax would have automatically broadcast
 the result to all devices, and we would have gotten a matrix of shape `(128, 32)`.
 
-### Adding `pjit` to training
+### Adding `pjit` to training for data parallelism
 
 Now that we have a basic understanding of how `pjit` works, let's add it to our trainer. We'll start by creating a mesh
 with `num_devices` devices, and then we'll add a `with mesh:` block to our training loop. Inside the `with mesh:`
@@ -729,8 +728,9 @@ with mesh:
     print(pjit_matmul(weights, inputs))
 ```
 
-This will partition the `weights`'s second axis along the `model` axis, and the `inputs`'s first axis along the `data` axis, and then do a
-distributed matrix multiply. The result will be partitioned along both axes, so that no device shares any data with another device.
+This will partition the `weights`'s first axis and `inputs`'s second axis across the mesh, and then do a
+distributed matrix multiply. The result will be partitioned along no axes, so it will be fully replicated across
+the mesh.
 
 ### Haliax's `named_pjit`
 
