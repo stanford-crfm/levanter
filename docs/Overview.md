@@ -528,6 +528,66 @@ The reason to use `Stacked` and `fold`/`scan` in Jax is that it makes compilatio
 non-constant lengths. We're mostly using it for compilation speed. Eventually we'll add support for fancier gradient
 checkpointing strategies to Haliax `fold` and `scan` and for pipeline parallelism.
 
+## Simplest Training Loop
+
+Now that we have a model, we can train it. Let's start with the simplest possible training loop. We're going to
+skip over data loading, setting up logging, callbacks, and all that stuff, and just focus on the core training loop.
+
+```python
+import optax
+
+training_data = load_training_data()
+model_config = Gpt2Config()
+
+key = jax.random.PRNGKey(0)
+
+model_key, training_key = jax.random.split(key, 2)
+
+Vocab = Axis("vocab", len(tokenizer))
+Batch = Axis("batch", 8)
+SeqLen = Axis("seq_len", 128)
+model = Gpt2LMHeadModel(SeqLen, model_config, key=model_key)
+
+optimizer = optax.adamw(learning_rate=1e-4)
+opt_state = optimizer.init(model)
+
+# loss of a single example
+def compute_loss(model, input_ids, key, inference):
+    pred_y = model(input_ids, key=key, inference=inference)
+    return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+
+
+def train_batch_loss(model, input_ids, attn_mask, key):
+    per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
+    return hax.mean(per_ex_loss, "batch").scalar()
+
+# return value and gradient of loss
+grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
+def train_step(model, opt_state, input_ids, keys):
+   loss, grads = grad_loss(model, input_ids, keys)
+
+   # distribute gradients across the mesh and apply them
+   updates, opt_state = optimizer.update(grads, opt_state, params=model)
+   model = eqx.apply_updates(model, updates)
+
+   return loss, model, opt_state
+
+for batch_input_ids in training_data:
+    my_key, training_key = jrandom.split(training_key, 2)
+    batch_key = jrandom.split(my_key, Batch.size)
+
+    jax_step_loss, model, opt_state = train_step(model, opt_state, batch_input_ids, batch_key)
+    step_loss = jax_step_loss.item()
+    print(f"step loss: {step_loss:.4f}")
+```
+
+This is a pretty standard training loop. We're using `optax` for the optimizer, and you can see how the random number
+state is threaded through the training loop. We're using `hax.vmap` to compute the loss for each example in the batch,
+and then we're using `hax.mean` to compute the mean loss across the batch. We're using `eqx.filter_value_and_grad` to
+compute the loss and its gradient, and then we're using `eqx.apply_updates` to apply the optimizer updates to the model.
+
+
 ## Data Parallel Training via `pjit`
 
 With all that, let's go ahead and implement data parallel training. As a reminder, data parallel training is the
@@ -570,7 +630,7 @@ When we compute the mean of the gradients and the loss, Jax will automatically a
 we'll broadcast the averaged gradients to all devices to do parameter updates. This is the same as the "all-reduce"
 operation in PyTorch.
 
-### `pjit` for Data Parallelism
+### `pjit` for Distributed Computation
 
 The way we do this sharding in Jax is with `pjit`. `pjit` is a function that takes a function and a `PartitionSpec` for each
 input and output and returns a new function that's "partitioned" across the devices in the mesh. The `PartitionSpec` is
@@ -619,9 +679,65 @@ the result to all devices, and we would have gotten a matrix of shape `(128, 32)
 Now that we have a basic understanding of how `pjit` works, let's add it to our trainer. We'll start by creating a mesh
 with `num_devices` devices, and then we'll add a `with mesh:` block to our training loop. Inside the `with mesh:`
 block, we'll add a `pjit` call to our `training_step` function, specifying that the `input_ids` and the keys should be
-partitioned along the `data` axis of the mesh, and that the output should not be partitioned. We'll also add a XXX
+partitioned along the `data` axis of the mesh, and that the output should not be partitioned.
 
-XXX
+```python
+import optax
+
+training_data = load_training_data()
+model_config = Gpt2Config()
+
+key = jax.random.PRNGKey(0)
+
+model_key, training_key = jax.random.split(key, 2)
+
+Vocab = Axis("vocab", len(tokenizer))
+Batch = Axis("batch", 8)
+SeqLen = Axis("seq_len", 128)
+
+# NEW: create a mesh and name its (one) axis "data"
+with Mesh(jax.devices(), ("data",)):
+    model = Gpt2LMHeadModel(SeqLen, model_config, key=model_key)
+
+    optimizer = optax.adamw(learning_rate=1e-4)
+    opt_state = optimizer.init(model)
+
+    # loss of a single example
+    def compute_loss(model, input_ids, key, inference):
+        pred_y = model(input_ids, key=key, inference=inference)
+        return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+
+    # loss of a batch
+    def train_batch_loss(model, input_ids, key):
+        per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
+        return hax.mean(per_ex_loss, "batch").scalar()
+
+    # return value and gradient of loss
+    grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
+
+    def train_step(model, opt_state, input_ids, keys):
+       loss, grads = grad_loss(model, input_ids, keys)
+
+       # distribute gradients across the mesh and apply them
+       updates, opt_state = optimizer.update(grads, opt_state, params=model)
+       model = eqx.apply_updates(model, updates)
+
+       return loss, model, opt_state
+
+    # NEW: add pjit to training_step to partition input_ids
+    train_step_pjit = pjit(train_step,
+                           in_axis_resources=(None, None, PartitionSpec("data", None), PartitionSpec("data", None)),
+                           out_axis_resources=None)
+
+    for batch_input_ids in training_data:
+        my_key, training_key = jrandom.split(training_key, 2)
+        batch_key = jrandom.split(my_key, Batch.size)
+
+        jax_step_loss, model, opt_state = train_step_pjit(model, opt_state, batch_input_ids, batch_key)
+        step_loss = jax_step_loss.item()
+        print(f"step loss: {step_loss:.4f}")
+```
 
 ## Reducing Memory Usage with Fully-Sharded Data Parallelism
 

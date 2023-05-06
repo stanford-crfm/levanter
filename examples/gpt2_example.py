@@ -6,13 +6,13 @@ from typing import Optional
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
+import wandb
+from jax.sharding import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
 import levanter
-import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
 from levanter import callbacks
@@ -143,7 +143,6 @@ def main(config: TrainGpt2Config):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
