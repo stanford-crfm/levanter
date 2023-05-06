@@ -741,10 +741,13 @@ examples across multiple devices.
 
 When doing training, you need to store the parameters for your model, the gradients, and the optimizer state. For Adam
 and its kin, the optimizer state is another two copies of the parameters. If you store the parameters
-and optimizer states in float32, then you need at a minimum `16 * num_params` bytes of memory,
-without including the memory needed for activations. (For LLMs, the data for a batch is typically trivial in comparison.) I
-Without FSDP, you'll need to store all of these on every TPU/GPU. It's generally recommended to store all of these
-(maybe not the gradients) in float32 for training. We'll talke about mixed-precision training later.
+and optimizer states in float32 (we'll talk about mixed precision later), then you need at a minimum `16 * num_params` bytes of memory,
+without including the memory needed for activations. (For LLMs, the data for a batch is typically trivial in comparison.)
+
+Without FSDP, you'll need to store all of these on every TPU/GPU, which gets to be a lot of memory very quickly.
+With FSDP, this is reduced to `16 * num_params / num_devices` bytes per device. So memory cost goes from extremely expensive
+(~24GB/device for a 1.5B paramter model) to very cheap (~3GB/device for a 1.5B parameter model on 8 devices) with FSDP.
+This is by far the most important optimization to distribute training.
 
 ### FSDP, Conceptually
 
