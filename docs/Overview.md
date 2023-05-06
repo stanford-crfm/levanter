@@ -205,7 +205,7 @@ def update(model, opt_state, x, y):
 
 It's so simple that Copilot wrote all that for me... Thanks Copilot!
 
-## Haliax: Named Tensors
+### Haliax: Named Tensors
 
 Haliax is a library for named tensors in Jax. It wraps Jax's APIs (especially the numpy-like ones, along with
 the core transformations like vmap, pjit, etc) to make them work with named tensors. It also builds on top of
@@ -245,7 +245,7 @@ foo_vmap = hax.vmap(foo, axis=Batch)
 By convention, we capitalize the names of axes. This is because it makes it easier to visually distinguish them.
 
 
-### Why Named Arrays?
+#### Why Named Arrays?
 
 I get really confused when reading tensor code that uses axes like `0`, `1`, `2`, etc. It's not clear what
 those axes are, and it's especially unclear when you have multiple tensors with different shapes. I've also been
@@ -264,7 +264,7 @@ easier, more semantic-y partitioning if you use NamedArrays as the fields in you
 and access the underlying array and use it like normal.
 
 
-### Named Axes in Jax
+#### Named Axes in Jax
 Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
@@ -275,13 +275,13 @@ Flax supports a logical-to-physical axis mapping thing similar to what's in Hali
 their axis names so you have to remember them and pass them in manually when doing partitioning for data parallelism,
 tensor parallism and FSDP. I think this is a bit of a missed opportunity (relative to what we have in Haliax, but it's still useful.
 
-### Named Tensors Elsewhere
+#### Named Tensors Elsewhere
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh), and I think
 I basically reimplemented it in Jax without really meaning to.
 
 PyTorch has [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're purely for documentation purposes
-as far as I'm aware, and don't help with model partitioning.
+as far as I'm aware, and don't help with model partitioning, which is one of their main use cases in Haliax.
 
 ## GPT-2 Implementation
 
@@ -292,13 +292,6 @@ The whole implementation is [here](../src/levanter/models/gpt2.py).
 (If you look at the whole thing, I caution you to skip over the torch serialization compatibility parts because they're
 messy and not that interesting for our purposes here.) I'll walk through the more interesting bits. In terms of basic
 structure and grouping of classes it's pretty similar to standard PyTorch implementations.
-
-If you want, you can compare it with Andrej Karpathy's [minGPT implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py).
-Ours is a bit longer  for a few reasons:
-* We have to do some work to be compatible with HF's GPT-2 checkpoint serialization. (This is about half of the LoC difference.)
-* Boilerplate from declaring fields for modules and type annotations (a third or so)
-* Tricks to improve stability from the [Mistral project](https://crfm.stanford.edu/2021/08/26/mistral.html#eureka/)
-
 
 ### Attention
 Let's jump right into the attention module, starting with the preamble
