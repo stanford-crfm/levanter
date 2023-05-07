@@ -1,15 +1,18 @@
 # Training
 
-This document will guide you through the process of launching model training and configuring it to your specific needs.
+This document provides a guide on how to launch model training and configure it according to your specific needs.
 
 ## Launch Model Training
 
-To launch training of a GPT2 model, run the following command:
+To launch the training of a GPT2 model, run the following command:
 ```bash
-python levanter/examples/gpt2_example.py --config_path config/gpt2_small.yaml 
+python levanter/examples/gpt2_example.py --config_path config/gpt2_small.yaml
 ```
 
+This will execute the training pipeline pre-defined in the [gp2_example.py](../examples/gpt2_example.py) and set model and training configuration defined in [gpt2_small.yaml](../config/gpt2_small.yaml). You can find more template configurations in the [config](../config/) directory.
 
+### Set Custom Training Configuration
+Commonly, you would
 
 ## Training Configurations
 
