@@ -11,8 +11,21 @@ python levanter/examples/gpt2_example.py --config_path config/gpt2_small.yaml
 
 This will execute the training pipeline pre-defined in the [gp2_example.py](../examples/gpt2_example.py) and set model and training configuration defined in [gpt2_small.yaml](../config/gpt2_small.yaml). You can find more template configurations in the [config](../config/) directory.
 
-### Set Custom Training Configuration
-Commonly, you would
+## Set Custom Training Configuration
+In machine learning experiments, it is common to adjust model hyperparameters. In this section, we will provide examples of different use cases and explain the corresponding parameters that you can change.
+
+### Change Model Parameters
+Assuming that I want to set different dimensions for my GPT2 model and increase the number of training steps to 10,000, I can use the following command:
+
+```
+python levanter/examples/gpt2_example.py \
+    --config_path config/gpt2_small.yaml \
+    --model.num_heads 20 \
+    --model.num_layers 36 \
+    --model.hidden_dim 1280 \
+    --trainer.num_train_steps 10000
+```
+
 
 ## Training Configurations
 
