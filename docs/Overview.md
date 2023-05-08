@@ -338,24 +338,27 @@ some Jax/Haliax idioms.
         *,
         key,
         causal: bool = True,
-    ):
-        self.Heads = Heads
-        self.HeadDim = HeadDim
-        self.SeqLen = SeqLen
-        self.Qkv = Axis("qkv", 3)
-        self.KeySeqLen = SeqLen.alias("key_" + SeqLen.name)
+):
 
-        k_c, k_proj = jrandom.split(key, 2)  # splitting random keys is how you get different random numbers from different calls
 
-        # Haliax's Linear allows you to specify multiple input and output axes, and it will do the right thing
-        # I find this clearer than the reshape heavy code you usually see
-        self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
-        self.dropout = hnn.Dropout(dropout_prob)
+    self.Heads = Heads
+    self.HeadDim = HeadDim
+    self.Pos = SeqLen
+    self.Qkv = Axis("qkv", 3)
+    self.KeyPos = SeqLen.alias("key_" + SeqLen.name)
 
-        self.causal = causal
-        self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
-        self.upcast = upcast
+    k_c, k_proj = jrandom.split(key,
+                            2)  # splitting random keys is how you get different random numbers from different calls
+
+# Haliax's Linear allows you to specify multiple input and output axes, and it will do the right thing
+# I find this clearer than the reshape heavy code you usually see
+self.c_attn = hnn.Linear(In=InDim, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c)
+self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=InDim, key=k_proj)
+self.dropout = hnn.Dropout(dropout_prob)
+
+self.causal = causal
+self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
+self.upcast = upcast
 ```
 
 The basic flow of multi-headed attention in a standard transformer is (note that the `Batch` axis is omitted for simplicity):
@@ -374,8 +377,8 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     q, k, v = qkv_out.unbind(self.Qkv)
 
     # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-    k = k.rename({self.SeqLen: self.KeySeqLen})
-    v = v.rename({self.SeqLen: self.KeySeqLen})
+    k = k.rename({self.Pos: self.KeyPos})
+    v = v.rename({self.Pos: self.KeyPos})
 
     # mistral tweak: scale norms by 1/layer_idx to prevent blowup
     scale = jax.lax.rsqrt(float(self.HeadDim.size))
@@ -394,15 +397,15 @@ def __call__(self, hidden_states: NamedArray, layer_idx, inference: bool = True,
     attn_scores = hax.dot(self.HeadDim, q, k)
 
     if self.causal:
-        causal_mask = hax.tril(hax.ones((self.SeqLen, self.KeySeqLen), dtype=bool), self.SeqLen, self.KeySeqLen)
+        causal_mask = hax.tril(hax.ones((self.Pos, self.KeyPos), dtype=bool), self.Pos, self.KeyPos)
         attn_scores = hax.where(causal_mask, attn_scores, -1e9)
 
     # 3. normalize attention scores to "attention weights"
-    attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
+    attn_weights = hnn.softmax(attn_scores, axis=self.KeyPos).astype(hidden_states.dtype)
     attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
     # 4. compute attention output by summing up the values weighted by the attention scores
-    attn_output = hax.dot(self.KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+    attn_output = hax.dot(self.KeyPos, attn_weights, v)  # [heads, seq_len, head_dim]
 
     # 5. project the attention output back to the original input dimension
     attn_output = self.c_proj(attn_output)
