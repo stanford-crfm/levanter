@@ -14,6 +14,7 @@ from optax._src import numerics
 from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
+import wandb
 from levanter.config import TrainerConfig
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
@@ -222,7 +223,36 @@ def hero(
     return chain_second_order(scale_by_hero(b1, b2, eps, gamma, mu_dtype), optax.scale(lr))
 
 
-def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
+def hero_from_config(config: TrainerConfig, hacked_up_lr_scheduler: bool) -> SecondOrderTransformation:
+    if not hacked_up_lr_scheduler:
+        scheduler = config.lr_scheduler()
+    else:
+        wandb.run.config.update({"hacked_up_lr_scheduler": True})
+        min_lr = config.learning_rate * config.min_lr_ratio
+        warmup_steps = int(config.warmup_ratio * config.num_train_steps)
+        warmup = optax.linear_schedule(0.0, config.learning_rate, warmup_steps)
+        total_lr_decay_steps = config.num_train_steps - warmup_steps
+
+        # nb: total_lr_decay_steps to 0, but we're gonnna switch over at 100,000
+        decay1 = optax.cosine_decay_schedule(config.learning_rate, total_lr_decay_steps, 0.0)
+        # here we decay from the value at 100,000 to the min_lr
+        final_decay_1_lr = decay1(100000)
+        # last param is a multiplier of the first param
+        decay2 = optax.cosine_decay_schedule(final_decay_1_lr, 100000, min_lr / final_decay_1_lr)
+
+        scheduler = optax.join_schedules(
+            schedules=[warmup, decay1, decay2],
+            boundaries=[warmup_steps, 100000],
+        )
+
+        # real quick, write out a matplotlib plot of the two schedules
+        orig_scheduler = config.lr_scheduler()
+        import matplotlib.pyplot as plt
+
+        plt.plot([orig_scheduler(step) for step in range(config.num_train_steps)])
+        plt.plot([scheduler(step) for step in range(config.num_train_steps)])
+        plt.savefig("lr_schedule.png")
+
     def _optimizer(learning_rate) -> SecondOrderTransformation:
         components = []
 
@@ -242,7 +272,7 @@ def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
 
         return optimizer
 
-    optimizer = inject_hyperparams(_optimizer)(learning_rate=config.lr_scheduler())
+    optimizer = inject_hyperparams(_optimizer)(learning_rate=scheduler)
 
     return optimizer
 
