@@ -228,7 +228,7 @@ def hero_from_config(config: TrainerConfig, hacked_up_lr_scheduler: bool) -> Sec
         scheduler = config.lr_scheduler()
     else:
         wandb.run.config.update({"hacked_up_lr_scheduler": True})
-        min_lr = config.learning_rate * config.min_lr_ratio
+        min_lr = config.learning_rate * 0.1
         warmup_steps = int(config.warmup_ratio * config.num_train_steps)
         warmup = optax.linear_schedule(0.0, config.learning_rate, warmup_steps)
         total_lr_decay_steps = config.num_train_steps - warmup_steps
@@ -236,22 +236,30 @@ def hero_from_config(config: TrainerConfig, hacked_up_lr_scheduler: bool) -> Sec
         # nb: total_lr_decay_steps to 0, but we're gonnna switch over at 100,000
         decay1 = optax.cosine_decay_schedule(config.learning_rate, total_lr_decay_steps, 0.0)
         # here we decay from the value at 100,000 to the min_lr
-        final_decay_1_lr = decay1(100000)
+        final_decay_1_lr = decay1(100000 - warmup_steps)
         # last param is a multiplier of the first param
-        decay2 = optax.cosine_decay_schedule(final_decay_1_lr, 100000, min_lr / final_decay_1_lr)
+        target_lr = (final_decay_1_lr - min_lr) / (config.num_train_steps - 100000 - warmup_steps) * (
+            total_lr_decay_steps
+        ) + min_lr
+        decay2_base = optax.cosine_decay_schedule(target_lr, 200000 - warmup_steps, min_lr / target_lr)
+
+        def decay2(step):
+            return decay2_base(step + 100000)
 
         scheduler = optax.join_schedules(
             schedules=[warmup, decay1, decay2],
             boundaries=[warmup_steps, 100000],
         )
 
-        # real quick, write out a matplotlib plot of the two schedules
-        orig_scheduler = config.lr_scheduler()
-        import matplotlib.pyplot as plt
-
-        plt.plot([orig_scheduler(step) for step in range(config.num_train_steps)])
-        plt.plot([scheduler(step) for step in range(config.num_train_steps)])
-        plt.savefig("lr_schedule.png")
+        # # real quick, write out a matplotlib plot of the two schedules
+        # orig_scheduler = config.lr_scheduler()
+        # import matplotlib.pyplot as plt
+        #
+        # plt.plot([orig_scheduler(step) for step in range(0, config.num_train_steps, 100)])
+        # plt.plot([scheduler(step) for step in range(0, config.num_train_steps, 100)])
+        # plt.plot([decay2_base(step) for step in range(0, config.num_train_steps, 100)])
+        # plt.savefig("lr_schedule.png")
+        #
 
     def _optimizer(learning_rate) -> SecondOrderTransformation:
         components = []

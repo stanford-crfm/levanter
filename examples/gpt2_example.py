@@ -120,7 +120,6 @@ def main(config: TrainGpt2Config):
         wandb.summary["parameter_count"] = parameter_count(model)
 
         # initialize the optimizer
-        # This is basically the same as the model.
         optimizer = hero_from_config(config.trainer, hacked_up_lr_scheduler=True)
         # optimizer = config.trainer.optimizer()
         opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
