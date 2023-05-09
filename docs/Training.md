@@ -70,7 +70,20 @@ python levanter/examples/gpt2_example.py \
 
 This will overwrite the default eval frequency (every 1,000) from the `TrainerConfig` in [config.py](src/levanter/config.py) to every 500 steps.
 
-## Set Other Configurations
+### Change Parallelism Settings
+By default, Levanter will split the number of examples in `train_batch_size` equally across all available GPUs. 
+To set explicit number of examples to process on each device during training and evaluation, you can use the following command:
+
+```
+python levanter/examples/gpt2_example.py \
+    --config_path config/gpt2_small.yaml \
+    --trainer.batch_size 256 \
+    --trainer.per_device_parallelism 64 \
+    --trainer.eval_per_device_parallelism 64
+```
+
+Note that: `batch_size` must be divisible by `per_device_parallelism` and `eval_per_device_parallelism`.
+
 ### Change WandB Configuration
 Levanter supports extensive logging, metrics tracking, and artifact saving on WandB. Once you have created a WandB account and finished setting up
 your WandB API key, all of your training runs will be automatically logged to WandB, without any additional configuration in your training commands. 
