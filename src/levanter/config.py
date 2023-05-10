@@ -45,15 +45,21 @@ class WandbConfig:
     """
     Configuration for wandb.
     """
+    entity: Optional[str] = None # An entity is a username or team name where you send runs
+    project: Optional[str] = None # The name of the project where you are sending the enw run. 
+    name: Optional[str] = None # A short display name for this run, which is how you'll identify this run in the UI. 
+    tags: List[str] = field(default_factory=list) # Will populate the list of tags on this run in the UI.
+    id: Optional[str] = None # A unique ID for this run, used for resuming. It must be unique in the project
+    group: Optional[str] = None # Specify a group to organize individual runs into a larger experiment.
+    mode: Optional[str] = None # Can be "online", "offline" or "disabled". If None, it will be online.
+    resume: Optional[Union[bool, str]] = None # 
+    """
+    Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
+    By default, if the new run has the same ID as a previous run, this run overwrites that data.
+    Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
+    document for more details.
+    """
 
-    entity: Optional[str] = None
-    project: Optional[str] = None
-    name: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    id: Optional[str] = None
-    group: Optional[str] = None
-    mode: Optional[str] = None
-    resume: Optional[Union[bool, str]] = None
 
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
