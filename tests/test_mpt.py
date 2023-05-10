@@ -52,3 +52,20 @@ def test_mpt_nano_compare():
         lev_out = lev_model(hax_input).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
+
+    # now test round trip
+    lev_model = lev_model.to_state_dict()
+
+    # convert all values to torch
+    for k, v in lev_model.items():
+        lev_model[k] = torch.from_numpy(np.array(v))
+
+    model = cls(config)
+    model.load_state_dict(lev_model)
+
+    model.eval()
+    with torch.no_grad():
+        torch_out = model(input_torch)
+        torch_out = torch_out.logits[0].detach().cpu().numpy()
+
+    np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)

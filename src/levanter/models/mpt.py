@@ -1,11 +1,13 @@
 # implements the necessary variations of GPT-2 to work with https://huggingface.co/mosaicml/mpt-7b in haliax/levanter
 import math
 from dataclasses import dataclass
+from typing import Dict, Optional, Union
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from transformers import PretrainedConfig
 
 import haliax as hax
 import haliax.nn as hnn
@@ -16,16 +18,11 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    reshape_linear_layer,
+    flatten_linear_layer,
     stack_state_dict,
+    unflatten_linear_layer,
     unstack_state_dict,
 )
-
-
-"""A HuggingFace-style model configuration."""
-from typing import Dict, Optional, Union, cast
-
-from transformers import PretrainedConfig
 
 
 attn_config_defaults: Dict = {
@@ -342,16 +339,18 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # this is a bit annoying, Torch's Linear is the opposite of ours, so we need to transpose
-        ret_dict = {}
+        ret_dict: StateDict = {}
 
-        for k, v in state_dict.items():
-            if prefix is None or k.startswith(prefix):
-                if k.endswith("weight"):
-                    ret_dict[k] = v.swapaxes(-1, -2)
-                elif k.endswith("bias"):
-                    ret_dict[k] = v
+        super().update_state_dict(ret_dict, prefix=None)
 
-        return super().update_state_dict(ret_dict, prefix=prefix)
+        for k, v in ret_dict.items():
+            if k.endswith("weight"):
+                state_dict[apply_prefix(prefix, k)] = v.swapaxes(-1, -2)
+            else:
+                assert k.endswith("bias")
+                state_dict[apply_prefix(prefix, k)] = v
+
+        return state_dict
 
 
 # Attention is the same as GPT-2 Attention, modulo alibi
@@ -415,24 +414,13 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        es = cast(Axis, self.Wqkv.In).size
         d = {}
         d.update(
-            reshape_linear_layer(
-                state_dict,
-                apply_prefix(prefix, "Wqkv"),
-                (es,),
-                (3, self.config.Head.size, self.config.HeadDim.size),
-                transpose_in_out=True,
-            )
+            unflatten_linear_layer(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
         )
         d.update(
-            reshape_linear_layer(
-                state_dict,
-                apply_prefix(prefix, "out_proj"),
-                (self.config.Head.size, self.config.HeadDim.size),
-                (es,),
-                transpose_in_out=True,
+            unflatten_linear_layer(
+                apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, out_dims_first_in_dict=True
             )
         )
 
@@ -441,30 +429,10 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # need to undo the reshape we did in from_state_dict
         # reminder that everything is vectorized
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        es = cast(Axis, self.Wqkv.In).size
-        my_dict.update(
-            reshape_linear_layer(
-                my_dict,
-                apply_prefix(prefix, "Wqkv"),
-                (es,),
-                (3 * self.Heads.size * self.HeadDim.size,),
-                transpose_in_out=True,
-            )
+        state_dict.update(flatten_linear_layer(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
+        state_dict.update(
+            flatten_linear_layer(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
         )
-        my_dict.update(
-            reshape_linear_layer(
-                my_dict,
-                apply_prefix(prefix, "out_proj"),
-                (self.Heads.size * self.HeadDim.size,),
-                (es,),
-                transpose_in_out=True,
-            )
-        )
-
-        state_dict.update(my_dict)
         return state_dict
 
 
