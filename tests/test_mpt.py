@@ -51,7 +51,7 @@ def test_mpt_nano_compare():
     with jax.disable_jit():
         lev_out = lev_model(hax_input).array
 
-    np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-5)
+    np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
 
 

@@ -1,3 +1,4 @@
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
 
@@ -145,16 +146,59 @@ def default_update_state_dict_with_eqx_module(
 
 
 def reshape_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
+    in_dict: StateDict, prefix: Optional[str],
+    in_shape: Tuple[int, ...], out_shape: Tuple[int, ...],
+    transpose_in_out: bool = False
 ) -> StateDict:
-    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
+    """
+    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
+    torch.Linear is [Out, In] while our linear is [In, Out], so we need to transpose in that circumstance. You
+    can use transpose_in_out to do that.
+    """
     new_dict: StateDict = {}
     weight_key = cast(str, apply_prefix(prefix, "weight"))
     bias_key = cast(str, apply_prefix(prefix, "bias"))
     weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape((-1,) + in_shape + out_shape)
-    bias = bias.reshape((-1,) + out_shape)
+    bias = in_dict.get(bias_key, None)
+
+    if bias is not None:
+        # we sometimes use an extra leading dim (for Stacked/scan layers) so we add an extra dim for that
+        need_extra_dim = math.prod(out_shape) != bias.size
+        if need_extra_dim:
+            bias = bias.reshape((-1,) + out_shape)
+        else:
+            bias = bias.reshape(out_shape)
+
+    # Weights can be [Out, In] or [In, Out] depending on whether we're using torch Linear or jax, so we need to
+    # transpose in that case
+    if transpose_in_out:
+        # swap in/out shape here, and then transpose at the end
+        in_shape, out_shape = out_shape, in_shape
+
+    new_shape = (in_shape) + (out_shape)
+    total_new_size = math.prod(in_shape) * math.prod(out_shape)
+    needs_extra_dim = weight.size != total_new_size
+    if needs_extra_dim:
+        new_shape = (-1,) + new_shape
+
+    weight = weight.reshape(new_shape)
+
+    if transpose_in_out:
+        # have to transpose here because we swapped in/out shape above
+        # our matrix is [<Block>, In, Out] but torch's is [Block, Out, In]
+        # because we have a tuple of shapes we have to work a bit harder
+        if needs_extra_dim:
+            in_shape_indices = tuple(range(1, len(in_shape) + 1))
+            out_shape_indices = tuple(range(len(in_shape) + 1, len(in_shape) + 1 + len(out_shape)))
+            transposed_axes = (0,) + out_shape_indices + in_shape_indices
+        else:
+            # same idea but no leading 0
+            in_shape_indices = tuple(range(len(in_shape)))
+            out_shape_indices = tuple(range(len(in_shape), len(in_shape) + len(out_shape)))
+            transposed_axes = out_shape_indices + in_shape_indices
+
+        weight = weight.transpose(transposed_axes)
+
     new_dict[weight_key] = weight
     new_dict[bias_key] = bias
 

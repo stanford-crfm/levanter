@@ -369,12 +369,14 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "Wqkv"), (es,), (3, self.config.Head.size, self.config.HeadDim.size)
+                state_dict, apply_prefix(prefix, "Wqkv"), (es,), (3, self.config.Head.size, self.config.HeadDim.size),
+                transpose_in_out=True
             )
         )
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "out_proj"), (self.config.Head.size, self.config.HeadDim.size), (es,)
+                state_dict, apply_prefix(prefix, "out_proj"), (self.config.Head.size, self.config.HeadDim.size), (es,),
+                transpose_in_out=True
             )
         )
 
@@ -390,12 +392,14 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.Wqkv.In).size
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "Wqkv"), (es,), (3 * self.Heads.size * self.HeadDim.size,)
+                my_dict, apply_prefix(prefix, "Wqkv"), (es,), (3 * self.Heads.size * self.HeadDim.size,),
+                transpose_in_out=True
             )
         )
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "out_proj"), (self.Heads.size * self.HeadDim.size,), (es,)
+                my_dict, apply_prefix(prefix, "out_proj"), (self.Heads.size * self.HeadDim.size,), (es,),
+                transpose_in_out=True
             )
         )
 
