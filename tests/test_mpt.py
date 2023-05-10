@@ -1,14 +1,12 @@
+import jax
 import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
 import torch
+from jax.random import PRNGKey
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from utils import skip_if_no_torch
 
 import haliax
 from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
-from utils import skip_if_no_torch
-import jax
-from jax.random import PRNGKey
 
 
 @skip_if_no_torch
@@ -19,15 +17,17 @@ def test_mpt_nano_compare():
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = get_class_from_dynamic_module("mosaicml/mpt-7b", "modeling_mpt.py", "MPTForCausalLM")
-    config = MPTConfig(d_model=32,
-                       max_seq_len=512,
-                       n_heads=8, n_layers=2, dropout=0.0, attn_config={
-        'attn_impl': 'torch',
-        'alibi': True
-    }, vocab_size=vocab_size)
+    config = MPTConfig(
+        d_model=32,
+        max_seq_len=512,
+        n_heads=8,
+        n_layers=2,
+        dropout=0.0,
+        attn_config={"attn_impl": "torch", "alibi": True},
+        vocab_size=vocab_size,
+    )
 
     model = cls(config)
-
 
     # conjure a fake input
     input = jax.random.randint(PRNGKey(0), (512,), 0, vocab_size)
@@ -52,14 +52,3 @@ def test_mpt_nano_compare():
         lev_out = lev_model(hax_input).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
-
-
-
-
-
-
-
-
-
-
-

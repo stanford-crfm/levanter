@@ -2,30 +2,73 @@
 import math
 from dataclasses import dataclass
 
-import jax
-import jax.random as jrandom
 import equinox as eqx
-from typing_extensions import override
+import jax
+import jax.numpy as jnp
+import jax.random as jrandom
 
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.torch_serialization import StateDict, StateDictSerializationMixin, apply_prefix, \
-    reshape_linear_layer, stack_state_dict, unstack_state_dict
+from levanter.compat.torch_serialization import (
+    StateDict,
+    StateDictSerializationMixin,
+    apply_prefix,
+    reshape_linear_layer,
+    stack_state_dict,
+    unstack_state_dict,
+)
+
 
 """A HuggingFace-style model configuration."""
-from typing import Callable, Dict, Optional, Tuple, Union, cast
+from typing import Dict, Optional, Union, cast
+
 from transformers import PretrainedConfig
-attn_config_defaults: Dict = {'attn_type': 'multihead_attention', 'attn_pdrop': 0.0, 'attn_impl': 'triton', 'qk_ln': False, 'clip_qkv': None, 'softmax_scale': None, 'prefix_lm': False, 'attn_uses_sequence_id': False, 'alibi': False, 'alibi_bias_max': 8}
-init_config_defaults: Dict = {'name': 'kaiming_normal_', 'fan_mode': 'fan_in', 'init_nonlinearity': 'relu'}
+
+
+attn_config_defaults: Dict = {
+    "attn_type": "multihead_attention",
+    "attn_pdrop": 0.0,
+    "attn_impl": "triton",
+    "qk_ln": False,
+    "clip_qkv": None,
+    "softmax_scale": None,
+    "prefix_lm": False,
+    "attn_uses_sequence_id": False,
+    "alibi": False,
+    "alibi_bias_max": 8,
+}
+init_config_defaults: Dict = {"name": "kaiming_normal_", "fan_mode": "fan_in", "init_nonlinearity": "relu"}
+
 
 class MPTConfig(PretrainedConfig):
     # copied from https://huggingface.co/mosaicml/mpt-7b/blob/main/configuration_mpt.py
-    model_type = 'mpt'
+    model_type = "mpt"
 
-    def __init__(self, d_model: int=2048, n_heads: int=16, n_layers: int=24, expansion_ratio: int=4, max_seq_len: int=2048, vocab_size: int=50368, resid_pdrop: float=0.0, emb_pdrop: float=0.0, learned_pos_emb: bool=True, attn_config: Dict=attn_config_defaults, init_device: str='cpu', logit_scale: Optional[Union[float, str]]=None, no_bias: bool=False, verbose: int=0, embedding_fraction: float=1.0, norm_type: str='low_precision_layernorm', use_cache: bool=False, init_config: Dict=init_config_defaults, **kwargs):
+    def __init__(
+        self,
+        d_model: int = 2048,
+        n_heads: int = 16,
+        n_layers: int = 24,
+        expansion_ratio: int = 4,
+        max_seq_len: int = 2048,
+        vocab_size: int = 50368,
+        resid_pdrop: float = 0.0,
+        emb_pdrop: float = 0.0,
+        learned_pos_emb: bool = True,
+        attn_config: Dict = attn_config_defaults,
+        init_device: str = "cpu",
+        logit_scale: Optional[Union[float, str]] = None,
+        no_bias: bool = False,
+        verbose: int = 0,
+        embedding_fraction: float = 1.0,
+        norm_type: str = "low_precision_layernorm",
+        use_cache: bool = False,
+        init_config: Dict = init_config_defaults,
+        **kwargs,
+    ):
         """The MPT configuration class.
         Args:
             d_model (int): The size of the embedding dimension of the model.
@@ -97,10 +140,10 @@ class MPTConfig(PretrainedConfig):
         self.norm_type = norm_type
         self.use_cache = use_cache
         self.init_config = init_config
-        if 'name' in kwargs:
-            del kwargs['name']
-        if 'loss_fn' in kwargs:
-            del kwargs['loss_fn']
+        if "name" in kwargs:
+            del kwargs["name"]
+        if "loss_fn" in kwargs:
+            del kwargs["loss_fn"]
         super().__init__(**kwargs)
         self._validate_config()
 
@@ -114,45 +157,53 @@ class MPTConfig(PretrainedConfig):
         self.attn_config = self._set_config_defaults(self.attn_config, attn_config_defaults)
         self.init_config = self._set_config_defaults(self.init_config, init_config_defaults)
         if self.d_model % self.n_heads != 0:
-            raise ValueError('d_model must be divisible by n_heads')
-        if any((prob < 0 or prob > 1 for prob in [self.attn_config['attn_pdrop'], self.resid_pdrop, self.emb_pdrop])):
-            raise ValueError("self.attn_config['attn_pdrop'], resid_pdrop, emb_pdrop are probabilities and must be between 0 and 1")
-        if self.attn_config['attn_impl'] not in ['torch', 'flash', 'triton']:
+            raise ValueError("d_model must be divisible by n_heads")
+        if any((prob < 0 or prob > 1 for prob in [self.attn_config["attn_pdrop"], self.resid_pdrop, self.emb_pdrop])):
+            raise ValueError(
+                "self.attn_config['attn_pdrop'], resid_pdrop, emb_pdrop are probabilities and must be between 0 and 1"
+            )
+        if self.attn_config["attn_impl"] not in ["torch", "flash", "triton"]:
             raise ValueError(f"Unknown attn_impl={self.attn_config['attn_impl']}")
         # if self.attn_config['prefix_lm'] and self.attn_config['attn_impl'] not in ['torch', 'triton']:
         #     raise NotImplementedError('prefix_lm only implemented with torch and triton attention.')
         # no prefix_lm for now
-        if self.attn_config['prefix_lm']:
-            raise NotImplementedError('prefix_lm not implemented yet.')
-        if self.attn_config['alibi'] and self.attn_config['attn_impl'] not in ['torch', 'triton']:
-            raise NotImplementedError('alibi only implemented with torch and triton attention.')
+        if self.attn_config["prefix_lm"]:
+            raise NotImplementedError("prefix_lm not implemented yet.")
+        if self.attn_config["alibi"] and self.attn_config["attn_impl"] not in ["torch", "triton"]:
+            raise NotImplementedError("alibi only implemented with torch and triton attention.")
         # if self.attn_config['attn_uses_sequence_id'] and self.attn_config['attn_impl'] not in ['torch', 'triton']:
         #     raise NotImplementedError('attn_uses_sequence_id only implemented with torch and triton attention.')
         # no attn_uses_sequence_id for now
-        if self.attn_config['attn_uses_sequence_id']:
-            raise NotImplementedError('attn_uses_sequence_id not implemented yet.')
+        if self.attn_config["attn_uses_sequence_id"]:
+            raise NotImplementedError("attn_uses_sequence_id not implemented yet.")
         # no clip_qkv for now
-        if self.attn_config['clip_qkv']:
-            raise NotImplementedError('clip_qkv not implemented yet.')
+        if self.attn_config["clip_qkv"]:
+            raise NotImplementedError("clip_qkv not implemented yet.")
         # no softmax_scale
-        if self.attn_config['softmax_scale']:
-            raise NotImplementedError('softmax_scale not implemented yet.')
+        if self.attn_config["softmax_scale"]:
+            raise NotImplementedError("softmax_scale not implemented yet.")
         # no qk_ln
-        if self.attn_config['qk_ln']:
-            raise NotImplementedError('qk_ln not implemented yet.')
+        if self.attn_config["qk_ln"]:
+            raise NotImplementedError("qk_ln not implemented yet.")
         if self.embedding_fraction > 1 or self.embedding_fraction <= 0:
-            raise ValueError('model.embedding_fraction must be between 0 (exclusive) and 1 (inclusive)!')
-        if isinstance(self.logit_scale, str) and self.logit_scale != 'inv_sqrt_d_model':
-            raise ValueError(f"self.logit_scale={self.logit_scale!r} is not recognized as an option; use numeric value or 'inv_sqrt_d_model'.")
-        if self.init_config.get('name', None) is None:
+            raise ValueError("model.embedding_fraction must be between 0 (exclusive) and 1 (inclusive)!")
+        if isinstance(self.logit_scale, str) and self.logit_scale != "inv_sqrt_d_model":
+            raise ValueError(
+                f"self.logit_scale={self.logit_scale!r} is not recognized as an option; use numeric value or"
+                " 'inv_sqrt_d_model'."
+            )
+        if self.init_config.get("name", None) is None:
             raise ValueError(f"self.init_config={self.init_config!r} 'name' needs to be set.")
-        if not self.learned_pos_emb and (not self.attn_config['alibi']):
-            raise ValueError(f'Positional information must be provided to the model using either learned_pos_emb or alibi.')
+        if not self.learned_pos_emb and (not self.attn_config["alibi"]):
+            raise ValueError(
+                "Positional information must be provided to the model using either learned_pos_emb or alibi."
+            )
+
 
 @dataclass
 class MptAttentionConfig:
-    attn_type: str = 'multihead_attention'
-    attn_impl: str = 'torch'
+    attn_type: str = "multihead_attention"
+    attn_impl: str = "torch"
     attn_pdrop: float = 0.0
     attn_uses_sequence_id: bool = False
     prefix_lm: bool = False
@@ -163,14 +214,16 @@ class MptAttentionConfig:
     alibi_bias_max: Optional[int] = 8
 
     def __post_init__(self):
-        assert self.attn_impl in ['torch'], f'attn_impl={self.attn_impl} not implemented yet.'
-        assert self.attn_pdrop == 0.0, f'attn_pdrop={self.attn_pdrop} not implemented yet.'
-        assert not self.attn_uses_sequence_id, f'attn_uses_sequence_id={self.attn_uses_sequence_id} not implemented yet.'
+        assert self.attn_impl in ["torch"], f"attn_impl={self.attn_impl} not implemented yet."
+        assert self.attn_pdrop == 0.0, f"attn_pdrop={self.attn_pdrop} not implemented yet."
+        assert (
+            not self.attn_uses_sequence_id
+        ), f"attn_uses_sequence_id={self.attn_uses_sequence_id} not implemented yet."
         # assert not self.alibi, f'alibi={self.alibi} not implemented yet.'
-        assert not self.prefix_lm, f'prefix_lm={self.prefix_lm} not implemented yet.'
-        assert self.clip_qkv is None, f'clip_qkv={self.clip_qkv} not implemented yet.'
-        assert not self.softmax_scale, f'softmax_scale={self.softmax_scale} not implemented yet.'
-        assert not self.qk_ln, f'qk_ln={self.qk_ln} not implemented yet.'
+        assert not self.prefix_lm, f"prefix_lm={self.prefix_lm} not implemented yet."
+        assert self.clip_qkv is None, f"clip_qkv={self.clip_qkv} not implemented yet."
+        assert not self.softmax_scale, f"softmax_scale={self.softmax_scale} not implemented yet."
+        assert not self.qk_ln, f"qk_ln={self.qk_ln} not implemented yet."
 
     @staticmethod
     def from_dict(d):
@@ -192,13 +245,13 @@ class MptConfig:
 
     use_bias: bool = True
 
-    Embed = property(lambda self: Axis('embed', self.d_model))
-    Head = property(lambda self: Axis('head', self.n_heads))
-    Layers = property(lambda self: Axis('layer', self.n_layers))
-    SeqLen = property(lambda self: Axis('seqlen', self.max_seq_len))
-    KeySeqLen = property(lambda self: Axis('key_seqlen', self.max_seq_len))
-    Mlp = property(lambda self: Axis('mlp', self.expansion_ratio * self.d_model))
-    HeadDim = property(lambda self: Axis('head_dim', self.d_model // self.n_heads))
+    Embed = property(lambda self: Axis("embed", self.d_model))
+    Head = property(lambda self: Axis("head", self.n_heads))
+    Layers = property(lambda self: Axis("layer", self.n_layers))
+    SeqLen = property(lambda self: Axis("seqlen", self.max_seq_len))
+    KeySeqLen = property(lambda self: Axis("key_seqlen", self.max_seq_len))
+    Mlp = property(lambda self: Axis("mlp", self.expansion_ratio * self.d_model))
+    HeadDim = property(lambda self: Axis("head_dim", self.d_model // self.n_heads))
 
     @staticmethod
     def from_torch_config(config):
@@ -257,13 +310,12 @@ class MptConfig:
 # * non-approximate GELU
 # * no bias terms by default
 
+
 class MptMlp(eqx.Module, StateDictSerializationMixin):
     up_proj: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     down_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(
-        self, Embed: Axis, Intermediate: Axis, *, key, use_bias: bool = False
-    ):
+    def __init__(self, Embed: Axis, Intermediate: Axis, *, key, use_bias: bool = False):
         k_fc, k_proj = jrandom.split(key, 2)
         self.up_proj = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
         self.down_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
@@ -275,13 +327,12 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
         hidden_states = self.down_proj(hidden_states)
         return hidden_states
 
-    @override
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # this is a bit annoying, Torch's Linear is the opposite of ours, so we need to transpose
         ret_dict = {}
 
         for k, v in state_dict.items():
-            if k.startswith(prefix):
+            if prefix is None or k.startswith(prefix):
                 if k.endswith("weight"):
                     ret_dict[k] = v.swapaxes(-1, -2)
                 elif k.endswith("bias"):
@@ -289,20 +340,18 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
 
         return super().from_state_dict(ret_dict, prefix=prefix)
 
-    @override
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # this is a bit annoying, Torch's Linear is the opposite of ours, so we need to transpose
         ret_dict = {}
 
         for k, v in state_dict.items():
-            if k.startswith(prefix):
+            if prefix is None or k.startswith(prefix):
                 if k.endswith("weight"):
                     ret_dict[k] = v.swapaxes(-1, -2)
                 elif k.endswith("bias"):
                     ret_dict[k] = v
 
         return super().update_state_dict(ret_dict, prefix=prefix)
-
 
 
 # Attention is the same as GPT-2 Attention, modulo alibi
@@ -326,13 +375,15 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         self.Wqkv = hnn.Linear(In=config.Embed, Out=(qkv, config.Head, config.HeadDim), key=k_c, use_bias=use_bias)
         self.out_proj = hnn.Linear(In=(config.Head, config.HeadDim), Out=config.Embed, key=k_proj, use_bias=use_bias)
 
-    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray] = None, bias: Optional[NamedArray] = None):
+    def __call__(
+        self, hidden_states: NamedArray, mask: Optional[NamedArray] = None, bias: Optional[NamedArray] = None
+    ):
         qkv_out = self.Wqkv(hidden_states)
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({"seqlen": "key_seqlen"})
-        v = v.rename({"seqlen": "value_seqlen"})
+        k = k.rename({self.config.SeqLen: self.config.KeySeqLen})
+        v = v.rename({self.config.SeqLen: self.config.KeySeqLen})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
@@ -358,8 +409,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         attn_output = self.out_proj(attn_output)
         return attn_output
 
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
         # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
         # so we need to reshape the one in the dict before forwarding to the linear
@@ -369,19 +419,24 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "Wqkv"), (es,), (3, self.config.Head.size, self.config.HeadDim.size),
-                transpose_in_out=True
+                state_dict,
+                apply_prefix(prefix, "Wqkv"),
+                (es,),
+                (3, self.config.Head.size, self.config.HeadDim.size),
+                transpose_in_out=True,
             )
         )
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "out_proj"), (self.config.Head.size, self.config.HeadDim.size), (es,),
-                transpose_in_out=True
+                state_dict,
+                apply_prefix(prefix, "out_proj"),
+                (self.config.Head.size, self.config.HeadDim.size),
+                (es,),
+                transpose_in_out=True,
             )
         )
 
         return super().from_state_dict(d, prefix)
-
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # need to undo the reshape we did in from_state_dict
@@ -392,14 +447,20 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.Wqkv.In).size
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "Wqkv"), (es,), (3 * self.Heads.size * self.HeadDim.size,),
-                transpose_in_out=True
+                my_dict,
+                apply_prefix(prefix, "Wqkv"),
+                (es,),
+                (3 * self.Heads.size * self.HeadDim.size,),
+                transpose_in_out=True,
             )
         )
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "out_proj"), (self.Heads.size * self.HeadDim.size,), (es,),
-                transpose_in_out=True
+                my_dict,
+                apply_prefix(prefix, "out_proj"),
+                (self.Heads.size * self.HeadDim.size,),
+                (es,),
+                transpose_in_out=True,
             )
         )
 
@@ -407,12 +468,10 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-
-
-
 # Block is broadly similar to GPT-2 Block, with the following changes:
 # * fancy layer norm type (we ignore this)
 # pdrop seems to be off so we won't use it
+
 
 class MptBlock(eqx.Module):
     norm_1: eqx.Module
@@ -429,7 +488,9 @@ class MptBlock(eqx.Module):
         self.ffn = MptMlp(config.Embed, config.Mlp, key=kmlp, use_bias=config.use_bias)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[NamedArray]):
+    def __call__(
+        self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[NamedArray]
+    ):
         a = self.norm_1(hidden_states)
         b = self.attn(a, bias=attn_bias, mask=attention_mask)
         hidden_states = hidden_states + b
@@ -437,6 +498,7 @@ class MptBlock(eqx.Module):
         n = self.ffn(m)
         hidden_states = hidden_states + n
         return hidden_states
+
 
 class MptTransformer(StateDictSerializationMixin, eqx.Module):
     config: MptConfig = eqx.static_field()
@@ -453,43 +515,23 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
 
         # vectorize the blocks
         self.blocks = Stacked(
-            self.Layers,
-            MptBlock,
-            config,
-            key=shaped_rng_split(key, config.n_layers),
-            gradient_checkpointing=False
+            self.Layers, MptBlock, config, key=shaped_rng_split(key, config.n_layers), gradient_checkpointing=False
         )
         self.norm_f = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
-        attn_bias = self._combine_mask_and_bias(attention_mask=attention_mask)
-        hidden_states = self.blocks.fold(hidden_states, attn_bias=attn_bias, attention_mask=None)
+        if self.config.attn_config.alibi:
+            bias = mpt_build_alibi_bias(
+                self.config.Head, self.config.KeySeqLen, self.config.attn_config.alibi_bias_max
+            )
+        else:
+            bias = None
+
+        hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask)
         hidden_states = self.norm_f(hidden_states)
 
         return hidden_states
-
-    def _combine_mask_and_bias(self, attention_mask: Optional[NamedArray]) -> NamedArray:
-        # TODO: support sequence_id
-        # TODO: support prefix mask?
-        # the above is kinda weird, but the basic idea is to create the alibi bias if using, and then combine
-        # the alibi bias with the attention mask
-        # because we have named arrays, we don't have to worry about shapes and things
-        causal = hnn.attention.causal_mask(self.config.SeqLen, self.config.KeySeqLen)
-        attention_mask = hnn.attention.combine_masks_and(causal, attention_mask)
-        if attention_mask is not None:
-            base_bias = hnn.attention.mask_to_bias(attention_mask)
-        else:
-            base_bias = None
-
-        if self.config.attn_config.alibi:
-            alibi = hnn.attention.alibi_attention_bias(self.config.Head, self.config.SeqLen, self.config.attn_config.alibi_bias_max)
-            if base_bias is None:
-                base_bias = alibi
-            else:
-                base_bias = base_bias.broadcast_axis(alibi.axes) + alibi
-
-        return base_bias
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # We use a vectorized set of blocks, meaning that we have 1 GptBlock,
@@ -533,6 +575,8 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, input_ids: NamedArray, attention_mask: Optional[NamedArray] = None) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
+        causal = hnn.attention.causal_mask(self.config.SeqLen, self.config.KeySeqLen)
+        attention_mask = hnn.attention.combine_masks_and(causal, attention_mask)
         hidden_states = self.transformer(hidden_states, attention_mask=attention_mask)
         output_logits = self.wte.unembed(hidden_states)
 
@@ -544,6 +588,21 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         }
 
 
+def mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
+    _n_heads = 2 ** math.ceil(math.log2(n_heads))
+    m = jnp.arange(1, _n_heads + 1)
+    m = m * (alibi_bias_max / _n_heads)
+    slopes = 1.0 / jnp.power(2, m)
+    if _n_heads != n_heads:
+        slopes = jnp.concat([slopes[1::2], slopes[::2]])[:n_heads]
+    return slopes
 
 
+def mpt_build_alibi_bias(Heads, KSeqLen, alibi_bias_max=8):
+    alibi_bias = jnp.arange(1 - KSeqLen.size, 1, dtype=jnp.int32)
+    slopes = mpt_alibi_gen_slopes(Heads.size, alibi_bias_max)
 
+    slopes = hax.named(slopes, Heads)
+    positions = hax.named(alibi_bias, KSeqLen).broadcast_axis(Heads)
+
+    return slopes * positions
