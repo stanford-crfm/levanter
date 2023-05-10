@@ -175,13 +175,14 @@ def forgetful_causal_mask(KSeqLen: Axis, mask_prob: float, sample_prob: bool = T
         return base | zeroth_on
 
 
-def _get_alibi_slopes(heads: int) -> List[float]:
+def _get_alibi_slopes(heads: int, bias_max: float) -> List[float]:
+    # Mosaic supports "bias_max"
+    log_bias_max = math.log2(bias_max)
     # from https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
     def get_slopes_power_of_2(n: int):
-        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+        start = 2 ** (-(2 ** -(math.log2(n) - log_bias_max)))
         ratio = start
         return [start * ratio**i for i in range(n)]
-
     if math.log2(heads).is_integer():
         return get_slopes_power_of_2(heads)
     closest_power_of_2 = 2 ** math.floor(math.log2(heads))
@@ -191,7 +192,8 @@ def _get_alibi_slopes(heads: int) -> List[float]:
     )
 
 
-def alibi_attention_bias(Heads: Axis, SeqLen: Axis, dtype=jnp.float32) -> NamedArray:
+# TODO: Mosaic flips the biases around, by subtracting max(bias) from all biases. See if this matters for numerics
+def alibi_attention_bias(Heads: Axis, SeqLen: Axis, bias_max: float = 8, dtype=jnp.float32) -> NamedArray:
     """
     Creates an attention bias for alibi attention.
 
@@ -199,7 +201,7 @@ def alibi_attention_bias(Heads: Axis, SeqLen: Axis, dtype=jnp.float32) -> NamedA
     :param Heads: Axis of heads
     :return: NamedArray of shape (Heads, QSeqLen)
     """
-    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size)), Heads)
+    slopes = haliax.named(np.array(_get_alibi_slopes(Heads.size, bias_max)), Heads)
     positions = haliax.arange(SeqLen).broadcast_axis(Heads)
 
     biases = slopes * positions

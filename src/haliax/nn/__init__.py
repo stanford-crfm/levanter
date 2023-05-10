@@ -13,6 +13,7 @@ from ..types import Axis, AxisSelector, AxisSpec
 from ..wrap import unwrap_namedarrays, wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
 from .linear import Linear
+from .embedding import Embedding
 from .normalization import LayerNorm
 
 
@@ -142,4 +143,5 @@ __all__ = [
     "Dropout",
     "LayerNorm",
     "Linear",
+    "Embedding",
 ]
