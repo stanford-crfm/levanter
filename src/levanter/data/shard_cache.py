@@ -115,7 +115,7 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
-    with fsspec.open(f"{cache_dir}/{chunk_name}.parquet", "wb") as file:
+    with fsspec.open(os.path.join(cache_dir, f"{chunk_name}.parquet"), "wb") as file:
         with pq.ParquetWriter(file, record_batch.schema, version="2.6", compression="ZSTD") as writer:
             writer.write_batch(record_batch)
 
@@ -141,7 +141,7 @@ def _produce_cache_for_shard(
     which is an actor of ChunkCacheBuilder."""
     # load or create shard metadata (for recovery)
     try:
-        shard_metadata_path = f"{cache_dir}/{shard_name}.json"
+        shard_metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
         try:
             with fsspec.open(shard_metadata_path, "r") as file:
                 shard_metadata = ShardMetadata.from_json(file.read())  # type: ignore
@@ -164,7 +164,7 @@ def _produce_cache_for_shard(
             logger.info(f"Yielding new chunk {chunk.name} from {shard_name}")
             sink.new_chunk.remote(shard_name, chunk)
             shard_metadata.chunks.append(chunk)
-            _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
+            _serialize_json_and_commit(os.path.join(cache_dir, f"{shard_name}.json"), shard_metadata)
 
         if not was_finished:
             count = len(shard_metadata.chunks)
@@ -175,18 +175,20 @@ def _produce_cache_for_shard(
                     # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
                     # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
                     # other shards since we want to stream them round-robin
-                    chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, f"{shard_name}/chunk-{count}"))
+                    chunk_name = os.path.join(shard_name, f"chunk-{count}")
+                    count += 1
+                    chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
                     yield_chunk(chunk)
 
                     batch = []
-                    count += 1
 
             if batch:
-                chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, f"{shard_name}/chunk-{count}"))
+                chunk_name = os.path.join(shard_name, f"chunk-{count}")
+                chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
                 yield_chunk(chunk)
 
             shard_metadata.is_finished = True
-            _serialize_json_and_commit(f"{cache_dir}/{shard_name}.json", shard_metadata)
+            _serialize_json_and_commit(os.path.join(cache_dir, f"{shard_name}.json"), shard_metadata)
 
         sink.shard_finished.remote(shard_name)
     except Exception as e:
@@ -211,11 +213,12 @@ def _serialize_json_and_commit(path, obj):
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     try:
         logger.info(f"Attempting to load cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
-        with fsspec.open(f"{cache_dir}/{LEDGER_FILE_NAME}") as file:
+        ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
+        with fsspec.open(ledger_path) as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
         return cache_ledger
     except FileNotFoundError:
-        raise FileNotFoundError(f"Cache ledger not found at {cache_dir}/{LEDGER_FILE_NAME}")
+        raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
 
 
 def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T]):
@@ -405,7 +408,7 @@ class ChunkCacheBroker:
             future.set_result(None)
 
         # write ledger
-        _serialize_json_and_commit(f"{self._cache_dir}/{LEDGER_FILE_NAME}", CacheLedger(self.chunks))
+        _serialize_json_and_commit(os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks))
 
         self._reader_promises = {}
         self._builder_actor = None
@@ -541,13 +544,13 @@ class _ChunkReader:
     @staticmethod
     def from_name(cache_dir, name: str, batch_size: int) -> "_ChunkReader":
         fs, path = fsspec.core.url_to_fs(cache_dir)
-        with fs.open(f"{path}/{name}.json", "r") as f:
+        with fs.open(os.path.join(path, f"{name}.json"), "r") as f:
             metadata = ChunkMetadata.from_json(f.read())  # type: ignore
         return _ChunkReader.from_metadata(cache_dir, metadata, batch_size)
 
     @staticmethod
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int) -> "_ChunkReader":
-        file = pq.ParquetFile(fsspec.open(f"{cache_dir}/{metadata.name}.parquet", "rb").open())
+        file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
 
 
