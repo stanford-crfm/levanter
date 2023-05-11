@@ -1,6 +1,32 @@
 set -x
 # broadly based on https://github.com/ayaka14732/tpu-starter
 
+# parse some arguments
+# usage: ./setup-tpu-vm.sh -b|--branch <git commit or branch for levanter> -r <git repo for levanter>
+
+REPO="https://github.com/stanford-crfm/levanter.git"
+BRANCH=main
+
+while [[ $# -gt 0 ]]; do
+  key="$1"
+  case $key in
+    -b|--branch)
+      BRANCH="$2"
+      shift
+      shift
+      ;;
+    -r|--repo)
+      REPO="$2"
+      shift
+      shift
+      ;;
+    *)
+      >&2 echo "Unknown option $1"
+      exit 1
+      ;;
+  esac
+done
+
 # we frequently deal with commands failing, and we like to loop until they succeed. this function does that for us
 function retry {
   for i in {1..5}; do
@@ -66,10 +92,18 @@ pip install -U wheel
 retry pip install -U "jax[tpu]==0.4.7" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # clone levanter
-git clone https://github.com/stanford-crfm/levanter.git
+git clone $REPO levanter
 
 echo $VENV > levanter/infra/venv_path.txt
 
 cd levanter
+
+# checkout the branch we want
+
+echo "Checking out branch $BRANCH"
+
+git checkout $BRANCH
+
+# install levanter
 
 pip install -e .
