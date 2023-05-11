@@ -1,5 +1,6 @@
 import jax
 import numpy as np
+import pytest
 import torch
 from jax.random import PRNGKey
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
@@ -10,7 +11,8 @@ from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
 
 
 @skip_if_no_torch
-def test_mpt_nano_compare():
+@pytest.mark.parametrize("use_bias", [True, False])
+def test_mpt_nano_compare(use_bias):
     # conjure up a fake model and compare
     vocab_size = 5257
     torch.manual_seed(0)
@@ -25,6 +27,7 @@ def test_mpt_nano_compare():
         dropout=0.0,
         attn_config={"attn_impl": "torch", "alibi": True},
         vocab_size=vocab_size,
+        no_bias=not use_bias,
     )
 
     model = cls(config)

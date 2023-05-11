@@ -451,7 +451,7 @@ class MptBlock(eqx.Module):
         super().__init__()
         kattn, kmlp = jrandom.split(key, 2)
         self.norm_1 = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
-        self.attn = MptAttention(config, key=kattn)
+        self.attn = MptAttention(config, key=kattn, use_bias=config.use_bias)
         self.norm_2 = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
         self.ffn = MptMlp(config.Embed, config.Mlp, key=kmlp, use_bias=config.use_bias)
 

@@ -25,8 +25,12 @@ class LayerNorm(eqx.Module):
 
         if use_weight:
             self.weight = hax.ones(axis)
+        else:
+            self.weight = None
         if use_bias:
             self.bias = hax.zeros(axis)
+        else:
+            self.bias = None
 
     def __call__(self, x: NamedArray) -> NamedArray:
         mean = x.mean(self.axis)
