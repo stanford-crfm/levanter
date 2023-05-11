@@ -20,7 +20,7 @@ We want to support the following use cases:
    machine only reads from the chunks that it needs to read from.
 2) We have a smaller validation dataset, and we want to do a single pass over it. We don't care about resuming, and it's ok if
 we have to read the whole dataset on each machine.
-3) Like (1) but we want to jump around the dataset. We still care about resuming and determinism, but don't care about epochs.
+3) (Eventually) Like (1) but we want to jump around the dataset. We still care about resuming and determinism, but don't care about epochs.
 
 We focus on (1) and (2) for now.
 
@@ -66,16 +66,25 @@ chunk, as well as token counts/lengths of various fields. This metadata is used 
 
 ## Cache construction
 
-We use Ray to manage the writers. Readers are managed by the main processes (though call into Ray to get the data).
-At a high level, we create a writer process for each shard, which produce chunks one by one. T is a central
-writer coordinator process that receives chunks from each shard and adds them to the global ordering round robin.
-When chunks are added, we make them available to an actor that readers can access to get chunks.
+We use Ray to handle the construction of the cache. There are 4 types of processes/actors that we create using Ray:
+
+* A ChunkCacheBroker actor, whose job is to dispense chunks to readers while the cache is being built. It is also
+  responsible for keeping track of the global ordering of chunks.
+* A ChunkCacheBuilder actor, which is responsible for building the cache. It forks off processes for processing
+   input shards. It acts as a callback for these processes, and accepts chunk metadata from them.
+* Shard writer processes, one per input shard. The function _produce_cache_for_shard is the entry point for these processes.
+  This function is responsible for reading from the input shard and forking off processes to process chunks of documents.
+* Chunk processor processes, which are responsible for processing documents and creating chunks. _produce_chunk is the
+  entry point for these processes.
+
+Readers are managed by the model training processes, which read by sending requests to the broker via the Ray. They
+are not themselves Ray actors/processes.
 
 ## Reproducible Sharded Reading for Training
 
 We want to be able to read from the cache in a way that is deterministic and reproducible, even if the number of readers
 changes. We also want readers to only read from the chunks that they need to read from.
-We pretend the list of data is infinite by cycling. We cannot track epochs.
+We pretend the list of data is infinite by cycling. We do track epochs when reading this way.
 
 NB Our goal is a deterministic ordering over examples, and not merely chunks or even documents.
 
@@ -140,7 +149,7 @@ If our metadata includes token counts, then we can skip chunks until we pass `ba
 ## Shuffling
 
 ### A brief digression
-Why do we shuffle in machine learning Shuffling reduces variance in the gradients. If we have batches
+Why do we want to shuffle during training? Shuffling reduces variance in the gradients. If we have batches
 where every example is from the same document/domain, then the gradients for those batches will be correlated.
 
 That said, in our setting where we use moving windows from documents, if we round-robin from chunks (which are produced

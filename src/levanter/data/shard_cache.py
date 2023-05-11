@@ -256,8 +256,8 @@ class ChunkCacheBuilder:
                     self_ref, source, shard_name, processor, cache_dir
                 )
 
-
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
+        """Callback method for when a shard worker has produced a new chunk."""
         assert shard_name in self.current_shard_tasks
         assert shard_name in self.buffered_shard_chunks
         self.buffered_shard_chunks[shard_name] += chunks
@@ -266,6 +266,7 @@ class ChunkCacheBuilder:
         self._attempt_to_flush_buffers()
 
     def shard_finished(self, shard_name: str):
+        """Callback method for when a shard worker has finished."""
         assert shard_name in self.current_shard_tasks
         # we're done with this shard, so remove it from the list of active shards
         del self.current_shard_tasks[shard_name]
@@ -284,6 +285,7 @@ class ChunkCacheBuilder:
             self._finish()
 
     def shard_failed(self, shard_name: str, error: _ExcInfo):
+        """Callback method for when a shard worker has failed."""
         ray.get(self.broker_ref._writer_exception.remote(shard_name, error))
 
     def _attempt_to_flush_buffers(self):
