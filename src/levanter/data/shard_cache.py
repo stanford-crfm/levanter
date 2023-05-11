@@ -30,7 +30,7 @@ ROWS_PER_CHUNK = 32 * 1024  # if a doc produces ~1200 tokens, this is ~150MB chu
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
-class BatchProcessor(Generic[T_contra], ABC):  # type: ignore
+class BatchProcessor(Generic[T_contra], ABC):
     @abstractmethod
     def __call__(self, batch: Sequence[T_contra]) -> pa.RecordBatch:
         raise NotImplementedError
