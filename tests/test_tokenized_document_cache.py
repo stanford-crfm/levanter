@@ -3,7 +3,7 @@ from typing import List, Sequence, TypeVar
 
 import pytest
 import ray
-from test_utils import IdentityProcessor, ShardsDataSource, SimpleDocumentSource
+from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.shard_cache import ShardedDataSource, cache_dataset
@@ -26,13 +26,25 @@ def teardown_module(module):
 def test_index_empty_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         empty_dataset = [""]
-        source = SimpleDocumentSource(empty_dataset)
+        source = SingleShardDocumentSource(empty_dataset)
         cache = TokenizedDocumentCache.build_or_load(
             f"{tmpdir}/cache", source, tokenizer, flatten_docs=True, enforce_eos=False
         )
 
         for chunk in cache:
             assert chunk["input_ids"].size == 0
+
+
+def test_index_no_files():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_dataset = []
+        source = SingleShardDocumentSource(empty_dataset)
+        cache = TokenizedDocumentCache.build_or_load(
+            f"{tmpdir}/cache", source, tokenizer, flatten_docs=True, enforce_eos=False
+        )
+
+        for chunk in cache:
+            pytest.fail("Should not have any chunks")
 
 
 def test_doc_cache_reproduces_data_one_batch_per_shard():
@@ -151,7 +163,7 @@ def test_token_seq_dataset_len_is_correct(flatten_docs, num_docs, seq_len, doc_l
         for i in range(num_docs)
     ]
     total_tokens_in_docs = sum([len(d["input_ids"][0]) for d in docs])
-    source = SimpleDocumentSource(docs)
+    source = SingleShardDocumentSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())

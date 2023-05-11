@@ -143,7 +143,7 @@ class ShardsDataSource(ShardedDataSource[T]):
         return self.docs[int(shard_name)][row:]
 
 
-class SimpleDocumentSource(ShardedDataSource[T]):
+class SingleShardDocumentSource(ShardedDataSource[T]):
     def __init__(self, docs: List[T]):
         self.docs = docs
 
