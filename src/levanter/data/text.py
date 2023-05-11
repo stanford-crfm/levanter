@@ -14,10 +14,16 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
-from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
-from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import (
+# intercept the logging nonsense here
+from levanter.logging import silence_transformer_nag  # noqa
+
+
+silence_transformer_nag()  # noqa
+from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
+
+from levanter.data.dataset import ShardableDataset  # noqa
+from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
@@ -26,8 +32,8 @@ from levanter.data.shard_cache import (
     _serialize_json_and_commit,
     cache_dataset,
 )
-from levanter.shapes import NamedShapeSpec, ShapeSpec
-from levanter.utils.hf_utils import load_tokenizer
+from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
+from levanter.utils.hf_utils import load_tokenizer  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
