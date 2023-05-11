@@ -22,12 +22,3 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: 2
   per_device_eval_parallelism: 8
-
-  axis_resources:
-    batch: "data"
-    vocab: "model" # [vocab, embed] -> sharded by vocab across the model axis
-    mlp: "model"
-    heads: "model"
-  # ZERO-3
-  parameter_axis_resources:
-    embed: "data"

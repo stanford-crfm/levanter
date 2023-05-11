@@ -14,9 +14,3 @@ trainer:
   per_device_eval_parallelism: 1
   per_device_parallelism: 4
   train_batch_size: 32
-
-  axis_resources:
-    batch: "data"
-    vocab: "model"
-    mlp: "model"
-    heads: "model"
