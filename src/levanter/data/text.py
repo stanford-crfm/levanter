@@ -309,9 +309,11 @@ class BatchTokenizer(BatchProcessor[str]):
 
     def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
         if self._need_to_add_eos:
-            encoding = self.tokenizer([d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False)
+            encoding = self.tokenizer(
+                [d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False, verbose=False
+            )
         else:
-            encoding = self.tokenizer(batch, return_attention_mask=False)  # type: ignore
+            encoding = self.tokenizer(batch, return_attention_mask=False, verbose=False)  # type: ignore
         return _as_record_batch(encoding)
 
     @property
