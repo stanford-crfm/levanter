@@ -110,4 +110,8 @@ def silence_transformer_nag():
     # this is a hack to silence the transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
     # which is annoying and not useful
     # Often we won't call this early enough, but it helps with multiprocessing stuff
-    pylogging.getLogger("transformers").setLevel(pylogging.ERROR)
+    logger = pylogging.getLogger("transformers")
+    logger.setLevel(pylogging.ERROR)
+
+    # log propagation bites us here when using ray
+    logger.propagate = False
