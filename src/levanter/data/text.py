@@ -158,7 +158,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         tokenizer: PreTrainedTokenizerBase,
         flatten_docs=True,
         enforce_eos=True,
-    ):
+    ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
         cache_dataset(cache_dir, source, bt)
         return TokenizedDocumentCache.load(cache_dir, flatten_docs=flatten_docs)

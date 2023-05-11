@@ -62,10 +62,10 @@ class ShardedDataSource(Protocol[T_co]):
 
 
 def cache_dataset(
-    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: Optional[int] = None
+    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int = 1
 ) -> "ShardCache":
     # first see if we need to do anything
-    cache = ShardCache(cache_dir, input_shards, processor, batch_size or 1)
+    cache = ShardCache(cache_dir, input_shards, processor, batch_size=batch_size)
 
     sentinel_remote = cache.finished_sentinel()
     while True:
@@ -135,7 +135,7 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
 
 @ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
-    sink, source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str
+    sink: ActorHandle, source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
@@ -539,14 +539,14 @@ class _ChunkReader:
             yield record_batch
 
     @staticmethod
-    def from_name(cache_dir, name: str, batch_size: int):
+    def from_name(cache_dir, name: str, batch_size: int) -> "_ChunkReader":
         fs, path = fsspec.core.url_to_fs(cache_dir)
         with fs.open(f"{path}/{name}.json", "r") as f:
             metadata = ChunkMetadata.from_json(f.read())  # type: ignore
         return _ChunkReader.from_metadata(cache_dir, metadata, batch_size)
 
     @staticmethod
-    def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int):
+    def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int) -> "_ChunkReader":
         file = pq.ParquetFile(fsspec.open(f"{cache_dir}/{metadata.name}.parquet", "rb").open())
         return _ChunkReader(metadata, file, batch_size)
 
