@@ -6,7 +6,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar
+from typing import Dict, Generic, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
 import fsspec.core
 import pyarrow as pa
@@ -49,7 +49,7 @@ class BatchProcessor(Generic[T_contra], ABC):
         return 0
 
 
-class ShardedDataSource(Protocol[T_co]):
+class ShardedDataSource(Generic[T_co]):
     @property
     def shard_names(self) -> Sequence[str]:
         raise NotImplementedError
