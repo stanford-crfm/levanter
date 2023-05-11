@@ -79,7 +79,7 @@ are interested in building their own codebases for training foundation models.
 
 Levanter offers:
 * A modular, extensible codebase for training foundation models
-* Easy, customizable support for Fully-Sharded Data Parallelism (FSDP) and tensor parallelism
+* Easy, customizable support for [Fully-Sharded Data Parallelism (FSDP)](https://engineering.fb.com/2021/07/15/open-source/fsdp/) and tensor parallelism
 * Support for resuming from preemption (important when using donated compute)
 * Bitwise reproducibility of training runs, even with preemption
 * (Coming soon) Distributed, just-in-time preprocessing
@@ -87,13 +87,13 @@ Levanter offers:
 * Export of models to PyTorch state dict serialization format, Hugging Face's new safetensors library (XXX), and the HF model hub
 * Visualization of token probabilities integrated into WandB during training
 
-Levanter is built on top of a number of great libraries from the community, including [Equinox](XXX), [Optax](XXX),
-[Hugging Face Transformers](XXX), and [WandB](XXX). Equinox is a simple but powerful library for organizing neural
+Levanter is built on top of a number of great libraries from the community, including [Equinox](https://github.com/patrick-kidger/equinox), [Optax](https://github.com/deepmind/optax),
+[Hugging Face Transformers](https://github.com/huggingface/transformers), and [WandB](https://wandb.ai). Equinox is a simple but powerful library for organizing neural
 network modules in Jax, and Optax is a library for defining and applying optimizers in Jax. I believe Hugging Face
 Transformers and WandB need no introduction.
 
 Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will be useful to others who are interested in training foundation models
-using Jax.
+using Jax and TPUs.
 
 ### Features
 
@@ -105,10 +105,10 @@ Levanter is a successor to Mistral, and we have made a number of improvements. I
 * Flexible tensor parallelism support
 * Bitwise reproducibility
 * Improved support for resuming from preemption
-* (Coming Soon) Simultaneous preprocessing and training
+* (Coming Soon) Simultaneous, distributed preprocessing and training
 
 Levanter is not yet at complete feature parity with Mistral. Beyond the obvious lack of PyTorch support, Levanter does
-not yet support multi-machine training with GPUs, due to some issues with CUDA configuration we haven't quite worked out
+not yet support multi-machine training with GPUs, due to [some issues with CUDA configuration](https://github.com/stanford-crfm/levanter/issues/113) we haven't quite worked out
 yet. Some libraries (e.g. WandB) have better PyTorch integration than Jax integration, so some features aren't quite
 as polished as they are in Mistral. We are working on improving these issues.
 
@@ -200,12 +200,12 @@ Tensor Parallelism works in a broadly similar manner, with you specifying how "w
 and specifying which axes of your model should be sharded. (For a transformer, this would typically be the Head
 and MLP axes.)
 
-In our experiments, we have found that, for models of the sizes that we can reasonably train with our resources, FSDP
-is more than enough to get good scaling, especially on TPU. In practice, with FSDP, we haven't found tensor parallelism
-to be useful for training transformers to at least 20B parameters. (Tensor parallelism is useful for inference, but
-Levanter's focus is on training.)
+Through our experiments, we have found that FSDP provides sufficient scaling for the model sizes we can feasibly train
+using our available resources, particularly on TPU. In practical applications, using FSDP, we observed that tensor
+parallelism offered limited utility in training transformers with up to 20 billion parameters. (Tensor parallelism is
+useful for inference, but Levanter's focus is on training.)
 
-For more details, please see the [Architectural Overview](XXX) in the Levanter documentation.
+For (much) more detail, please see the [Architectural Overview](XXX) in the Levanter documentation.
 
 #### Bitwise Reproducibility
 
@@ -231,7 +231,7 @@ learn differently from Transformers.
 
 Here is an example of the token probability visualization in action:
 
-XXX legal data?
+![plot showing heat map of token probabilities for a sample of the validation set](figures/token_probabilities.png)
 
 This visualization is logged to WandB as training progresses, which is a nice alternative to just staring obsessively at
 the loss curve, which is what I usually do.
@@ -256,7 +256,8 @@ This is just the beginning for Levanter. In the future, look for:
 * larger models
 
 We are excited to continue to develop Levanter and to share our work with the community. Please join us on our journey!
-(And by the way, [we're hiring](https://crfm.stanford.edu/apply.html)!)
+You can find us on [GitHub](https://github.com/stanford-crfm/levanter), [Twitter](https://twitter.com/StanfordCRFM),
+and [Discord](https://discord.gg/8JXaqtq7HH). (And by the way, [we're hiring](https://crfm.stanford.edu/apply.html)!)
 
 ## Acknowledgements
 
@@ -264,6 +265,6 @@ In addition to the generous support of Google, we would like to thank the follow
 
 * John Thickstun, Sidi Lu, John Hewitt, and others for being early adopters and providing feedback. We really appreciate your patience, support, and feedback.
 * Yifan Mai, Tony Lee, Jason Bolton, Ivan Zhou, and the rest of the CRFM engineering team for support and discussions.
-* The TRC team for support and help getting spun up on TPUs and for making the TPU pods available to us.
+* The TRC team for support getting spun up on TPUs and for making the TPU slices available to us.
 * Roy Froystig, Sholto Douglas, and the rest Jax team for help with debugging and support.
 * Sidd Karamcheti for support and conversations
