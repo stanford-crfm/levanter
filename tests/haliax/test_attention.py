@@ -1,6 +1,6 @@
 import numpy as np
 from jax.random import PRNGKey
-from utils import skip_if_no_torch
+from test_utils import skip_if_no_torch
 
 import haliax as hax
 from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weights, forgetful_causal_mask

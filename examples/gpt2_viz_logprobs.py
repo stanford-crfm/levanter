@@ -13,7 +13,7 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
-from levanter.data.text import CachedLMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer_hooks import StepInfo
@@ -27,7 +27,7 @@ class EvalGpt2Config:
     checkpoint_path: str
     output_dir: str = "logprob_viz"
     trainer: TrainerConfig = TrainerConfig()
-    data: CachedLMDatasetConfig = CachedLMDatasetConfig()
+    data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
 
     num_docs: int = 256
@@ -41,7 +41,7 @@ def main(config: EvalGpt2Config):
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         EvalBatch,
     )

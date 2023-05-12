@@ -6,7 +6,7 @@ from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec
 from jax.sharding import SingleDeviceSharding
 from jaxtyping import Array
-from utils import skip_if_not_enough_devices
+from test_utils import skip_if_not_enough_devices
 
 import haliax as hax
 from haliax import Axis, NamedArray

@@ -5,7 +5,7 @@ wandb
 pyrallis
 pyarrow
 zstandard
-datasets~=2.6.0
+datasets==2.11.0
 gcsfs==2023.3.0
 braceexpand
 jmp @ git+https://github.com/deepmind/jmp#7b3ae548154625a56a6dbdb03bc07d4f599c37b2
@@ -16,4 +16,6 @@ humanfriendly
 requests
 safetensors[numpy]
 matplotlib
-filelock
+tblib
+dataclasses_json
+ray[default]
