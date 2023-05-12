@@ -117,7 +117,7 @@ def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
         chunks=[
             ChunkMetadata(
                 name=chunk["file_name"].replace(".parquet", ""),
-                num_rows=_open_arrow_table(os.path.join(cache_dir, chunk["file_name"])).rows_finished,
+                num_rows=_open_arrow_table(os.path.join(cache_dir, chunk["file_name"])).num_rows,
                 field_counts={"input_ids": chunk["num_tokens"]},
             )
             for chunk in ledger["files"]
@@ -257,11 +257,11 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             else:
                 yield BatchEncoding(
                     {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
-                    n_sequences=b.rows_finished,
+                    n_sequences=b.num_rows,
                 )
 
 
-def _open_arrow_table(path):
+def _open_arrow_table(path) -> pa.Table:
     fs, _, paths = fsspec.get_fs_token_paths(path)
     return pq.read_table(path, filesystem=fs)
 
