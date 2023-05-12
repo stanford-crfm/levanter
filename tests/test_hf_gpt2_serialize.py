@@ -8,10 +8,10 @@ import jax.random as jrandom
 import numpy as onp
 from fsspec import AbstractFileSystem
 from jax.random import PRNGKey
+from test_utils import skip_if_no_torch
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
-from utils import skip_if_no_torch
 
 import haliax as hax
 from haliax import Axis

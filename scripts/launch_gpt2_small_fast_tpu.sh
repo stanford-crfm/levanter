@@ -5,8 +5,6 @@ if [ -z "$WANDB_API_KEY" ]; then
   exit 1
 fi
 
-# TODO: would be good to allow for direct customization of creation args here
-
 if [ -z "$GIT_BRANCH" ]; then
   GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 fi
