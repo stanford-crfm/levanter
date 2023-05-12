@@ -7,7 +7,7 @@ import sys
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Generic, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar
+from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar
 
 import fsspec.core
 import pyarrow as pa
@@ -237,6 +237,17 @@ def _load_cache_ledger(cache_dir) -> CacheLedger:
         return cache_ledger
     except FileNotFoundError:
         raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
+
+
+# TODO: should we just make the ledger have all this?
+@dataclass_json
+@dataclass
+class InProgressCacheMetrics:
+    rows_finished: int = 0
+    chunks_finished: int = 0
+    shards_finished: int = 0
+    field_counts: Dict[str, int] = dataclasses.field(default_factory=dict)
+    is_finished: bool = False
 
 
 class MetricsMonitor(Protocol):
