@@ -19,3 +19,4 @@ matplotlib
 tblib
 dataclasses_json
 ray[default]
+rich
