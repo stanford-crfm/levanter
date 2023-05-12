@@ -490,7 +490,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
         if self.config.attn_config.alibi:
-            bias = mpt_build_alibi_bias(
+            bias = _mpt_build_alibi_bias(
                 self.config.Head, self.config.KeySeqLen, self.config.attn_config.alibi_bias_max
             )
         else:
@@ -556,7 +556,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         }
 
 
-def mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
+def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
     _n_heads = 2 ** math.ceil(math.log2(n_heads))
     m = jnp.arange(1, _n_heads + 1)
     m = m * (alibi_bias_max / _n_heads)
@@ -566,9 +566,10 @@ def mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
     return slopes
 
 
-def mpt_build_alibi_bias(Heads, KSeqLen, alibi_bias_max=8):
+def _mpt_build_alibi_bias(Heads, KSeqLen, alibi_bias_max=8):
+
     alibi_bias = jnp.arange(1 - KSeqLen.size, 1, dtype=jnp.int32)
-    slopes = mpt_alibi_gen_slopes(Heads.size, alibi_bias_max)
+    slopes = _mpt_alibi_gen_slopes(Heads.size, alibi_bias_max)
 
     slopes = hax.named(slopes, Heads)
     positions = hax.named(alibi_bias, KSeqLen).broadcast_axis(Heads)
