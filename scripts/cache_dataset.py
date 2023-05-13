@@ -1,3 +1,5 @@
+import os
+
 from dataclasses import dataclass
 
 import levanter
@@ -25,8 +27,7 @@ def main(args: RayCachedLMDatasetConfig):
         batch_tokenizer = BatchTokenizer(tokenizer)
         source = args.get_shard_source(split)
 
-        cache_dataset(f"{args.cache_dir}/{split}", source, batch_tokenizer)
-
+        cache_dataset(os.path.join(args.cache_dir, split), source, batch_tokenizer)
         print(f"Finished caching {split} to {args.cache_dir}/{split}.")
 
 
