@@ -3,8 +3,9 @@ import numpy as np
 import pytest
 import torch
 from jax.random import PRNGKey
+from transformers import AutoModelForCausalLM
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-from utils import skip_if_no_torch
+from test_utils import skip_if_no_torch
 
 import haliax
 from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
@@ -72,3 +73,18 @@ def test_mpt_nano_compare(use_bias):
         torch_out = torch_out.logits[0].detach().cpu().numpy()
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
+
+
+@skip_if_no_torch
+def test_load_full_mpt():
+    model = AutoModelForCausalLM.from_pretrained("mosaicml/mpt-7b", trust_remote_code=True)
+
+    state_dict = model.state_dict()
+    config = model.config
+
+    lev_config = MptConfig.from_torch_config(config)
+
+    Vocab = haliax.Axis("vocab", config.vocab_size)
+    lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
+
+    lev_model = lev_model.from_state_dict(state_dict)
