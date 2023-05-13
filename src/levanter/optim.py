@@ -223,13 +223,13 @@ def hero(
 
 
 def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
-    def _optimizer(learning_rate) -> SecondOrderTransformation:
+    def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
         components = []
 
         if config.max_grad_norm:
             components.append(optax.clip_by_global_norm(config.max_grad_norm))
 
-        components.append(scale_by_hero(b1=config.beta1, b2=config.beta2, eps=config.epsilon))
+        components.append(scale_by_hero(b1=config.beta1, b2=config.beta2, eps=config.epsilon, gamma=gamma))
 
         if config.weight_decay > 0:
             # TODO: add weight decay masking??
@@ -242,7 +242,14 @@ def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
 
         return optimizer
 
-    optimizer = inject_hyperparams(_optimizer)(learning_rate=config.lr_scheduler())
+    # I also want to add a schedule for gamma after 100K. we decay gamma with the cosine schedule until 0.
+    gamma_decay_schedule = optax.cosine_decay_schedule(0.01, config.num_train_steps // 2, 0)
+    constant_gamma_schedule = optax.constant_schedule(0.01)
+    gamma_schedule = optax.join_schedules(
+        [constant_gamma_schedule, gamma_decay_schedule], [config.num_train_steps // 2]
+    )
+
+    optimizer = inject_hyperparams(_optimizer)(learning_rate=config.lr_scheduler(), gamma=gamma_schedule)
 
     return optimizer
 
