@@ -25,8 +25,11 @@ def main(args: RayCachedLMDatasetConfig):
     for split in ["train", "validation"]:
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer)
-        source = args.get_shard_source(split)
-        
+        try:
+            source = args.get_shard_source(split)
+        except ValueError as e:
+            print(f"Skipping {split} because it doesn't exist: {e}")
+            continue
         split_cache_dir = os.path.join(args.cache_dir, split)
         cache_dataset(split_cache_dir, source, batch_tokenizer)
 
