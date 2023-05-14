@@ -195,6 +195,3 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, namespace=namespace, **kwargs)
-    # debugging
-    print(f"=====debugging=====")
-    print(f"This ray cluster consists of {len(ray.nodes())} nodes and {ray.cluster_resources()['CPU']} CPUs")
