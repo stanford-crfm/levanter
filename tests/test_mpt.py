@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 import torch
 from jax.random import PRNGKey
+from test_utils import skip_if_no_torch
 from transformers import AutoModelForCausalLM
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-from test_utils import skip_if_no_torch
 
 import haliax
 from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
@@ -19,7 +19,7 @@ def test_mpt_nano_compare(use_bias):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    cls = get_class_from_dynamic_module("mosaicml/mpt-7b", "modeling_mpt.py", "MPTForCausalLM")
+    cls = get_class_from_dynamic_module("modeling_mpt.MPTForCausalLM", "mosaicml/mpt-7b", "modeling_mpt.py")
     config = MPTConfig(
         d_model=32,
         max_seq_len=512,
