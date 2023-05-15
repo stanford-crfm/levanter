@@ -28,7 +28,7 @@ from .core import (
 )
 from .hof import fold, scan, vmap
 from .ops import clip, isclose, pad_left, trace, tril, triu, where
-from .partitioning import auto_sharded, axis_mapping, shard_with_axis_mapping
+from .partitioning import auto_sharded, axis_mapping, named_pjit, shard_with_axis_mapping
 from .types import Axis, AxisSelection, AxisSelector, AxisSpec
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
@@ -382,6 +382,7 @@ __all__ = [
     "auto_sharded",
     "axis_mapping",
     "shard_with_axis_mapping",
+    "named_pjit",
     "enable_shape_checks",
     "are_shape_checks_enabled",
     "isclose",

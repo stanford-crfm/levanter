@@ -7,8 +7,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from transformers import PretrainedConfig
+from jax.random import PRNGKey
+from transformers import AutoModelForCausalLM, PretrainedConfig
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
@@ -530,6 +532,10 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
     def config(self) -> MptConfig:
         return self.transformer.config
 
+    @property
+    def Vocab(self) -> Axis:
+        return self.wte.Vocab
+
     def __init__(self, Vocab: Axis, config: MptConfig, *, key):
         super().__init__()
         k_transformer, k_wte = jrandom.split(key, 2)
@@ -554,6 +560,30 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         return {
             "wte": "transformer.wte",
         }
+
+    @staticmethod
+    def from_hf_pretrained(
+        model_name_or_path="mosaicml/mpt-7b", axis_mapping: Optional[Dict[str, str]] = None
+    ) -> "MptLmHeadModel":
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True)
+        state_dict = model.state_dict()
+        # move to cpu
+        state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+        config = model.config
+
+        del model
+
+        lev_config = MptConfig.from_torch_config(config)
+        Vocab = haliax.Axis("vocab", config.vocab_size)
+
+        @haliax.named_pjit(axis_resources={}, out_axis_resources=axis_mapping)
+        def init_model(state_dict):
+            lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
+            lev_model = lev_model.from_state_dict(state_dict)
+
+            return lev_model
+
+        return init_model(state_dict)
 
 
 def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
