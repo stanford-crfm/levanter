@@ -1,0 +1,22 @@
+data:
+  #train_urls:
+  #validation_urls:
+  cache_dir: "gs://levanter-data/tokenized/pile/"
+  tokenizer: "EleutherAI/gpt-neox-20b"
+fcm_prob: 0.15
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["pile", "mpt"]
+
+  mp: p=f32,c=bfloat16
+  learning_rate: 1.2e-4
+  weight_decay: 0.1
+
+  model_axis_size: 1
+  per_device_parallelism: 4
+  per_device_eval_parallelism: 4
+
+  train_batch_size: 1024
+  num_train_steps: 10000
+  steps_per_eval: 500
