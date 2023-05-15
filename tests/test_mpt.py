@@ -1,7 +1,6 @@
 import jax
 import numpy as np
 import pytest
-import torch
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
 from transformers import AutoModelForCausalLM
@@ -14,6 +13,8 @@ from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
 @skip_if_no_torch
 @pytest.mark.parametrize("use_bias", [True, False])
 def test_mpt_nano_compare(use_bias):
+    import torch
+
     # conjure up a fake model and compare
     vocab_size = 5257
     torch.manual_seed(0)
