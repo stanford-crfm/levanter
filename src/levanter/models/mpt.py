@@ -576,7 +576,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         lev_config = MptConfig.from_torch_config(config)
         Vocab = haliax.Axis("vocab", config.vocab_size)
 
-        with jax.default_device("cpu"):
+        with jax.default_device(jax.devices("cpu")[0]):
             lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
