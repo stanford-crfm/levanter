@@ -576,14 +576,15 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         lev_config = MptConfig.from_torch_config(config)
         Vocab = haliax.Axis("vocab", config.vocab_size)
 
-        @haliax.named_pjit(in_axis_resources={}, axis_resources={}, out_axis_resources=axis_mapping)
-        def init_model(state_dict):
+        with jax.default_device("cpu"):
             lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
+        @haliax.named_pjit(out_axis_resources=axis_mapping, axis_resources={})
+        def init_model(lev_model):
             return lev_model
 
-        return init_model(state_dict)
+        return init_model(lev_model)
 
 
 def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
