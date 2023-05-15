@@ -576,7 +576,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         lev_config = MptConfig.from_torch_config(config)
         Vocab = haliax.Axis("vocab", config.vocab_size)
 
-        @haliax.named_pjit(axis_resources={}, out_axis_resources=axis_mapping)
+        @haliax.named_pjit(in_axis_resources={}, axis_resources={}, out_axis_resources=axis_mapping)
         def init_model(state_dict):
             lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
