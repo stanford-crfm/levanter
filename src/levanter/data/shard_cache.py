@@ -27,8 +27,8 @@ _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 logger = logging.getLogger(__name__)
 
 MEAN_BYTES_PER_ROW = 8 * 1024
-ROWS_PER_CHUNK = 32 * 1024  # if a doc produces ~1200 tokens, this is ~150MB chunks
-BYTES_PER_CHUNK = ROWS_PER_CHUNK * MEAN_BYTES_PER_ROW
+ROWS_PER_CHUNK = 2048  # if a doc produces ~1200 tokens, this is ~150MB chunks
+BYTES_PER_CHUNK = ROWS_PER_CHUNK
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
@@ -175,7 +175,7 @@ def _produce_cache_for_shard(
             for row in shard_iter:
                 batch.append(row)
                 total_bytes += sys.getsizeof(row)
-                if total_bytes >= BYTES_PER_CHUNK:
+                if len(batch) == ROWS_PER_CHUNK:
                     # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
                     # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
                     # other shards since we want to stream them round-robin
