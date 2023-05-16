@@ -75,14 +75,14 @@ def main(config: TrainMptConfig):
         KeySeqLen = model_config.KeySeqLen
 
         dataset = GlobalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.seq_len),
+            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.max_seq_len),
             config.trainer.device_mesh,
             Batch,
             compute_axis_mapping,
         )
 
         eval_dataset = LocalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.seq_len),
+            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.max_seq_len),
             config.trainer.device_mesh,
             EvalBatch,
             compute_axis_mapping,
