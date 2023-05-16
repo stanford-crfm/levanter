@@ -212,7 +212,7 @@ def named_pjit(
         )
 
     if axis_resources is None:
-        axis_resources = axis_resources
+        axis_resources = _mapping_holder.thread_data.resource_mapping
 
     if in_axis_resources is None:
         in_axis_resources = axis_resources
