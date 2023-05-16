@@ -563,9 +563,11 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def from_hf_pretrained(
-        model_name_or_path="mosaicml/mpt-7b", axis_mapping: Optional[Dict[str, str]] = None
+        model_name_or_path="mosaicml/mpt-7b",
+        axis_mapping: Optional[Dict[str, str]] = None,
+        config: Optional[MPTConfig] = None,
     ) -> "MptLmHeadModel":
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True, config=config)
         state_dict = model.state_dict()
         # move to cpu
         state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
@@ -574,7 +576,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         del model
 
         lev_config = MptConfig.from_torch_config(config)
-        Vocab = haliax.Axis("vocab", config.vocab_size)
+        Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):
             lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))

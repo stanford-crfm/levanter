@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.random as jrandom
 import jmp
 from jax.interpreters.pxla import PartitionSpec
-from transformers import GPT2Tokenizer
+from transformers import AutoConfig, GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
@@ -41,6 +41,8 @@ class TrainMptConfig:
     trainer: TrainerConfig = TrainerConfig()
     initialize_from: str = "mosaicml/mpt-7b"
 
+    seq_len: Optional[int] = None
+
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
@@ -64,6 +66,11 @@ def main(config: TrainMptConfig):
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+
+        mpt_config = AutoConfig.from_pretrained(config.initialize_from, trust_remote_code=True)
+
+        if config.seq_len is not None:
+            mpt_config.update({"max_seq_len": config.seq_len})
 
         model = MptLmHeadModel.from_hf_pretrained(config.initialize_from, axis_mapping=parameter_axis_mapping)
         model_config = model.config
@@ -94,7 +101,13 @@ def main(config: TrainMptConfig):
         vocab_size = len(tokenizer)
         Vocab = model.Vocab
 
-        assert vocab_size == Vocab.size, f"Vocab size mismatch: {vocab_size} != {Vocab.size}. Probably wrong tokenizer"
+        assert vocab_size <= Vocab.size, f"Vocab size mismatch: {vocab_size} != {Vocab.size}. Probably wrong tokenizer"
+        if vocab_size != Vocab.size:
+            logger.warning(
+                "Vocab size mismatch: %d != %d. Pretrained MPT was trained this way, so it's ok",
+                vocab_size,
+                Vocab.size,
+            )
 
         # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
         # 1) compute (typically bfloat16)
