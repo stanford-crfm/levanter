@@ -117,7 +117,19 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         def _do_device_put(x):
             pspec = _as_pspec(x)
             sharding = jax.sharding.NamedSharding(mesh, pspec)
-            return jax.device_put(x, sharding)
+            raw_x = x.array if isinstance(x, NamedArray) else x
+            shape = raw_x.shape
+            current_sharding = raw_x.sharding
+            if current_sharding == sharding:
+                return x
+            elif sharding.is_fully_addressable:
+                return jax.device_put(raw_x, sharding)
+            else:
+                # if the sharding is not fully addressable, we can't use device_put, so
+                # we use this hacky workaround.
+                # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
+                # context, I think?
+                return jax.make_array_from_callback(shape, sharding, lambda index: x[index])
 
         return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
