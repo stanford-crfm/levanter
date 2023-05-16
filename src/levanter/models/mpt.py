@@ -579,12 +579,9 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         with jax.default_device(jax.devices("cpu")[0]):
             lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
 
-        @haliax.named_pjit(out_axis_resources=axis_mapping, axis_resources={})
-        def init_model(lev_model):
-            return lev_model
-
-        return init_model(lev_model)
+        return lev_model
 
 
 def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
