@@ -7,6 +7,7 @@ from typing import List, Mapping, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -105,8 +106,20 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         )
         return spec
 
-    pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-    return with_sharding_constraint(x, pspec)
+    # attempt to detect if we're in a jit context
+    if isinstance(jnp.zeros(1), jax.core.Tracer):
+        pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
+        return with_sharding_constraint(x, pspec)
+    else:
+        # use device_put_sharded instead
+        mesh = _get_mesh()
+
+        def _do_device_put(x):
+            pspec = _as_pspec(x)
+            sharding = jax.sharding.NamedSharding(mesh, pspec)
+            return jax.device_put(x, sharding)
+
+        return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
 
 def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceMapping] = None) -> PyTree:
@@ -335,6 +348,12 @@ def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] =
     else:
         new_size = (axis.size + size - 1) // size * size
         return Axis(axis.name, new_size)
+
+
+def _get_mesh():
+    from jax.experimental.maps import thread_resources
+
+    return thread_resources.env.physical_mesh
 
 
 __all__ = [
