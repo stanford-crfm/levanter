@@ -282,12 +282,12 @@ class RichMetricsMonitor(MetricsMonitor):
         columns = [
             BarColumn(),
             TaskProgressColumn(),
-            TextColumn("{task.fields[chunks_finished]} chunks", justify="center"),
-            TextColumn("{task.fields[rows_finished]} docs", justify="center"),
+            TextColumn("| {task.fields[chunks_finished]} chunks", justify="center"),
+            TextColumn("| {task.fields[rows_finished]} docs", justify="center"),
         ]
 
         for field in metrics.field_counts:
-            columns.append(TextColumn(f"{{task.fields[field_counts][{field}]}} {field}", justify="center"))
+            columns.append(TextColumn(f"| {{task.fields[field_counts][{field}]}} {field}", justify="center"))
 
         columns.append(TimeElapsedColumn())
         columns.append(TimeRemainingColumn())
