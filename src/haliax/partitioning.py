@@ -86,7 +86,11 @@ def auto_sharded(x: T) -> T:
 def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
-    Other arrays are not sharded.
+    Other arrays are not sharded (unless they're already sharded).
+
+    Inside of a jit context, this method grounds out in calls to `with_sharding_constraint`. Outside of a jit
+    context, this method grounds out in either device_put or make_array_from_callback, depending on whether the
+    resulting sharding spans more than one host.
 
     :param x:
     :param mapping:
@@ -106,12 +110,11 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         )
         return spec
 
-    # attempt to detect if we're in a jit context
-    if isinstance(jnp.zeros(1), jax.core.Tracer):
+    if _is_jit_context():
         pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
         return with_sharding_constraint(x, pspec)
     else:
-        # use device_put_sharded instead
+        # use device_put or make_array_from_callback instead
         mesh = _get_mesh()
 
         def _do_device_put(x):
@@ -372,6 +375,10 @@ def _get_mesh():
     from jax.experimental.maps import thread_resources
 
     return thread_resources.env.physical_mesh
+
+
+def _is_jit_context():
+    return isinstance(jnp.zeros(1), jax.core.Tracer)
 
 
 __all__ = [
