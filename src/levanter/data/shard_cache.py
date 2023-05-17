@@ -26,9 +26,7 @@ _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 logger = logging.getLogger(__name__)
 
-MEAN_BYTES_PER_ROW = 8 * 1024
-ROWS_PER_CHUNK = 2048  # if a doc produces ~1200 tokens, this is ~150MB chunks
-BYTES_PER_CHUNK = ROWS_PER_CHUNK
+ROWS_PER_CHUNK = 1024
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
@@ -171,10 +169,8 @@ def _produce_cache_for_shard(
         if not was_finished:
             count = len(shard_metadata.chunks)
             batch = []
-            total_bytes = 0
             for row in shard_iter:
                 batch.append(row)
-                total_bytes += sys.getsizeof(row)
                 if len(batch) == ROWS_PER_CHUNK:
                     # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
                     # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
@@ -183,9 +179,7 @@ def _produce_cache_for_shard(
                     count += 1
                     chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
                     yield_chunk(chunk)
-                    print(f"Average bytes per row: {total_bytes / len(batch)}")
                     batch = []
-                    total_bytes = 0
 
             if batch:
                 chunk_name = os.path.join(shard_name, f"chunk-{count}")
