@@ -129,7 +129,8 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
                 # we use this hacky workaround.
                 # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
                 # context, I think?
-                return jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+                raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+                return NamedArray(raw_x, x.axes)
 
         return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
