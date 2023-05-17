@@ -1,3 +1,5 @@
+import os
+
 from dataclasses import dataclass
 
 import wandb
@@ -29,13 +31,12 @@ def main(args: RayCachedLMDatasetConfig):
         batch_tokenizer = BatchTokenizer(tokenizer)
         source = args.get_shard_source(split)
 
-        cache = cache_dataset(f"{args.cache_dir}/{split}", source, batch_tokenizer, await_finished=False)
+        cache = cache_dataset(os.path.join(args.cache_dir, split), source, batch_tokenizer, await_finished=False)
 
         cache.attach_metrics_monitor(RichMetricsMonitor(source.num_shards))
         cache.attach_metrics_monitor(WandbMetricsMonitor("preprocess/" + split, commit=True))
 
         cache.await_finished()
-
         print(f"Finished caching {split} to {args.cache_dir}/{split}.")
 
 
