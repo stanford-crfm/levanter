@@ -199,6 +199,7 @@ def _produce_cache_for_shard(
                     # other shards since we want to stream them round-robin
                     chunk_name = os.path.join(shard_name, f"chunk-{count}")
                     count += 1
+                    logger.info(f"Forking process to produce chunk {chunk_name} from {shard_name}")
                     chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
                     yield_chunk(chunk)
 
