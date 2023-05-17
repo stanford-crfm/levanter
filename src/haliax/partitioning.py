@@ -3,12 +3,11 @@ import functools
 import threading
 import typing
 from math import prod
-from typing import List, Mapping, Optional, Sequence, TypeVar, Union
+from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
@@ -97,50 +96,42 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     :return:
     """
 
-    def _as_pspec(x):
-        if isinstance(x, NamedArray):
-            physical_names: List[Optional[PhysicalAxisSpec]] = [mapping.get(a.name, None) for a in x.axes]
-        elif is_array(x):
-            physical_names = [None] * len(x.shape)
-        else:
-            return None
-
-        spec = PartitionSpec(
-            *tuple(tuple(p) if not (isinstance(p, str)) and isinstance(p, Sequence) else p for p in physical_names)
-        )
-        return spec
-
     if _is_jit_context():
-        pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-        return with_sharding_constraint(x, pspec)
+
+        def _shard_leaf(x):
+            if isinstance(x, NamedArray):
+                pspec = pspec_for_axis(x.axes, mapping)
+                return with_sharding_constraint(x, pspec)
+            else:
+                return x
+
+        return jax.tree_util.tree_map(_shard_leaf, x, is_leaf=is_named_array)
     else:
         # use device_put or make_array_from_callback instead
         mesh = _get_mesh()
 
         def _do_device_put(x):
-            pspec = _as_pspec(x)
+            if not is_named_array(x):
+                return x
+
+            pspec = pspec_for_axis(x.axes, mapping)
             sharding = jax.sharding.NamedSharding(mesh, pspec)
-            raw_x = x.array if isinstance(x, NamedArray) else x
-            shape = raw_x.shape
+
+            raw_x = x.array
             current_sharding = raw_x.sharding
+
             if current_sharding == sharding:
                 return x
             elif sharding.is_fully_addressable:
                 raw_x = jax.device_put(raw_x, sharding)
-                if isinstance(x, NamedArray):
-                    return NamedArray(raw_x, x.axes)
-                else:
-                    return raw_x
+                return NamedArray(raw_x, x.axes)
             else:
-                # if the sharding is not fully addressable, we can't use device_put, so
-                # we use this hacky workaround.
+                # if the sharding is not fully addressable, we can't use device_put, so we use this hacky workaround.
                 # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
                 # context, I think?
+                shape = raw_x.shape
                 raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
-                if isinstance(x, NamedArray):
-                    return NamedArray(raw_x, x.axes)
-                else:
-                    return raw_x
+                return NamedArray(raw_x, x.axes)
 
         return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
