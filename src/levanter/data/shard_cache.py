@@ -123,6 +123,7 @@ class CacheLedger:
 def _mk_process_task(processor: BatchProcessor[T]):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
         return processor(batch)
 
     return process_task
@@ -130,6 +131,7 @@ def _mk_process_task(processor: BatchProcessor[T]):
 
 @ray.remote(num_cpus=0)
 def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
+    logging.basicConfig(level=logging.INFO)
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
@@ -157,6 +159,7 @@ def _produce_cache_for_shard(
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
+    logging.basicConfig(level=logging.INFO)
     # load or create shard metadata (for recovery)
     try:
         shard_metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
@@ -347,6 +350,7 @@ class ChunkCacheBuilder:
     """
 
     def __init__(self, broker_ref, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
+        logging.basicConfig(level=logging.INFO)
         self.broker_ref = broker_ref
         self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
         self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
@@ -471,6 +475,7 @@ class ChunkCacheBroker:
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
+        logging.basicConfig(level=logging.INFO)
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
