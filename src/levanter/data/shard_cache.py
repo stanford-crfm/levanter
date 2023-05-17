@@ -74,6 +74,10 @@ def cache_dataset(
             break
         except GetTimeoutError:
             pass
+        except Exception as e:
+            # add a retry logic here
+            logger.error(f"Error while waiting for cache to finish: {e}")
+            continue
 
     return cache
 
