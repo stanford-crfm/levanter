@@ -479,7 +479,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
     def Layers(self) -> Axis:
         return self.config.Layers
 
-    def __init__(self, Vocab, config: MptConfig, *, key):
+    def __init__(self, config: MptConfig, *, key):
         super().__init__()
         self.config = config
 
@@ -540,7 +540,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         super().__init__()
         k_transformer, k_wte = jrandom.split(key, 2)
         self.wte = hnn.Embedding(Vocab, config.Embed, key=k_wte)
-        self.transformer = MptTransformer(Vocab, config, key=k_transformer)
+        self.transformer = MptTransformer(config, key=k_transformer)
 
         assert config.emb_pdrop == 0.0, "embedding dropout not supported"
         assert config.resid_pdrop == 0.0, "residual dropout not supported"
