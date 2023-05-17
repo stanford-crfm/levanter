@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec
-from jax.sharding import SingleDeviceSharding
+from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
 from jaxtyping import Array
 from test_utils import skip_if_not_enough_devices
 
@@ -127,3 +127,17 @@ def test_infer_resource_partition_gda_bug():
 
         finally:
             jax.config.update("jax_parallel_functions_output_gda", False)
+
+
+@skip_if_not_enough_devices(4)
+def test_shard_with_axis_mapping_outside_pjit():
+    devices = jax.devices()
+    with Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)) as mesh:
+        x = hax.ones((Dim1, Dim2))
+        y = hax.ones((Dim2, Dim3))
+
+        x = hax.shard_with_axis_mapping(x, resource_map)
+        assert x.array.sharding == NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA))
+
+        y = hax.shard_with_axis_mapping(y, resource_map)
+        assert y.array.sharding == NamedSharding(mesh, PartitionSpec(ResourceAxis.DATA, ResourceAxis.MODEL))

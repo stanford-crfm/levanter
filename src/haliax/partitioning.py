@@ -3,11 +3,11 @@ import functools
 import threading
 import typing
 from math import prod
-from typing import List, Mapping, Optional, Sequence, TypeVar, Union
+from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
-from equinox import is_array
+import jax.numpy as jnp
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
@@ -85,28 +85,55 @@ def auto_sharded(x: T) -> T:
 def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
-    Other arrays are not sharded.
+    Other arrays are not sharded (unless they're already sharded).
+
+    Inside of a jit context, this method grounds out in calls to `with_sharding_constraint`. Outside of a jit
+    context, this method grounds out in either device_put or make_array_from_callback, depending on whether the
+    resulting sharding spans more than one host.
 
     :param x:
     :param mapping:
     :return:
     """
 
-    def _as_pspec(x):
-        if isinstance(x, NamedArray):
-            physical_names: List[Optional[PhysicalAxisSpec]] = [mapping.get(a.name, None) for a in x.axes]
-        elif is_array(x):
-            physical_names = [None] * len(x.shape)
-        else:
-            return None
+    if _is_jit_context():
 
-        spec = PartitionSpec(
-            *tuple(tuple(p) if not (isinstance(p, str)) and isinstance(p, Sequence) else p for p in physical_names)
-        )
-        return spec
+        def _shard_leaf(x):
+            if isinstance(x, NamedArray):
+                pspec = pspec_for_axis(x.axes, mapping)
+                return with_sharding_constraint(x, pspec)
+            else:
+                return x
 
-    pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-    return with_sharding_constraint(x, pspec)
+        return jax.tree_util.tree_map(_shard_leaf, x, is_leaf=is_named_array)
+    else:
+        # use device_put or make_array_from_callback instead
+        mesh = _get_mesh()
+
+        def _do_device_put(x):
+            if not is_named_array(x):
+                return x
+
+            pspec = pspec_for_axis(x.axes, mapping)
+            sharding = jax.sharding.NamedSharding(mesh, pspec)
+
+            raw_x = x.array
+            current_sharding = raw_x.sharding
+
+            if current_sharding == sharding:
+                return x
+            elif sharding.is_fully_addressable:
+                raw_x = jax.device_put(raw_x, sharding)
+                return NamedArray(raw_x, x.axes)
+            else:
+                # if the sharding is not fully addressable, we can't use device_put, so we use this hacky workaround.
+                # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
+                # context, I think?
+                shape = raw_x.shape
+                raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+                return NamedArray(raw_x, x.axes)
+
+        return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
 
 def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceMapping] = None) -> PyTree:
@@ -123,12 +150,10 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
     if resource_mapping is None:
         raise ValueError("No resource mapping found")
 
-    _resource_mapping = typing.cast(ResourceMapping, resource_mapping)  # for mypy
-
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
             return NamedArray(
-                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
+                pspec_for_axis(node.axes, resource_mapping),  # type: ignore
                 node.axes,
             )
         # elif isinstance(node, GlobalDeviceArray):
@@ -186,7 +211,8 @@ def named_pjit(
             **pjit_args,
         )
 
-    axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
+    if axis_resources is None:
+        axis_resources = _mapping_holder.thread_data.resource_mapping
 
     if in_axis_resources is None:
         in_axis_resources = axis_resources
@@ -334,6 +360,16 @@ def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] =
     else:
         new_size = (axis.size + size - 1) // size * size
         return Axis(axis.name, new_size)
+
+
+def _get_mesh():
+    from jax.experimental.maps import thread_resources
+
+    return thread_resources.env.physical_mesh
+
+
+def _is_jit_context():
+    return isinstance(jnp.zeros(1), jax.core.Tracer)
 
 
 __all__ = [
