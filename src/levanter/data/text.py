@@ -264,7 +264,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                 )
 
 
-def _open_arrow_table(path):
+def _open_arrow_table(path) -> pa.Table:
     fs, _, paths = fsspec.get_fs_token_paths(path)
     return pq.read_table(path, filesystem=fs)
 
