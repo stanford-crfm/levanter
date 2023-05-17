@@ -170,6 +170,7 @@ def _produce_cache_for_shard(
 
         total_rows_written = sum(chunk.num_rows for chunk in shard_metadata.chunks)
         if not was_finished:
+            logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
             shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
 
         # yield from existing chunks
@@ -358,6 +359,7 @@ class ChunkCacheBuilder:
             logger.warning("No shards to index?!?")
             self._finish()
         else:
+            logger.info(f"Starting cache build for {len(source.shard_names)} shards")
             for shard_name in source.shard_names:
                 self.buffered_shard_chunks[shard_name] = []
 
