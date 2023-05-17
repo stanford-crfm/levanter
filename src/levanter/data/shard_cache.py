@@ -350,6 +350,7 @@ class ChunkCacheBuilder:
         self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
         self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
         self.source = source
+        self._metrics = InProgressCacheMetrics()
 
         self_ref = ray.runtime_context.get_runtime_context().current_actor
 
@@ -373,6 +374,16 @@ class ChunkCacheBuilder:
         # if we have buffered chunks, we need to check if we can send them to the broker
         self._attempt_to_flush_buffers()
 
+        self._metrics.chunks_finished += len(chunks)
+        # update metrics
+        for chunk in chunks:
+            self._metrics.rows_finished += chunk.num_rows
+            for field, count in chunk.field_counts.items():
+                self._metrics.field_counts[field] = self._metrics.field_counts.get(field, 0) + count
+
+        if len(chunks) > 0:
+            ray.get(self.broker_ref._new_metrics.remote(self._metrics))
+
     def shard_finished(self, shard_name: str):
         """Callback method for when a shard worker has finished."""
         assert shard_name in self.current_shard_tasks
@@ -385,6 +396,8 @@ class ChunkCacheBuilder:
             del self.buffered_shard_chunks[shard_name]
 
         self._attempt_to_flush_buffers()
+        self._metrics.shards_finished += 1
+        ray.get(self.broker_ref._new_metrics.remote(self._metrics))
 
         # if there are no more active shards, we're done
         if len(self.current_shard_tasks) == 0:
@@ -439,9 +452,11 @@ class ChunkCacheBuilder:
         if len(chunks_to_send) > 0:
             logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
             # send the chunk to the broker
-            ray.get(self.broker_ref._append_chunk.remote(*chunks_to_send))
+            ray.get(self.broker_ref._append_chunks.remote(*chunks_to_send))
 
     def _finish(self):
+        self._metrics.is_finished = True
+        ray.get(self.broker_ref._new_metrics.remote(self._metrics))
         ray.get(self.broker_ref._finalize.remote())
 
 
@@ -449,26 +464,30 @@ class ChunkCacheBuilder:
 class ChunkCacheBroker:
     """Actor that manages the global order on chunks and vends chunk metadata to readers."""
 
+    chunks: List[ChunkMetadata]
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
+        self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
         self._source = source
         self._processor = processor
         self._cache_dir = cache_dir
         self._finished_promise = asyncio.Future()
+        # used to subscribe to metrics updates
+        self._latest_metrics = InProgressCacheMetrics()
+        self._metrics_condition = asyncio.Condition()
 
         # initialize writer task
         # first see if we need to do anything: check the ledger for is_finished
         try:
             cache_ledger = _load_cache_ledger(self._cache_dir)
-            self.chunks = cache_ledger.chunks
+            self._append_chunks(*cache_ledger.chunks)
             self._is_finished = True
             self._finished_promise.set_result(None)
         except FileNotFoundError:
-            self.chunks = []
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, self._source, self._processor)  # type: ignore
 
@@ -477,6 +496,17 @@ class ChunkCacheBroker:
 
     async def finished_sentinel(self):
         await self._finished_promise
+
+    async def updated_metrics(self) -> InProgressCacheMetrics:
+        if self._finished_promise.done():
+            if self._finished_promise.exception() is not None:
+                raise self._finished_promise.exception()  # type: ignore
+            else:
+                return self._latest_metrics
+
+        async with self._metrics_condition:
+            await self._metrics_condition.wait()
+            return self._latest_metrics
 
     async def get_chunk(self, chunk_idx: int) -> Optional[ChunkMetadata]:
         if chunk_idx < len(self.chunks):
@@ -489,13 +519,24 @@ class ChunkCacheBroker:
                 self._reader_promises[chunk_idx] = asyncio.Future()
             return await self._reader_promises[chunk_idx]
 
-    def _append_chunk(self, *chunks: ChunkMetadata):
+    def _append_chunks(self, *chunks: ChunkMetadata):
         for chunk in chunks:
             self.chunks.append(chunk)
             chunk_idx = len(self.chunks) - 1
             if chunk_idx in self._reader_promises:
                 self._reader_promises[chunk_idx].set_result(chunk)
                 del self._reader_promises[chunk_idx]
+
+    def _new_metrics(self, metrics):
+        self._latest_metrics = metrics
+        self._do_notify()
+
+    def _do_notify(self):
+        async def _do_notify_async():
+            async with self._metrics_condition:
+                self._metrics_condition.notify_all()
+
+        asyncio.create_task(_do_notify_async())
 
     def _writer_exception(self, shard_name, exc_info: _ExcInfo):
         info = _restore_exc_info(exc_info)
@@ -505,9 +546,12 @@ class ChunkCacheBroker:
             future.set_exception(info[1])
 
         self._reader_promises = {}
+
         self._finished_promise.set_exception(info[1])
+        self._do_notify()
 
     def _finalize(self):
+        logger.info(f"Finalizing cache {self._cache_dir}...")
         self._is_finished = True
         for future in self._reader_promises.values():
             future.set_result(None)
@@ -518,6 +562,9 @@ class ChunkCacheBroker:
         self._reader_promises = {}
         self._builder_actor = None
         self._finished_promise.set_result(None)
+
+        # notify metrics subscribers
+        self._do_notify()
 
 
 def _get_broker_actor(cache_dir, input_shards, processor):
