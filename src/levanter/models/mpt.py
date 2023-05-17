@@ -485,7 +485,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
 
         # vectorize the blocks
         self.blocks = Stacked(
-            self.Layers, MptBlock, config, key=shaped_rng_split(key, config.n_layers), gradient_checkpointing=False
+            self.Layers, MptBlock, config, key=shaped_rng_split(key, config.n_layers), gradient_checkpointing=True
         )
         self.norm_f = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
 
