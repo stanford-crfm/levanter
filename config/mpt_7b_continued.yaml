@@ -1,6 +1,6 @@
 data:
-  #train_urls:
-  #validation_urls:
+  train_urls: gs://levanter-data/pile/train/{00..29}.jsonl.zst
+  validation_urls: gs://levanter-data/pile/val.jsonl.zst
   cache_dir: "gs://levanter-data/tokenized/pile/"
   tokenizer: "EleutherAI/gpt-neox-20b"
 fcm_prob: 0.15
