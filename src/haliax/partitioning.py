@@ -148,12 +148,10 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
     if resource_mapping is None:
         raise ValueError("No resource mapping found")
 
-    _resource_mapping = typing.cast(ResourceMapping, resource_mapping)  # for mypy
-
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
             return NamedArray(
-                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
+                pspec_for_axis(node.axes, resource_mapping),  # type: ignore
                 node.axes,
             )
         # elif isinstance(node, GlobalDeviceArray):
