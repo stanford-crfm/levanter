@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
 from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import Mesh
 from jaxlib.xla_client import SingleDeviceSharding
 from jaxtyping import PyTree
 
@@ -67,7 +68,7 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = False, **kwargs):
 T = TypeVar("T", bound=PyTree)
 
 
-def auto_sharded(x: T) -> T:
+def auto_sharded(x: T, mesh: Optional[Mesh] = None) -> T:
     """
     Shard a PyTree using the global axis mapping. NamedArrays in the PyTree are sharded using the axis mapping
      and the names in the tree.
@@ -79,10 +80,10 @@ def auto_sharded(x: T) -> T:
     if mapping is None:
         return x
 
-    return shard_with_axis_mapping(x, mapping)
+    return shard_with_axis_mapping(x, mapping, mesh)
 
 
-def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
+def shard_with_axis_mapping(x: T, mapping: ResourceMapping, mesh: Optional[Mesh] = None) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
     Other arrays are not sharded (unless they're already sharded).
@@ -90,10 +91,6 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
     Inside of a jit context, this method grounds out in calls to `with_sharding_constraint`. Outside of a jit
     context, this method grounds out in either device_put or make_array_from_callback, depending on whether the
     resulting sharding spans more than one host.
-
-    :param x:
-    :param mapping:
-    :return:
     """
 
     if _is_jit_context():
@@ -108,7 +105,7 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         return jax.tree_util.tree_map(_shard_leaf, x, is_leaf=is_named_array)
     else:
         # use device_put or make_array_from_callback instead
-        mesh = _get_mesh()
+        mesh = mesh or _get_mesh()
 
         def _do_device_put(x):
             if not is_named_array(x):
