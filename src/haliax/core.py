@@ -709,25 +709,13 @@ def rename(array: NamedArray, renames: Mapping[AxisSelector, AxisSelector]) -> N
         if isinstance(old, Axis) and isinstance(new, Axis) and old.size != new.size:
             raise ValueError(f"Cannot rename axis {old} to {new}: size mismatch")
 
-    def _rename(ax: AxisSelector) -> Axis:
-        new_axis = renames.get(ax, None)
-        if new_axis is None and isinstance(ax, Axis):
-            new_axis_name = renames.get(ax.name, None)
-            if isinstance(new_axis_name, str):
-                new_axis = Axis(new_axis_name, ax.size)
-                return new_axis
-            elif isinstance(new_axis_name, Axis):
-                if new_axis_name.size != ax.size:
-                    raise ValueError(f"Cannot rename axis {ax} to {new_axis_name}: size mismatch")
-                return new_axis_name
-            else:
-                return ax
-        elif isinstance(new_axis, Axis):
+    def _rename(ax: Axis) -> Axis:
+        new_axis = renames.get(ax, ax)
+        if isinstance(new_axis, Axis):
             return new_axis
         else:
             assert isinstance(new_axis, str)
-            ax_size = array.axis_size(ax)
-            return Axis(new_axis, ax_size)
+            return Axis(new_axis, ax.size)
 
     new_axes = tuple(_rename(ax) for ax in array.axes)
     return NamedArray(array.array, new_axes)
@@ -808,17 +796,38 @@ def named(a: jnp.ndarray, axis: AxisSelection) -> NamedArray:
     return NamedArray(a, axes)
 
 
-def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
+@overload
+def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> Sequence[Axis]:
+    pass
+
+
+@overload
+def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> Sequence[Union[Axis, str]]:
+    pass
+
+
+def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> AxisSelection:
     """Concatenates two AxisSpec. Raises ValueError if any axis is present in both specs"""
+
+    def _ax_name(ax: AxisSelector) -> str:
+        if isinstance(ax, Axis):
+            return ax.name
+        else:
+            return ax
+
     if isinstance(a1, Axis) and isinstance(a2, Axis):
-        if a1 == a2:
+        if _ax_name(a1) == _ax_name(a2):
             raise ValueError(f"Axis {a1} specified twice")
         return (a1, a2)
     else:
         a1 = ensure_tuple(a1)
         a2 = ensure_tuple(a2)
-        if any(x in a2 for x in a1) or any(x in a1 for x in a2):
-            overlap = set(a1).intersection(set(a2))
+
+        a1_names = [_ax_name(ax) for ax in a1]
+        a2_names = [_ax_name(ax) for ax in a2]
+
+        if len(set(a1_names) & set(a2_names)) > 0:
+            overlap = [ax for ax in a1_names if ax in a2_names]
             raise ValueError(f"AxisSpecs overlap! {' '.join(str(x) for x in overlap)}")
         return a1 + a2
 
