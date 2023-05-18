@@ -111,77 +111,49 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
 
-    Pos: Axis = eqx.static_field()
-    KeySize: Axis = eqx.static_field()
-    Heads: Axis = eqx.static_field()
-    Qkv: Axis = eqx.static_field()
-    KeyPos: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
 
-    # Mistral stability tweaks
-    scale_by_inverse_layer_idx: bool = eqx.static_field()
-    upcast: bool = eqx.static_field()
-
-    def __init__(
-        self,
-        Pos: Axis,
-        KeyPos: Axis,
-        Embed: Axis,
-        Heads: Axis,
-        KeySize: Axis,
-        dropout_prob: float,
-        scale_by_inverse_layer_idx: bool,
-        upcast: bool,
-        *,
-        key,
-        use_bias: bool = True,
-    ):
-        self.Heads = Heads
-        self.KeySize = KeySize
-        self.Pos = Pos
-        self.Qkv = Axis("qkv", 3)
-        self.KeyPos = KeyPos
+    def __init__(self, config: Gpt2Config, *, key):
+        self.config = config
+        Qkv = Axis("qkv", size=3)
+        use_bias = config.use_bias
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.KeySize), key=k_c, use_bias=use_bias)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.KeySize), Out=Embed, key=k_proj, use_bias=use_bias)
-        self.dropout = hnn.Dropout(dropout_prob)
-
-        self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
-        self.upcast = upcast
+        self.c_attn = hnn.Linear(In=config.Embed, Out=(Qkv, config.Heads, config.KeySize), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear(In=(config.Heads, config.KeySize), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        self.dropout = hnn.Dropout(config.attn_pdrop)
 
     @named_call
-    def __call__(
-        self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key
-    ):
-        qkv_out = self.c_attn(hidden_states)
-        q, k, v = qkv_out.unbind(self.Qkv)
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+        qkv_out = self.c_attn(x)
+        q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.Pos: self.KeyPos})
-        v = v.rename({self.Pos: self.KeyPos})
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.KeySize.size))
-        if self.scale_by_inverse_layer_idx:
+        scale = jax.lax.rsqrt(float(self.config.KeySize.size))
+        if self.config.scale_attn_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
 
         # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.upcast:
+        if self.config.upcast_attn:
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot(self.KeySize, q, k)
+        attn_scores = hax.dot("key_size", q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis=self.KeyPos).astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        attn_output = hax.dot(self.KeyPos, attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
 
         attn_output = self.c_proj(attn_output)
         return attn_output
@@ -196,12 +168,15 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.KeySize.size)
+                state_dict,
+                apply_prefix(prefix, "c_attn"),
+                (es,),
+                (3, self.config.Heads.size, self.config.KeySize.size),
             )
         )
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.KeySize.size), (es,)
+                state_dict, apply_prefix(prefix, "c_proj"), (self.config.Heads.size, self.config.KeySize.size), (es,)
             )
         )
 
@@ -216,12 +191,15 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.c_attn.In).size
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * self.Heads.size * self.KeySize.size,)
+                my_dict,
+                apply_prefix(prefix, "c_attn"),
+                (es,),
+                (3 * self.config.Heads.size * self.config.KeySize.size,),
             )
         )
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size * self.KeySize.size,), (es,)
+                my_dict, apply_prefix(prefix, "c_proj"), (self.config.Heads.size * self.config.KeySize.size,), (es,)
             )
         )
 
@@ -244,18 +222,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         ), f"embed_dim={config.Embed} must be divisible by num_heads={config.num_heads}"
 
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
-        self.attn = Gpt2Attention(
-            Pos=config.Pos,
-            KeyPos=config.KeyPos,
-            Embed=config.Embed,
-            Heads=config.Heads,
-            KeySize=config.KeySize,
-            dropout_prob=config.attn_pdrop,
-            key=k_attn,
-            scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-            upcast=config.upcast_attn,
-            use_bias=config.use_bias,
-        )
+        self.attn = Gpt2Attention(config, key=k_attn)
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
