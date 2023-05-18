@@ -22,6 +22,10 @@ class Stacked(eqx.Module, Generic[M]):
     the sequential and compiling everything as a giant graph. In Jax, this pattern is often called "scan layers" or
     "scan over layers".
 
+    A further constraint is that the elements of the stack must have the same Python control flow. This is because
+    Jax's scan primitive requires that the function you pass to it is pure, and the only way to do that is to ensure
+    that the function has the same control flow for every element of the stack.
+
     Stacked supports both "fold" and "scan" semantics. "fold" is the same as a for loop that accumulates a single
     output, while "scan" is the same as a for loop that accumulates a list of intermediates as well as the final output.
 
@@ -43,6 +47,8 @@ class Stacked(eqx.Module, Generic[M]):
         >>> mod = MyModule(5, Hidden)
         >>> mod(hax.ones(Hidden))
     """
+
+    # TODO: we can probably make this module support pipeline parallelism, but that's a whole project in itself
 
     stacked: M
     Block: Axis = eqx.static_field()

@@ -7,22 +7,22 @@ from haliax.nn.attention import alibi_attention_bias, dot_product_attention_weig
 
 
 def test_alibi_attention_bias():
-    KeySeqLen = hax.Axis("KeySeqLen", 20)
+    KeyPos = hax.Axis("KeyPos", 20)
     NumHeads = hax.Axis("NumHeads", 1)
     Hid = hax.Axis("Hid", 8)
 
-    bias = alibi_attention_bias(NumHeads, KeySeqLen)
+    bias = alibi_attention_bias(NumHeads, KeyPos)
 
     query = hax.ones((NumHeads, Hid))
-    key = hax.ones((KeySeqLen, NumHeads, Hid))
+    key = hax.ones((KeyPos, NumHeads, Hid))
 
-    weights_bias = dot_product_attention_weights(Hid, KeySeqLen, query, key, bias=bias)
-    weights_no_bias = dot_product_attention_weights(Hid, KeySeqLen, query, key)
+    weights_bias = dot_product_attention_weights(Hid, KeyPos, query, key, bias=bias)
+    weights_no_bias = dot_product_attention_weights(Hid, KeyPos, query, key)
 
-    assert weights_bias.take(KeySeqLen, -1).item() > weights_bias.take(KeySeqLen, -2).item()
-    assert weights_bias.take(KeySeqLen, -1).item() > weights_no_bias.take(KeySeqLen, -1).item()
+    assert weights_bias.take(KeyPos, -1).item() > weights_bias.take(KeyPos, -2).item()
+    assert weights_bias.take(KeyPos, -1).item() > weights_no_bias.take(KeyPos, -1).item()
 
-    assert weights_no_bias.take(KeySeqLen, -1).item() == weights_no_bias.take(KeySeqLen, -2).item()
+    assert weights_no_bias.take(KeyPos, -1).item() == weights_no_bias.take(KeyPos, -2).item()
 
 
 @skip_if_no_torch
@@ -44,26 +44,26 @@ def test_alibi_attention_compared_to_hf():
 
 
 def test_fcm_attention_mask():
-    KeySeqLen = hax.Axis("KeySeqLen", 20)
+    KeyPos = hax.Axis("KeyPos", 20)
 
-    mask = forgetful_causal_mask(KeySeqLen, mask_prob=0.6, sample_prob=False, key=PRNGKey(0))
+    mask = forgetful_causal_mask(KeyPos, mask_prob=0.6, sample_prob=False, key=PRNGKey(0))
 
-    assert mask.axes == (KeySeqLen,)
+    assert mask.axes == (KeyPos,)
     assert mask.array[0].item() == 1
 
-    assert mask.astype(float).sum().item() <= KeySeqLen.size
+    assert mask.astype(float).sum().item() <= KeyPos.size
 
-    QuerySeqLen = hax.Axis("QuerySeqLen", 10)
+    QueryPos = hax.Axis("QueryPos", 10)
     Head = hax.Axis("Head", 8)
 
-    query = hax.arange(QuerySeqLen).broadcast_axis(Head)
-    key = hax.arange(KeySeqLen).broadcast_axis(Head)
+    query = hax.arange(QueryPos).broadcast_axis(Head)
+    key = hax.arange(KeyPos).broadcast_axis(Head)
 
-    weights = dot_product_attention_weights(Head, KeySeqLen, query, key, mask=mask)
+    weights = dot_product_attention_weights(Head, KeyPos, query, key, mask=mask)
 
     # check that all masked out values are zero
     # TODO: think about how to make this work with named arrays
-    weights = weights.rearrange((KeySeqLen, QuerySeqLen)).array
+    weights = weights.rearrange((KeyPos, QueryPos)).array
     mask = mask.array
 
     assert weights[mask == 0].sum() == 0

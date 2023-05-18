@@ -381,6 +381,7 @@ __all__ = [
     "true_divide",
     "auto_sharded",
     "axis_mapping",
+    "named_pjit",
     "shard_with_axis_mapping",
     "named_pjit",
     "enable_shape_checks",
