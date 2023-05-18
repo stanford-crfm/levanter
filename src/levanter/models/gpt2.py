@@ -64,9 +64,9 @@ class Gpt2Config:
 
 
 class Gpt2Mlp(eqx.Module):
-    act: Callable = eqx.static_field()
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
+    act: Callable = eqx.static_field()
 
     def __init__(self, Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True):
         k_fc, k_proj = jrandom.split(key, 2)
@@ -85,11 +85,11 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
+    config: Gpt2Config = eqx.static_field()
+
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
-
-    config: Gpt2Config = eqx.static_field()
 
     def __init__(self, config: Gpt2Config, *, key):
         self.config = config
@@ -257,12 +257,12 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
 
 
 class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
+    Vocab: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
+
     token_embeddings: NamedArray
     position_embeddings: NamedArray
     dropout: hnn.Dropout
-
-    Vocab: Axis = eqx.static_field()
-    config: Gpt2Config = eqx.static_field()
 
     def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         super().__init__()
