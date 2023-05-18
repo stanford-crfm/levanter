@@ -88,12 +88,10 @@ class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(
-        self, Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True
-    ):
+    def __init__(self, Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        self.c_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
+        self.c_fc = hnn.Linear(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        self.c_proj = hnn.Linear(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         self.act = activation_fn  # type: ignore
@@ -202,10 +200,6 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        assert (
-            config.Embed.size % config.num_heads == 0
-        ), f"embed_dim={config.Embed} must be divisible by num_heads={config.num_heads}"
-
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(config, key=k_attn)
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
@@ -213,7 +207,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
         self.mlp = Gpt2Mlp(
             Embed=config.Embed,
-            Intermediate=config.Mlp,
+            Mlp=config.Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
@@ -292,44 +286,29 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
 class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     token_embeddings: NamedArray
     position_embeddings: NamedArray
-    token_out_embeddings: Optional[NamedArray]
     dropout: hnn.Dropout
 
-    # axes
     Vocab: Axis = eqx.static_field()
-    Pos: Axis = eqx.static_field()
-    Embed: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
 
-    def __init__(
-        self,
-        Embed: Axis,
-        Vocab: Axis,
-        Pos: Axis,
-        initializer_range: float,
-        tie_word_embeddings: bool,
-        dropout_prob: float,
-        *,
-        key,
-    ):
+    def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         super().__init__()
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
         self.Vocab = Vocab
-        self.Pos = Pos
-        self.Embed = Embed
+        self.config = config
 
-        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = sharded_normal(key=k_wpe, shape=(Pos, Embed)) * (initializer_range / 2)
-        self.dropout = hnn.Dropout(pdrop=dropout_prob)
+        initializer_range = config.initializer_range
 
-        if tie_word_embeddings:
-            self.token_out_embeddings = None
-        else:
-            self.token_out_embeddings = sharded_normal(key=k_out, shape=(Vocab, Embed)) * initializer_range
+        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, config.Embed)) * initializer_range
+        self.position_embeddings = sharded_normal(key=k_wpe, shape=(config.Pos, config.Embed)) * (
+            initializer_range / 2
+        )
+        self.dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
     @named_call
     def embed(self, input_ids, inference, *, key):
-        input_embeds = self.token_embeddings.take(self.Vocab, input_ids)
+        input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
         hidden_states = input_embeds + position_embeds
@@ -338,11 +317,9 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return hidden_states
 
     def unembed(self, hidden_states: NamedArray):
-        embeddings = self.token_out_embeddings or self.token_embeddings
-        return hax.dot(self.Embed, hidden_states, embeddings)
+        return hax.dot("embed", hidden_states, self.token_embeddings)
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
-        assert self.token_out_embeddings is None
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
@@ -356,7 +333,7 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
 
     @property
     def vocab_size(self) -> int:
-        return self.embeddings.Vocab.size
+        return self.Vocab.size
 
     @property
     def Vocab(self) -> Axis:
@@ -364,20 +341,12 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
 
     @property
     def Pos(self) -> Axis:
-        return self.embeddings.Pos
+        return self.config.Pos
 
     def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
         self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings(
-            Vocab=Vocab,
-            Embed=config.Embed,
-            Pos=config.Pos,
-            initializer_range=config.initializer_range,
-            tie_word_embeddings=True,
-            dropout_prob=config.embed_pdrop,
-            key=k_embeddings,
-        )
+        self.embeddings = Gpt2Embeddings(Vocab, config, key=k_embeddings)
 
     def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
         if not inference and key is None:
