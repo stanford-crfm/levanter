@@ -3,6 +3,7 @@ from typing import Dict, Generic, Optional, Type, TypeVar
 import equinox as eqx
 
 import haliax
+from haliax.core import Axis
 from haliax.jax_utils import filter_checkpoint
 
 
@@ -44,11 +45,11 @@ class Stacked(eqx.Module, Generic[M]):
     """
 
     stacked: M
-    Block: haliax.Axis = eqx.static_field()
+    Block: Axis = eqx.static_field()
     # TODO: support fancier gradient checkpointing
     gradient_checkpointing: bool = eqx.static_field()
 
-    def __init__(self, Block: haliax.Axis, module: Type[M], *args, gradient_checkpointing: bool = False, **kwargs):
+    def __init__(self, Block: Axis, module: Type[M], *args, gradient_checkpointing: bool = False, **kwargs):
         super().__init__()
         self.Block = Block
         self.stacked = haliax.vmap(module, Block)(*args, **kwargs)
