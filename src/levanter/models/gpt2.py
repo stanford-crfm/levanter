@@ -202,16 +202,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(config, key=k_attn)
-        self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
-
-        self.mlp = Gpt2Mlp(
-            Embed=config.Embed,
-            Mlp=config.Mlp,
-            activation_fn=config.activation_function,
-            key=k_mlp,
-            use_bias=config.use_bias,
-        )
+        self.mlp = Gpt2Mlp(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
+        self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
