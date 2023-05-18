@@ -212,10 +212,10 @@ class NamedArray:
     def split(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
-    def flatten_axes(self, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> "NamedArray":
+    def flatten_axes(self, old_axes: AxisSelection, new_axis: AxisSelector) -> "NamedArray":
         return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
 
-    def unflatten_axis(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> "NamedArray":
+    def unflatten_axis(self, axis: AxisSelector, new_axes: AxisSpec) -> "NamedArray":
         return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
 
     def unbind(self, axis: AxisSelector) -> Sequence["NamedArray"]:
@@ -733,15 +733,16 @@ def rename(array: NamedArray, renames: Mapping[AxisSelector, AxisSelector]) -> N
     return NamedArray(array.array, new_axes)
 
 
-def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> NamedArray:
+def flatten_axes(array: NamedArray, old_axes: AxisSelection, new_axis: AxisSelector) -> NamedArray:
     """
     Merge a sequence of axes into a single axis. The new axis must have the same size as the product of the old axes.
     For now the new axis will always be the last axis
     """
+    old_axes = ensure_tuple(old_axes)
+    old_axes = array.resolve_axis(old_axes)
+
     if len(old_axes) == 0:
         raise ValueError("Must specify at least one axis to merge")
-
-    old_axes = array.resolve_axis(old_axes)
 
     if isinstance(new_axis, Axis):
         if new_axis.size != prod(array.axis_size(ax) for ax in old_axes):
@@ -772,7 +773,7 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: 
     return NamedArray(raw_array, tuple(new_axes))
 
 
-def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> NamedArray:
+def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: AxisSpec) -> NamedArray:
     """
     Split an axis into a sequence of axes. The old axis must have the same size as the product of the new axes.
     """
@@ -781,6 +782,8 @@ def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axi
         raise ValueError(f"Axis {axis} not found in {array}")
 
     axis_size = array.axes[old_index].size
+
+    new_axes = ensure_tuple(new_axes)
 
     if len(new_axes) == 0:
         if axis_size == 1:
