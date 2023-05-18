@@ -47,7 +47,7 @@ def main(config: EvalGpt2Config):
     )
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    Pos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -66,8 +66,8 @@ def main(config: EvalGpt2Config):
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+            input_ids = hax.named(input_ids, (EvalBatch, Pos))
+            attn_mask = hax.nn.attention.causal_mask(config.model.Pos, config.model.KeyPos)
             attn_mask = hax.auto_sharded(attn_mask)
 
             with hax.axis_mapping(compute_axis_mapping):
@@ -76,7 +76,7 @@ def main(config: EvalGpt2Config):
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(model.SeqLen, model.Vocab, pred_y, input_ids).scalar()
+                return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
 
         # initialize the model
         @named_pjit(axis_resources=parameter_axis_mapping)

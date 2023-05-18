@@ -6,7 +6,7 @@ from typing import Optional
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
@@ -56,8 +56,8 @@ def main(config: TrainGpt2Config):
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-    SeqLen = config.model.SeqLen
-    KeySeqLen = config.model.KeySeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -121,11 +121,11 @@ def main(config: TrainGpt2Config):
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
 
             # forgetful causal masking
             if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
@@ -137,13 +137,12 @@ def main(config: TrainGpt2Config):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+                return next_token_loss(Pos, Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
@@ -172,8 +171,8 @@ def main(config: TrainGpt2Config):
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            input_ids = hax.named(input_ids, (EvalBatch, Pos))
+            mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
         # Set up evaluation
@@ -220,7 +219,7 @@ def main(config: TrainGpt2Config):
         # visualize log probs
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -229,11 +228,11 @@ def main(config: TrainGpt2Config):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, reduction=None)
+                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, SeqLen)
-                return logprobs.rearrange(("batch", SeqLen)).array
+                logprobs = haliax.roll(logprobs, 1, Pos)
+                return logprobs.rearrange(("batch", Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
@@ -270,7 +269,7 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, SeqLen))
+                    input_ids = hax.named(input_ids, (Batch, Pos))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
