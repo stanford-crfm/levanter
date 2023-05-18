@@ -54,33 +54,13 @@ class Gpt2Config:
     use_bias: bool = True
 
     # Axes
-    @property
-    def Pos(self) -> Axis:
-        return Axis(name="position", size=self.seq_len)
-
-    @property
-    def KeyPos(self) -> Axis:
-        return self.Pos.alias("key_position")
-
-    @property
-    def Embed(self) -> Axis:
-        return Axis(name="embed", size=self.hidden_dim)
-
-    @property
-    def Heads(self) -> Axis:
-        return Axis(name="heads", size=self.num_heads)
-
-    @property
-    def Layers(self) -> Axis:
-        return Axis(name="layers", size=self.num_layers)
-
-    @property
-    def Mlp(self) -> Axis:
-        return Axis(name="mlp", size=self.hidden_dim * 4)
-
-    @property
-    def KeySize(self) -> Axis:
-        return Axis(name="key_size", size=self.hidden_dim // self.num_heads)
+    Pos = property(lambda self: Axis(name="position", size=self.seq_len))
+    KeyPos = property(lambda self: self.Pos.alias("key_position"))
+    Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
+    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
+    Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
+    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * self.mlp_scale))
+    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
 
 class Gpt2Mlp(eqx.Module):
@@ -117,8 +97,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         use_bias = config.use_bias
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=config.Embed, Out=(Qkv, config.Heads, config.KeySize), key=k_c, use_bias=use_bias)
-        self.c_proj = hnn.Linear(In=(config.Heads, config.KeySize), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        self.c_attn = hnn.Linear(In=config.Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear(In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_proj, use_bias=use_bias)
         self.dropout = hnn.Dropout(config.attn_pdrop)
 
     @named_call
@@ -131,7 +111,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         v = v.rename({"position": "key_position"})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.config.KeySize.size))
+        scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
         if self.config.scale_attn_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
@@ -143,7 +123,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot("key_size", q, k)
+        attn_scores = hax.dot("head_size", q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e9
@@ -165,9 +145,9 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.c_attn.In).size
         d = {}
         num_heads = self.config.Heads.size
-        key_size = self.config.KeySize.size
-        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, num_heads, key_size)))
-        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (num_heads, key_size), (es,)))
+        head_size = self.config.HeadSize.size
+        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, num_heads, head_size)))
+        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (num_heads, head_size), (es,)))
 
         return super().from_state_dict(d, prefix)
 
@@ -179,12 +159,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
         es = cast(Axis, self.c_attn.In).size
         num_heads = self.config.Heads.size
-        key_size = self.config.KeySize.size
+        head_size = self.config.HeadSize.size
 
         my_dict.update(
-            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * num_heads * key_size,))
+            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * num_heads * head_size,))
         )
-        my_dict.update(reshape_linear_layer(my_dict, apply_prefix(prefix, "c_proj"), (num_heads * key_size,), (es,)))
+        my_dict.update(reshape_linear_layer(my_dict, apply_prefix(prefix, "c_proj"), (num_heads * head_size,), (es,)))
 
         state_dict.update(my_dict)
         return state_dict
