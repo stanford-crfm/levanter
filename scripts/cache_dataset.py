@@ -26,18 +26,20 @@ def main(args: RayCachedLMDatasetConfig):
 
     wandb.init(mode="offline")
 
-    for split in ["train", "validation"]:
+    for split in args.splits:
+        print(f"Caching {split} to {args.cache_dir}.")
+
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer)
+        split_cache_dir = os.path.join(args.cache_dir, split)
         source = args.get_shard_source(split)
-
-        cache = cache_dataset(os.path.join(args.cache_dir, split), source, batch_tokenizer, await_finished=False)
+        cache = cache_dataset(split_cache_dir, source, batch_tokenizer, await_finished=False)
 
         cache.attach_metrics_monitor(RichMetricsMonitor(source.num_shards))
         cache.attach_metrics_monitor(WandbMetricsMonitor("preprocess/" + split, commit=True))
 
         cache.await_finished()
-        print(f"Finished caching {split} to {args.cache_dir}/{split}.")
+        print(f"Finished caching {split} to {split_cache_dir}.")
 
 
 if __name__ == "__main__":

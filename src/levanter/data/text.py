@@ -14,6 +14,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
+from pyrallis import field
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -421,6 +422,8 @@ class LMDatasetConfig:
 
     create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+
+    splits: List[str] = field(default_factory=lambda: ["train", "validation"])
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
