@@ -27,9 +27,9 @@ def test_gradient_checkpointing():
         model = Gpt2LMHeadModel(Vocab, config, key=key)
         model_checkpoint = Gpt2LMHeadModel(Vocab, config_checkpoint, key=key)
 
-        input_ids = hax.arange(config.SeqLen, dtype=jnp.int32)
+        input_ids = hax.arange(config.Pos, dtype=jnp.int32)
 
-        causal_mask = hax.nn.attention.causal_mask(config.SeqLen, config.KeySeqLen)
+        causal_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
 
         a1 = model(input_ids, inference=False, key=key, attn_mask=causal_mask)
         a2 = model_checkpoint(input_ids, inference=False, key=key, attn_mask=causal_mask)

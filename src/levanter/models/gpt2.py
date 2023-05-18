@@ -55,12 +55,12 @@ class Gpt2Config:
 
     # Axes
     @property
-    def SeqLen(self) -> Axis:
-        return Axis(name="seqlen", size=self.seq_len)
+    def Pos(self) -> Axis:
+        return Axis(name="position", size=self.seq_len)
 
     @property
-    def KeySeqLen(self) -> Axis:
-        return self.SeqLen.alias(f"key_{self.SeqLen.name}")
+    def KeyPos(self) -> Axis:
+        return self.Pos.alias("key_position")
 
     @property
     def Embed(self) -> Axis:
@@ -79,8 +79,8 @@ class Gpt2Config:
         return Axis(name="mlp", size=self.hidden_dim * 4)
 
     @property
-    def HeadDim(self) -> Axis:
-        return Axis(name="head", size=self.hidden_dim // self.num_heads)
+    def KeySize(self) -> Axis:
+        return Axis(name="key_size", size=self.hidden_dim // self.num_heads)
 
 
 class Gpt2Mlp(eqx.Module):
@@ -111,11 +111,11 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
     dropout: hnn.Dropout
 
-    SeqLen: Axis = eqx.static_field()
-    HeadDim: Axis = eqx.static_field()
+    Pos: Axis = eqx.static_field()
+    KeySize: Axis = eqx.static_field()
     Heads: Axis = eqx.static_field()
     Qkv: Axis = eqx.static_field()
-    KeySeqLen: Axis = eqx.static_field()
+    KeyPos: Axis = eqx.static_field()
 
     # Mistral stability tweaks
     scale_by_inverse_layer_idx: bool = eqx.static_field()
@@ -123,11 +123,11 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
     def __init__(
         self,
-        SeqLen: Axis,
-        KeySeqLen: Axis,
+        Pos: Axis,
+        KeyPos: Axis,
         Embed: Axis,
         Heads: Axis,
-        HeadDim: Axis,
+        KeySize: Axis,
         dropout_prob: float,
         scale_by_inverse_layer_idx: bool,
         upcast: bool,
@@ -136,14 +136,14 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         use_bias: bool = True,
     ):
         self.Heads = Heads
-        self.HeadDim = HeadDim
-        self.SeqLen = SeqLen
+        self.KeySize = KeySize
+        self.Pos = Pos
         self.Qkv = Axis("qkv", 3)
-        self.KeySeqLen = KeySeqLen
+        self.KeyPos = KeyPos
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.HeadDim), key=k_c, use_bias=use_bias)
-        self.c_proj = hnn.Linear(In=(self.Heads, self.HeadDim), Out=Embed, key=k_proj, use_bias=use_bias)
+        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.KeySize), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear(In=(self.Heads, self.KeySize), Out=Embed, key=k_proj, use_bias=use_bias)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -156,12 +156,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         qkv_out = self.c_attn(hidden_states)
         q, k, v = qkv_out.unbind(self.Qkv)
 
-        # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.SeqLen: self.KeySeqLen})
-        v = v.rename({self.SeqLen: self.KeySeqLen})
+        # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
+        k = k.rename({self.Pos: self.KeyPos})
+        v = v.rename({self.Pos: self.KeyPos})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.HeadDim.size))
+        scale = jax.lax.rsqrt(float(self.KeySize.size))
         if self.scale_by_inverse_layer_idx:
             scale /= layer_idx + 1.0
 
@@ -173,15 +173,15 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot(self.HeadDim, q, k)
+        attn_scores = hax.dot(self.KeySize, q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis=self.KeyPos).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        attn_output = hax.dot(self.KeySeqLen, attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = hax.dot(self.KeyPos, attn_weights, v)  # [heads, seq_len, head_dim]
 
         attn_output = self.c_proj(attn_output)
         return attn_output
@@ -196,12 +196,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.HeadDim.size)
+                state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, self.Heads.size, self.KeySize.size)
             )
         )
         d.update(
             reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.HeadDim.size), (es,)
+                state_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size, self.KeySize.size), (es,)
             )
         )
 
@@ -216,12 +216,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.c_attn.In).size
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * self.Heads.size * self.HeadDim.size,)
+                my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * self.Heads.size * self.KeySize.size,)
             )
         )
         my_dict.update(
             reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size * self.HeadDim.size,), (es,)
+                my_dict, apply_prefix(prefix, "c_proj"), (self.Heads.size * self.KeySize.size,), (es,)
             )
         )
 
@@ -245,11 +245,11 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
         self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(
-            SeqLen=config.SeqLen,
-            KeySeqLen=config.KeySeqLen,
+            Pos=config.Pos,
+            KeyPos=config.KeyPos,
             Embed=config.Embed,
             Heads=config.Heads,
-            HeadDim=config.HeadDim,
+            KeySize=config.KeySize,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
@@ -345,14 +345,14 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
 
     # axes
     Vocab: Axis = eqx.static_field()
-    SeqLen: Axis = eqx.static_field()
+    Pos: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
 
     def __init__(
         self,
         Embed: Axis,
         Vocab: Axis,
-        SeqLen: Axis,
+        Pos: Axis,
         initializer_range: float,
         tie_word_embeddings: bool,
         dropout_prob: float,
@@ -363,11 +363,11 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
         self.Vocab = Vocab
-        self.SeqLen = SeqLen
+        self.Pos = Pos
         self.Embed = Embed
 
         self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
+        self.position_embeddings = sharded_normal(key=k_wpe, shape=(Pos, Embed)) * (initializer_range / 2)
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
@@ -411,8 +411,8 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
         return self.embeddings.Vocab
 
     @property
-    def SeqLen(self) -> Axis:
-        return self.embeddings.SeqLen
+    def Pos(self) -> Axis:
+        return self.embeddings.Pos
 
     def __init__(self, Vocab: Axis, config: Gpt2Config, *, key):
         k_t, k_embeddings = jrandom.split(key, 2)
@@ -420,7 +420,7 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
         self.embeddings = Gpt2Embeddings(
             Vocab=Vocab,
             Embed=config.Embed,
-            SeqLen=config.SeqLen,
+            Pos=config.Pos,
             initializer_range=config.initializer_range,
             tie_word_embeddings=True,
             dropout_prob=config.embed_pdrop,

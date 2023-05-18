@@ -52,7 +52,7 @@ def main(config: EvalGpt2Config):
     eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    Pos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -70,15 +70,15 @@ def main(config: EvalGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+                attn_mask = hax.nn.attention.causal_mask(config.model.Pos, config.model.KeyPos)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids).scalar()
+                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
 
         compute_loss_pjit = named_pjit(
