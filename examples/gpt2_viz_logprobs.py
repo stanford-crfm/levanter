@@ -41,7 +41,7 @@ def main(config: EvalGpt2Config):
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         EvalBatch,
     )

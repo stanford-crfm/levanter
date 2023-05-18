@@ -29,7 +29,7 @@ from pyrallis import field, parse
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import Checkpointer, CheckpointInterval
-from levanter.distributed import LevanterSlurmCluster
+from levanter.distributed import LevanterSlurmCluster, auto_ray_cluster
 from levanter.utils import cloud_utils, jax_utils
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
@@ -45,21 +45,21 @@ class WandbConfig:
     """
     Configuration for wandb.
     """
-    entity: Optional[str] = None # An entity is a username or team name where you send runs
-    project: Optional[str] = None # The name of the project where you are sending the enw run. 
-    name: Optional[str] = None # A short display name for this run, which is how you'll identify this run in the UI. 
-    tags: List[str] = field(default_factory=list) # Will populate the list of tags on this run in the UI.
-    id: Optional[str] = None # A unique ID for this run, used for resuming. It must be unique in the project
-    group: Optional[str] = None # Specify a group to organize individual runs into a larger experiment.
-    mode: Optional[str] = None # Can be "online", "offline" or "disabled". If None, it will be online.
-    resume: Optional[Union[bool, str]] = None # 
+
+    entity: Optional[str] = None  # An entity is a username or team name where you send runs
+    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
+    tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
+    id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
+    group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
+    mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be online.
+    resume: Optional[Union[bool, str]] = None  #
     """
     Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
     By default, if the new run has the same ID as a previous run, this run overwrites that data.
     Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
     document for more details.
     """
-
 
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
@@ -250,6 +250,17 @@ class DistributedConfig:
 
 
 @dataclass
+class RayConfig:
+    address: Optional[str] = None
+    start_workers: bool = True
+    auto_start_cluster: bool = True
+
+    def initialize(self):
+        if self.auto_start_cluster:
+            auto_ray_cluster(address=self.address, start_workers=self.start_workers)
+
+
+@dataclass
 class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
@@ -316,6 +327,7 @@ class TrainerConfig:
     use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
 
     distributed: DistributedConfig = DistributedConfig()
+    ray: RayConfig = RayConfig()
 
     # whether or not to require an accelerator (e.g. TPU or GPU).
     # default depends on the platform: on macos False, else True
@@ -337,6 +349,7 @@ class TrainerConfig:
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
+        self.ray.initialize()
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()

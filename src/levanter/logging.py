@@ -46,6 +46,9 @@ def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
     # Create Root Logger w/ Base Formatting
     pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
 
+    # Silence Transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
+    silence_transformer_nag()
+
 
 def save_xla_dumps_to_wandb(initial_time: float):
     import os
@@ -101,3 +104,14 @@ def jittable_wandb_log(data, *, step=None):
 
 def is_wandb_available():
     return wandb is not None and wandb.run is not None
+
+
+def silence_transformer_nag():
+    # this is a hack to silence the transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
+    # which is annoying and not useful
+    # Often we won't call this early enough, but it helps with multiprocessing stuff
+    logger = pylogging.getLogger("transformers")
+    logger.setLevel(pylogging.ERROR)
+
+    # log propagation bites us here when using ray
+    logger.propagate = False

@@ -1,9 +1,17 @@
+import atexit
+import logging
 import os
 import re
 import subprocess
 from typing import List, Optional
 
 import jax
+import ray
+from jax._src import clusters
+from jax._src.clusters import TpuCluster
+
+
+logger = logging.getLogger(__name__)
 
 
 _JOBID_PARAM = "SLURM_JOB_ID"
@@ -17,7 +25,7 @@ _VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 _NODE_NAME = "SLURM_TOPOLOGY_ADDR"
 
 
-class LevanterSlurmCluster:
+class LevanterSlurmCluster(clusters.SlurmCluster):
     """
     This class is a copy-paste and modification of the original SlurmCluster class in jax, with a few differences:
     - It uses the SLURM_LOCAL_PROCESS_COUNT to determine how many devices to use
@@ -26,19 +34,12 @@ class LevanterSlurmCluster:
     # TODO: upstream this
     """
 
-    @classmethod
-    def is_env_present(cls) -> bool:
-        return _JOBID_PARAM in os.environ
-
-    @classmethod
-    def get_local_process_id(cls) -> Optional[int]:
-        return int(os.environ[_LOCAL_PROCESS_ID])
-
     # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
-        port = int(os.environ[_JOBID_PARAM]) % 2**12 + (65535 - 2**12 + 1)
+        id = os.environ[_JOBID_PARAM]
+        port = _choose_port(id)
 
         # Parse the first hostname of the job
         # If we are looking for 'node001',
@@ -127,3 +128,70 @@ class LevanterSlurmCluster:
         # select contiguous devices for this process
         begin = local_process_id * num_devices_per_local_process
         return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+
+def _choose_port(id):
+    port = int(id) % 2**12 + (65535 - 2**12 + 1)
+    return port
+
+
+def auto_ray_cluster(
+    address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
+):
+    """Initializes ray, automatically discovering the address if it is not provided.
+    Currently supports slurm and TPU.
+
+    NB that Ray has Slurm support: https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html
+
+    We don't use that because it's more geared towards submitting jobs to a ray cluster that is backed by slurm.
+    Instead, we have our machines already.
+    """
+
+    def _munge_address_port(address: str):
+        # the coordinator address typically includes a port that jax wants to use. we want to use our own port
+        # we add a deterministic number to the chosen port and then cycle through the ephemeral range
+        # this is a hack, but it works
+        host, port_str = address.split(":")
+        port = int(port_str)
+        return host, port
+
+    if address is None:
+        # Ray automatically looks at RAY_ADDRESS. We don't want to use our defaulting logic if that is set
+        if os.getenv("RAY_ADDRESS") is not None:
+            address = os.getenv("RAY_ADDRESS")
+            logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
+        else:
+            cluster_types = [LevanterSlurmCluster, TpuCluster]
+            found = False
+            for cluster_type in cluster_types:
+                if cluster_type.is_env_present():
+                    found = True
+                    break
+
+            if not found:
+                logger.info("No auto-discovered ray address found. Using default ray.init()")
+                address = None
+            else:
+                logger.info(f"Auto-discovered ray address using {cluster_type.__name__}")
+
+                coord_address = cluster_type.get_coordinator_address()
+                host, port = _munge_address_port(coord_address)
+
+                ray_port = _choose_port(port + 10234)
+                address = f"{host}:{ray_port}"
+
+                if cluster_type.get_process_id() == 0:
+                    logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
+                    os.system(f"ray start --head --port {ray_port}")
+                    # install an atexit handler to kill the head when we exit
+                    atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                elif start_workers:
+                    logger.info(
+                        f"Starting ray worker and connecting to {address}."
+                        f" We are process {cluster_type.get_process_id()}."
+                    )
+                    os.system(f"ray start --address {address}")
+
+    logger.info(f"ray.init(address='{address}', **{kwargs})")
+    # Ray has retry logic, so we don't need to retry here :fingers-crossed:
+    ray.init(address=address, namespace=namespace, **kwargs)

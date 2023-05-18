@@ -383,6 +383,7 @@ __all__ = [
     "axis_mapping",
     "named_pjit",
     "shard_with_axis_mapping",
+    "named_pjit",
     "enable_shape_checks",
     "are_shape_checks_enabled",
     "isclose",

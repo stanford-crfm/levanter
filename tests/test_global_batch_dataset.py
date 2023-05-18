@@ -1,43 +1,46 @@
 import itertools
-from typing import Union
+from typing import Sequence, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental.maps import Mesh
 from jaxtyping import PyTree
-from transformers import BatchEncoding
-from utils import skip_if_not_enough_devices
+from test_utils import skip_if_not_enough_devices
 
 import haliax
+import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from levanter.data import ShardableDataset
 from levanter.data.sharded import GlobalBatchDataset, check_sharded_consistency
-from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
 NUM_SHARDS_TINY = 16
 
 
-def _small_dataset(seq_len=128, num_sequences=200) -> TokenSeqDataset:
-    def token_iter():
-        for i in range(num_sequences):
-            yield BatchEncoding(
-                {
-                    "input_ids": np.tile(np.arange(seq_len, dtype=np.int32) + i * 1000, (1, 1)),
-                }
-            )
+def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDataset[Sequence[int]]:
+    class SequenceDataset(levanter.data.ShardableDataset[np.ndarray]):
+        def __init__(self, sequences: Sequence[np.ndarray]):
+            self.sequences = sequences
 
-    cache = TokenizedDocumentCache.build_or_load(
-        token_iter(),
-        cache_dir=f"test_cache/{seq_len}",
-        num_shards=NUM_SHARDS_TINY,
-        flatten_docs=True,
-    )
+        def __len__(self):
+            return len(self.sequences)
 
-    return TokenSeqDataset(cache, seq_len)
+        def shard(self, shard_idx: int, num_shards: int) -> levanter.data.ShardableDataset[np.ndarray]:
+            return SequenceDataset(self.sequences[shard_idx::num_shards])
+
+        def __iter__(self):
+            yield from self.sequences
+
+        @property
+        def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+            return ShapeSpec((seq_len,), dtype=np.int32)
+
+    # sequences = [list(range(i * 1000, i * 1000 + seq_len)) for i in range(num_sequences)]
+    sequences = [np.arange(seq_len) + 1000 * i for i in range(num_sequences)]
+
+    return SequenceDataset(sequences)
 
 
 @skip_if_not_enough_devices(2)
@@ -50,7 +53,6 @@ def test_sharded_data_loading_model_axis_2():
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -71,7 +73,6 @@ def test_sharded_data_loading_model_axis_1():
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -83,7 +84,6 @@ def test_sharded_data_loading_model_axis_1():
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
-#
 def test_sharded_data_loading_len_impact():
     devices = jax.devices()
     model_axis_size = 1
@@ -111,7 +111,7 @@ def test_sharded_data_loading_len_impact():
             assert len(dataset) == process_1_len
 
 
-class StructuredDataset(ShardableDataset):
+class StructuredDataset(levanter.data.ShardableDataset):
     def __init__(self, seq_len, begin, end, stride):
         self.seq_len = seq_len
         self.begin = begin
@@ -189,7 +189,7 @@ def test_structured_batches_model_axis_2():
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
-class StructuredDatasetWithNames(ShardableDataset):
+class StructuredDatasetWithNames(levanter.data.ShardableDataset):
     def __init__(self, Height: Axis, Width: Axis, begin, end, stride):
         self.Height = Height
         self.Width = Width
