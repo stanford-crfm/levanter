@@ -77,11 +77,11 @@ class Gpt2Mlp(eqx.Module):
         self.act = activation_fn  # type: ignore
 
     @named_call
-    def __call__(self, hidden_states: NamedArray):
-        hidden_states = self.c_fc(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.c_proj(hidden_states)
-        return hidden_states
+    def __call__(self, x: NamedArray):
+        x = self.c_fc(x)
+        x = self.act(x)
+        x = self.c_proj(x)
+        return x
 
 
 class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
@@ -187,18 +187,18 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        attn_output = self.attn(self.ln_1(hidden_states), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
+        attn_output = self.attn(self.ln_1(x), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
-        hidden_states = hidden_states + attn_output
+        x = x + attn_output
 
-        ff_output = self.mlp(self.ln_2(hidden_states))
+        ff_output = self.mlp(self.ln_2(x))
         ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
-        hidden_states = hidden_states + ff_output
+        x = x + ff_output
 
-        return hidden_states
+        return x
 
 
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
@@ -225,12 +225,12 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        hidden_states = self.blocks.fold(hidden_states, attn_mask, hax.arange(self.Layers), inference, key=keys)
-        hidden_states = self.ln_f(hidden_states)
+        x = self.blocks.fold(x, attn_mask, hax.arange(self.Layers), inference, key=keys)
+        x = self.ln_f(x)
 
-        return hidden_states
+        return x
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"blocks": "h"}
@@ -280,13 +280,13 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
-        hidden_states = input_embeds + position_embeds
-        hidden_states = self.dropout(hidden_states, inference=inference, key=key)
+        x = input_embeds + position_embeds
+        x = self.dropout(x, inference=inference, key=key)
 
-        return hidden_states
+        return x
 
-    def unembed(self, hidden_states: NamedArray):
-        return hax.dot("embed", hidden_states, self.token_embeddings)
+    def unembed(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_embeddings)
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
@@ -322,9 +322,9 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
             raise ValueError("key must be provided for training")
 
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
-        lm_logits = self.embeddings.unembed(hidden_states)
+        x = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
+        x = self.transformer(x, attn_mask, inference=inference, key=k_transformer)
+        lm_logits = self.embeddings.unembed(x)
 
         return lm_logits
 
