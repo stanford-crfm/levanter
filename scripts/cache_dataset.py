@@ -22,7 +22,8 @@ def main(args: RayCachedLMDatasetConfig):
 
     tokenizer = args.the_tokenizer
 
-    for split in ["train", "validation"]:
+    for split in args.splits:
+        print(f"Caching {split} to {args.cache_dir}.")
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer)
         try:
