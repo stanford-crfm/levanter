@@ -12,8 +12,10 @@ from ..core import NamedArray
 from ..types import Axis, AxisSelector, AxisSpec
 from ..wrap import unwrap_namedarrays, wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
 from .dropout import Dropout
+from .embedding import Embedding
 from .linear import Linear
 from .normalization import LayerNorm
+from .scan import Stacked
 
 
 relu = wrap_elemwise_unary(jnn.relu)
@@ -142,4 +144,6 @@ __all__ = [
     "Dropout",
     "LayerNorm",
     "Linear",
+    "Embedding",
+    "Stacked",
 ]
