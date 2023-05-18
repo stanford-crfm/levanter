@@ -166,19 +166,10 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
         es = cast(Axis, self.c_attn.In).size
         d = {}
-        d.update(
-            reshape_linear_layer(
-                state_dict,
-                apply_prefix(prefix, "c_attn"),
-                (es,),
-                (3, self.config.Heads.size, self.config.KeySize.size),
-            )
-        )
-        d.update(
-            reshape_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.config.Heads.size, self.config.KeySize.size), (es,)
-            )
-        )
+        num_heads = self.config.Heads.size
+        key_size = self.config.KeySize.size
+        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, num_heads, key_size)))
+        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (num_heads, key_size), (es,)))
 
         return super().from_state_dict(d, prefix)
 
@@ -189,19 +180,13 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         super().update_state_dict(my_dict, prefix)
 
         es = cast(Axis, self.c_attn.In).size
+        num_heads = self.config.Heads.size
+        key_size = self.config.KeySize.size
+
         my_dict.update(
-            reshape_linear_layer(
-                my_dict,
-                apply_prefix(prefix, "c_attn"),
-                (es,),
-                (3 * self.config.Heads.size * self.config.KeySize.size,),
-            )
+            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * num_heads * key_size,))
         )
-        my_dict.update(
-            reshape_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.config.Heads.size * self.config.KeySize.size,), (es,)
-            )
-        )
+        my_dict.update(reshape_linear_layer(my_dict, apply_prefix(prefix, "c_proj"), (num_heads * key_size,), (es,)))
 
         state_dict.update(my_dict)
         return state_dict
