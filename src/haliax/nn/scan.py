@@ -3,7 +3,7 @@ from typing import Dict, Generic, Optional, Type, TypeVar
 import equinox as eqx
 
 import haliax
-from haliax import Axis
+from haliax.core import Axis
 from haliax.jax_utils import filter_checkpoint
 
 
@@ -39,7 +39,7 @@ class Stacked(eqx.Module, Generic[M]):
         ...     def __call__(self, x):
         ...         return self.layers.fold(x)  # applies each layer in sequence
         ...
-        >>> Hidden = Axis("hidden", 10)
+        >>> Hidden = hax.Axis("hidden", 10)
         >>> mod = MyModule(5, Hidden)
         >>> mod(hax.ones(Hidden))
     """

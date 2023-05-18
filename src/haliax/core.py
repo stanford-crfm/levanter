@@ -212,10 +212,10 @@ class NamedArray:
     def split(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> Sequence["NamedArray"]:
         return haliax.split(self, axis=axis, new_axes=new_axes)
 
-    def flatten_axes(self, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> "NamedArray":
+    def flatten_axes(self, old_axes: AxisSelection, new_axis: AxisSelector) -> "NamedArray":
         return haliax.flatten_axes(self, old_axes=old_axes, new_axis=new_axis)
 
-    def unflatten_axis(self, axis: AxisSelector, new_axes: Sequence[Axis]) -> "NamedArray":
+    def unflatten_axis(self, axis: AxisSelector, new_axes: AxisSpec) -> "NamedArray":
         return haliax.unflatten_axis(self, axis=axis, new_axes=new_axes)
 
     def unbind(self, axis: AxisSelector) -> Sequence["NamedArray"]:
@@ -721,15 +721,16 @@ def rename(array: NamedArray, renames: Mapping[AxisSelector, AxisSelector]) -> N
     return NamedArray(array.array, new_axes)
 
 
-def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: AxisSelector) -> NamedArray:
+def flatten_axes(array: NamedArray, old_axes: AxisSelection, new_axis: AxisSelector) -> NamedArray:
     """
     Merge a sequence of axes into a single axis. The new axis must have the same size as the product of the old axes.
     For now the new axis will always be the last axis
     """
+    old_axes = ensure_tuple(old_axes)
+    old_axes = array.resolve_axis(old_axes)
+
     if len(old_axes) == 0:
         raise ValueError("Must specify at least one axis to merge")
-
-    old_axes = array.resolve_axis(old_axes)
 
     if isinstance(new_axis, Axis):
         if new_axis.size != prod(array.axis_size(ax) for ax in old_axes):
@@ -760,7 +761,7 @@ def flatten_axes(array: NamedArray, old_axes: Sequence[AxisSelector], new_axis: 
     return NamedArray(raw_array, tuple(new_axes))
 
 
-def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axis]) -> NamedArray:
+def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: AxisSpec) -> NamedArray:
     """
     Split an axis into a sequence of axes. The old axis must have the same size as the product of the new axes.
     """
@@ -769,6 +770,8 @@ def unflatten_axis(array: NamedArray, axis: AxisSelector, new_axes: Sequence[Axi
         raise ValueError(f"Axis {axis} not found in {array}")
 
     axis_size = array.axes[old_index].size
+
+    new_axes = ensure_tuple(new_axes)
 
     if len(new_axes) == 0:
         if axis_size == 1:
@@ -793,17 +796,38 @@ def named(a: jnp.ndarray, axis: AxisSelection) -> NamedArray:
     return NamedArray(a, axes)
 
 
-def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> AxisSpec:
+@overload
+def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> Sequence[Axis]:
+    pass
+
+
+@overload
+def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> Sequence[Union[Axis, str]]:
+    pass
+
+
+def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> AxisSelection:
     """Concatenates two AxisSpec. Raises ValueError if any axis is present in both specs"""
+
+    def _ax_name(ax: AxisSelector) -> str:
+        if isinstance(ax, Axis):
+            return ax.name
+        else:
+            return ax
+
     if isinstance(a1, Axis) and isinstance(a2, Axis):
-        if a1 == a2:
+        if _ax_name(a1) == _ax_name(a2):
             raise ValueError(f"Axis {a1} specified twice")
         return (a1, a2)
     else:
         a1 = ensure_tuple(a1)
         a2 = ensure_tuple(a2)
-        if any(x in a2 for x in a1) or any(x in a1 for x in a2):
-            overlap = set(a1).intersection(set(a2))
+
+        a1_names = [_ax_name(ax) for ax in a1]
+        a2_names = [_ax_name(ax) for ax in a2]
+
+        if len(set(a1_names) & set(a2_names)) > 0:
+            overlap = [ax for ax in a1_names if ax in a2_names]
             raise ValueError(f"AxisSpecs overlap! {' '.join(str(x) for x in overlap)}")
         return a1 + a2
 
