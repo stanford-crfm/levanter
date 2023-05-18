@@ -74,6 +74,7 @@ def cache_dataset(
             break
         except GetTimeoutError:
             pass
+
     return cache
 
 
@@ -178,6 +179,7 @@ def _produce_cache_for_shard(
                     count += 1
                     chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
                     yield_chunk(chunk)
+
                     batch = []
 
             if batch:
