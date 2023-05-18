@@ -26,7 +26,7 @@ _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 logger = logging.getLogger(__name__)
 
-ROWS_PER_CHUNK = 32 * 1024  # if a doc produces ~1200 tokens, this is ~150MB chunks
+ROWS_PER_CHUNK = 1024
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
