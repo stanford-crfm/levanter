@@ -70,8 +70,8 @@ class Gpt2Mlp(eqx.Module):
 
     def __init__(self, Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = True):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.c_fc = hnn.Linear(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        self.c_proj = hnn.Linear(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
+        self.c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        self.c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         self.act = activation_fn  # type: ignore
@@ -95,10 +95,11 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         self.config = config
         Qkv = Axis("qkv", size=3)
         use_bias = config.use_bias
+        Embed = config.Embed
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=config.Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias)
-        self.c_proj = hnn.Linear(In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        self.c_attn = hnn.Linear.init(In=Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias)
+        self.c_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_proj, use_bias=use_bias)
         self.dropout = hnn.Dropout(config.attn_pdrop)
 
     @named_call
