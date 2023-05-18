@@ -180,9 +180,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     def __init__(self, config: Gpt2Config, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
         self.attn = Gpt2Attention(config, key=k_attn)
-        self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
         self.mlp = Gpt2Mlp(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
         self.resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
 
@@ -222,7 +222,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
             key=shaped_rng_split(key, config.num_layers),
             gradient_checkpointing=config.gradient_checkpointing,
         )
-        self.ln_f = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
