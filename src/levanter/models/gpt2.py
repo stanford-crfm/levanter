@@ -298,12 +298,8 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         self.Vocab = Vocab
         self.config = config
 
-        initializer_range = config.initializer_range
-
-        self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, config.Embed)) * initializer_range
-        self.position_embeddings = sharded_normal(key=k_wpe, shape=(config.Pos, config.Embed)) * (
-            initializer_range / 2
-        )
+        self.token_embeddings = sharded_normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
+        self.position_embeddings = sharded_normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         self.dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
     @named_call
