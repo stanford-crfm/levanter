@@ -424,6 +424,7 @@ class LMDatasetConfig:
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
+    rows_per_chunk: int = 2048 # number of rows to process and cache per chunk
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
