@@ -187,18 +187,22 @@ def _produce_cache_for_shard(
         if not was_finished:
             count = len(shard_metadata.chunks)
             batch = []
-            for row in shard_iter:
-                batch.append(row)
-                if len(batch) == ROWS_PER_CHUNK:
-                    # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
-                    # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
-                    # other shards since we want to stream them round-robin
-                    chunk_name = os.path.join(shard_name, f"chunk-{count}")
-                    count += 1
-                    chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
-                    yield_chunk(chunk)
+            try:
+                for row in shard_iter:
+                    batch.append(row)
+                    if len(batch) == ROWS_PER_CHUNK:
+                        # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
+                        # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
+                        # other shards since we want to stream them round-robin
+                        chunk_name = os.path.join(shard_name, f"chunk-{count}")
+                        count += 1
+                        chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
+                        yield_chunk(chunk)
 
-                    batch = []
+                        batch = []
+            except Exception as e:
+                print(f"Fail at batch {count} with {len(batch)} rows")
+                raise e
 
             if batch:
                 chunk_name = os.path.join(shard_name, f"chunk-{count}")
