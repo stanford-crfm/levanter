@@ -15,3 +15,18 @@ def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
 
     if len(batch) > 0:
         yield batch
+
+
+def safe_enumerate(iterator: Iterator[T]) -> Iterator[T]:
+    index = 0
+    while True:
+        try:
+            item = next(iterator)
+            yield item
+            index += 1
+        except StopIteration:
+            break
+        except Exception as e:
+            print(f"Error on item {index}: {e}")
+            index += 1
+            continue

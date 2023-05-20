@@ -18,7 +18,7 @@ from pyrallis import field
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
-
+from levanter.data.utils import safe_enumerate
 
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
@@ -535,20 +535,6 @@ class HFDatasetDataSource(ShardedDataSource[str]):
             self.config.id, split=self.split, name=self.config.name, streaming=self.config.stream
         )
 
-
-def safe_enumerate(iterator: Iterator[T]) -> Iterator[T]:
-    index = 0
-    while True:
-        try:
-            item = next(iterator)
-            yield item
-            index += 1
-        except StopIteration:
-            break
-        except Exception as e:
-            print(f"Error on item {index}: {e}")
-            index += 1
-            continue
 
 class TextDataSource(ShardedDataSource[str]):
     def __init__(self, config: LMDatasetConfig, split: str):
