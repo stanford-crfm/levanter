@@ -37,7 +37,7 @@ _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 logger = logging.getLogger(__name__)
 
-ROWS_PER_CHUNK = 512
+ROWS_PER_CHUNK = 2048
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
