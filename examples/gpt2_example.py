@@ -65,14 +65,14 @@ def main(config: TrainGpt2Config):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -171,7 +171,6 @@ def main(config: TrainGpt2Config):
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
@@ -219,7 +218,6 @@ def main(config: TrainGpt2Config):
         # visualize log probs
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -269,7 +267,6 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, Pos))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
