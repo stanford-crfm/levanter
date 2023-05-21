@@ -18,7 +18,7 @@ from pyrallis import field
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
-from levanter.data.utils import safe_enumerate
+from levanter.data.utils import safe_enumerate_iterable
 
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
@@ -523,7 +523,7 @@ class HFDatasetDataSource(ShardedDataSource[str]):
             shard = dataset
 
         idx = 0
-        for _, doc in safe_enumerate(shard):
+        for _, doc in safe_enumerate_iterable(shard):
             if idx >= row:
                 yield doc[self.config.text_key]
             idx += 1
