@@ -252,7 +252,7 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
                 break
 
         log_probs = _concatenate(log_probs)
-        targets = _concatenate(targets)
+        targets = _concatenate([t.array for t in targets])
 
         # gather the log probs and targets
         # TODO: is this still necessary?

@@ -41,7 +41,7 @@ def main(config: EvalGpt2Config):
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos),
         config.trainer.device_mesh,
         EvalBatch,
     )
@@ -66,7 +66,6 @@ def main(config: EvalGpt2Config):
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             attn_mask = hax.nn.attention.causal_mask(config.model.Pos, config.model.KeyPos)
             attn_mask = hax.auto_sharded(attn_mask)
 
