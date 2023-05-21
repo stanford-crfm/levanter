@@ -3,6 +3,8 @@ from typing import List, Sequence, TypeVar
 
 import pytest
 import ray
+
+from haliax import Axis
 from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 from transformers import AutoTokenizer, BatchEncoding
 
@@ -158,6 +160,7 @@ def test_doc_cache_sharding():
     [(3, 10, 7), (3, 10, 1), (3, 10, 10), (1, 10, 10), (1, 10, 5), (1, 10, 1), (1, 10, 7), (3, 10, 20), (2, 10, 21)],
 )
 def test_token_seq_dataset_len_is_correct(flatten_docs, num_docs, seq_len, doc_length):
+    Pos = Axis("Pos", seq_len)
     docs = [
         BatchEncoding(data=dict(input_ids=[list(range(i * doc_length, (i + 1) * doc_length))]))
         for i in range(num_docs)
@@ -169,7 +172,7 @@ def test_token_seq_dataset_len_is_correct(flatten_docs, num_docs, seq_len, doc_l
         cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=flatten_docs)
 
-        ds = TokenSeqDataset(cache, seq_len)
+        ds = TokenSeqDataset(cache, Pos)
         assert len(ds) == (total_tokens_in_docs // seq_len)
         all_examples = list(ds)
         assert len(all_examples) == (total_tokens_in_docs // seq_len)
