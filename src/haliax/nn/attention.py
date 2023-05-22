@@ -37,11 +37,11 @@ def dot_product_attention_weights(
     "Pos" axis in query must be distinct from the "Pos" axis in key.
 
     :param Head: Axis of head dimension
-    :param KPos: Axis of key sequence. Can be an AxisSpec to attend along more than one axis.
-    :param query: NamedArray of shape (QPos, HeadDim)
-    :param key: NamedArray of shape (KPos, HeadDim)
-    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QPos, KPos). Should be boolean
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QPos, KPos). Should be float
+    :param KPos: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
+    :param query: NamedArray of shape (QPos, KeySize)
+    :param key: NamedArray of shape (KPos, KeySize)
+    :param mask: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be boolean
+    :param bias: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be float
     :param attention_dtype: Optional dtype to use for attention
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
     :return: NamedArray of shape (QPos, KPos)
@@ -71,7 +71,7 @@ def dot_product_attention_weights(
 def dot_product_attention(
     QPos: Axis,
     KPos: Axis,
-    HeadDim: Axis,
+    KeySize: Axis,
     query: NamedArray,
     key: NamedArray,
     value: NamedArray,
@@ -85,19 +85,19 @@ def dot_product_attention(
 
     :param QPos: Axis of sequence length
     :param KPos: Axis of key sequence length
-    :param HeadDim: Axis of head dimension
-    :param query: NamedArray of shape (QPos, HeadDim)
-    :param key: NamedArray of shape (KPos, HeadDim)
-    :param value: NamedArray of shape (KPos, HeadDim)
-    :param mask: Optional[NamedArray] broadcast compatible with (HeadDim, QPos, KPos). Should be boolean
-    :param bias: Optional[NamedArray] broadcast compatible with (HeadDim, QPos, KPos). Should be float
+    :param KeySize: Axis of head dimension
+    :param query: NamedArray of shape (QPos, KeySize)
+    :param key: NamedArray of shape (KPos, KeySize)
+    :param value: NamedArray of shape (KPos, KeySize)
+    :param mask: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be boolean
+    :param bias: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be float
     :param attention_dtype: Optional dtype to use for attention
     :param precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
-    :return: NamedArray of shape (QPos, HeadDim)
+    :return: NamedArray of shape (QPos, KeySize)
 
     Mask and bias are given as separate arguments because they are often computed separately and have different shapes.
     For example, mask is frequently just a boolean array of shape (QPos, KPos), while bias is frequently a float
-    array of shape (HeadDim, QPos, KPos) or (HeadDim, KPos)
+    array of shape (KeySize, QPos, KPos) or (KeySize, KPos)
     """
     # cf https://github.com/google/flax/blob/509bf97ea272e130d932920f45307ac98947d994/flax/linen/attention.py#L125
 
@@ -107,7 +107,7 @@ def dot_product_attention(
         key = key.rename({KPos: QPos})
         value = value.rename({KPos: QPos})
 
-    weights = dot_product_attention_weights(HeadDim, KPos, query, key, mask, bias, attention_dtype, precision)
+    weights = dot_product_attention_weights(KeySize, KPos, query, key, mask, bias, attention_dtype, precision)
 
     return haliax.dot(KPos, weights, value)
 

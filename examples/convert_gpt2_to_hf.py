@@ -60,7 +60,7 @@ def main(config: ConvertGpt2Config):
         # we want to call this in case we're on a TPU node
         jax.process_index()
 
-        model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+        model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
 
         if config.old_style_model:
             model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)

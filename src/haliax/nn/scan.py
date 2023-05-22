@@ -1,4 +1,5 @@
-from typing import Dict, Generic, Optional, Type, TypeVar
+import functools
+from typing import Dict, Generic, Optional, Protocol, Type, TypeVar
 
 import equinox as eqx
 
@@ -7,7 +8,12 @@ from haliax.core import Axis
 from haliax.jax_utils import filter_checkpoint
 
 
-M = TypeVar("M", bound=eqx.Module)
+M = TypeVar("M", bound=eqx.Module, covariant=True)
+
+
+class ModuleInit(Protocol[M]):
+    def __call__(self, *args, **kwargs) -> M:
+        ...
 
 
 class Stacked(eqx.Module, Generic[M]):
@@ -38,7 +44,7 @@ class Stacked(eqx.Module, Generic[M]):
         >>> class MyModule(eqx.Module):
         ...     def __init__(self, num_layers: int, hidden: hax.Axis, *, key):
         ...         self.axis = Axis("layer", num_layers)
-        ...         self.layers = Stacked(self.axis, hnn.Linear, In=hidden, Out=hidden, key=key)
+        ...         self.layers = Stacked.init(self.axis, hnn.Linear)(In=hidden, Out=hidden, key=key)
         ...
         ...     def __call__(self, x):
         ...         return self.layers.fold(x)  # applies each layer in sequence
@@ -55,11 +61,14 @@ class Stacked(eqx.Module, Generic[M]):
     # TODO: support fancier gradient checkpointing
     gradient_checkpointing: bool = eqx.static_field()
 
-    def __init__(self, Block: Axis, module: Type[M], *args, gradient_checkpointing: bool = False, **kwargs):
-        super().__init__()
-        self.Block = Block
-        self.stacked = haliax.vmap(module, Block)(*args, **kwargs)
-        self.gradient_checkpointing = gradient_checkpointing
+    @staticmethod
+    def init(Block: Axis, module: Type[M], *, gradient_checkpointing: bool = False) -> ModuleInit["Stacked[M]"]:
+        @functools.wraps(module)
+        def fn(*args, **kwargs):
+            stacked = haliax.vmap(module.init, Block)(*args, **kwargs)
+            return Stacked(stacked, Block, gradient_checkpointing)
+
+        return fn
 
     def scan(self, init, *extra_args, **extra_kwargs):
         if self.gradient_checkpointing:
