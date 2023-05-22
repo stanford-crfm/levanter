@@ -65,14 +65,14 @@ def main(config: TrainGpt2Config):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
