@@ -434,7 +434,7 @@ class LMDatasetConfig:
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer)
+        cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
         return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):

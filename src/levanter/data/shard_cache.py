@@ -38,7 +38,7 @@ _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
 logger = logging.getLogger(__name__)
 
-ROWS_PER_CHUNK = 2048
+DEFAULT_ROWS_PER_CHUNK = 1024 * 32
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
@@ -82,10 +82,11 @@ def cache_dataset(
     input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T],
     batch_size: int = 1,
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
     await_finished: bool = True,
 ) -> "ShardCache":
     # first see if we need to do anything
-    cache = ShardCache(cache_dir, input_shards, processor, batch_size)
+    cache = ShardCache(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
 
     while await_finished:
         try:
@@ -154,7 +155,7 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
 
 @ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
-    sink: ActorHandle, source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str
+    sink: ActorHandle, source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str, rows_per_chunk: int
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
@@ -191,7 +192,7 @@ def _produce_cache_for_shard(
             try:
                 for row in safe_enumerate_iterable(shard_iter):
                     batch.append(row)
-                    if len(batch) == ROWS_PER_CHUNK:
+                    if len(batch) == rows_per_chunk:
                         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
                         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
                         # other shards since we want to stream them round-robin
@@ -331,11 +332,11 @@ class WandbMetricsMonitor(MetricsMonitor):
         wandb.log(to_log, commit=self.commit)
 
 
-def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T]):
+def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
     try:
         return _load_cache_ledger(cache_dir)
     except FileNotFoundError:
-        return _get_broker_actor(cache_dir, input_shards, processor)
+        return _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk)
 
 
 @ray.remote(num_cpus=0)
@@ -350,7 +351,7 @@ class ChunkCacheBuilder:
     lose that property.
     """
 
-    def __init__(self, broker_ref, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
+    def __init__(self, broker_ref, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
         self.broker_ref = broker_ref
         self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
         self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
@@ -367,7 +368,7 @@ class ChunkCacheBuilder:
                 self.buffered_shard_chunks[shard_name] = []
 
                 self.current_shard_tasks[shard_name] = _produce_cache_for_shard.remote(
-                    self_ref, source, shard_name, processor, cache_dir
+                    self_ref, source, shard_name, processor, cache_dir, rows_per_chunk
                 )
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
@@ -473,13 +474,14 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
-    def __init__(self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T]):
+    def __init__(self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
         self._source = source
         self._processor = processor
         self._cache_dir = cache_dir
+        self._rows_per_chunk = rows_per_chunk
         self._finished_promise = asyncio.Future()
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
@@ -494,7 +496,7 @@ class ChunkCacheBroker:
             self._finished_promise.set_result(None)
         except FileNotFoundError:
             self_ref = ray.runtime_context.get_runtime_context().current_actor
-            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, self._source, self._processor)  # type: ignore
+            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, self._source, self._processor, self._rows_per_chunk)  # type: ignore
 
     def is_finished(self):
         return self._is_finished
@@ -572,12 +574,13 @@ class ChunkCacheBroker:
         self._do_notify()
 
 
-def _get_broker_actor(cache_dir, input_shards, processor):
+def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk):
     return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
         cache_dir,
         input_shards,
         processor,
+        rows_per_chunk,
     )
 
 
@@ -623,13 +626,14 @@ class ShardCache(Iterable[pa.RecordBatch]):
     _metrics_monitors: List[MetricsMonitor]
 
     def __init__(
-        self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int
+        self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int, rows_per_chunk: int
     ):
         self.cache_dir = cache_dir
         self.shard_source = shard_source
         self.processor = processor
+        self.rows_per_chunk = rows_per_chunk
 
-        ledger_or_broker = _ledger_or_broker(cache_dir, shard_source, processor)
+        ledger_or_broker = _ledger_or_broker(cache_dir, shard_source, processor, rows_per_chunk)
         if isinstance(ledger_or_broker, CacheLedger):
             self._ledger = ledger_or_broker
             self._broker = None
