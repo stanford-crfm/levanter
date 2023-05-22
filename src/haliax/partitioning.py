@@ -112,22 +112,24 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping, mesh: Optional[Mesh]
             if not is_named_array(x):
                 return x
 
-            sharding = infer_resource_partitions(x, mapping, mesh=mesh, preserve_existing_shardings=False)
-
             raw_x = x.array
             current_sharding = raw_x.sharding
 
-            if current_sharding == sharding:
+            desired_sharding = infer_resource_partitions(
+                x, mapping, mesh=mesh, preserve_existing_shardings=False
+            ).array
+
+            if current_sharding == desired_sharding:
                 return x
-            elif sharding.is_fully_addressable:
-                raw_x = jax.device_put(raw_x, sharding)
+            elif desired_sharding.is_fully_addressable:
+                raw_x = jax.device_put(raw_x, desired_sharding)
                 return NamedArray(raw_x, x.axes)
             else:
                 # if the sharding is not fully addressable, we can't use device_put, so we use this hacky workaround.
                 # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
                 # context, I think?
                 shape = raw_x.shape
-                raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+                raw_x = jax.make_array_from_callback(shape, desired_sharding, lambda index: raw_x[index])
                 return NamedArray(raw_x, x.axes)
 
         return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
