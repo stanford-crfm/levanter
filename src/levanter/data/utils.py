@@ -18,7 +18,6 @@ def batched(iterable: Iterable[T], batch_size: int) -> Iterator[List[T]]:
 
 
 def safe_enumerate(iterator: Iterator[T]) -> Iterator[T]:
-    assert isinstance(iterator, Iterator), f"{iterator} is not an iterator!"
     index = 0
     while True:
         try:
@@ -34,5 +33,4 @@ def safe_enumerate(iterator: Iterator[T]) -> Iterator[T]:
 
 
 def safe_enumerate_iterable(iterable: Iterable[T]) -> Iterable[T]:
-    assert isinstance(iterable, Iterable), f"{iterable} is not iterable!"
     return safe_enumerate(iter(iterable))
