@@ -194,12 +194,12 @@ def named_jit(
     **pjit_args,
 ):
     """
-    A version of pjit that uses NamedArrays and the provided resource mapping to infer the
-    resource partitions.
+    A version of pjit that uses NamedArrays and the provided resource mapping to infer the resource partitions.
 
     If no resource mapping is provided, this function attempts to use the global resource mapping.
-    axis_resources will be used for a context-specific resource mapping as well as in_axis_resources and out_axis_resources
-    if they are not provided.
+    axis_resources will be used for a context-specific resource mapping. In addition, if in_axis_resources is not
+    provided, the arguments' own (pre-existing) shardings will be used as the in_axis_resources.
+    If out_axis_resources is not provided, axis_resources will be used as the out_axis_resources.
 
     :param fn: The function to be jit'd
     :param axis_resources: A mapping from logical axis names to physical axis names
