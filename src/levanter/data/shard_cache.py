@@ -155,7 +155,12 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
 
 @ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
-    sink: ActorHandle, source: ShardedDataSource[T], shard_name: str, processor: BatchProcessor[T], cache_dir: str, rows_per_chunk: int
+    sink: ActorHandle,
+    source: ShardedDataSource[T],
+    shard_name: str,
+    processor: BatchProcessor[T],
+    cache_dir: str,
+    rows_per_chunk: int,
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
@@ -262,7 +267,6 @@ class MetricsMonitor(Protocol):
 
 
 class RichMetricsMonitor(MetricsMonitor):
-
     progress: Optional[Progress]  # type: ignore
     task: Optional[TaskID]
 
@@ -332,7 +336,9 @@ class WandbMetricsMonitor(MetricsMonitor):
         wandb.log(to_log, commit=self.commit)
 
 
-def _ledger_or_broker(cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
+def _ledger_or_broker(
+    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
+):
     try:
         return _load_cache_ledger(cache_dir)
     except FileNotFoundError:
@@ -351,7 +357,14 @@ class ChunkCacheBuilder:
     lose that property.
     """
 
-    def __init__(self, broker_ref, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
+    def __init__(
+        self,
+        broker_ref,
+        cache_dir: str,
+        source: ShardedDataSource[T],
+        processor: BatchProcessor[T],
+        rows_per_chunk: int,
+    ):
         self.broker_ref = broker_ref
         self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
         self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
@@ -474,7 +487,9 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
-    def __init__(self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int):
+    def __init__(
+        self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
+    ):
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
@@ -626,7 +641,12 @@ class ShardCache(Iterable[pa.RecordBatch]):
     _metrics_monitors: List[MetricsMonitor]
 
     def __init__(
-        self, cache_dir: str, shard_source: ShardedDataSource[T], processor: BatchProcessor[T], batch_size: int, rows_per_chunk: int
+        self,
+        cache_dir: str,
+        shard_source: ShardedDataSource[T],
+        processor: BatchProcessor[T],
+        batch_size: int,
+        rows_per_chunk: int,
     ):
         self.cache_dir = cache_dir
         self.shard_source = shard_source

@@ -35,11 +35,11 @@ def main(args: RayCachedLMDatasetConfig):
         source = args.get_shard_source(split)
         rows_per_chunk = args.rows_per_shard
         cache = cache_dataset(
-            cache_dir=split_cache_dir, 
-            input_shards=source, 
-            processor=batch_tokenizer, 
-            rows_per_chunk=rows_per_chunk, 
-            await_finished=False
+            cache_dir=split_cache_dir,
+            input_shards=source,
+            processor=batch_tokenizer,
+            rows_per_chunk=rows_per_chunk,
+            await_finished=False,
         )
 
         cache.attach_metrics_monitor(RichMetricsMonitor(source.num_shards))
