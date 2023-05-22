@@ -14,7 +14,7 @@ import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
@@ -105,7 +105,7 @@ def main(config: TrainGpt2Config):
         # 1) initializes model weights
         # 2) ensures all model weights are the right dtype
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
             model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
@@ -117,7 +117,7 @@ def main(config: TrainGpt2Config):
         # initialize the optimizer
         # This is basically the same as the model.
         optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
@@ -143,7 +143,7 @@ def main(config: TrainGpt2Config):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
@@ -169,7 +169,7 @@ def main(config: TrainGpt2Config):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
@@ -216,7 +216,7 @@ def main(config: TrainGpt2Config):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)

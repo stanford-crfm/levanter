@@ -11,7 +11,7 @@ from transformers import GPT2Tokenizer
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.partitioning import named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
@@ -79,9 +79,8 @@ def main(config: EvalGpt2Config):
         def mean_loss(model: Gpt2LMHeadModel, input_ids: hax.NamedArray):
             return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids))
 
-        compute_loss_pjit = named_pjit(
+        compute_loss_pjit = named_jit(
             mean_loss,
-            in_axis_resources=parameter_axis_mapping,
             out_axis_resources=compute_axis_mapping,
             axis_resources=compute_axis_mapping,
         )
@@ -106,7 +105,7 @@ def main(config: EvalGpt2Config):
         # initialize the model
         if config.checkpoint_path is not None:
 
-            @named_pjit(axis_resources=parameter_axis_mapping)
+            @named_jit(axis_resources=parameter_axis_mapping)
             def init_model():
                 model = Gpt2LMHeadModel(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)

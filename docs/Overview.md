@@ -876,9 +876,10 @@ devices = onp.array(jax.devices())
 key = jax.random.PRNGKey(0)
 
 with Mesh(devices, ("data",)) as mesh:
-    @hax.named_pjit(axis_resources=axis_mapping)
+    @hax.named_jit(axis_resources=axis_mapping)
     def matmul(y, x):
         return hax.dot("Embed", x, y)
+
 
     inputs = jax.random.normal(key, (Batch, Embed))
     weights = jax.random.normal(key, (Embed, Mlp))
@@ -897,6 +898,7 @@ and the "parameter" mapping will instead shard our *parameters and optimizer sta
 
 ```python
 import haliax as hax
+
 training_data = load_training_data()
 model_config = Gpt2Config()
 
@@ -914,10 +916,11 @@ param_mapping = {"embed": "data"}
 
 with Mesh(jax.devices(), ("data",)):
     # NEW: partition the model and optimizer state when we instantiate it
-    model = hax.named_pjit(Gpt2LMHeadModel, axis_resources=param_mapping)(SeqLen, model_config, key=model_key)
+    model = hax.named_jit(Gpt2LMHeadModel, axis_resources=param_mapping)(SeqLen, model_config, key=model_key)
 
     optimizer = optax.adamw(learning_rate=1e-4)
-    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+    opt_state = hax.named_jit(optimizer.init, axis_resources=param_mapping)(model)
+
 
     # loss of a single example
     def compute_loss(model, input_ids, key, inference):
@@ -926,25 +929,29 @@ with Mesh(jax.devices(), ("data",)):
             pred_y = model(input_ids, key=key, inference=inference)
             return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
 
+
     # loss of a batch
     def train_batch_loss(model, input_ids, key):
         per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
         return hax.mean(per_ex_loss, "batch").scalar()
 
+
     # return value and gradient of loss
     grad_loss = eqx.filter_value_and_grad(train_batch_loss)
 
+
     def train_step(model, opt_state, input_ids, keys):
-       loss, grads = grad_loss(model, input_ids, keys)
+        loss, grads = grad_loss(model, input_ids, keys)
 
-       # distribute gradients across the mesh and apply them
-       updates, opt_state = optimizer.update(grads, opt_state, params=model)
-       model = eqx.apply_updates(model, updates)
+        # distribute gradients across the mesh and apply them
+        updates, opt_state = optimizer.update(grads, opt_state, params=model)
+        model = eqx.apply_updates(model, updates)
 
-       return loss, model, opt_state
+        return loss, model, opt_state
+
 
     # NEW: use named pjit to partition the train step
-    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+    train_step_pjit = hax.named_jit(train_step, axis_resources=param_mapping)
 
     for batch_input_ids in training_data:
         my_key, training_key = jrandom.split(training_key, 2)
@@ -1055,15 +1062,17 @@ param_mapping = {"embed": "data"}
 
 with Mesh(jax.devices(), ("data",)):
     # NEW: cast the model to the param dtype
-    @hax.named_pjit(axis_resources=param_mapping)
+    @hax.named_jit(axis_resources=param_mapping)
     def init_model():
         model = Gpt2LMHeadModel(model_config, key=model_key)
         return policy.cast_to_param(model)
 
+
     model = init_model()
 
     optimizer = optax.adamw(learning_rate=1e-4)
-    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+    opt_state = hax.named_jit(optimizer.init, axis_resources=param_mapping)(model)
+
 
     # loss of a single example
     def compute_loss(model, input_ids, key, inference):
@@ -1075,13 +1084,16 @@ with Mesh(jax.devices(), ("data",)):
             pred_y = policy.cast_to_output(pred_y)
             return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
 
+
     # loss of a batch
     def train_batch_loss(model, input_ids, key):
         per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
         return hax.mean(per_ex_loss, "batch").scalar()
 
+
     # return value and gradient of loss
     grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
 
     def train_step(model, opt_state, input_ids, keys):
         loss, grads = grad_loss(model, input_ids, keys)
@@ -1092,7 +1104,8 @@ with Mesh(jax.devices(), ("data",)):
 
         return loss, model, opt_state
 
-    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+
+    train_step_pjit = hax.named_jit(train_step, axis_resources=param_mapping)
 
     for batch_input_ids in training_data:
         my_key, training_key = jrandom.split(training_key, 2)
@@ -1169,9 +1182,10 @@ parameter.
 This is where named axes come in. With Haliax, you can specify a "physical" (i.e. mesh) axis name for each
 named axis in your model. Then, you just call `named_pjit` with the name of the function you want to partition, and
 the `dict` containing those mappings. That's it! Here's that same example from above, but using named axes:
+
 ```python
 import haliax as hax
-from haliax.partitioning import named_pjit
+from haliax.partitioning import named_jit
 import jax
 import numpy as onp
 
@@ -1182,14 +1196,16 @@ Intermediate = hax.Axis("intermediate", 512)
 inputs = hax.ones((Batch, Embed))
 weights = hax.ones((Embed, Intermediate))
 
+
 def matmul(weights, inputs):
     return weights.dot(Embed, inputs)
+
 
 # assume we have 8 devices, e.g. a v3-8 TPU node
 devices = onp.array(jax.devices()).reshape((4, 2))
 mesh = Mesh(devices, ("model", "data"))
 
-pjit_matmul = named_pjit(matmul, axis_resources={"intermediate": "model", "batch": "data"})
+pjit_matmul = named_jit(matmul, axis_resources={"intermediate": "model", "batch": "data"})
 
 with mesh:
     print(pjit_matmul(x, y))
@@ -1232,15 +1248,17 @@ model_axis_size = 2
 mesh = Mesh(onp.array(jax.devices()).reshape((-1, model_axis_size)), ("data", "model"))
 
 with mesh:
-    @hax.named_pjit(axis_resources=param_mapping)
+    @hax.named_jit(axis_resources=param_mapping)
     def init_model():
         model = Gpt2LMHeadModel(model_config, key=model_key)
         return policy.cast_to_param(model)
 
+
     model = init_model()
 
     optimizer = optax.adamw(learning_rate=1e-4)
-    opt_state = hax.named_pjit(optimizer.init, axis_resources=param_mapping)(model)
+    opt_state = hax.named_jit(optimizer.init, axis_resources=param_mapping)(model)
+
 
     # loss of a single example
     def compute_loss(model, input_ids, key, inference):
@@ -1250,13 +1268,16 @@ with mesh:
             pred_y = policy.cast_to_output(pred_y)
             return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
 
+
     # loss of a batch
     def train_batch_loss(model, input_ids, key):
         per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, key, inference=False)
         return hax.mean(per_ex_loss, "batch").scalar()
 
+
     # return value and gradient of loss
     grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
 
     def train_step(model, opt_state, input_ids, keys):
         loss, grads = grad_loss(model, input_ids, keys)
@@ -1267,7 +1288,8 @@ with mesh:
 
         return loss, model, opt_state
 
-    train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping)
+
+    train_step_pjit = hax.named_jit(train_step, axis_resources=param_mapping)
 
     for batch_input_ids in training_data:
         my_key, training_key = jrandom.split(training_key, 2)
@@ -1311,7 +1333,8 @@ def train_step(model, opt_state, input_ids, keys):
 
     return loss, model, opt_state
 
-train_step_pjit = hax.named_pjit(train_step, axis_resources=param_mapping, donate=(True, True, False, False))
+
+train_step_pjit = hax.named_jit(train_step, axis_resources=param_mapping, donate=(True, True, False, False))
 ```
 
 ## Random Gotchas

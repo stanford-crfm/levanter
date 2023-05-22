@@ -10,7 +10,7 @@ from test_utils import skip_if_not_enough_devices
 
 import haliax as hax
 from haliax import Axis, NamedArray
-from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_pjit
+from haliax.partitioning import ResourceAxis, axis_mapping, infer_resource_partitions, named_jit
 
 
 class MyModule(eqx.Module):
@@ -30,12 +30,15 @@ resource_map = {
 
 
 def test_infer_named_axes():
-    with axis_mapping(resource_map):
+    mesh = Mesh(np.array(jax.devices()).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL))
+    with axis_mapping(resource_map), mesh:
         mod = MyModule(named=hax.ones((Dim1, Dim2, Dim3)), unnamed1=jnp.ones(Dim2.size), static_field=1)
 
         axes: MyModule = infer_resource_partitions(mod)
 
-        assert axes.named.array == PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
+        spec = PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
+
+        assert axes.named.array == NamedSharding(mesh, spec)
         assert axes.unnamed1 is None or isinstance(axes.unnamed1, SingleDeviceSharding)
 
 
@@ -56,8 +59,8 @@ class MyModuleInit(eqx.Module):
 def test_pjit_class_init():
     with axis_mapping(resource_map):
         devices = jax.devices()
-        with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod = named_pjit(MyModuleInit)()
+        with Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+            mod = named_jit(MyModuleInit)()
 
         assert mod.named.array.shape == (Dim2.size, Dim3.size)
 
@@ -76,8 +79,8 @@ def test_pjit_class_nested_init():
                 self.inner = MyModuleInit()
 
         devices = jax.devices()
-        with pxla.Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod2 = named_pjit(Mod2)()
+        with Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+            mod2 = named_jit(Mod2)()
 
         mod = mod2.inner
         assert mod.named.array.shape == (Dim2.size, Dim3.size)
@@ -97,8 +100,8 @@ def test_pjit_class_init_with_args():
                 self.array2 = hax.zeros(Dim3)
 
         devices = jax.devices()
-        with pxla.Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
-            mod = named_pjit(ModWithArgs)(hax.ones((Dim1, Dim2)))
+        with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+            mod = named_jit(ModWithArgs)(hax.ones((Dim1, Dim2)))
         assert isinstance(mod, ModWithArgs)
         assert mod.array.array.shape == (Dim1.size, Dim2.size)
         assert mod.array2.array.shape == (Dim3.size,)
@@ -113,7 +116,7 @@ def test_infer_resource_partition_gda_bug():
             def foo():
                 return hax.zeros((Dim1, Dim2, Dim3))
 
-            pjit_foo = named_pjit(foo, resource_map)
+            pjit_foo = named_jit(foo, resource_map)
             r = pjit_foo()
             assert r.axes == (Dim1, Dim2, Dim3)
 
@@ -121,7 +124,7 @@ def test_infer_resource_partition_gda_bug():
                 return x
 
             # this won't work with GDAs
-            pjit_bar = named_pjit(bar, resource_map)
+            pjit_bar = named_jit(bar, resource_map)
             r = pjit_bar(r)
             assert r.axes == (Dim1, Dim2, Dim3)
 
