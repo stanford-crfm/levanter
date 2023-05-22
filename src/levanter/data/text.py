@@ -10,11 +10,15 @@ from typing import Iterator, List, Optional, Sequence, Union
 import braceexpand
 import datasets
 import fsspec
+import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
 from pyrallis import field
+
+import haliax as hax
+from haliax import Axis, NamedArray
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -47,23 +51,30 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset(ShardableDataset[Sequence[int]]):
+class TokenSeqDataset(ShardableDataset[NamedArray]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
+
+    :param doc_cache: the TokenizedDocumentCache to draw from
+    :param pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
     """
 
-    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
+    def __init__(self, doc_cache, Pos: Axis, stride: Optional[int] = None):
         self.doc_cache = doc_cache
-        self.seq_len = seq_len
+        self.Pos = Pos
         self.stride = stride
+
+    @property
+    def seq_len(self) -> int:
+        return self.Pos.size
 
     def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.Pos, self.stride)
 
-    def __iter__(self) -> Iterator[Sequence[int]]:
+    def __iter__(self) -> Iterator[NamedArray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
 
@@ -79,11 +90,12 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
                     extra_tokens = encoded_slice
                 else:
                     extra_tokens = None
-                    yield encoded_slice["input_ids"]
+                    ids = encoded_slice["input_ids"]
+                    yield hax.named(ids, self.Pos)
 
     @property
     def item_shape(self) -> PyTree:
-        return ShapeSpec((self.seq_len,), dtype=np.int32)
+        return NamedShapeSpec((self.Pos,), jnp.int32)
 
     def __len__(self):
         total_tokens = self.doc_cache.total_tokens
@@ -93,9 +105,9 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
             return (total_tokens - self.seq_len) // self.stride + 1
 
     @staticmethod
-    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
+    def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return TokenSeqDataset(doc_cache, seq_len, stride)
+        return TokenSeqDataset(doc_cache, pos, stride)
 
 
 def _load_old_ledger(cache_dir):

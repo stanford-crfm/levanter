@@ -42,14 +42,14 @@ def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+    Batch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
+    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, Batch)
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
@@ -78,8 +78,7 @@ def main(config: EvalGpt2Config):
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
-            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
+            return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids))
 
         compute_loss_pjit = named_pjit(
             mean_loss,

@@ -6,7 +6,7 @@ from typing import Optional
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
@@ -65,14 +65,14 @@ def main(config: TrainGpt2Config):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -143,7 +143,6 @@ def main(config: TrainGpt2Config):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        # training loop
         @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
@@ -172,7 +171,6 @@ def main(config: TrainGpt2Config):
 
         @named_pjit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
@@ -220,7 +218,6 @@ def main(config: TrainGpt2Config):
         # visualize log probs
         @named_pjit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, Pos))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -270,7 +267,6 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, Pos))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)

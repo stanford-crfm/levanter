@@ -23,6 +23,7 @@ from levanter.compat.torch_serialization import (
 )
 
 
+# we use sharded_normal here so that the random initialization can be split across devices
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
 
 
@@ -147,7 +148,6 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-
         es = cast(Axis, self.c_attn.In).size
         d = {}
         num_heads = self.config.Heads.size

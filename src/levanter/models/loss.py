@@ -16,7 +16,6 @@ def next_token_loss(
     loss_fn: Callable[[NamedArray, hax.AxisSelector, NamedArray], NamedArray] = cross_entropy_loss,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
 ):
-
     Pos, Vocab = pred_ids.resolve_axis((Pos, Vocab))
     # need to roll the target tokens back by one so that each token is predicting the next token
     target_y = hax.roll(true_ids, -1, Pos)
