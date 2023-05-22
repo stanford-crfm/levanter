@@ -50,6 +50,10 @@ def main(config: EvalGpt2Config):
         EvalBatch,
     )
 
+    # some axes we use outside the model proper
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
+
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -76,12 +80,12 @@ def main(config: EvalGpt2Config):
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(Pos, model.Vocab, pred_y, input_ids).scalar()
+                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
 
         # initialize the model
         @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+            model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
             model = config.trainer.mp.cast_to_param(model)
             return model
 

@@ -76,7 +76,8 @@ def main(config: EvalGpt2Config):
 
                 return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids: hax.NamedArray):
+        def mean_loss(model: Gpt2LMHeadModel, input_ids):
+            # None here means the first argument (the model) is not vectorized but instead broadcasted
             return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids))
 
         compute_loss_pjit = named_jit(
@@ -107,7 +108,7 @@ def main(config: EvalGpt2Config):
 
             @named_jit(axis_resources=parameter_axis_mapping)
             def init_model():
-                model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+                model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)
                 return model
 

@@ -166,7 +166,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 def test_hf_save_to_fs_spec():
     Vocab = Axis("Vocab", 128)
     config = Gpt2Config(hidden_dim=32, num_heads=2, num_layers=2)
-    simple_model = Gpt2LMHeadModel(Vocab, config, key=PRNGKey(0))
+    simple_model = Gpt2LMHeadModel.init(Vocab, config, key=PRNGKey(0))
 
     save_hf_gpt2_checkpoint(simple_model, "memory://model")
 

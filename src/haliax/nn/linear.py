@@ -19,13 +19,12 @@ class Linear(eqx.Module):
     In: AxisSpec = eqx.static_field()
     Out: AxisSpec = eqx.static_field()
 
-    def __init__(self, In: AxisSpec, Out: AxisSpec, *, key, use_bias=True):
+    @staticmethod
+    def init(In: AxisSpec, Out: AxisSpec, *, key, use_bias=True) -> "Linear":
         joint_spec = hax.concat_axis_specs(In, Out)
-        self.weight = hax.random.generate_sharded(hax.random.normal)(key, joint_spec) * 0.02
-        self.bias = hax.zeros(Out) if use_bias else None
-
-        self.In = In
-        self.Out = Out
+        weight = hax.random.generate_sharded(hax.random.normal)(key, joint_spec) * 0.02
+        bias = hax.zeros(Out) if use_bias else None
+        return Linear(weight, bias, In, Out)
 
     @jax.named_scope(name="linear")
     def __call__(self, inputs):
@@ -34,7 +33,6 @@ class Linear(eqx.Module):
 
         if self.bias is not None:
             q = q + self.bias
-
-        q = hax.auto_sharded(q)
+            q = hax.auto_sharded(q)
 
         return q
