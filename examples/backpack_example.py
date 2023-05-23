@@ -65,14 +65,14 @@ def main(config: TrainBackpackConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
