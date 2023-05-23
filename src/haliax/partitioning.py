@@ -267,8 +267,9 @@ def named_jit(
             in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
             my_pjit_args["in_shardings"] = in_resources
 
-        out_resources = infer_resource_partitions(output_shape, out_axis_resources)
-        my_pjit_args["out_shardings"] = out_resources
+        if out_axis_resources is not None:
+            out_resources = infer_resource_partitions(output_shape, out_axis_resources)
+            my_pjit_args["out_shardings"] = out_resources
 
         with axis_mapping(axis_resources):
             cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
