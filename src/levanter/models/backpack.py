@@ -114,8 +114,8 @@ class BackpackMlp(StateDictSerializationMixin, eqx.Module):
     ):
         k_fc, k_proj = jrandom.split(key, 2)
         self.Out = Out
-        self.c_fc = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        self.c_proj = hnn.Linear(Out=Out, In=Intermediate, key=k_proj, use_bias=use_bias)
+        self.c_fc = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
+        self.c_proj = hnn.Linear.init(Out=Out, In=Intermediate, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         self.act = activation_fn  # type: ignore
@@ -215,7 +215,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         self.KeySeqLen = KeySeqLen
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias)
+        self.c_attn = hnn.Linear.init(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -296,10 +296,10 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
     def __init__(self, config: BackpackConfig, *, key):
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        self.ln_1 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
         self.resid_dropout1 = hnn.Dropout(pdrop=config.resid_pdrop)
         self.resid_dropout2 = hnn.Dropout(pdrop=config.resid_pdrop)
-        self.ln_2 = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
         self.mlp = BackpackMlp(
             Embed=config.Embed,
@@ -358,7 +358,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
 
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
         self.block = NoMixBlock(config, key=k_block)
-        self.ln = hnn.LayerNorm(config.Embed, eps=config.layer_norm_epsilon)
+        self.ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
         self.final_mlp = BackpackMlp(
             Embed=config.Embed,
             Intermediate=config.SenseIntermediate,
