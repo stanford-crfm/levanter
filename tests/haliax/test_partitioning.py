@@ -144,3 +144,24 @@ def test_shard_with_axis_mapping_outside_pjit():
 
         y = hax.shard_with_axis_mapping(y, resource_map)
         assert y.array.sharding == NamedSharding(mesh, PartitionSpec(ResourceAxis.DATA, ResourceAxis.MODEL))
+
+
+def test_named_jit_works_without_axis_resources():
+    devices = jax.devices()
+    with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)) as mesh:
+
+        def foo(x):
+            return x
+
+        pjit_foo = named_jit(foo)
+        r = pjit_foo(hax.ones((Dim1, Dim2)))
+
+        assert r.array.sharding.is_fully_replicated
+
+        def foo2(x):
+            return hax.shard_with_axis_mapping(x, resource_map)
+
+        pjit_foo2 = named_jit(foo2)
+        r2 = pjit_foo2(hax.ones((Dim1, Dim2)))
+
+        assert r2.array.sharding.is_equivalent_to(NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA)), ndim=2)
