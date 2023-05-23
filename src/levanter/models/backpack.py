@@ -408,7 +408,6 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             hidden_dim=config.hidden_dim,
             seq_len=config.seq_len,
             initializer_range=config.initializer_range,
-            tie_word_embeddings=True,
             embed_pdrop=config.embed_pdrop,
         )
         self.embeddings = Gpt2Embeddings.init(
