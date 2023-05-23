@@ -402,9 +402,9 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return self.embeddings.SeqLen
 
     def __init__(self, Vocab: Axis, config: BackpackConfig, *, key):
-        k_t, k_embeddings, k_senses, k_attn = jrandom.split(key, 4)
-        self.transformer = Gpt2Transformer(config, key=k_t)
-        self.embeddings = Gpt2Embeddings(
+        k_t, k_embeddings, k_attn = jrandom.split(key, 3)
+        self.transformer = Gpt2Transformer.init(config, key=k_t)
+        self.embeddings = Gpt2Embeddings.init(
             Vocab=Vocab,
             Embed=config.Embed,
             SeqLen=config.SeqLen,
