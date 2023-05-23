@@ -87,7 +87,7 @@ def main(config: TrainBackpackConfig):
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
-        #vocab_size = len(tokenizer) 
+        # vocab_size = len(tokenizer)
         vocab_size = 50264
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
         if vocab_size != Vocab.size:
@@ -111,7 +111,7 @@ def main(config: TrainBackpackConfig):
             model = BackpackLMHeadModel(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
-        model = init_model() 
+        model = init_model()
         input = hax.random.randint(jax.random.PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
         attn_mask = hax.nn.attention.causal_mask(model.SeqLen, model.config.KeySeqLen)
 
@@ -164,7 +164,6 @@ def main(config: TrainBackpackConfig):
         # donate args to conserve memory
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
-
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -288,7 +287,7 @@ def main(config: TrainBackpackConfig):
         # assign these here in case num_train_steps == 0
         step_loss = 0.0
         step_time = lambda: 0.0  # noqa: E731
-        
+
         # finally, run the training loop
         for step in range(initial_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
