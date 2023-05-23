@@ -1,30 +1,33 @@
-# Levanter
+# Levanter and Haliax
 
-> You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew. <br/>
-> — Cora L. V. Hatch
-
-
-Levanter is a library based on [Jax](https:://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox)
-for training [foundation models](https://en.wikipedia.org/wiki/Foundation_models) created by [Stanford's Center for Research
-on Foundation Models (CRFM)](https://crfm.stanford.edu/).
+Levanter and Haliax are a libraries based on [Jax](https:://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox)
+for training deep learning models, espsecially [foundation models](https://en.wikipedia.org/wiki/Foundation_models) created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/). Haliax is a named tensor library (modeled on [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor)) that focuses on improving the legibility and compositionality of deep learning code while still being efficient and scalable. Levanter is a library for training foundation models built on top of Haliax that strives for bitwise reproducibility, meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
 
 ## Haliax
 
 > Though you don’t seem to be much for listening, it’s best to be careful. If you managed to catch hold of even just a piece of my name, you’d have all manner of power over me.<br/>
 > — Patrick Rothfuss, *The Name of the Wind*
 
-Haliax is a module (currently) inside Levanter for named tensors, modeled on Alexander Rush's [Tensor Considered Harmful](https://arxiv.org/abs/1803.09868).
-It's designed to work with Jax and Equinox to make constructing distributed models easier.
+Haliax is a Jax library for building neural networks with named tensors, in the tradition of Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor). We use named tensor to improve the legibility and composability of our programs without sacrificing performance or scalability.
 
+### Documentation for Haliax
 
-## Getting Started with Levanter
+Currently we have two tutorials for Haliax:
+* [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
+* [Distributed Training in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) (including FSDP)
 
-### Installation
+## Levanter
 
-First install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
-as it varies from platform to platform.
+> You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew. <br/>
+> — Cora L. V. Hatch
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md).
+Levanter is a library for training foundation models built on top of Haliax. Levanter strives for bitwise reproducibility, meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints. It supports distributed training on TPUs (and, soon, GPUs), including FSDP, tensor parallelism, distributed checkpointing, distributed data loading, and more. Levanter integrates with WandB for logging and and the Hugging Face ecosystem for tokenizers, datasets, and model import and export.
+
+### Installing Levanter
+
+First install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+
+If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
 Now clone this repository and install it with pip:
 
@@ -36,7 +39,6 @@ wandb login  # optional, we use wandb for logging
 ```
 
 TODO: put things on pypi, etc
-
 
 ### Training a GPT2-nano
 
