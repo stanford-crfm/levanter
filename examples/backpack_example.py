@@ -56,6 +56,7 @@ def main(config: TrainBackpackConfig):
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+
     SeqLen = config.model.SeqLen
     KeySeqLen = config.model.KeySeqLen
 
@@ -65,14 +66,14 @@ def main(config: TrainBackpackConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), SeqLen),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), KeySeqLen),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,

@@ -61,46 +61,18 @@ class BackpackConfig:
     sense_intermediate_scale: int = 4
 
     # Axes
-    @property
-    def SeqLen(self) -> Axis:
-        return Axis(name="seqlen", size=self.seq_len)
-
-    @property
-    def KeySeqLen(self) -> Axis:
-        return self.SeqLen.alias(f"key_{self.SeqLen.name}")
-
-    @property
-    def Embed(self) -> Axis:
-        return Axis(name="embed", size=self.hidden_dim)
-
-    @property
-    def Heads(self) -> Axis:
-        return Axis(name="heads", size=self.num_heads)
-
-    @property
-    def Layers(self) -> Axis:
-        return Axis(name="layers", size=self.num_layers)
-
-    @property
-    def Mlp(self) -> Axis:
-        return Axis(name="mlp", size=self.hidden_dim * 4)
-
-    @property
-    def HeadSize(self) -> Axis:
-        return Axis(name="head", size=self.hidden_dim // self.num_heads)
-
-    @property
-    def SenseHeadSize(self) -> Axis:
-        return Axis(name="head", size=self.hidden_dim // self.num_senses)
-
-    # Backpack-specific axes
-    @property
-    def Senses(self) -> Axis:
-      return Axis(name="senses", size=self.num_senses)
-
-    @property
-    def SenseIntermediate(self) -> Axis:
-      return Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim)
+    SeqLen = property(lambda self: Axis(name="seqlen", size=self.seq_len))
+    KeySeqLen = property(lambda self: self.SeqLen.alias(f"key_{self.SeqLen.name}"))
+    # Pos = property(lambda self: Axis(name="position", size=self.seq_len))
+    # KeyPos = property(lambda self: self.Pos.alias("key_position"))
+    Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
+    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
+    Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
+    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * 4))
+    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+    SenseHeadSize = property(lambda self: Axis(name="head", size=self.hidden_dim // self.num_senses))
+    Senses = property(lambda self: Axis(name="senses", size=self.num_senses))
+    SenseIntermediate = property(lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim))
 
 
 class BackpackMlp(StateDictSerializationMixin, eqx.Module):
