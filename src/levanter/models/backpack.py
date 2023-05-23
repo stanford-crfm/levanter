@@ -86,11 +86,11 @@ class BackpackConfig:
         return Axis(name="mlp", size=self.hidden_dim * 4)
 
     @property
-    def HeadDim(self) -> Axis:
+    def HeadSize(self) -> Axis:
         return Axis(name="head", size=self.hidden_dim // self.num_heads)
 
     @property
-    def SenseHeadDim(self) -> Axis:
+    def SenseHeadSize(self) -> Axis:
         return Axis(name="head", size=self.hidden_dim // self.num_senses)
 
     # Backpack-specific axes
@@ -185,7 +185,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
     dropout: hnn.Dropout
 
     SeqLen: Axis = eqx.static_field()
-    SenseHeadDim: Axis = eqx.static_field()
+    SenseHeadSize: Axis = eqx.static_field()
     Heads: Axis = eqx.static_field()
     Qkv: Axis = eqx.static_field()
     KeySeqLen: Axis = eqx.static_field()
@@ -200,7 +200,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         KeySeqLen: Axis,
         Embed: Axis,
         Heads: Axis,
-        SenseHeadDim: Axis,
+        SenseHeadSize: Axis,
         dropout_prob: float,
         scale_by_inverse_layer_idx: bool,
         upcast: bool,
@@ -209,13 +209,13 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         use_bias: bool = True,
     ):
         self.Heads = Heads
-        self.SenseHeadDim = SenseHeadDim
+        self.SenseHeadSize = SenseHeadSize
         self.SeqLen = SeqLen
         self.Qkv = Axis("qkv", 2)
         self.KeySeqLen = KeySeqLen
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadDim), key=k_c, use_bias=use_bias)
+        self.c_attn = hnn.Linear(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias)
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -232,7 +232,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({self.SeqLen: self.KeySeqLen})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.SenseHeadDim.size))
+        scale = jax.lax.rsqrt(float(self.SenseHeadSize.size))
         #if self.scale_by_inverse_layer_idx:
         #    scale /= layer_idx + 1.0
 
@@ -244,7 +244,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot(self.SenseHeadDim, q, k)
+        attn_scores = hax.dot(self.SenseHeadSize, q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
@@ -262,7 +262,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         d = {}
         d.update(
             reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, self.Heads.size, self.SenseHeadDim.size)
+                state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, self.Heads.size, self.SenseHeadSize.size)
             )
         )
 
@@ -278,7 +278,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         es = cast(Axis, self.c_attn.In).size
         my_dict.update(
             reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * self.Heads.size * self.SenseHeadDim.size,)
+                my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * self.Heads.size * self.SenseHeadSize.size,)
             )
         )
 
@@ -428,7 +428,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             KeySeqLen=config.KeySeqLen,
             Embed=config.Embed,
             Heads=config.Senses,
-            SenseHeadDim=config.SenseHeadDim,
+            SenseHeadSize=config.SenseHeadSize,
             dropout_prob=config.attn_pdrop,
             key=k_attn,
             scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
