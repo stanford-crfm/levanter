@@ -23,7 +23,7 @@ from levanter.compat.torch_serialization import (
     reshape_linear_layer,
     reshape_mlp_linear_layer,
 )
-from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, GPT2Config
+from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
@@ -404,7 +404,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     def __init__(self, Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
         self.transformer = Gpt2Transformer.init(config, key=k_t)
-        gpt2_config = GPT2Config(
+        gpt2_config = Gpt2Config(
             Embed=config.Embed,
             SeqLen=config.SeqLen,
             initializer_range=config.initializer_range,
