@@ -8,7 +8,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
@@ -17,7 +17,7 @@ import levanter
 import wandb
 from haliax import Axis
 from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
-from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset
@@ -106,7 +106,7 @@ def main(config: TrainBackpackConfig):
         # 1) initializes model weights
         # 2) ensures all model weights are the right dtype
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
             model = BackpackLMHeadModel(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
@@ -121,7 +121,7 @@ def main(config: TrainBackpackConfig):
         # initialize the optimizer
         # This is basically the same as the model.
         optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
@@ -162,7 +162,7 @@ def main(config: TrainBackpackConfig):
 
         # training loop
         # donate args to conserve memory
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
 
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
@@ -187,7 +187,7 @@ def main(config: TrainBackpackConfig):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             # just use causal mask for evaluation
@@ -236,7 +236,7 @@ def main(config: TrainBackpackConfig):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
