@@ -271,7 +271,12 @@ def named_jit(
             out_resources = infer_resource_partitions(output_shape, out_axis_resources)
             my_pjit_args["out_shardings"] = out_resources
 
-        with axis_mapping(axis_resources):
+        if axis_resources is not None:
+            cmanager = axis_mapping(axis_resources)
+        else:
+            cmanager = contextlib.nullcontext()
+
+        with cmanager:
             cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
             return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
 
