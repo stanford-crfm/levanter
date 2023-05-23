@@ -396,10 +396,10 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     @property
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
-
+    
     @property
     def SeqLen(self) -> Axis:
-        return self.embeddings.SeqLen
+        return self.sense_net.SeqLen
 
     def __init__(self, Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
