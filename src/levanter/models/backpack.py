@@ -405,11 +405,11 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
         self.transformer = Gpt2Transformer.init(config, key=k_t)
         gpt2_config = Gpt2Config(
-            Embed=config.Embed,
-            SeqLen=config.SeqLen,
+            hidden_dim=config.hidden_dim,
+            seq_len=config.seq_len,
             initializer_range=config.initializer_range,
             tie_word_embeddings=True,
-            dropout_prob=config.embed_pdrop,
+            embed_pdrop=config.embed_pdrop,
         )
         self.embeddings = Gpt2Embeddings.init(
             Vocab=Vocab,
