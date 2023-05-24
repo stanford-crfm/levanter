@@ -106,7 +106,7 @@ def accumulate_gradients_sharded(
             raise ValueError(f"batched_args_spec must be a tuple of booleans of length {len(args)} (or less)")
 
         if isinstance(batched_kwargs, bool):
-            batched_kwarg_spec = {k: True for k in kwargs}
+            batched_kwarg_spec = {k: batched_kwargs for k in kwargs}
         elif batched_kwargs is None:
             batched_kwarg_spec = batched_kwargs or {k: True for k in kwargs}
         else:
@@ -124,9 +124,10 @@ def accumulate_gradients_sharded(
 
         # third, we want to do compute.
         def loop(acc, microbatch):
+            mbatch_args, mbatch_kwargs = microbatch
             loss, grad = acc
             with jax.named_scope("grad"):
-                this_loss, this_grad = f(model, *microbatch)
+                this_loss, this_grad = f(model, *mbatch_args, **mbatch_kwargs)
                 this_grad = shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
             with jax.named_scope("accum"):
@@ -136,7 +137,10 @@ def accumulate_gradients_sharded(
 
             return loss, grad
 
-        loss, grad = hax.fold(loop, AccumStep)((loss, grad), args)
+        def is_scanned_if_not_none(x):
+            return x is not None
+
+        loss, grad = hax.fold(loop, AccumStep, is_scanned=(batched_args_spec, batched_kwarg_spec))((loss, grad), *args, **kwargs)
 
         return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 

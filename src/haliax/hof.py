@@ -46,11 +46,8 @@ def scan(
                     False otherwise. Behaves similarly to the `default` argument in filter_jit
     """
 
-    def is_scanned_with_axis(leaf):
-        if is_named_array(leaf):
-            return selects_axis(leaf.axes, axis) and is_scanned(leaf)
-        else:
-            return is_scanned(leaf)
+    # augment is_scanned so that we only scan over named arrays that have the axis (and that we're asked to scan over)
+    is_scanned_with_axis = _combine_is_scanned_with_names(is_scanned, axis)
 
     def scanned_f(init, *args, **kwargs):
         # This implementation is a bit tricky.
@@ -91,6 +88,26 @@ def scan(
         return carry, ys
 
     return scanned_f
+
+
+def _combine_is_scanned_with_names(is_scanned, axis):
+    def combined_is_scanned_with_axis(spec):
+        def is_scanned_with_axis_leaf(leaf):
+            if spec is False:
+                return False
+            elif is_named_array(leaf):
+                if spec is True:
+                    return selects_axis(leaf.axes, axis)
+                else:
+                    return spec(leaf) and selects_axis(leaf.axes, axis)
+            elif spec is True:
+                return True
+            else:
+                return spec(leaf)
+
+        return is_scanned_with_axis_leaf
+
+    return jax.tree_util.tree_map(combined_is_scanned_with_axis, is_scanned, is_leaf=is_named_array)
 
 
 def fold(

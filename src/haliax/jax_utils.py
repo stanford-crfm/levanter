@@ -5,6 +5,7 @@ import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
+from equinox.custom_types import BoolAxisSpec
 from equinox.module import Static
 from jax import numpy as jnp
 from jax import random as jrandom
@@ -79,14 +80,29 @@ def is_jax_array_like(x):
     return hasattr(x, "shape") and hasattr(x, "dtype")
 
 
+class _Sentinel:
+    pass
+
+_SENTINEL = _Sentinel()
+
+
 # adapted from jax but exposed so i can use it
 def broadcast_prefix(prefix_tree: Any, full_tree: Any, is_leaf: Optional[Callable[[Any], bool]] = None) -> List[Any]:
     """Broadcast a prefix tree to match the structure of a full tree."""
+    # None in a tree is treated a bit weird so we want to have to replace it with a sentinel
+
+    def _is_leaf(x):
+        return x is None or (is_leaf is not None and is_leaf(x))
+
+    prefix_tree = jax.tree_util.tree_map(lambda x: _SENTINEL if x is None else x, prefix_tree, is_leaf=_is_leaf)
+
     result = []
-    num_leaves = lambda t: jax.tree_util.tree_structure(t).num_leaves  # noqa: E731
+    num_leaves = lambda t: jax.tree_util.tree_structure(t).num_leaves if t is not None else 1  # noqa: E731
     add_leaves = lambda x, subtree: result.extend([x] * num_leaves(subtree))  # noqa: E731
     jax.tree_util.tree_map(add_leaves, prefix_tree, full_tree, is_leaf=is_leaf)
     full_structure = jax.tree_util.tree_structure(full_tree)
+
+    result = [x if x is not _SENTINEL else None for x in result]
 
     return jax.tree_util.tree_unflatten(full_structure, result)
 

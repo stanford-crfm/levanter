@@ -62,3 +62,83 @@ def test_accumulate_gradients_sharded_simple(per_device_parallelism):
             assert jnp.isclose(x, y).all()
 
         jax.tree_map(check_is_close, grads, no_accum_grads)
+
+@pytest.mark.parametrize("per_device_parallelism", (1, 2, 4))
+def test_accumulate_gradients_sharded_with_batched_key(per_device_parallelism):
+    def loss_fn(model, x, key):
+        return model(x, key=key).mean().scalar()
+
+    def batch_mean_loss(model, x, key):
+        return hax.vmap(loss_fn, "batch")(model, x, key).mean()
+
+    devices = jax.devices()
+    axis_mapping = {"batch": ResourceAxis.DATA, "mid": ResourceAxis.MODEL}
+    with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+
+        model = MLP(In, Mid, key=jax.random.PRNGKey(0))
+        x = hax.ones((Batch, In))
+
+        grad_loss = eqx.filter_value_and_grad(batch_mean_loss)
+
+        key = jax.random.split(jax.random.PRNGKey(0), Batch.size)
+
+        @hax.named_jit
+        def train_step(model, x):
+            loss, grads = accumulate_gradients_sharded(
+                grad_loss, Batch, per_device_parallelism, axis_mapping, axis_mapping
+            )(model, x, key)
+
+            return loss, grads
+
+        no_accum_loss, no_accum_grads = grad_loss(model, x, key)
+
+        loss, grads = train_step(model, x)
+
+        assert loss.shape == ()
+        assert jnp.isclose(loss, no_accum_loss).all()
+
+        def check_is_close(x, y):
+            assert jnp.isclose(x, y).all()
+
+        jax.tree_map(check_is_close, grads, no_accum_grads)
+
+
+@pytest.mark.parametrize("per_device_parallelism", (1, 2, 4))
+def test_accumulate_gradients_sharded_with_unbatched_key(per_device_parallelism):
+    def loss_fn(model, x, key):
+        return model(x, key=key).mean().scalar()
+
+    def batch_mean_loss(model, x, key):
+        return hax.vmap(loss_fn, "batch", kwargs={"key": None})(model, x, key).mean()
+
+    devices = jax.devices()
+    axis_mapping = {"batch": ResourceAxis.DATA, "mid": ResourceAxis.MODEL}
+    with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+
+        model = MLP(In, Mid, key=jax.random.PRNGKey(0))
+        x = hax.ones((Batch, In))
+
+        grad_loss = eqx.filter_value_and_grad(batch_mean_loss)
+
+        key = jax.random.PRNGKey(0)
+
+        @hax.named_jit
+        def train_step(model, x):
+            loss, grads = accumulate_gradients_sharded(
+                grad_loss, Batch, per_device_parallelism, axis_mapping, axis_mapping,
+                batched_args=(True, False)
+            )(model, x, key)
+
+            return loss, grads
+
+        no_accum_loss, no_accum_grads = grad_loss(model, x, key)
+
+        loss, grads = train_step(model, x)
+
+        assert loss.shape == ()
+        assert jnp.isclose(loss, no_accum_loss).all()
+
+        def check_is_close(x, y):
+            assert jnp.isclose(x, y).all()
+
+        jax.tree_map(check_is_close, grads, no_accum_grads)
