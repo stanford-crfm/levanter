@@ -23,7 +23,6 @@ from haliax import Axis, NamedArray
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 
-
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
@@ -36,6 +35,7 @@ from levanter.data.shard_cache import (  # noqa
     _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
+    DEFAULT_ROWS_PER_CHUNK,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.hf_utils import load_tokenizer  # noqa
@@ -77,7 +77,6 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
     def __iter__(self) -> Iterator[NamedArray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
-
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -281,6 +280,7 @@ def _open_arrow_table(path) -> pa.Table:
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     """Converts a document to an arrow-compatible record batch."""
+
     # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
     def _as_array(x):
         if isinstance(x, np.ndarray) and x.ndim > 1:
@@ -436,6 +436,7 @@ class LMDatasetConfig:
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
@@ -445,7 +446,7 @@ class LMDatasetConfig:
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer)
+        cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
         return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):
