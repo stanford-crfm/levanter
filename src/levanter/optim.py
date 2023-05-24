@@ -1,4 +1,4 @@
-# implements the prototype hero optimizer
+# implements the prototype sofia optimizer
 import functools
 import inspect
 from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Union
@@ -143,7 +143,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
     return SecondOrderTransformation(init_fn, update_fn, hessian_update_fn)
 
 
-def scale_by_hero(
+def scale_by_sofia(
     b1: float = 0.96,
     b2: float = 0.99,
     eps: float = 1e-12,
@@ -211,7 +211,7 @@ def scale_by_hero(
     return SecondOrderTransformation(init_fn, update_fn, update_hessian)
 
 
-def hero(
+def sofia(
     lr: float,
     b1: float = 0.95,
     b2: float = 0.99,
@@ -219,17 +219,17 @@ def hero(
     gamma: float = 0.1,
     mu_dtype: Optional[Any] = None,
 ) -> SecondOrderTransformation:
-    return chain_second_order(scale_by_hero(b1, b2, eps, gamma, mu_dtype), optax.scale(lr))
+    return chain_second_order(scale_by_sofia(b1, b2, eps, gamma, mu_dtype), optax.scale(lr))
 
 
-def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
+def sofia_from_config(config: TrainerConfig) -> SecondOrderTransformation:
     def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
         components = []
 
         if config.max_grad_norm:
             components.append(optax.clip_by_global_norm(config.max_grad_norm))
 
-        components.append(scale_by_hero(b1=config.beta1, b2=config.beta2, eps=config.epsilon, gamma=gamma))
+        components.append(scale_by_sofia(b1=config.beta1, b2=config.beta2, eps=config.epsilon, gamma=gamma))
 
         if config.weight_decay > 0:
             # TODO: add weight decay masking??
@@ -249,9 +249,7 @@ def hero_from_config(config: TrainerConfig) -> SecondOrderTransformation:
         [constant_gamma_schedule, gamma_decay_schedule], [config.num_train_steps // 2]
     )
 
-    optimizer = inject_hyperparams(_optimizer)(learning_rate=config.lr_scheduler(), gamma=gamma_schedule)
-
-    return optimizer
+    return inject_hyperparams(_optimizer)(learning_rate=config.lr_scheduler(), gamma=gamma_schedule)
 
 
 def inject_hyperparams(

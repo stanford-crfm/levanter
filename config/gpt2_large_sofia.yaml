@@ -14,7 +14,7 @@ model:
 trainer:
   wandb:
     project: "levanter"
-    tags: [ "openwebtext", "gpt2", "hero"]
+    tags: [ "openwebtext", "gpt2", "sofia"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
