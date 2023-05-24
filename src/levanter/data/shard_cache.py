@@ -584,7 +584,7 @@ class ChunkCacheBroker:
         self._do_notify()
 
 
-def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk):
+def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk=DEFAULT_ROWS_PER_CHUNK):
     return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
         cache_dir,
