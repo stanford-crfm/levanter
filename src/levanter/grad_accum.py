@@ -45,6 +45,7 @@ def accumulate_gradients_sharded(
     f: GradAndValFn,
     Batch: Axis,
     per_device_parallelism: int,
+    compute_axis_mapping,
     parameter_axis_mapping,
     batched_args: Optional[Union[bool, Tuple[bool, ...]]] = None,
     batched_kwargs: Optional[Union[bool, Dict[str, bool]]] = None,
@@ -118,7 +119,7 @@ def accumulate_gradients_sharded(
             AccumStep,
             (args, kwargs),
             (batched_args_spec, batched_kwarg_spec),
-            parameter_axis_mapping,
+            compute_axis_mapping,
         )
 
         # third, we want to do compute.

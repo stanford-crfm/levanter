@@ -154,6 +154,7 @@ def main(config: TrainGpt2Config):
                 grad_loss,
                 Batch,
                 config.trainer.per_device_parallelism,
+                compute_axis_mapping,
                 parameter_axis_mapping,
             )(model, input_ids, attn_mask, keys)
 
