@@ -12,6 +12,8 @@ python levanter/examples/gpt2_example.py --config_path config/gpt2_small.yaml
 This will execute the training pipeline pre-defined in the [gp2_example.py](../examples/gpt2_example.py) and set model and training configuration
 set in [gpt2_small.yaml](../config/gpt2_small.yaml). You can find more template configurations in the [config](../config/) directory.
 
+Configuration files are processed using [Pyrallis](https://github.com/eladrich/pyrallis). Pyrallis is yet-another yaml-to-dataclass library.
+
 ## Set Custom Training Configuration
 In machine learning experiments, it is common to adjust model hyperparameters. In this section, we will provide examples of different use cases
 and explain the corresponding parameters that you can change.
@@ -128,4 +130,3 @@ start training from scratch.
 2. Resume from a WandB run: if you set `--trainer.wandb.resume`, it will resume the corresponding WandB run with the ID `asdf1234`. You can
 find the WandB run ID in the URL of your WandB run page. For more information, please refer to the
 [WandB documentation](https://docs.wandb.ai/guides/runs/resuming).
-
