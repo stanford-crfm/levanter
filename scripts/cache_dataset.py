@@ -33,7 +33,13 @@ def main(args: RayCachedLMDatasetConfig):
         batch_tokenizer = BatchTokenizer(tokenizer)
         split_cache_dir = os.path.join(args.cache_dir, split)
         source = args.get_shard_source(split)
-        cache = cache_dataset(split_cache_dir, source, batch_tokenizer, await_finished=False)
+        cache = cache_dataset(
+            cache_dir=split_cache_dir,
+            input_shards=source,
+            processor=batch_tokenizer,
+            rows_per_chunk=args.rows_per_chunk,
+            await_finished=False,
+        )
 
         cache.attach_metrics_monitor(RichMetricsMonitor(source.num_shards))
         cache.attach_metrics_monitor(WandbMetricsMonitor("preprocess/" + split, commit=True))
