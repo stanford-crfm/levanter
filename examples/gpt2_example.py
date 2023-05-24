@@ -153,13 +153,9 @@ def main(config: TrainGpt2Config):
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
-                model,
-                input_ids,
-                attn_mask,
-                keys,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )
+                config.trainer.per_device_parallelism,
+                parameter_axis_mapping,
+            )(model, input_ids, attn_mask, keys)
 
             # distribute gradients across the mesh and apply them
             updates, opt_state = optimizer.update(grads, opt_state, params=model)
