@@ -14,6 +14,7 @@ from optax._src import numerics
 from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
+import haliax
 from levanter.config import TrainerConfig
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
@@ -66,6 +67,8 @@ def hvp(f, x, v):
 # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
 # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
 # https://arxiv.org/pdf/2208.03268.pdf
+
+# Use this for original Sofia
 def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
 
@@ -80,6 +83,24 @@ def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
 
     return hessian
+
+
+# use this for Sofia+
+def stochastic_diag_gauss_newton(fn, model, *args, g_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs):
+    """Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
+
+    Args:
+        fn: loss function of the form fn(logits, y). Should return a scalar, even if batched
+        model:
+        g_key: key for sample from
+    """
+    logits, model_backward = eqx.filter_vjp(lambda f: f(*args, **kwargs), model)
+    hat_y = haliax.random.categorical(g_key, logits, Vocab)
+
+    grad_loss_logits = eqx.filter_grad(fn)(logits, hat_y)
+    pseudo_g = model_backward(grad_loss_logits)[0]
+
+    return jax.tree_util.tree_map(lambda x: x**2, pseudo_g)
 
 
 def tree_gaussian(key, tree):
@@ -171,9 +192,12 @@ def scale_by_sofia(
         # track how often hessian is used
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
         h_leaves = jax.tree_util.tree_leaves(h_hat)
+
+        # with sofia+ the max(h, 0) is not needed but no harm
         hessian_use_count = sum(
             jnp.sum(jnp.abs(mu) < gamma * jnp.maximum(h, 0)) for (mu, h) in zip(mu_leaves, h_leaves)
         )
+
         param_count = parameter_count(updates)
         hessian_use_ratio = hessian_use_count / param_count
 

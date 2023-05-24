@@ -23,7 +23,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
-from levanter.optim import sofia_from_config, stochastic_hessian_diagonal
+from levanter.optim import sofia_from_config, stochastic_diag_gauss_newton
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -179,7 +179,13 @@ def main(config: TrainGpt2Config):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
             # loss, grads = eqx.filter_value_and_grad(train_batch_loss)(model, input_ids, attn_mask, keys)
-            hess = stochastic_hessian_diagonal(train_batch_loss, model, input_ids, attn_mask, keys, g_key=g_key)
+
+            def mean_loss(logits, labels):
+                return hax.mean(next_token_loss(Pos, Vocab, logits, labels), "batch").scalar()
+
+            hess = stochastic_diag_gauss_newton(
+                mean_loss, model, input_ids, attn_mask, inference=True, key=None, Vocab=Vocab, g_key=g_key
+            )
 
             # distribute gradients across the mesh and apply them
             opt_state = optimizer.hessian_update(hess, opt_state)

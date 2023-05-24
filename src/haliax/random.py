@@ -234,20 +234,25 @@ def choice(
 
 
 @named_call
-def categorical(key, shape: AxisSpec, logits: NamedArray, axis: AxisSelector):
+def categorical(key, logits: NamedArray, axis: AxisSelector, shape: Optional[AxisSpec] = None):
     """Sample random values from categorical distributions.
 
     Args:
       key: a PRNG key used as the random key.
-      shape: A tuple of nonnegative integers representing the result shape.
-        Must be broadcast-compatible with logits without the axis
+
       logits: Unnormalized log probabilities of the categorical distribution(s) to sample from,
         so that `softmax(logits, axis)` gives the corresponding probabilities.
       axis: Axis along which logits belong to the same categorical distribution.
+      shape: A tuple of axes representing the result shape, or None. if None, the shape is
+        logits.axes \ {axis}. If not None, logits.axes \ {axis}  must be a subset of shape.
     Returns:
       A random array with int dtype and shape given by ``shape``
     """
-    shape = ensure_tuple(shape)
+    axis = logits.resolve_axis(axis)
+    if shape is None:
+        shape = tuple(a for a in logits.axes if a != axis)
+    else:
+        shape = ensure_tuple(shape)
 
     # TODO: could alias the axis and rename at end
     if selects_axis(shape, axis):

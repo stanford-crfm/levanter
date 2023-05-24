@@ -255,13 +255,13 @@ def test_categorical():
     )
     check_gen_is_equal(
         lambda k, s: jax.random.categorical(k, logits.array, shape=s, axis=-1),
-        lambda k, s: hax.random.categorical(k, s, logits, Digit),
+        lambda k, s: hax.random.categorical(k, logits, Digit, shape=s),
     )
 
     logits = logits.rearrange((Digit, Height, Width))
     check_gen_is_equal(
         lambda k, s: jax.random.categorical(k, logits.array, shape=s, axis=0),
-        lambda k, s: hax.random.categorical(k, s, logits, Digit),
+        lambda k, s: hax.random.categorical(k, logits, Digit, shape=s),
     )
 
     # check broadcasting
@@ -276,13 +276,13 @@ def test_categorical():
     raw_logits = jnp.broadcast_to(logits.array.reshape(-1, 1, Digit.size), (Height.size, Width.size, Digit.size))
     check_gen_is_equal(
         lambda k, s: jax.random.categorical(k, raw_logits, shape=s, axis=-1),
-        lambda k, s: hax.random.categorical(k, s, logits, Digit),
+        lambda k, s: hax.random.categorical(k, logits, Digit, shape=s),
     )
 
     # check str arg for selector
     check_gen_is_equal(
         lambda k, s: jax.random.categorical(k, raw_logits, shape=s, axis=-1),
-        lambda k, s: hax.random.categorical(k, s, logits, "Digit"),
+        lambda k, s: hax.random.categorical(k, logits, "Digit", shape=s),
     )
 
 
