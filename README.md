@@ -1,7 +1,11 @@
 # Levanter and Haliax
 
 Levanter and Haliax are libraries based on [Jax](https:://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox)
-for training deep learning models, espsecially [foundation models](https://en.wikipedia.org/wiki/Foundation_models) created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/). Haliax is a named tensor library (modeled on [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor)) that focuses on improving the legibility and compositionality of deep learning code while still being efficient and scalable. Levanter is a library for training foundation models built on top of Haliax that strives for bitwise reproducibility, meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
+for training deep learning models, especially [foundation models](https://en.wikipedia.org/wiki/Foundation_models).
+Haliax is a named tensor library (modeled on [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor)) that focuses on improving the legibility and compositionality of deep learning code while still being efficient and scalable.
+Levanter is a library for training foundation models built on top of Haliax that strives for efficiency, scalability, and bitwise reproducibility, meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
+
+Levanter and Haliax were created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html))
 
 ## Haliax
 
@@ -21,11 +25,14 @@ Currently we have two tutorials for Haliax:
 > You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew. <br/>
 > — Cora L. V. Hatch
 
-Levanter is a library for training foundation models built on top of Haliax. Levanter strives for bitwise reproducibility, meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints. It supports distributed training on TPUs (and, soon, GPUs), including FSDP, tensor parallelism, distributed checkpointing, distributed data loading, and more. Levanter integrates with WandB for logging and and the Hugging Face ecosystem for tokenizers, datasets, and model import and export.
+Levanter is a library for training foundation models built on top of Haliax. Levanter strives for bitwise reproducibility,
+meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
+It supports distributed training on TPUs (and, soon, GPUs), including FSDP, tensor parallelism, distributed checkpointing, distributed data loading, and more.
+Levanter integrates with WandB for logging and with the Hugging Face ecosystem for tokenizers, datasets, and model import and export.
 
 ### Installing Levanter
 
-First install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+First, install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
@@ -51,8 +58,10 @@ python examples/gpt2_example.py --config_path config/gpt2_nano.yaml
 This will train a GPT2-nano model on the [WikiText-2](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
 You can change the dataset by changing the `dataset` field in the config file.
 
-The config file is a [Pyrallis](https://github.com/eladrich/pyrallis) config file. Pyrallis is yet-another yaml-to-dataclass library.
-You can use `--help` or poke around other configs to see all the options available to you.
+For more information about the various configuration options, please see the [Training Getting Started](docs/Getting-Started-Training.md) guide.
+You can also use `--help` or poke around other configs to see all the options available to you.
+
+
 
 #### Training on a TPU Cloud VM
 
