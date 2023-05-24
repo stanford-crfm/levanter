@@ -28,7 +28,6 @@ from rich.progress import (
 )
 
 import wandb
-from levanter.data.utils import safe_enumerate_iterable
 
 
 T = TypeVar("T")
@@ -194,7 +193,7 @@ def _produce_cache_for_shard(
         if not was_finished:
             count = len(shard_metadata.chunks)
             batch = []
-            for row in safe_enumerate_iterable(shard_iter):
+            for row in shard_iter:
                 batch.append(row)
                 if len(batch) == rows_per_chunk:
                     # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
