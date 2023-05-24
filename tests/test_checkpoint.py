@@ -9,7 +9,7 @@ import numpy as np
 import optax
 from chex import assert_trees_all_close
 from jax import numpy as jnp
-from utils import MLP, arrays_only, assert_trees_not_close
+from test_utils import MLP, arrays_only, assert_trees_not_close
 
 from levanter.checkpoint import (
     Checkpointer,

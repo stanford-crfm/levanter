@@ -21,6 +21,12 @@ if [ "$AUTODELETE" = "true" ]; then
 fi
 
 
+# if ssh-agent isn't running, complain
+if [ -z "$SSH_AUTH_SOCK" ]; then
+  echo "Error: ssh-agent not running"
+  exit 1
+fi
+
 
 # create the vm
 # spin loop until we get a good error code
@@ -67,7 +73,7 @@ done
 
 # run the setup script
 for i in {1..5}; do
-  gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME > setup.out" --worker=all
+  gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME --branch ${GIT_BRANCH} --repo ${GIT_REPO} > setup.out" --worker=all
   if [ $? -eq 0 ]; then
     break
   fi

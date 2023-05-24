@@ -6,7 +6,7 @@ from typing import Optional
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from transformers import GPT2Tokenizer
 
 import haliax as hax
@@ -14,7 +14,7 @@ import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
@@ -59,8 +59,8 @@ def main(config: TrainGpt2Config):
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-    SeqLen = config.model.SeqLen
-    KeySeqLen = config.model.KeySeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -68,14 +68,14 @@ def main(config: TrainGpt2Config):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -108,9 +108,9 @@ def main(config: TrainGpt2Config):
         # 1) initializes model weights
         # 2) ensures all model weights are the right dtype
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+            model = Gpt2LMHeadModel.init(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
@@ -121,15 +121,15 @@ def main(config: TrainGpt2Config):
         # This is basically the same as the model.
         optimizer = hero_from_config(config.trainer)
         # optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
 
             # forgetful causal masking
             if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
@@ -141,14 +141,13 @@ def main(config: TrainGpt2Config):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+                return next_token_loss(Pos, Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        # training loop
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=(True, True, False, False))
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=(True, True, False, False))
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
@@ -175,7 +174,7 @@ def main(config: TrainGpt2Config):
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
 
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=(False, True, False, False, False))
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=(False, True, False, False, False))
         def update_hessian(model, opt_state, input_ids, keys, g_key):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
@@ -189,10 +188,9 @@ def main(config: TrainGpt2Config):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
         # Set up evaluation
@@ -237,9 +235,8 @@ def main(config: TrainGpt2Config):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -248,11 +245,11 @@ def main(config: TrainGpt2Config):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, reduction=None)
+                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, SeqLen)
-                return logprobs.rearrange(("batch", SeqLen)).array
+                logprobs = haliax.roll(logprobs, 1, Pos)
+                return logprobs.rearrange(("batch", Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
@@ -289,7 +286,6 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, SeqLen))
 
                 my_key, g_key, training_key = jrandom.split(training_key, 3)
                 example_keys = global_key_array(

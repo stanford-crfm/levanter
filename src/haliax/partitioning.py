@@ -3,15 +3,17 @@ import functools
 import threading
 import typing
 from math import prod
-from typing import List, Mapping, Optional, Sequence, TypeVar, Union
+from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
-from equinox import is_array
+import jax.numpy as jnp
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
-from jax.experimental.pjit import pjit, with_sharding_constraint
+from jax._src.sharding_impls import AUTO
+from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
-from jaxlib.xla_client import SingleDeviceSharding
+from jax.lax import with_sharding_constraint
+from jax.sharding import Mesh
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -67,7 +69,7 @@ def axis_mapping(mapping: ResourceMapping, *, merge: bool = False, **kwargs):
 T = TypeVar("T", bound=PyTree)
 
 
-def auto_sharded(x: T) -> T:
+def auto_sharded(x: T, mesh: Optional[Mesh] = None) -> T:
     """
     Shard a PyTree using the global axis mapping. NamedArrays in the PyTree are sharded using the axis mapping
      and the names in the tree.
@@ -79,41 +81,71 @@ def auto_sharded(x: T) -> T:
     if mapping is None:
         return x
 
-    return shard_with_axis_mapping(x, mapping)
+    return shard_with_axis_mapping(x, mapping, mesh)
 
 
-def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
+def shard_with_axis_mapping(x: T, mapping: ResourceMapping, mesh: Optional[Mesh] = None) -> T:
     """
     Shard a PyTree using the provided axis mapping. NamedArrays in the PyTree are sharded using the axis mapping.
-    Other arrays are not sharded.
+    Other arrays are not sharded (unless they're already sharded).
 
-    :param x:
-    :param mapping:
-    :return:
+    Inside of a jit context, this method grounds out in calls to `with_sharding_constraint`. Outside of a jit
+    context, this method grounds out in either device_put or make_array_from_callback, depending on whether the
+    resulting sharding spans more than one host.
     """
 
-    def _as_pspec(x):
-        if isinstance(x, NamedArray):
-            physical_names: List[Optional[PhysicalAxisSpec]] = [mapping.get(a.name, None) for a in x.axes]
-        elif is_array(x):
-            physical_names = [None] * len(x.shape)
-        else:
-            return None
+    if _is_jit_context():
 
-        spec = PartitionSpec(
-            *tuple(tuple(p) if not (isinstance(p, str)) and isinstance(p, Sequence) else p for p in physical_names)
-        )
-        return spec
+        def _shard_leaf(x):
+            if isinstance(x, NamedArray):
+                pspec = pspec_for_axis(x.axes, mapping)
+                return with_sharding_constraint(x, pspec)
+            else:
+                return x
 
-    pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-    return with_sharding_constraint(x, pspec)
+        return jax.tree_util.tree_map(_shard_leaf, x, is_leaf=is_named_array)
+    else:
+        # use device_put or make_array_from_callback instead
+        mesh = mesh or _get_mesh()
+
+        def _do_device_put(x):
+            if not is_named_array(x):
+                return x
+
+            raw_x = x.array
+            current_sharding = raw_x.sharding
+
+            desired_sharding = infer_resource_partitions(
+                x, mapping, mesh=mesh, preserve_existing_shardings=False
+            ).array
+
+            if current_sharding == desired_sharding:
+                return x
+            elif desired_sharding.is_fully_addressable:
+                raw_x = jax.device_put(raw_x, desired_sharding)
+                return NamedArray(raw_x, x.axes)
+            else:
+                # if the sharding is not fully addressable, we can't use device_put, so we use this hacky workaround.
+                # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
+                # context, I think?
+                shape = raw_x.shape
+                raw_x = jax.make_array_from_callback(shape, desired_sharding, lambda index: raw_x[index])
+                return NamedArray(raw_x, x.axes)
+
+        return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
 
-def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceMapping] = None) -> PyTree:
+def infer_resource_partitions(
+    tree: PyTree,
+    resource_mapping: Optional[ResourceMapping] = None,
+    preserve_existing_shardings: bool = True,
+    mesh: Optional[Mesh] = None,
+) -> PyTree:
     """
-    Infer the resource partitions for a module, to be used with pjit.
+    Infer the sharding for a module, to be used with named_jit.
     The basic idea is to tree all NamedArrays as leaves for the purposes of this function,
-    and to create PartitionSpecs from those names plus the resource_mapping.
+    and to create NamedShardings from those names plus the resource_mapping.
+    If preserve_existing_shardings is True, then NamedArrays that are already sharded are left alone.
 
     If resource_mapping is not provided, this function attempts to use the global resource mapping.
     """
@@ -123,30 +155,37 @@ def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceM
     if resource_mapping is None:
         raise ValueError("No resource mapping found")
 
-    _resource_mapping = typing.cast(ResourceMapping, resource_mapping)  # for mypy
+    mesh = mesh or _get_mesh()
+
+    def _auto_array_sharding(node):
+        if hasattr(node, "sharding"):
+            return node.sharding
+        else:
+            return None
 
     def partition_spec(node: typing.Any):
         if isinstance(node, NamedArray):
-            return NamedArray(
-                PartitionSpec(*tuple(_resource_mapping.get(axis.name, None) for axis in node.axes)),  # type: ignore
-                node.axes,
-            )
-        # elif isinstance(node, GlobalDeviceArray):
-        #     return FROM_GDA
-        elif hasattr(node, "sharding"):
-            sharding = node.sharding
-            # these are usually replicated. Is there a better way to tell?
-            if isinstance(sharding, SingleDeviceSharding):
-                return None
+            if preserve_existing_shardings:
+                current_sharding = _auto_array_sharding(node)
             else:
-                return sharding
+                current_sharding = None
+
+            if current_sharding is not None:
+                return NamedArray(current_sharding, node.axes)  # type: ignore
+            else:
+                sharding = jax.sharding.NamedSharding(mesh, pspec_for_axis(node.axes, resource_mapping))
+                return NamedArray(sharding, node.axes)  # type: ignore
         else:
-            return None
+            sharding = _auto_array_sharding(node)
+            if sharding is not None:
+                return sharding
+            else:
+                return AUTO
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 
 
-def named_pjit(
+def named_jit(
     fn=None,
     axis_resources: Optional[ResourceMapping] = None,
     *,
@@ -157,27 +196,26 @@ def named_pjit(
     **pjit_args,
 ):
     """
-    A version of pjit that uses NamedArrays and the provided resource mapping to infer the
-    resource partitions.
+    A version of pjit that uses NamedArrays and the provided resource mapping to infer the resource partitions.
 
     If no resource mapping is provided, this function attempts to use the global resource mapping.
-    axis_resources will be used for a context-specific resource mapping as well as in_axis_resources and out_axis_resources
-    if they are not provided.
+    axis_resources will be used for a context-specific resource mapping. In addition, if in_axis_resources is not
+    provided, the arguments' own (pre-existing) shardings will be used as the in_axis_resources.
+    If out_axis_resources is not provided, axis_resources will be used as the out_axis_resources.
 
-    :param fn: The function to be pjit'd
+    :param fn: The function to be jit'd
     :param axis_resources: A mapping from logical axis names to physical axis names
-    :param in_axis_resources: A mapping from logical axis names to physical axis names for arguments, defaults to axis_resources
+    :param in_axis_resources: A mapping from logical axis names to physical axis names for arguments. If not passed, it uses the arguments' own shardings
     :param out_axis_resources: A mapping from logical axis names to physical axis names for the result, defaults to axis_resources
     :param donate_args: A PyTree of booleans or function leaf->bool, indicating whether to donate arguments to the
      computation
     :param donate_kwargs: A PyTree of booleans or function leaf->bool, indicating whether to donate keyword arguments to
         the computation
     """
-    # TODO: support jax.Array
 
     if fn is None:
         return functools.partial(
-            named_pjit,
+            named_jit,
             axis_resources=axis_resources,
             in_axis_resources=in_axis_resources,
             out_axis_resources=out_axis_resources,
@@ -186,24 +224,18 @@ def named_pjit(
             **pjit_args,
         )
 
-    axis_resources = axis_resources or _mapping_holder.thread_data.resource_mapping
-
-    if in_axis_resources is None:
-        in_axis_resources = axis_resources
-
-    if out_axis_resources is None:
-        out_axis_resources = axis_resources
-
-    if axis_resources is None and (in_axis_resources is None or out_axis_resources is None):
-        raise ValueError(
-            "Must provide axis_resources, or in_axis_resources and out_axis_resources,"
-            " or have a global mapping via axis_mapping"
-        )
-
-    dynamic_fun, static_fun = hashable_partition(fn, is_jax_array_like)
-
     @functools.wraps(fn)
     def f(*args, **kwargs):
+        nonlocal axis_resources, in_axis_resources, out_axis_resources, donate_args, donate_kwargs
+
+        if axis_resources is None:
+            axis_resources = _mapping_holder.thread_data.resource_mapping
+
+        if out_axis_resources is None:
+            out_axis_resources = axis_resources
+
+        dynamic_fun, static_fun = hashable_partition(fn, is_jax_array_like)
+
         dynamic_argspec, static_argspec = hashable_partition((args, kwargs), is_jax_array_like)
         dynamic = (dynamic_fun, dynamic_argspec)
 
@@ -226,14 +258,25 @@ def named_pjit(
         static = (static_fun, static_argspec)
 
         output_shape = _cached_filter_eval_shape(fn, *args, **kwargs)
-        # TODO: with new jax.Array I shouldn't have to specify shardings, but I do...
-        in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
-        out_resources = infer_resource_partitions(output_shape, out_axis_resources)
-
+        # TODO: with new jax.Array I shouldn't have to specify shardings, but I do for now
+        #  https://github.com/google/jax/issues/15600
+        # we don't really need in_shardings though
         my_pjit_args = dict(**pjit_args)
-        my_pjit_args["in_axis_resources"] = in_resources
-        my_pjit_args["out_axis_resources"] = out_resources
-        with axis_mapping(axis_resources or {}):
+
+        if in_axis_resources is not None:
+            in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
+            my_pjit_args["in_shardings"] = in_resources
+
+        if out_axis_resources is not None:
+            out_resources = infer_resource_partitions(output_shape, out_axis_resources)
+            my_pjit_args["out_shardings"] = out_resources
+
+        if axis_resources is not None:
+            cmanager = axis_mapping(axis_resources)
+        else:
+            cmanager = contextlib.nullcontext()
+
+        with cmanager:
             cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
             return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
 
@@ -271,6 +314,7 @@ def _named_pjit_cache(fun_names, **jitkwargs):
     fun_wrapped.__name__ = fun_name
     fun_wrapped.__qualname__ = fun_qualname
 
+    # TODO: jit should work here, but there's a weird error. see if it goes away on its own
     return pjit(fun_wrapped, donate_argnums=0, static_argnums=2, **jitkwargs)
 
 
@@ -336,6 +380,16 @@ def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] =
         return Axis(axis.name, new_size)
 
 
+def _get_mesh():
+    from jax.experimental.maps import thread_resources
+
+    return thread_resources.env.physical_mesh
+
+
+def _is_jit_context():
+    return isinstance(jnp.zeros(1), jax.core.Tracer)
+
+
 __all__ = [
     "LogicalAxisName",
     "PhysicalAxis",
@@ -345,7 +399,7 @@ __all__ = [
     "axis_mapping",
     "auto_sharded",
     "infer_resource_partitions",
-    "named_pjit",
+    "named_jit",
     "physical_axis_name",
     "pspec_for_axis",
     "round_axis_for_partitioning",
