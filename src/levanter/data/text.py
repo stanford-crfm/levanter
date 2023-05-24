@@ -31,6 +31,7 @@ from levanter.data.shard_cache import (  # noqa
     _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
+    DEFAULT_ROWS_PER_CHUNK,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.hf_utils import load_tokenizer  # noqa
@@ -423,7 +424,7 @@ class LMDatasetConfig:
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
-    rows_per_chunk: int = 2048 # number of rows to process and cache per chunk
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK # number of rows to process and cache per chunk
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
