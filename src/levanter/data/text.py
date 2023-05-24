@@ -66,7 +66,6 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
     def __iter__(self) -> Iterator[Sequence[int]]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
-
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -269,6 +268,7 @@ def _open_arrow_table(path) -> pa.Table:
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     """Converts a document to an arrow-compatible record batch."""
+
     # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
     def _as_array(x):
         if isinstance(x, np.ndarray) and x.ndim > 1:
@@ -424,7 +424,7 @@ class LMDatasetConfig:
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
-    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK # number of rows to process and cache per chunk
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
