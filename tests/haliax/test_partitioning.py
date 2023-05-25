@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import pxla
 from jax.interpreters.pxla import PartitionSpec
-from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
+from jax.sharding import Mesh, NamedSharding
 from jaxtyping import Array
 from test_utils import skip_if_not_enough_devices
 
@@ -39,7 +39,7 @@ def test_infer_named_axes():
         spec = PartitionSpec(None, ResourceAxis.DATA, ResourceAxis.MODEL)
 
         assert axes.named.array == NamedSharding(mesh, spec)
-        assert axes.unnamed1 is None or isinstance(axes.unnamed1, SingleDeviceSharding)
+        assert axes.unnamed1.is_fully_replicated
 
 
 class MyModuleInit(eqx.Module):
