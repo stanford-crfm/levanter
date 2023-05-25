@@ -320,7 +320,7 @@ class TrainerConfig:
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     jax_config: Dict[str, JsonAtom] = field(
-        default_factory=copy.deepcopy(DEFAULT_JAX_CONFIG)
+        default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
 
     distributed: DistributedConfig = DistributedConfig()
