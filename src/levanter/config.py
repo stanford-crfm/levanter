@@ -99,6 +99,14 @@ class WandbConfig:
             logger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
+            # for some reason, wandb isn't populating the git commit, so we do it here
+            try:
+                repo = Repo(code_dir)
+                other_settings["git_commit"] = repo.head.commit.hexsha
+                hparams_to_save["git_commit"] = repo.head.commit.hexsha
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.warning(f"Could not find git repo at {code_dir}")
+                pass
 
         r = wandb.init(
             entity=self.entity,
@@ -141,6 +149,14 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
+        # generate a pip freeze
+        with tempfile.TemporaryDirectory() as tmpdir:
+            requirements_path = f"{tmpdir}/requirements.txt"
+            requirements = _generate_pip_freeze()
+            with open(requirements_path, "w") as f:
+                f.write(requirements)
+            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="config")
+
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
         wandb.summary["backend"] = jax.default_backend()
@@ -169,6 +185,13 @@ class WandbConfig:
                 logger.debug(f"Skipping {dirname} since it's not a git root")
                 pass
         return top_git_root
+
+
+def _generate_pip_freeze():
+    from importlib_metadata import distributions
+
+    dists = distributions()
+    return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
 
 
 @dataclass
