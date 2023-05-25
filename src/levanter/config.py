@@ -99,6 +99,13 @@ class WandbConfig:
             logger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
+            # for some reason, wandb isn't populating the git commit, so we do it here
+            try:
+                repo = Repo(code_dir)
+                other_settings["git_commit"] = repo.head.commit.hexsha
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.warning(f"Could not find git repo at {code_dir}")
+                pass
 
         r = wandb.init(
             entity=self.entity,
