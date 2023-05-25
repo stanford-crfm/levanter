@@ -8,7 +8,7 @@ import threading
 import time
 import warnings
 from functools import partial
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
@@ -31,23 +31,30 @@ logger = logging.getLogger(__name__)
 
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
-    dataloader: Callable[[], Iterator[tuple]],
+    dataset: Iterable,
+    max_batches: Optional[int] = None,
 ):
     def compute_loss(info: StepInfo):
         total_loss = 0.0
         n = 0
-        test_loader = dataloader()
 
-        pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
+        pbar = tqdm(dataset, desc="eval", position=1, leave=False)
         for batch in pbar:
-            loss = loss_fn(info.model, *batch)
+            loss = loss_fn(info.model, batch)
             # this mean is over the devices, somewhat confusingly
             loss = jnp.mean(loss)
             total_loss += loss.item()
             n += 1
             pbar.set_postfix(loss=total_loss / n)
 
-        mean_loss = total_loss / n
+            if max_batches is not None and n >= max_batches:
+                break
+
+        if n > 0:
+            mean_loss = total_loss / n
+        else:
+            mean_loss = 0.0
+
         if wandb.run is not None:
             wandb.log({"eval/loss": mean_loss}, step=info.step)
 
