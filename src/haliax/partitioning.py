@@ -13,7 +13,7 @@ from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import PartitionSpec
 from jax.lax import with_sharding_constraint
-from jax.sharding import Mesh
+from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -173,11 +173,14 @@ def infer_resource_partitions(
             if current_sharding is not None:
                 return NamedArray(current_sharding, node.axes)  # type: ignore
             else:
-                sharding = jax.sharding.NamedSharding(mesh, pspec_for_axis(node.axes, resource_mapping))
+                sharding = NamedSharding(mesh, pspec_for_axis(node.axes, resource_mapping))
                 return NamedArray(sharding, node.axes)  # type: ignore
         else:
             sharding = _auto_array_sharding(node)
-            if sharding is not None:
+            # TODO: these are usually replicated. Is there a better way to tell?
+            if isinstance(sharding, SingleDeviceSharding):
+                return NamedSharding(mesh, PartitionSpec(None))
+            elif sharding is not None:
                 return sharding
             else:
                 return AUTO
@@ -248,6 +251,10 @@ def named_jit(
                 dargs = tuple(donate_args)
             else:
                 dargs = donate_args
+
+            if len(dargs) != len(args):
+                raise ValueError(f"Expected {len(args)} donate_args, got {len(dargs)}")
+
             dkwargs = donate_kwargs or {k: False for k in kwargs}
             dkwargs = {k: dkwargs.get(k, False) for k in kwargs}
             dynamic_donated, dynamic_reserved = eqx.partition(dynamic, (False, (dargs, dkwargs)))
@@ -263,8 +270,13 @@ def named_jit(
         # we don't really need in_shardings though
         my_pjit_args = dict(**pjit_args)
 
-        if in_axis_resources is not None:
-            in_resources = infer_resource_partitions((dynamic_donated, dynamic_reserved), in_axis_resources)
+        if in_axis_resources is not None or axis_resources is not None:
+            in_axis_resources = in_axis_resources or axis_resources
+            in_resources = infer_resource_partitions(
+                (dynamic_donated, dynamic_reserved),
+                in_axis_resources,
+                preserve_existing_shardings=in_axis_resources is None,
+            )
             my_pjit_args["in_shardings"] = in_resources
 
         if out_axis_resources is not None:
