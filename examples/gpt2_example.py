@@ -28,6 +28,9 @@ from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
+import jax
+jax.config.update('jax_threefry_partitionable', True)
+
 
 logger = logging.getLogger(__name__)
 

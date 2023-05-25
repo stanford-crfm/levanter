@@ -19,6 +19,9 @@ from levanter.config import TrainerConfig
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
 
+GAMMA_SOFIA_G=20000
+GAMMA_SOFIA_H=0.1
+
 
 class ScaleByHeroState(NamedTuple):
     """State for the Adam algorithm."""
@@ -267,8 +270,8 @@ def sofia_from_config(config: TrainerConfig) -> SecondOrderTransformation:
         return optimizer
 
     # I also want to add a schedule for gamma after 100K. we decay gamma with the cosine schedule until 0.
-    gamma_decay_schedule = optax.cosine_decay_schedule(0.01, config.num_train_steps // 2, 0)
-    constant_gamma_schedule = optax.constant_schedule(0.01)
+    gamma_decay_schedule = optax.cosine_decay_schedule(GAMMA_SOFIA_G, config.num_train_steps // 2, 0)
+    constant_gamma_schedule = optax.constant_schedule(GAMMA_SOFIA_G)
     gamma_schedule = optax.join_schedules(
         [constant_gamma_schedule, gamma_decay_schedule], [config.num_train_steps // 2]
     )
