@@ -174,21 +174,25 @@ def main(config: TrainGpt2Config):
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
 
-        @named_jit(axis_resources=parameter_axis_mapping, donate_args=(False, True, False, False, False))
-        def update_hessian(model, opt_state, input_ids, keys, g_key):
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
+        @named_jit(
+            in_axis_resources=parameter_axis_mapping,
+            out_axis_resources=parameter_axis_mapping,
+            donate_args=(False, True, False, False),
+        )
+        def update_hessian(model, opt_state, input_ids, g_key):
+            attn_mask = hax.vmap(attention_mask, Batch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
-            # loss, grads = eqx.filter_value_and_grad(train_batch_loss)(model, input_ids, attn_mask, keys)
 
-            def mean_loss(logits, labels):
-                return hax.mean(next_token_loss(Pos, Vocab, logits, labels), "batch").scalar()
+            def loss(logits, labels):
+                return next_token_loss(Pos, Vocab, logits, labels).mean().scalar()
 
-            hess = stochastic_diag_gauss_newton(
-                mean_loss, model, input_ids, attn_mask, inference=True, key=None, Vocab=Vocab, g_key=g_key
-            )
+            with hax.axis_mapping(compute_axis_mapping):
+                hess = stochastic_diag_gauss_newton(
+                    loss, model, input_ids, attn_mask, inference=True, key=None, g_key=g_key, Vocab=Vocab
+                )
 
-            # distribute gradients across the mesh and apply them
-            opt_state = optimizer.hessian_update(hess, opt_state)
+                # distribute gradients across the mesh and apply them
+                opt_state = optimizer.hessian_update(hess, opt_state)
 
             return opt_state
 
@@ -300,7 +304,8 @@ def main(config: TrainGpt2Config):
 
                 if step % config.hessian_update_steps == 0:
                     with log_time_to_wandb("throughput/hessian_time", step=step):
-                        opt_state = update_hessian(model, opt_state, input_ids, example_keys, g_key)
+                        # g_key = jax.device_put_replicated(g_key, jax.local_devices())
+                        opt_state = update_hessian(model, opt_state, input_ids, g_key)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jax_step_loss.item()
