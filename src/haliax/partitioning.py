@@ -270,12 +270,14 @@ def named_jit(
         # we don't really need in_shardings though
         my_pjit_args = dict(**pjit_args)
 
-        in_resources = infer_resource_partitions(
-            (dynamic_donated, dynamic_reserved),
-            in_axis_resources or axis_resources,
-            preserve_existing_shardings=in_axis_resources is None,
-        )
-        my_pjit_args["in_shardings"] = in_resources
+        if in_axis_resources is not None or axis_resources is not None:
+            in_axis_resources = in_axis_resources or axis_resources
+            in_resources = infer_resource_partitions(
+                (dynamic_donated, dynamic_reserved),
+                in_axis_resources,
+                preserve_existing_shardings=in_axis_resources is None,
+            )
+            my_pjit_args["in_shardings"] = in_resources
 
         if out_axis_resources is not None:
             out_resources = infer_resource_partitions(output_shape, out_axis_resources)
