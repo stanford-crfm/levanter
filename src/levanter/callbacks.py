@@ -29,38 +29,42 @@ from levanter.trainer_hooks import StepInfo
 logger = logging.getLogger(__name__)
 
 
+def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
+    total_loss = 0.0
+    n = 0
+
+    pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    for batch in pbar:
+        loss = loss_fn(model, batch)
+        # this mean is over the devices, somewhat confusingly
+        loss = jnp.mean(loss)
+        total_loss += loss.item()
+        n += 1
+        pbar.set_postfix(loss=total_loss / n)
+
+        if max_batches is not None and n >= max_batches:
+            break
+
+    if n > 0:
+        loss /= n
+
+    return loss
+
+
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
     dataset: Iterable,
     max_batches: Optional[int] = None,
 ):
     def compute_loss(info: StepInfo):
-        total_loss = 0.0
-        n = 0
-
-        pbar = tqdm(dataset, desc="eval", position=1, leave=False)
-        for batch in pbar:
-            loss = loss_fn(info.model, batch)
-            # this mean is over the devices, somewhat confusingly
-            loss = jnp.mean(loss)
-            total_loss += loss.item()
-            n += 1
-            pbar.set_postfix(loss=total_loss / n)
-
-            if max_batches is not None and n >= max_batches:
-                break
-
-        if n > 0:
-            mean_loss = total_loss / n
-        else:
-            mean_loss = 0.0
+        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches)
 
         if wandb.run is not None:
-            wandb.log({"eval/loss": mean_loss}, step=info.step)
+            wandb.log({"eval/loss": loss}, step=info.step)
 
-        logger.info(f"validation loss: {mean_loss:.3f}")
+        logger.info(f"validation loss: {loss:.3f}")
 
-        return total_loss
+        return loss
 
     return compute_loss
 

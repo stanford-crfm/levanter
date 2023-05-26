@@ -12,6 +12,7 @@ import haliax as hax
 import levanter
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
+from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
@@ -53,6 +54,7 @@ def main(config: EvalGpt2Config):
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
+    KeyPos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -70,38 +72,23 @@ def main(config: EvalGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(config.model.Pos, config.model.KeyPos)
+                attn_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
+                return hax.mean(next_token_loss(Pos, Vocab, pred_y, input_ids)).scalar()
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids):
-            # None here means the first argument (the model) is not vectorized but instead broadcasted
-            return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids))
+        # @named_jit(axis_resources=parameter_axis_mapping)
+        # def eval_loss(model, input_ids):
+        #     return hax.mean(compute_loss(model, input_ids)).scalar()
 
         compute_loss_pjit = named_jit(
-            mean_loss,
+            compute_loss,
             out_axis_resources=compute_axis_mapping,
             axis_resources=compute_axis_mapping,
         )
 
         total = config.trainer.max_eval_batches
-
-        def evaluate(model):
-
-            # standard evaluation loop
-            loss = 0.0
-            n = 0
-
-            with hax.axis_mapping(compute_axis_mapping):
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
-                    loss += compute_loss_pjit(model, batch).item()
-                    n += 1
-                    if total is not None and n >= total:
-                        break
-
-            return loss / n
 
         # initialize the model
         if config.checkpoint_path is not None:
@@ -114,9 +101,9 @@ def main(config: EvalGpt2Config):
 
             model = init_model()
 
-            # TODO: switch to throwing isntead of returning None
+            # TODO: switch to throwing instead of returning None
             model, _, _ = load_checkpoint(model, None, config.checkpoint_path)  # type: ignore
-            loss = evaluate(model)
+            loss = callbacks.eval_loss_loop(compute_loss_pjit, model, eval_dataset, max_batches=total)
 
             del model
             print("Loss from Levanter model: ", loss)
@@ -126,7 +113,7 @@ def main(config: EvalGpt2Config):
             with jax.default_device(jax.devices("cpu")[0]):
                 hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
             # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
-            loss = evaluate(hf_model)
+            loss = callbacks.eval_loss_loop(compute_loss_pjit, hf_model, eval_dataset, max_batches=total)
 
             print("Loss from HF model: ", loss)
 
