@@ -196,6 +196,7 @@ def main(config: TrainGpt2Config):
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
+            """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -208,7 +209,7 @@ def main(config: TrainGpt2Config):
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, Pos)
-                return logprobs.rearrange(("batch", Pos)).array
+                return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
