@@ -188,7 +188,7 @@ class WandbConfig:
 
 
 def _generate_pip_freeze():
-    from importlib_metadata import distributions
+    from importlib.metadata import distributions
 
     dists = distributions()
     return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
