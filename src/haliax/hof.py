@@ -191,8 +191,8 @@ def vmap(
             for p in signature.parameters.values()
         ]
     )
-    axis_spec_bound_sig = signature_default.bind_partial(*args, **kwargs)
-    axis_spec_bound_sig.apply_defaults()
+    axis_spec_sig = signature_default.bind_partial(*args, **kwargs)
+    axis_spec_sig.apply_defaults()
     del args, kwargs
 
     def _index_of_batch_axis(array, default):
@@ -211,9 +211,7 @@ def vmap(
         actual_bound.apply_defaults()
 
         # now that we have args, we can figure out what the axis spec is for each arg
-        padded_spec_args = axis_spec_bound_sig.args + (default,) * (
-            len(actual_bound.args) - len(axis_spec_bound_sig.args)
-        )
+        padded_spec_args = axis_spec_sig.args + (default,) * (len(actual_bound.args) - len(axis_spec_sig.args))
 
         # want to support padded_spec_args being a tree prefix of the actual args, which this enables
         padded_spec_args = broadcast_prefix(padded_spec_args, actual_bound.args, is_leaf=is_named_array)
@@ -223,8 +221,8 @@ def vmap(
         )
 
         padded_spec_kwargs = {
-            **axis_spec_bound_sig.kwargs,
-            **{k: default for k in actual_bound.kwargs.keys() - axis_spec_bound_sig.kwargs.keys()},
+            **axis_spec_sig.kwargs,
+            **{k: default for k in actual_bound.kwargs.keys() - axis_spec_sig.kwargs.keys()},
         }
 
         padded_spec_kwargs = broadcast_prefix(padded_spec_kwargs, actual_bound.kwargs)
