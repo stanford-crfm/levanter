@@ -155,7 +155,7 @@ class WandbConfig:
             requirements = _generate_pip_freeze()
             with open(requirements_path, "w") as f:
                 f.write(requirements)
-            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="config")
+            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
 
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
