@@ -36,7 +36,7 @@ class BackpackConfig(Gpt2Config):
     sense_intermediate_scale: int = 4
 
     # Axes
-    SenseHeadSize = property(lambda self: Axis(name="head", size=self.hidden_dim // self.num_senses))
+    SenseHeadDim = property(lambda self: Axis(name="head", size=self.hidden_dim // self.num_senses))
     Senses = property(lambda self: Axis(name="senses", size=self.num_senses))
     SenseIntermediate = property(
         lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim)
@@ -103,93 +103,70 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
 
 
 class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
+    """
+    Changes from Gpt2Attention:
+    1. No projection; it returns the attention weights
+    2. Use SenseHeadDim instead of HeadDim, use Senses instead of Heads
+    """
+
+    # No projection
+    config: Gpt2Config = eqx.static_field()
+
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
 
-    Pos: Axis = eqx.static_field()
-    SenseHeadSize: Axis = eqx.static_field()
-    Heads: Axis = eqx.static_field()
-    Qkv: Axis = eqx.static_field()
     KeyPos: Axis = eqx.static_field()
 
-    # Mistral stability tweaks
-    scale_by_inverse_layer_idx: bool = eqx.static_field()
-    upcast: bool = eqx.static_field()
+    @staticmethod
+    def init(config: Gpt2Config, *, key) -> "WeightsOnlyAttention":
+        Qk = Axis("qk", size=2)
+        use_bias = config.use_bias
+        Embed = config.Embed
 
-    def __init__(
-        self,
-        Pos: Axis,
-        KeyPos: Axis,
-        Embed: Axis,
-        Heads: Axis,
-        SenseHeadSize: Axis,
-        dropout_prob: float,
-        scale_by_inverse_layer_idx: bool,
-        upcast: bool,
-        *,
-        key,
-        use_bias: bool = True,
-    ):
-        self.Heads = Heads
-        self.SenseHeadSize = SenseHeadSize
-        self.Pos = Pos
-        self.Qkv = Axis("qkv", 2)
-        self.KeyPos = KeyPos
+        k_c, _ = jrandom.split(key, 2)
+        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
+        dropout = hnn.Dropout(config.attn_pdrop)
 
-        k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear.init(
-            In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias
-        )
-        self.dropout = hnn.Dropout(dropout_prob)
-
-        self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
-        self.upcast = upcast
+        return WeightsOnlyAttention(config, c_attn, dropout, KeyPos=config.KeyPos)
 
     @named_call
-    def __call__(
-        self, hidden_states: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key
-    ):
-        qkv_out = self.c_attn(hidden_states)
-        q, k = qkv_out.unbind(self.Qkv)
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+        qk_out = self.c_attn(x)
+        q, k = qk_out.unbind("qk")
 
-        # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.Pos: self.KeyPos})
+        # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
+        k = k.rename({"position": "key_position"})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.SenseHeadSize.size))
-        # if self.scale_by_inverse_layer_idx:
-        #    scale /= layer_idx + 1.0
+        scale = jax.lax.rsqrt(float(self.config.SenseHeadDim.size))
+        if self.config.scale_attn_by_inverse_layer_idx:
+            scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
 
         # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.upcast:
+        if self.config.upcast_attn:
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot(self.SenseHeadSize, q, k)
+        attn_scores = hax.dot("senses", q, k)
 
         if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e15
+            attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis=self.KeyPos).astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-
         es = cast(Axis, self.c_attn.In).size
         d = {}
+        num_heads = self.config.Senses.size
+        sense_head_size = self.config.SenseHeadDim.size
         d.update(
-            reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, self.Heads.size, self.SenseHeadSize.size)
-            )
+            reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, num_heads, sense_head_size))
         )
-
         return super().from_state_dict(d, prefix)
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
@@ -199,10 +176,11 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         super().update_state_dict(my_dict, prefix)
 
         es = cast(Axis, self.c_attn.In).size
+        num_heads = self.config.Senses.size
+        sense_head_size = self.config.SenseHeadDim.size
+
         my_dict.update(
-            reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * self.Heads.size * self.SenseHeadSize.size,)
-            )
+            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * num_heads * sense_head_size,))
         )
 
         state_dict.update(my_dict)
@@ -346,17 +324,9 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             key=k_embeddings,
             config=config,
         )
-        self.kq_selfattention = WeightsOnlyAttention(
-            Pos=config.Pos,
-            KeyPos=config.KeyPos,
-            Embed=config.Embed,
-            Heads=config.Senses,
-            SenseHeadSize=config.SenseHeadSize,
-            dropout_prob=config.attn_pdrop,
+        self.kq_selfattention = WeightsOnlyAttention.init(
+            config=config,
             key=k_attn,
-            scale_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-            upcast=config.upcast_attn,
-            use_bias=config.use_bias,
         )
 
     def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
