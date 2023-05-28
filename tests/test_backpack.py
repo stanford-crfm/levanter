@@ -1,5 +1,3 @@
-import numpy as onp
-
 from jax.random import PRNGKey
 
 import haliax as hax
@@ -33,10 +31,8 @@ def test_backpack_predict():
             axis=model.Vocab,
         )
 
-    out_1 = compute(input).array
-    assert out_1.shape == (
+    out = compute(input).array
+    assert out.shape == (
         model.Pos.size,
         model.Vocab.size,
-    ), f"{out_1.shape} != {(model.Pos, model.Vocab.size)}"
-
-
+    ), f"{out.shape} != {(model.Pos, model.Vocab.size)}"
