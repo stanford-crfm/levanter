@@ -189,7 +189,6 @@ def main(config: TrainBackpackConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             # just use causal mask for evaluation
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
             return compute_loss(model, input_ids, mask, None, True)
@@ -238,7 +237,6 @@ def main(config: TrainBackpackConfig):
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -294,7 +292,6 @@ def main(config: TrainBackpackConfig):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
