@@ -44,6 +44,27 @@ class BackpackConfig(Gpt2Config):
 
 
 class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
+    Out: Union[Axis, List[Axis]] = eqx.static_field()  # This is needed to output both Embed and Senses
+
+    @staticmethod
+    def init(
+        Embed: Axis,
+        Mlp: Axis,
+        Out: Union[Axis, List[Axis]],
+        activation_fn: Union[str, Callable],
+        *,
+        key,
+        use_bias: bool = True,
+    ) -> "BackpackMlp":
+        k_fc, k_proj = jrandom.split(key, 2)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias)
+        if isinstance(activation_fn, str):
+            activation_fn = ACT2FN[activation_fn]
+        act = activation_fn  # type: ignore
+
+        return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act, Out=Out)
+
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
         # so we need to reshape the one in the dict before forwarding to the linear
@@ -60,12 +81,9 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
                 state_dict, apply_prefix(prefix, "c_fc"), (self.c_fc.In.size,), (self.c_fc.Out.size,)
             )
         )
-
         return super().from_state_dict(d, prefix)
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
@@ -209,6 +227,7 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         self.mlp = BackpackMlp.init(
             Embed=config.Embed,
             Mlp=config.Mlp,
+            Out=config.Embed,
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
@@ -266,6 +285,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         self.final_mlp = BackpackMlp.init(
             Embed=config.Embed,
             Mlp=config.SenseIntermediate,
+            Out=(config.Senses, config.Embed),
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
