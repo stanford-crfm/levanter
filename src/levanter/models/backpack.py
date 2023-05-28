@@ -137,8 +137,6 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.SenseHeadDim.size))
-        if self.config.scale_attn_by_inverse_layer_idx:
-            scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
@@ -148,10 +146,10 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot("senses", q, k)
+        attn_scores = hax.dot("head", q, k)
 
         if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
+            attn_scores = attn_scores + (1.0 - mask) * -1e15
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
