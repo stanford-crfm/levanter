@@ -144,5 +144,4 @@ ledger.json
 /checkpoints
 *.jaxpr
 
-# local command scripts
 local_*.sh
