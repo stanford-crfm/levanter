@@ -61,8 +61,8 @@ class BackpackConfig:
     sense_intermediate_scale: int = 4
 
     # Axes
-    SeqLen = property(lambda self: Axis(name="seqlen", size=self.seq_len))
-    KeySeqLen = property(lambda self: self.SeqLen.alias(f"key_{self.SeqLen.name}"))
+    Pos = property(lambda self: Axis(name="position", size=self.seq_len))
+    KeyPos = property(lambda self: self.Pos.alias(f"key_{self.Pos.name}"))
     # Pos = property(lambda self: Axis(name="position", size=self.seq_len))
     # KeyPos = property(lambda self: self.Pos.alias("key_position"))
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
@@ -156,11 +156,11 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
 
-    SeqLen: Axis = eqx.static_field()
+    Pos: Axis = eqx.static_field()
     SenseHeadSize: Axis = eqx.static_field()
     Heads: Axis = eqx.static_field()
     Qkv: Axis = eqx.static_field()
-    KeySeqLen: Axis = eqx.static_field()
+    KeyPos: Axis = eqx.static_field()
 
     # Mistral stability tweaks
     scale_by_inverse_layer_idx: bool = eqx.static_field()
@@ -168,8 +168,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
     def __init__(
         self,
-        SeqLen: Axis,
-        KeySeqLen: Axis,
+        Pos: Axis,
+        KeyPos: Axis,
         Embed: Axis,
         Heads: Axis,
         SenseHeadSize: Axis,
@@ -182,9 +182,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
     ):
         self.Heads = Heads
         self.SenseHeadSize = SenseHeadSize
-        self.SeqLen = SeqLen
+        self.Pos = Pos
         self.Qkv = Axis("qkv", 2)
-        self.KeySeqLen = KeySeqLen
+        self.KeyPos = KeyPos
 
         k_c, k_proj = jrandom.split(key, 2)
         self.c_attn = hnn.Linear.init(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias)
@@ -200,8 +200,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         qkv_out = self.c_attn(hidden_states)
         q, k = qkv_out.unbind(self.Qkv)
 
-        # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.SeqLen: self.KeySeqLen})
+        # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
+        k = k.rename({self.Pos: self.KeyPos})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.SenseHeadSize.size))
@@ -221,7 +221,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
-        attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis=self.KeyPos).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
         return attn_weights
 
@@ -304,7 +304,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
 
     # axes
     Vocab: Axis = eqx.static_field()
-    SeqLen: Axis = eqx.static_field()
+    Pos: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
     Senses: Axis = eqx.static_field()
 
@@ -312,7 +312,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         self,
         Embed: Axis,
         Vocab: Axis,
-        SeqLen: Axis,
+        Pos: Axis,
         initializer_range: float,
         dropout_prob: float,
         embeddings: Gpt2Embeddings,
@@ -324,7 +324,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         k_wte, k_wpe, k_out, k_block, k_mlp = jrandom.split(key, 5)
 
         self.Vocab = Vocab
-        self.SeqLen = SeqLen
+        self.Pos = Pos
         self.Embed = Embed
         self.Senses = config.Senses
 
@@ -370,8 +370,8 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return self.embeddings.Vocab
     
     @property
-    def SeqLen(self) -> Axis:
-        return self.sense_net.SeqLen
+    def Pos(self) -> Axis:
+        return self.sense_net.Pos
 
     def __init__(self, Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
@@ -390,7 +390,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         self.sense_net = BackpackSenses(
             Vocab=Vocab,
             Embed=config.Embed,
-            SeqLen=config.SeqLen,
+            Pos=config.Pos,
             initializer_range=config.initializer_range,
             dropout_prob=config.embed_pdrop,
             embeddings=self.embeddings,
@@ -398,8 +398,8 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             config=config,
         )
         self.kq_selfattention = WeightsOnlyAttention(
-            SeqLen=config.SeqLen,
-            KeySeqLen=config.KeySeqLen,
+            Pos=config.Pos,
+            KeyPos=config.KeyPos,
             Embed=config.Embed,
             Heads=config.Senses,
             SenseHeadSize=config.SenseHeadSize,
@@ -424,10 +424,10 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         ## Compute sense vectors
         sense_input_embeds  = self.embeddings.embed(input_ids, inference=None, key=None, input_embeds_only=True) # (seq, embed
         sense_vectors = self.sense_net.sense_embed(sense_input_embeds, inference=inference, key=k_senses) # (seq, senses, embed)
-        sense_vectors = sense_vectors.rename({self.SeqLen: self.kq_selfattention.KeySeqLen})
+        sense_vectors = sense_vectors.rename({self.Pos: self.kq_selfattention.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(self.kq_selfattention.KeySeqLen, contextualization_weights, sense_vectors) #(seq, senses, embed)
+        hidden_states = hax.dot(self.kq_selfattention.KeyPos, contextualization_weights, sense_vectors) #(seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
         # divide by 1/senses
         scale = self.config.Senses.size

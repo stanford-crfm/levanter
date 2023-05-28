@@ -57,8 +57,8 @@ def main(config: TrainBackpackConfig):
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
-    SeqLen = config.model.SeqLen
-    KeySeqLen = config.model.KeySeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -66,14 +66,14 @@ def main(config: TrainBackpackConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), SeqLen),
+        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
     eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), KeySeqLen),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -113,8 +113,8 @@ def main(config: TrainBackpackConfig):
             return mp.cast_to_param(model)
 
         model = init_model()
-        input = hax.random.randint(jax.random.PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
-        attn_mask = hax.nn.attention.causal_mask(model.SeqLen, model.config.KeySeqLen)
+        input = hax.random.randint(jax.random.PRNGKey(0), model.Pos, 0, model.Vocab.size)
+        attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
         wandb.summary["parameter_count"] = parameter_count(model)
         print(f"Parameter count: {parameter_count(model)}")
@@ -126,16 +126,16 @@ def main(config: TrainBackpackConfig):
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
 
             # forgetful causal masking
             if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
         # don't want to compute the loss w.r.t. the final token
-        loss_mask = 1 - hax.nn.one_hot(-1, SeqLen, dtype=jnp.float32)  # one everywhere except the last token
+        loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)  # one everywhere except the last token
 
         # loss function: this computes the loss with respect to a single example
         def compute_loss(model: BackpackLMHeadModel, input_ids, attn_mask, key, inference):
@@ -146,7 +146,7 @@ def main(config: TrainBackpackConfig):
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
+                target_y = haliax.roll(input_ids, -1, Pos)
                 target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
                 loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
@@ -190,7 +190,7 @@ def main(config: TrainBackpackConfig):
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             # just use causal mask for evaluation
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             return compute_loss(model, input_ids, mask, None, True)
 
         # Set up evaluation
@@ -247,15 +247,15 @@ def main(config: TrainBackpackConfig):
                 pred_y = mp.cast_to_output(pred_y)
 
                 # need to roll the target tokens back by one so that each token is predicting the next token
-                target_y = haliax.roll(input_ids, -1, SeqLen)
+                target_y = haliax.roll(input_ids, -1, Pos)
                 target_y = haliax.nn.one_hot(target_y, Vocab, dtype=pred_y.dtype)
 
                 loss = cross_entropy_loss(pred_y, Vocab, target_y)
                 loss *= -1.0  # negate because we want log probs
                 masked = loss * loss_mask
                 # roll forward to get the loss for each token
-                masked = haliax.roll(masked, 1, SeqLen)
-                return masked.rearrange((EvalBatch, SeqLen)).array
+                masked = haliax.roll(masked, 1, Pos)
+                return masked.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
