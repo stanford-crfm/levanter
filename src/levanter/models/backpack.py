@@ -23,7 +23,7 @@ from levanter.compat.torch_serialization import (
     reshape_linear_layer,
     reshape_mlp_linear_layer,
 )
-from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config, Gpt2Mlp
+from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config, Gpt2Mlp, ACT2FN
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
@@ -115,8 +115,6 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
 
-    KeyPos: Axis = eqx.static_field()
-
     @staticmethod
     def init(config: Gpt2Config, *, key) -> "WeightsOnlyAttention":
         Qk = Axis("qk", size=2)
@@ -127,7 +125,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
 
-        return WeightsOnlyAttention(config, c_attn, dropout, KeyPos=config.KeyPos)
+        return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
@@ -349,11 +347,11 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         sense_vectors = self.sense_net.sense_embed(
             sense_input_embeds, inference=inference, key=k_senses
         )  # (seq, senses, embed)
-        sense_vectors = sense_vectors.rename({self.Pos: self.kq_selfattention.KeyPos})
+        sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
         hidden_states = hax.dot(
-            self.kq_selfattention.KeyPos, contextualization_weights, sense_vectors
+            self.config.KeyPos, contextualization_weights, sense_vectors
         )  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
         # divide by 1/senses
@@ -366,13 +364,3 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         return {"transformer": None, "embeddings": None}
-
-
-ACT2FN: Dict[str, Callable] = {
-    "relu": hnn.relu,
-    "silu": hnn.silu,
-    "swish": hnn.swish,
-    "gelu": partial(hnn.gelu, approximate=False),
-    "gelu_new": partial(hnn.gelu, approximate=True),
-    "quick_gelu": hnn.quick_gelu,
-}
