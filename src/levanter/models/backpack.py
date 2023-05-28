@@ -36,7 +36,7 @@ class BackpackConfig(Gpt2Config):
     sense_intermediate_scale: int = 4
 
     # Axes
-    SenseHeadDim = property(lambda self: Axis(name="head", size=self.hidden_dim // self.num_senses))
+    SenseHeadDim = property(lambda self: Axis(name="head_dim", size=self.hidden_dim // self.num_senses))
     Senses = property(lambda self: Axis(name="senses", size=self.num_senses))
     SenseIntermediate = property(
         lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim)
@@ -146,7 +146,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot("head", q, k)
+        attn_scores = hax.dot("head_dim", q, k)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
