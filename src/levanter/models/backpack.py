@@ -23,99 +23,36 @@ from levanter.compat.torch_serialization import (
     reshape_linear_layer,
     reshape_mlp_linear_layer,
 )
-from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config
+from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config, Gpt2Mlp
 
 
 sharded_normal = hax.random.generate_sharded(hax.random.normal)
 
 
 @dataclass(frozen=True)
-class BackpackConfig:
-    seq_len: int = 512
-    hidden_dim: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-
-    # how much to scale the embedding dim for the mlp layer
-    mlp_scale: int = 4
-
-    initializer_range: float = 0.02
-    # dropout doesn't really help so we 0 it out by default
-    embed_pdrop: float = 0.0
-    resid_pdrop: float = 0.0
-    attn_pdrop: float = 0.0
-    layer_norm_epsilon: float = 1e-5
-    activation_function: str = "gelu_new"
-
-    # mistral tweaks:
-    scale_attn_by_inverse_layer_idx: bool = True
-    upcast_attn: bool = False
-
-    gradient_checkpointing: bool = True  # better to just always use this
-    gradient_checkpointing_block_size: int = 5
-
-    use_bias: bool = True
-
+class BackpackConfig(Gpt2Config):
     # Backpack-specific terms
     num_senses: int = 16
     sense_intermediate_scale: int = 4
 
     # Axes
-    Pos = property(lambda self: Axis(name="position", size=self.seq_len))
-    KeyPos = property(lambda self: self.Pos.alias(f"key_{self.Pos.name}"))
-    # Pos = property(lambda self: Axis(name="position", size=self.seq_len))
-    # KeyPos = property(lambda self: self.Pos.alias("key_position"))
-    Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
-    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
-    Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
-    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * 4))
-    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
     SenseHeadSize = property(lambda self: Axis(name="head", size=self.hidden_dim // self.num_senses))
     Senses = property(lambda self: Axis(name="senses", size=self.num_senses))
-    SenseIntermediate = property(lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim))
+    SenseIntermediate = property(
+        lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim)
+    )
 
 
-class BackpackMlp(StateDictSerializationMixin, eqx.Module):
-    act: Callable = eqx.static_field()
-    c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
-    c_proj: hnn.Linear  # projection from Intermediate to out
-    Out: Union[Axis, List[Axis]] = eqx.static_field()
-
-    def __init__(
-        self, Embed: Axis, Intermediate: Axis, Out: Union[Axis, List[Axis]], activation_fn: Union[str, Callable], *, key, use_bias: bool = True
-    ):
-        k_fc, k_proj = jrandom.split(key, 2)
-        self.Out = Out
-        self.c_fc = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        self.c_proj = hnn.Linear.init(Out=Out, In=Intermediate, key=k_proj, use_bias=use_bias)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        self.act = activation_fn  # type: ignore
-
-    @named_call
-    def __call__(self, hidden_states: NamedArray):
-        hidden_states = hax.auto_sharded(hidden_states)
-        hidden_states = self.c_fc(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.c_proj(hidden_states)
-        return hidden_states
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
+class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        es = cast(Axis, self.c_proj.In).size
-        if isinstance(self.Out, Axis):
-          return super().from_state_dict(state_dict, prefix)
-          sizes = (es, self.Out.size)
-        else:
-          sizes = tuple([x.size for x in self.Out])
-          #sizes = tuple([x.size for x in [es] + list(self.Out)])
         d = {}
         d.update(
             reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (es,), sizes
+                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
             )
         )
         d.update(
@@ -132,14 +69,9 @@ class BackpackMlp(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        es = cast(Axis, self.c_proj.In).size
-        if isinstance(self.Out, Axis):
-          out_size = self.Out.size
-        else:
-          out_size = math.prod([x.size for x in self.Out])
         my_dict.update(
             reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (out_size,)
+                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
             )
         )
         my_dict.update(
@@ -187,7 +119,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         self.KeyPos = KeyPos
 
         k_c, k_proj = jrandom.split(key, 2)
-        self.c_attn = hnn.Linear.init(In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias)
+        self.c_attn = hnn.Linear.init(
+            In=Embed, Out=(self.Qkv, self.Heads, self.SenseHeadSize), key=k_c, use_bias=use_bias
+        )
         self.dropout = hnn.Dropout(dropout_prob)
 
         self.scale_by_inverse_layer_idx = scale_by_inverse_layer_idx
@@ -205,7 +139,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.SenseHeadSize.size))
-        #if self.scale_by_inverse_layer_idx:
+        # if self.scale_by_inverse_layer_idx:
         #    scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
@@ -237,7 +171,6 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
                 state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, self.Heads.size, self.SenseHeadSize.size)
             )
         )
-
 
         return super().from_state_dict(d, prefix)
 
@@ -273,10 +206,9 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         self.resid_dropout2 = hnn.Dropout(pdrop=config.resid_pdrop)
         self.ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
-        self.mlp = BackpackMlp(
+        self.mlp = BackpackMlp.init(
             Embed=config.Embed,
-            Intermediate=config.Mlp,
-            Out=config.Embed,
+            Mlp=config.Mlp,
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
@@ -331,15 +263,13 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
         self.block = NoMixBlock(config, key=k_block)
         self.ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
-        self.final_mlp = BackpackMlp(
+        self.final_mlp = BackpackMlp.init(
             Embed=config.Embed,
-            Intermediate=config.SenseIntermediate,
-            Out=(config.Senses, config.Embed),
+            Mlp=config.SenseIntermediate,
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
         )
-
 
     @named_call
     def sense_embed(self, input_embeds, inference, *, key):
@@ -350,12 +280,11 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         return senses
 
 
-
 class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
     sense_net: BackpackSenses
-    kq_selfattention : WeightsOnlyAttention
+    kq_selfattention: WeightsOnlyAttention
 
     @property
     def config(self):
@@ -368,7 +297,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     @property
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
-    
+
     @property
     def Pos(self) -> Axis:
         return self.sense_net.Pos
@@ -419,21 +348,29 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         # Compute contextualization weights
         hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
         hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
-        contextualization_weights = self.kq_selfattention(hidden_states, mask=attn_mask, inference=inference, layer_idx = self.config.num_layers, key=k_sa) # (seq, seq, senses)
+        contextualization_weights = self.kq_selfattention(
+            hidden_states, mask=attn_mask, inference=inference, layer_idx=self.config.num_layers, key=k_sa
+        )  # (seq, seq, senses)
 
         ## Compute sense vectors
-        sense_input_embeds  = self.embeddings.embed(input_ids, inference=None, key=None, input_embeds_only=True) # (seq, embed
-        sense_vectors = self.sense_net.sense_embed(sense_input_embeds, inference=inference, key=k_senses) # (seq, senses, embed)
+        sense_input_embeds = self.embeddings.embed(
+            input_ids, inference=None, key=None, input_embeds_only=True
+        )  # (seq, embed
+        sense_vectors = self.sense_net.sense_embed(
+            sense_input_embeds, inference=inference, key=k_senses
+        )  # (seq, senses, embed)
         sense_vectors = sense_vectors.rename({self.Pos: self.kq_selfattention.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(self.kq_selfattention.KeyPos, contextualization_weights, sense_vectors) #(seq, senses, embed)
+        hidden_states = hax.dot(
+            self.kq_selfattention.KeyPos, contextualization_weights, sense_vectors
+        )  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
         # divide by 1/senses
         scale = self.config.Senses.size
         hidden_states = hidden_states / scale
 
-        lm_logits = self.embeddings.unembed(hidden_states) 
+        lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
 
