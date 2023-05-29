@@ -253,9 +253,9 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         )
 
         return BackpackSenses(
-            dropout=dropout, 
-            block=block, 
-            ln=ln, 
+            dropout=dropout,
+            block=block,
+            ln=ln,
             final_mlp=final_mlp,
             Pos=config.Pos,
         )
