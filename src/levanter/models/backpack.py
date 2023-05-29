@@ -190,15 +190,16 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
     resid_dropout1: hnn.Dropout
     resid_dropout2: hnn.Dropout
 
-    def __init__(self, config: BackpackConfig, *, key):
-        k_attn, k_cross, k_mlp = jrandom.split(key, 3)
+    @staticmethod
+    def init(config: BackpackConfig, *, key) -> "NoMixBlock":
+        k_mlp = jrandom.split(key, 1)[0]
 
-        self.ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
-        self.resid_dropout1 = hnn.Dropout(pdrop=config.resid_pdrop)
-        self.resid_dropout2 = hnn.Dropout(pdrop=config.resid_pdrop)
-        self.ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        resid_dropout1 = hnn.Dropout(pdrop=config.resid_pdrop)
+        resid_dropout2 = hnn.Dropout(pdrop=config.resid_pdrop)
+        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
-        self.mlp = BackpackMlp.init(
+        mlp = BackpackMlp.init(
             Embed=config.Embed,
             Mlp=config.Mlp,
             Out=config.Embed,
@@ -207,9 +208,10 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
             use_bias=config.use_bias,
         )
 
+        return NoMixBlock(ln_1=ln_1, ln_2=ln_2, mlp=mlp, resid_dropout1=resid_dropout1, resid_dropout2=resid_dropout2)
+
     @named_call
     def __call__(self, hidden_states: NamedArray, residual: NamedArray, inference, *, key):
-        #
         k1, k2 = haliax.jax_utils.maybe_rng_split(key, 2)
 
         residual = self.resid_dropout1(hidden_states, key=k1, inference=inference) + residual
@@ -227,42 +229,35 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
     ln: hnn.LayerNorm
     final_mlp: BackpackMlp
 
-    # axes
-    Vocab: Axis = eqx.static_field()
     Pos: Axis = eqx.static_field()
-    Embed: Axis = eqx.static_field()
-    Senses: Axis = eqx.static_field()
 
-    def __init__(
-        self,
-        Embed: Axis,
-        Vocab: Axis,
-        Pos: Axis,
-        initializer_range: float,
-        dropout_prob: float,
-        embeddings: Gpt2Embeddings,
+    @staticmethod
+    def init(
         config,
+        dropout_prob: float,
         *,
         key,
     ):
-        super().__init__()
-        k_wte, k_wpe, k_out, k_block, k_mlp = jrandom.split(key, 5)
+        k_block, k_mlp = jrandom.split(key, 2)
 
-        self.Vocab = Vocab
-        self.Pos = Pos
-        self.Embed = Embed
-        self.Senses = config.Senses
-
-        self.dropout = hnn.Dropout(pdrop=dropout_prob)
-        self.block = NoMixBlock(config, key=k_block)
-        self.ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
-        self.final_mlp = BackpackMlp.init(
+        dropout = hnn.Dropout(pdrop=dropout_prob)
+        block = NoMixBlock.init(config, key=k_block)
+        ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        final_mlp = BackpackMlp.init(
             Embed=config.Embed,
             Mlp=config.SenseIntermediate,
             Out=(config.Senses, config.Embed),
             activation_fn=config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
+        )
+
+        return BackpackSenses(
+            dropout=dropout, 
+            block=block, 
+            ln=ln, 
+            final_mlp=final_mlp,
+            Pos=config.Pos,
         )
 
     @named_call
@@ -296,33 +291,36 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     def Pos(self) -> Axis:
         return self.sense_net.Pos
 
-    def __init__(self, Vocab: Axis, config: BackpackConfig, *, key):
+    @staticmethod
+    def init(Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
-        self.transformer = Gpt2Transformer.init(config, key=k_t)
+        transformer = Gpt2Transformer.init(config, key=k_t)
         gpt2_config = Gpt2Config(
             hidden_dim=config.hidden_dim,
             seq_len=config.seq_len,
             initializer_range=config.initializer_range,
             embed_pdrop=config.embed_pdrop,
         )
-        self.embeddings = Gpt2Embeddings.init(
+        embeddings = Gpt2Embeddings.init(
             Vocab=Vocab,
             config=gpt2_config,
             key=k_embeddings,
         )
-        self.sense_net = BackpackSenses(
-            Vocab=Vocab,
-            Embed=config.Embed,
-            Pos=config.Pos,
-            initializer_range=config.initializer_range,
-            dropout_prob=config.embed_pdrop,
-            embeddings=self.embeddings,
-            key=k_embeddings,
+        sense_net = BackpackSenses.init(
             config=config,
+            dropout_prob=config.embed_pdrop,
+            key=k_embeddings,
         )
-        self.kq_selfattention = WeightsOnlyAttention.init(
+        kq_selfattention = WeightsOnlyAttention.init(
             config=config,
             key=k_attn,
+        )
+
+        return BackpackLMHeadModel(
+            transformer=transformer,
+            embeddings=embeddings,
+            sense_net=sense_net,
+            kq_selfattention=kq_selfattention,
         )
 
     def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
@@ -348,9 +346,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(
-            self.config.KeyPos, contextualization_weights, sense_vectors
-        )  # (seq, senses, embed)
+        hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
         # divide by 1/senses
         scale = self.config.Senses.size

@@ -35,7 +35,7 @@ def test_hf_backpack_consistency():
     vocab_size = hf_model_config.vocab_size
     Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), trainer_config.compute_axis_mapping)
     model_key = PRNGKey(0)
-    model_levanter = BackpackLMHeadModel(Vocab, model_config, key=model_key)
+    model_levanter = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)
     model_levanter, (_, _), _ = load_checkpoint(
         model_levanter,
         (None, None),
@@ -73,6 +73,7 @@ def test_hf_backpack_consistency():
 
 def _compare_models_output(model_1, model_2):
     import torch
+
     input = hax.random.randint(PRNGKey(0), model_1.Pos, 0, model_1.Vocab.size)
     out_1, out_2 = None, None
     if model_1 is not None:

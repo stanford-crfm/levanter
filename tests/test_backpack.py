@@ -14,14 +14,14 @@ VOCAB_SIZE = 50264
 
 def test_backpack_predict():
     trainer_config = TrainerConfig()
-    
+
     Vocab = round_axis_for_partitioning(Axis("vocab", VOCAB_SIZE), trainer_config.compute_axis_mapping)
     model_config = BackpackConfig()
     model_key = PRNGKey(0)
-    model = BackpackLMHeadModel(Vocab, model_config, key=model_key)
+    model = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)
     mp = trainer_config.mp
     model = mp.cast_to_param(model)
-    
+
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
     attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
