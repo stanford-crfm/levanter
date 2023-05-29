@@ -109,7 +109,7 @@ def main(config: TrainBackpackConfig):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = BackpackLMHeadModel(Vocab, config.model, key=model_key)
+            model = BackpackLMHeadModel.init(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
