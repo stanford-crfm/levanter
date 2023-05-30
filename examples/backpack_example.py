@@ -20,7 +20,7 @@ from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset
+from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
@@ -56,7 +56,6 @@ def main(config: TrainBackpackConfig):
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
@@ -72,8 +71,8 @@ def main(config: TrainBackpackConfig):
         compute_axis_mapping,
     )
 
-    eval_dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), KeyPos),
+    eval_dataset = LocalBatchDataset(
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -113,11 +112,8 @@ def main(config: TrainBackpackConfig):
             return mp.cast_to_param(model)
 
         model = init_model()
-        input = hax.random.randint(jax.random.PRNGKey(0), model.Pos, 0, model.Vocab.size)
-        attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
         wandb.summary["parameter_count"] = parameter_count(model)
-        print(f"Parameter count: {parameter_count(model)}")
 
         # initialize the optimizer
         # This is basically the same as the model.
@@ -168,8 +164,10 @@ def main(config: TrainBackpackConfig):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
 
+            grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+
             loss, grads = accumulate_gradients_sharded(
-                eqx.filter_value_and_grad(train_batch_loss),
+                grad_loss,
                 Batch,
                 model,
                 input_ids,
