@@ -47,28 +47,28 @@ def test_hf_backpack_consistency():
     _compare_models_output(model_1=model_levanter, model_2=hf_model)
 
 
-# @skip_if_no_torch
-# def test_hf_gpt2_consistency():
-#     hf_model_config = GPT2Config.from_pretrained(HF_GPT2)
-#     hf_model = GPT2LMHeadModel.from_pretrained(HF_GPT2)
-#     hf_model.cuda().eval()
+@skip_if_no_torch
+def test_hf_gpt2_consistency():
+    hf_model_config = GPT2Config.from_pretrained(HF_GPT2)
+    hf_model = GPT2LMHeadModel.from_pretrained(HF_GPT2)
+    hf_model.cuda().eval()
 
-#     model_config: GPT2Config = hf_gpt2_config_to_levanter(hf_model_config)
-#     trainer_config = TrainerConfig()
+    model_config: GPT2Config = hf_gpt2_config_to_levanter(hf_model_config)
+    trainer_config = TrainerConfig()
 
-#     vocab_size = hf_model_config.vocab_size
-#     Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), trainer_config.compute_axis_mapping)
-#     model_key = PRNGKey(0)
-#     model_levanter = Gpt2LMHeadModel.init(Vocab, model_config, key=model_key)
-#     model_levanter, (_, _), _ = load_checkpoint(
-#         model_levanter,
-#         (None, None),
-#         checkpoint_path=LEVANTER_GPT2_CHECKPOINT,
-#         discover_latest=True,
-#     )
-#     mp = trainer_config.mp
-#     model_levanter = mp.cast_to_param(model_levanter)
-#     _compare_models_output(model_1=model_levanter, model_2=hf_model)
+    vocab_size = hf_model_config.vocab_size
+    Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), trainer_config.compute_axis_mapping)
+    model_key = PRNGKey(0)
+    model_levanter = Gpt2LMHeadModel.init(Vocab, model_config, key=model_key)
+    model_levanter, (_, _), _ = load_checkpoint(
+        model_levanter,
+        (None, None),
+        checkpoint_path=LEVANTER_GPT2_CHECKPOINT,
+        discover_latest=True,
+    )
+    mp = trainer_config.mp
+    model_levanter = mp.cast_to_param(model_levanter)
+    _compare_models_output(model_1=model_levanter, model_2=hf_model)
 
 
 def _compare_models_output(model_1, model_2):
