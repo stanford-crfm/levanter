@@ -168,7 +168,7 @@ def test_named_jit_works_without_axis_resources():
 
 
 @skip_if_not_enough_devices(4)
-def test_shard_with_axis_mapping_inside_pjit():
+def test_shard_with_axis_mapping_inside_jit():
     devices = jax.devices()
     with Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)) as mesh:
         x = hax.ones((Dim1, Dim2))
@@ -180,7 +180,7 @@ def test_shard_with_axis_mapping_inside_pjit():
 
             jax.debug.inspect_array_sharding(arr.array, callback=lambda x: assert_eq(x, expected))
 
-        @named_pjit(in_axis_resources={}, out_axis_resources=resource_map)
+        @named_jit(in_axis_resources={}, out_axis_resources=resource_map)
         def do_shard(x, y):
             x = hax.shard_with_axis_mapping(x, resource_map)
             assert_inside_pjit(x, NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA)))

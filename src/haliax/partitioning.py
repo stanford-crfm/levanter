@@ -260,7 +260,8 @@ def named_jit(
         my_pjit_args = dict(**pjit_args)
 
         if in_axis_resources is not None or axis_resources is not None:
-            in_axis_resources = in_axis_resources or axis_resources
+            if in_axis_resources is None:
+                in_axis_resources = axis_resources
             in_resources = infer_resource_partitions(
                 (dynamic_donated, dynamic_reserved),
                 in_axis_resources,
