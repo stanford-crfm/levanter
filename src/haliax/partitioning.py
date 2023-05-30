@@ -105,36 +105,35 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         )
         return spec
 
-    # attempt to detect if we're in a jit context
-    if _is_jit_context(x):
-        pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
-        return with_sharding_constraint(x, pspec)
-    else:
-        # use device_put_sharded instead
-        mesh = _get_mesh()
-
-        def _do_device_put(x):
+    def _do_device_put(x):
+        # attempt to detect if we're in a jit context
+        if _is_jit_tracer(x):
             pspec = _as_pspec(x)
-            sharding = jax.sharding.NamedSharding(mesh, pspec)
+            return with_sharding_constraint(x, pspec)
+        else:
+            pspec = _as_pspec(x)
+            sharding = jax.sharding.NamedSharding(_get_mesh(), pspec)
             raw_x = x.array if isinstance(x, NamedArray) else x
             shape = raw_x.shape
             current_sharding = raw_x.sharding
             if current_sharding == sharding:
                 return x
-            elif sharding.is_fully_addressable:
-                return jax.device_put(raw_x, sharding)
             else:
-                # if the sharding is not fully addressable, we can't use device_put, so
-                # we use this hacky workaround.
-                # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
-                # context, I think?
-                raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+                if sharding.is_fully_addressable:
+                    raw_x = jax.device_put(raw_x, sharding)
+                else:
+                    # if the sharding is not fully addressable, we can't use device_put, so
+                    # we use this hacky workaround.
+                    # TODO: we lose "src" information, but i think that's only for autodiff, and this isn't an autodiff
+                    # context, I think?
+                    raw_x = jax.make_array_from_callback(shape, sharding, lambda index: raw_x[index])
+
                 if isinstance(x, NamedArray):
                     return NamedArray(raw_x, x.axes)
                 else:
                     return raw_x
 
-        return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
+    return jax.tree_util.tree_map(_do_device_put, x, is_leaf=is_named_array)
 
 
 def infer_resource_partitions(tree: PyTree, resource_mapping: Optional[ResourceMapping] = None) -> PyTree:
@@ -371,8 +370,8 @@ def _get_mesh():
     return thread_resources.env.physical_mesh
 
 
-def _is_jit_context(x: PyTree) -> bool:
-    return any(isinstance(arr, jax.core.Tracer) for arr in jax.tree_leaves(x))
+def _is_jit_tracer(x) -> bool:
+    return isinstance(x, jax.core.Tracer)
 
 
 __all__ = [
