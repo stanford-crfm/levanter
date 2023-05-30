@@ -23,6 +23,7 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.data.dataset import ShardableDataset  # noqa
+from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
     CacheLedger,
@@ -186,10 +187,16 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                 ledger = _load_old_ledger(cache_dir)
                 logger.info("old cache format found, converting to new format")
                 ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE), ledger)
+                _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
             except FileNotFoundError:
                 logger.warning("old cache format not found, creating new cache")
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+            except Exception:
+                logger.exception("error converting cache")
+                raise
+        except Exception:
+            logger.exception("error loading cache")
+            raise
 
         return TokenizedDocumentCache(cache_dir, ledger.chunks, flatten_docs)
 
@@ -433,8 +440,12 @@ class LMDatasetConfig:
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer)
-        return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        try:
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        except FileNotFoundError:
+            logger.info(f"Building cache for {split}...")
+            cache_dataset(split_cache_dir, source, batch_tokenizer)
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
