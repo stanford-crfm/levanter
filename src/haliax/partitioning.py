@@ -7,7 +7,6 @@ from typing import List, Mapping, Optional, Sequence, TypeVar, Union
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 from equinox import is_array
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax.experimental.pjit import pjit, with_sharding_constraint
@@ -107,7 +106,7 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping) -> T:
         return spec
 
     # attempt to detect if we're in a jit context
-    if isinstance(jnp.zeros(1), jax.core.Tracer):
+    if _is_jit_context(x):
         pspec = jax.tree_util.tree_map(_as_pspec, x, is_leaf=is_named_array)
         return with_sharding_constraint(x, pspec)
     else:
@@ -370,6 +369,10 @@ def _get_mesh():
     from jax.experimental.maps import thread_resources
 
     return thread_resources.env.physical_mesh
+
+
+def _is_jit_context(x: PyTree) -> bool:
+    return any(isinstance(arr, jax.core.Tracer) for arr in jax.tree_leaves(x))
 
 
 __all__ = [
