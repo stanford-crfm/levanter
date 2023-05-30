@@ -371,6 +371,8 @@ def _get_mesh():
 
 
 def _is_jit_tracer(x) -> bool:
+    if isinstance(x, NamedArray):
+        x = x.array
     return isinstance(x, jax.core.Tracer)
 
 
