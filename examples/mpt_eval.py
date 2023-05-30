@@ -5,14 +5,12 @@ from typing import Optional
 import jax
 import jmp
 import tqdm
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import levanter
 from haliax import Axis
 from haliax.partitioning import named_pjit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
@@ -39,7 +37,7 @@ class EvalMptConfig:
 @levanter.config.main()
 def main(config: EvalMptConfig):
     config.trainer.initialize(config)
-    tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+    tokenizer = config.data.the_tokenizer
 
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
@@ -125,7 +123,7 @@ def main(config: EvalMptConfig):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
+                hf_model = MptLmHeadModel.from_hf_pretrained(config.hf_checkpoint, parameter_axis_mapping)
             # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
             loss = evaluate(hf_model)
 
