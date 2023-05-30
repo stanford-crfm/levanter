@@ -232,11 +232,11 @@ class MptAttentionConfig:
 # Haliax-style data class version
 @dataclass
 class MptConfig:
-    d_model: int
-    n_heads: int
-    n_layers: int
-    expansion_ratio: int
-    max_seq_len: int
+    d_model: int = 768
+    n_heads: int = 12
+    n_layers: int = 12
+    expansion_ratio: int = 4
+    max_seq_len: int = 2048
     resid_pdrop: float = 0.0
     emb_pdrop: float = 0.0
     learned_pos_emb: bool = True
