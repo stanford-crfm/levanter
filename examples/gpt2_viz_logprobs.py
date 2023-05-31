@@ -8,7 +8,7 @@ from transformers import GPT2Tokenizer
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.partitioning import named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
@@ -40,14 +40,19 @@ def main(config: EvalGpt2Config):
 
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
+    # some axes we use outside the model proper
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
+
     eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
     )
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -64,10 +69,9 @@ def main(config: EvalGpt2Config):
 
         # don't want to compute the mask w.r.t. the final token
 
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+            attn_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
             attn_mask = hax.auto_sharded(attn_mask)
 
             with hax.axis_mapping(compute_axis_mapping):
@@ -76,12 +80,12 @@ def main(config: EvalGpt2Config):
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(model.SeqLen, model.Vocab, pred_y, input_ids).scalar()
+                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
 
         # initialize the model
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+            model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
             model = config.trainer.mp.cast_to_param(model)
             return model
 

@@ -11,7 +11,7 @@ from transformers import GPT2Tokenizer
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.partitioning import named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
@@ -42,17 +42,17 @@ def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+    Batch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
+    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, Batch)
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    Pos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -70,20 +70,18 @@ def main(config: EvalGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+                attn_mask = hax.nn.attention.causal_mask(config.model.Pos, config.model.KeyPos)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids).scalar()
+                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
 
         def mean_loss(model: Gpt2LMHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
+            return hax.mean(hax.vmap(compute_loss, "batch")(model, input_ids))
 
-        compute_loss_pjit = named_pjit(
+        compute_loss_pjit = named_jit(
             mean_loss,
-            in_axis_resources=parameter_axis_mapping,
             out_axis_resources=compute_axis_mapping,
             axis_resources=compute_axis_mapping,
         )
@@ -108,9 +106,9 @@ def main(config: EvalGpt2Config):
         # initialize the model
         if config.checkpoint_path is not None:
 
-            @named_pjit(axis_resources=parameter_axis_mapping)
+            @named_jit(axis_resources=parameter_axis_mapping)
             def init_model():
-                model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+                model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)
                 return model
 

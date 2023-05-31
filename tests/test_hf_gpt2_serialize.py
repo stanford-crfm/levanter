@@ -49,14 +49,14 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
 
     model = load_hf_gpt2_checkpoint(model_id, revision=revision, device=device)
 
-    input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
+    input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
     torch_out = torch_model(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    attn_mask = hax.nn.attention.causal_mask(model.SeqLen, model.config.KeySeqLen)
+    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
     def compute(input):
         return hax.nn.softmax(model(input, inference=True, key=None, attn_mask=attn_mask), axis=model.Vocab)
@@ -96,18 +96,18 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 
     model = load_hf_gpt2_checkpoint(model_id, revision=revision)
 
-    input = hax.random.randint(PRNGKey(0), model.SeqLen, 0, model.Vocab.size)
+    input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
     def torch_loss(model, input_ids) -> torch.Tensor:
         return model(input_ids, labels=input_ids)[0]
 
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
-    causal_mask = hax.nn.attention.causal_mask(model.config.SeqLen, model.config.KeySeqLen)
+    causal_mask = hax.nn.attention.causal_mask(model.config.Pos, model.config.KeyPos)
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, inference=True, attn_mask=causal_mask)
 
-        return next_token_loss(model.SeqLen, model.Vocab, pred_y, input_ids).scalar()
+        return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
 
     jax_compute_grad = jax.value_and_grad(compute_loss)
     jax_loss, jax_grad = jax_compute_grad(model, input)
@@ -166,7 +166,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
 def test_hf_save_to_fs_spec():
     Vocab = Axis("Vocab", 128)
     config = Gpt2Config(hidden_dim=32, num_heads=2, num_layers=2)
-    simple_model = Gpt2LMHeadModel(Vocab, config, key=PRNGKey(0))
+    simple_model = Gpt2LMHeadModel.init(Vocab, config, key=PRNGKey(0))
 
     save_hf_gpt2_checkpoint(simple_model, "memory://model")
 

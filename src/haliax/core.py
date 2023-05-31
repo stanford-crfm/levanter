@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, c
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax._src.util import Seq
 
 import haliax
 from haliax.jax_utils import is_jax_array_like
@@ -710,13 +709,25 @@ def rename(array: NamedArray, renames: Mapping[AxisSelector, AxisSelector]) -> N
         if isinstance(old, Axis) and isinstance(new, Axis) and old.size != new.size:
             raise ValueError(f"Cannot rename axis {old} to {new}: size mismatch")
 
-    def _rename(ax: Axis) -> Axis:
-        new_axis = renames.get(ax, ax)
-        if isinstance(new_axis, Axis):
+    def _rename(ax: AxisSelector) -> Axis:
+        new_axis = renames.get(ax, None)
+        if new_axis is None and isinstance(ax, Axis):
+            new_axis_name = renames.get(ax.name, None)
+            if isinstance(new_axis_name, str):
+                new_axis = Axis(new_axis_name, ax.size)
+                return new_axis
+            elif isinstance(new_axis_name, Axis):
+                if new_axis_name.size != ax.size:
+                    raise ValueError(f"Cannot rename axis {ax} to {new_axis_name}: size mismatch")
+                return new_axis_name
+            else:
+                return ax
+        elif isinstance(new_axis, Axis):
             return new_axis
         else:
             assert isinstance(new_axis, str)
-            return Axis(new_axis, ax.size)
+            ax_size = array.axis_size(ax)
+            return Axis(new_axis, ax_size)
 
     new_axes = tuple(_rename(ax) for ax in array.axes)
     return NamedArray(array.array, new_axes)
@@ -798,12 +809,12 @@ def named(a: jnp.ndarray, axis: AxisSelection) -> NamedArray:
 
 
 @overload
-def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> Seq[Axis]:
+def concat_axis_specs(a1: AxisSpec, a2: AxisSpec) -> Sequence[Axis]:
     pass
 
 
 @overload
-def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> Seq[Union[Axis, str]]:
+def concat_axis_specs(a1: AxisSelection, a2: AxisSelection) -> Sequence[Union[Axis, str]]:
     pass
 
 

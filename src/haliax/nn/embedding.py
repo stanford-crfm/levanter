@@ -1,9 +1,8 @@
-from typing import Optional
-
-import haliax as hax
 import equinox as eqx
 
-from ..core import NamedArray, Axis
+import haliax as hax
+
+from ..core import Axis, NamedArray
 from ..jax_utils import named_call
 
 
@@ -39,4 +38,3 @@ class Embedding(eqx.Module):
 
     def unembed(self, input_embeds):
         return input_embeds.dot(self.Embed, self.weight)
-

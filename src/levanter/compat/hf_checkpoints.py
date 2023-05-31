@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import urllib.parse
+from dataclasses import dataclass
 from typing import Optional, Union, cast
 
 import fsspec
@@ -20,8 +21,10 @@ from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import GPT2Config as HfGpt2Config
+from transformers import PretrainedConfig as HfConfig
 
 from haliax import Axis
+from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
 
@@ -32,6 +35,24 @@ logger = logging.getLogger(__name__)
 PYTORCH_MODEL = "pytorch_model.bin"
 SAFE_TENSORS_MODEL = "model.safetensors"
 
+
+@dataclass
+class HFAutoMapConfig:
+    """
+    To create a custom AutoModel class, in your model's config.json, 
+    you will need to add a field like this:
+    "auto_map": {
+        "AutoConfig": "backpack_config.BackpackGPT2Config",
+        "AutoModelForCausalLM": "backpack_model.BackpackGPT2LMHeadModel"
+    },
+    """
+    AutoConfig: Optional[str] = None  # path of the AutoConfig class
+    AutoModelForCausalLM: Optional[str] = None  # path of the AutoModel class
+
+    def to_dict(self) -> dict:
+        """A helper function to convert class to dict"""
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+    
 
 def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     """
@@ -104,6 +125,48 @@ def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
     return hf_config
 
 
+def backpack_config_to_hf(
+    vocab_size: int, config: BackpackConfig, auto_map_config: Optional[HFAutoMapConfig] = None
+) -> HfConfig:
+    config = HfConfig(
+        vocab_size=vocab_size,
+        n_positions=config.seq_len,
+        n_layer=config.num_layers,
+        n_head=config.num_heads,
+        n_embd=config.hidden_dim,
+        initializer_range=config.initializer_range,
+        attn_pdrop=config.attn_pdrop,
+        embd_pdrop=config.embed_pdrop,
+        layer_norm_epsilon=config.layer_norm_epsilon,
+        activation_function=config.activation_function,
+        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+        reorder_and_upcast_attn=config.upcast_attn,
+        num_senses=config.num_senses,
+        sense_intermediate_scale=config.sense_intermediate_scale,
+    )
+    if auto_map_config is not None:
+        config.auto_map = auto_map_config.to_dict()
+    return config
+
+
+def hf_backpack_config_to_levanter(config: HfConfig) -> BackpackConfig:
+    return BackpackConfig(
+        seq_len=config.n_positions,
+        num_layers=config.n_layer,
+        num_heads=config.n_head,
+        hidden_dim=config.n_embd,
+        initializer_range=config.initializer_range,
+        attn_pdrop=config.attn_pdrop,
+        embed_pdrop=config.embd_pdrop,
+        layer_norm_epsilon=config.layer_norm_epsilon,
+        activation_function=config.activation_function,
+        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
+        upcast_attn=config.reorder_and_upcast_attn,
+        num_senses=config.num_senses,
+        sense_intermediate_scale=config.sense_intermediate_scale,
+    )
+
+
 def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
     config, checkpoint = load_hf_model_checkpoint(location_or_id, device=device, revision=revision)
 
@@ -112,7 +175,7 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
     Vocab = Axis("vocab", config.vocab_size)
     lev_config = hf_gpt2_config_to_levanter(config)
     key = PRNGKey(0)
-    model = Gpt2LMHeadModel(Vocab, lev_config, key=key)
+    model = Gpt2LMHeadModel.init(Vocab, lev_config, key=key)
 
     has_transformer_prefix = False
     for k in checkpoint.keys():
@@ -157,6 +220,44 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
     if jax.process_index() == 0:
         # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
         safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
+
+
+def _save_hf_checkpoint_local(
+    model: BackpackLMHeadModel,
+    path: str,
+    model_type: Optional[str] = None,
+    auto_map_config: Optional[HFAutoMapConfig] = None,
+    remap_state_dict_func = None,
+):
+    # Extract and save the model configuration
+    to_hf_config_func = backpack_config_to_hf
+    os.makedirs(path, exist_ok=True)
+    config = to_hf_config_func(model.vocab_size, model.config, auto_map_config)
+    config = config.to_dict()
+    if model_type is not None:
+        config["model_type"] = model_type
+
+    with open(f"{path}/config.json", "w") as f:
+        json.dump(config, f)
+
+    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+    model = jax.tree_map(
+        lambda arr: np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True))), model
+    )
+
+    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+    state_dict = model.to_state_dict()
+
+    if remap_state_dict_func is not None:
+        state_dict = remap_state_dict_func(state_dict, model.config)
+
+    # now that we've moved the model to the CPU, we don't need to do this on all processes
+    if jax.process_index() != 0:
+        return
+
+    # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+    safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
+    print(f"Saved checkpoint to {path}")
 
 
 def _is_url_like(path):

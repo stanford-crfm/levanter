@@ -21,7 +21,7 @@ from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer_hooks import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
@@ -31,14 +31,11 @@ from levanter.utils.py_utils import non_caching_cycle
 logger = logging.getLogger(__name__)
 
 
-# cf https://github.com/google-research/language/blob/aa58066bec83d30de6c8f9123f0af7b81db3aeba/language/mentionmemory/training/trainer.py
-
-
 @dataclass
-class TrainGpt2Config:
+class TrainBackpackConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
-    model: Gpt2Config = Gpt2Config()
+    model: BackpackConfig = BackpackConfig()
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
@@ -48,7 +45,7 @@ class TrainGpt2Config:
 
 
 @levanter.config.main()
-def main(config: TrainGpt2Config):
+def main(config: TrainBackpackConfig):
     config.trainer.initialize(config)
 
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
@@ -87,7 +84,8 @@ def main(config: TrainGpt2Config):
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
-        vocab_size = len(tokenizer)
+        # vocab_size = len(tokenizer)
+        vocab_size = 50264
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
@@ -107,7 +105,7 @@ def main(config: TrainGpt2Config):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel.init(Vocab, config.model, key=model_key)
+            model = BackpackLMHeadModel.init(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
@@ -130,7 +128,7 @@ def main(config: TrainGpt2Config):
             return causal_mask
 
         # loss function: this computes the loss with respect to a single example
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
+        def compute_loss(model: BackpackLMHeadModel, input_ids, attn_mask, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 

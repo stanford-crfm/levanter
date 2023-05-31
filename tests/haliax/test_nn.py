@@ -21,7 +21,7 @@ def _compare_eqx_and_haliax(hax_mod: eqx.Module, eqx_mod: eqx.Module):
 
 def test_layer_norm():
     H = Axis("H", 10)
-    hax_ln = hax.nn.LayerNorm(H)
+    hax_ln = hax.nn.LayerNorm.init(H)
     eqx_ln = eqx.nn.LayerNorm(shape=(H.size,))
 
     f = _compare_eqx_and_haliax(hax_ln, eqx_ln)

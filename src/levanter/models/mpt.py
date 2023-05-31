@@ -14,7 +14,7 @@ import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -314,10 +314,12 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
     up_proj: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     down_proj: hnn.Linear  # projection from Intermediate to Embed
 
-    def __init__(self, Embed: Axis, Intermediate: Axis, *, key, use_bias: bool = False):
+    @staticmethod
+    def init(Embed: Axis, Intermediate: Axis, *, key, use_bias: bool = False):
         k_fc, k_proj = jrandom.split(key, 2)
-        self.up_proj = hnn.Linear(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        self.down_proj = hnn.Linear(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
+        up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
+        down_proj = hnn.Linear.init(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
+        return MptMlp(up_proj=up_proj, down_proj=down_proj)
 
     @named_call
     def __call__(self, hidden_states: NamedArray):
@@ -362,19 +364,18 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
 
     config: MptConfig = eqx.static_field()
 
-    def __init__(
-        self,
+    @staticmethod
+    def init(
         config: MptConfig,
         *,
         key,
         use_bias: bool = True,
     ):
-        self.config = config
-
         k_c, k_proj = jrandom.split(key, 2)
         qkv = Axis("qkv", 3)
-        self.Wqkv = hnn.Linear(In=config.Embed, Out=(qkv, config.Head, config.HeadDim), key=k_c, use_bias=use_bias)
-        self.out_proj = hnn.Linear(In=(config.Head, config.HeadDim), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        Wqkv = hnn.Linear.init(In=config.Embed, Out=(qkv, config.Head, config.HeadDim), key=k_c, use_bias=use_bias)
+        out_proj = hnn.Linear.init(In=(config.Head, config.HeadDim), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
     def __call__(
         self, hidden_states: NamedArray, mask: Optional[NamedArray] = None, bias: Optional[NamedArray] = None
@@ -449,13 +450,14 @@ class MptBlock(eqx.Module):
     attn: MptAttention
     ffn: MptMlp
 
-    def __init__(self, config: MptConfig, *, key):
-        super().__init__()
+    @staticmethod
+    def init(config: MptConfig, *, key):
         kattn, kmlp = jrandom.split(key, 2)
-        self.norm_1 = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
-        self.attn = MptAttention(config, key=kattn, use_bias=config.use_bias)
-        self.norm_2 = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
-        self.ffn = MptMlp(config.Embed, config.Mlp, key=kmlp, use_bias=config.use_bias)
+        norm_1 = hnn.LayerNorm.init(config.Embed, use_bias=config.use_bias)
+        attn = MptAttention.init(config, key=kattn, use_bias=config.use_bias)
+        norm_2 = hnn.LayerNorm.init(config.Embed, use_bias=config.use_bias)
+        ffn = MptMlp.init(config.Embed, config.Mlp, key=kmlp, use_bias=config.use_bias)
+        return MptBlock(norm_1, norm_2, attn, ffn)
 
     @named_call
     def __call__(
@@ -479,15 +481,14 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
     def Layers(self) -> Axis:
         return self.config.Layers
 
-    def __init__(self, config: MptConfig, *, key):
-        super().__init__()
-        self.config = config
-
-        # vectorize the blocks
-        self.blocks = Stacked(
-            self.Layers, MptBlock, config, key=shaped_rng_split(key, config.n_layers), gradient_checkpointing=True
+    @staticmethod
+    def init(config: MptConfig, *, key):
+        blocks = Stacked.init(config.Layers, MptBlock, gradient_checkpointing=True)(
+            config, key=shaped_rng_split(key, config.n_layers)
         )
-        self.norm_f = hnn.LayerNorm(config.Embed, use_bias=config.use_bias)
+        norm_f = hnn.LayerNorm.init(config.Embed, use_bias=config.use_bias)
+
+        return MptTransformer(config, blocks, norm_f)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
@@ -536,15 +537,17 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
     def Vocab(self) -> Axis:
         return self.wte.Vocab
 
-    def __init__(self, Vocab: Axis, config: MptConfig, *, key):
-        super().__init__()
+    @staticmethod
+    def init(Vocab: Axis, config: MptConfig, *, key):
         k_transformer, k_wte = jrandom.split(key, 2)
-        self.wte = hnn.Embedding(Vocab, config.Embed, key=k_wte)
-        self.transformer = MptTransformer(config, key=k_transformer)
+        wte = hnn.Embedding(Vocab, config.Embed, key=k_wte)
+        transformer = MptTransformer.init(config, key=k_transformer)
 
         assert config.emb_pdrop == 0.0, "embedding dropout not supported"
         assert config.resid_pdrop == 0.0, "residual dropout not supported"
         assert config.attn_config.alibi, "alibi attention is required for now"
+
+        return MptLmHeadModel(wte, transformer)
 
     @named_call
     def __call__(self, input_ids: NamedArray, attention_mask: Optional[NamedArray] = None) -> NamedArray:
@@ -579,8 +582,10 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):
-            lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
+            lev_model = filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
+
+        if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
 
         return lev_model

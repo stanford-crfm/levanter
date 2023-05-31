@@ -363,3 +363,24 @@ def test_unflatten_axis():
     flattened_HD = named1.flatten_axes((H, D), "Z")
     assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HD, "Z", (H, D)).array, named1.array.transpose(0, 2, 1)))
     assert hax.unflatten_axis(flattened_HD, "Z", (H, D)).axes == (H, D, W)
+
+
+def test_rename():
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
+
+    H2 = Axis("H2", 2)
+    W2 = Axis("W2", 3)
+    D2 = Axis("D2", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {"H": "H2", "W": "W2", "D": "D2"}).array, named1.array))
+    assert hax.rename(named1, {"H": "H2", "W": "W2", "D": "D2"}).axes == (H2, W2, D2)
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {"H": H2, "W": "W2"}).array, named1.array))
+    assert hax.rename(named1, {"H": H2, "W": "W2"}).axes == (H2, W2, D)
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {H: H2, "W": "W2"}).array, named1.array))
+    assert hax.rename(named1, {H: H2, "W": "W2"}).axes == (H2, W2, D)

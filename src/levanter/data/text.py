@@ -10,10 +10,15 @@ from typing import Iterator, List, Optional, Sequence, Union
 import braceexpand
 import datasets
 import fsspec
+import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from jaxtyping import PyTree
+from pyrallis import field
+
+import haliax as hax
+from haliax import Axis, NamedArray
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -23,6 +28,7 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.data.dataset import ShardableDataset  # noqa
+from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
@@ -47,26 +53,32 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset(ShardableDataset[Sequence[int]]):
+class TokenSeqDataset(ShardableDataset[NamedArray]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
+
+    :param doc_cache: the TokenizedDocumentCache to draw from
+    :param pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
     """
 
-    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
+    def __init__(self, doc_cache, Pos: Axis, stride: Optional[int] = None):
         self.doc_cache = doc_cache
-        self.seq_len = seq_len
+        self.Pos = Pos
         self.stride = stride
+
+    @property
+    def seq_len(self) -> int:
+        return self.Pos.size
 
     def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.Pos, self.stride)
 
-    def __iter__(self) -> Iterator[Sequence[int]]:
+    def __iter__(self) -> Iterator[NamedArray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
-
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -79,11 +91,12 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
                     extra_tokens = encoded_slice
                 else:
                     extra_tokens = None
-                    yield encoded_slice["input_ids"]
+                    ids = encoded_slice["input_ids"]
+                    yield hax.named(ids, self.Pos)
 
     @property
     def item_shape(self) -> PyTree:
-        return ShapeSpec((self.seq_len,), dtype=np.int32)
+        return NamedShapeSpec((self.Pos,), jnp.int32)
 
     def __len__(self):
         total_tokens = self.doc_cache.total_tokens
@@ -93,9 +106,9 @@ class TokenSeqDataset(ShardableDataset[Sequence[int]]):
             return (total_tokens - self.seq_len) // self.stride + 1
 
     @staticmethod
-    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
+    def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return TokenSeqDataset(doc_cache, seq_len, stride)
+        return TokenSeqDataset(doc_cache, pos, stride)
 
 
 def _load_old_ledger(cache_dir):
@@ -278,6 +291,7 @@ def _open_arrow_table(path) -> pa.Table:
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     """Converts a document to an arrow-compatible record batch."""
+
     # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
     def _as_array(x):
         if isinstance(x, np.ndarray) and x.ndim > 1:
@@ -432,6 +446,9 @@ class LMDatasetConfig:
     create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
+    splits: List[str] = field(default_factory=lambda: ["train", "validation"])
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return load_tokenizer(self.tokenizer)
@@ -444,7 +461,7 @@ class LMDatasetConfig:
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
         except FileNotFoundError:
             logger.info(f"Building cache for {split}...")
-            cache_dataset(split_cache_dir, source, batch_tokenizer)
+            cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):

@@ -50,7 +50,7 @@ def test_mpt_nano_compare(use_bias):
     model_dict = model.state_dict()
 
     Vocab = haliax.Axis("vocab", vocab_size)
-    lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
+    lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(model_dict)
 
     hax_input = haliax.named(input, lev_config.SeqLen)
