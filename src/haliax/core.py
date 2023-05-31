@@ -224,12 +224,18 @@ class NamedArray:
     def rename(self, renames: Mapping[AxisSelector, AxisSelector]) -> "NamedArray":
         return haliax.rename(self, renames=renames)
 
+    # slicing
+
     # TOOD: AxisSelector-ify new_axis
     def slice(self, axis: AxisSelector, new_axis: Axis, start: int = 0) -> "NamedArray":
         return haliax.slice(self, axis=axis, new_axis=new_axis, start=start)
 
     def take(self, axis: AxisSelector, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
+
+    def __getitem__(self, idx: Mapping[AxisSelector, Union[int, slice]]):
+        # for now, we only support indexing on slices. We can add named arrays later.
+        return slice_nd(self, idx)
 
     # np.ndarray methods:
     def all(self, axis: Optional[AxisSelection] = None) -> "NamedArray":
@@ -541,6 +547,7 @@ def take(array: NamedArray, axis: AxisSelector, index: Union[int, NamedArray]) -
     # new axes come from splicing the old axis with
     return NamedArray(new_array, new_axes)
 
+_slice = slice
 
 def slice(array: NamedArray, axis: AxisSelector, new_axis: Axis, start: int = 0) -> NamedArray:
     """
@@ -555,6 +562,34 @@ def slice(array: NamedArray, axis: AxisSelector, new_axis: Axis, start: int = 0)
     new_axes = array.axes[:axis_index] + (new_axis,) + array.axes[axis_index + 1 :]
     # new axes come from splicing the old axis with
     return NamedArray(sliced, new_axes)
+
+
+def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice]]) -> NamedArray:
+    """
+    Selects elements from an array along an axis, by an index or by another named array.
+    Typically, you would call this via `array[...]` syntax. For example, you might call
+    `array[{"batch": slice(0, 10)}]` to select the first 10 elements of the batch axis.
+    :param array:
+    :param slices:
+    :return:
+    """
+    ordered_slices = [_slice(None, None, None)] * len(array.axes)
+    kept_axes = [True] * len(array.axes)
+    for axis, slice_ in slices.items():
+        axis_index = array._lookup_indices(axis)
+        if axis_index is None:
+            raise ValueError(f"axis {axis} not found in {array}")
+        ordered_slices[axis_index] = slice_
+        kept_axes[axis_index] = not isinstance(slice_, int)
+
+    sliced = array.array[tuple(ordered_slices)]
+    new_axes = tuple(axis for axis, keep in zip(array.axes, kept_axes) if keep)
+
+    return NamedArray(sliced, new_axes)
+
+
+
+
 
 
 def dot(axis: AxisSelection, *arrays: NamedArray, precision: PrecisionLike = None) -> NamedArray:
