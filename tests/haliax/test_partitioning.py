@@ -165,3 +165,32 @@ def test_named_jit_works_without_axis_resources():
         r2 = pjit_foo2(hax.ones((Dim1, Dim2)))
 
         assert r2.array.sharding.is_equivalent_to(NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA)), ndim=2)
+
+
+@skip_if_not_enough_devices(4)
+def test_shard_with_axis_mapping_inside_jit():
+    devices = jax.devices()
+    with Mesh(np.array(devices).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL)) as mesh:
+        x = hax.ones((Dim1, Dim2))
+        y = hax.ones((Dim2, Dim3))
+
+        def assert_inside_pjit(arr, expected: NamedSharding):
+            def assert_eq(x, y):
+                assert x == y
+
+            jax.debug.inspect_array_sharding(arr.array, callback=lambda x: assert_eq(x, expected))
+
+        @named_jit(in_axis_resources={}, out_axis_resources=resource_map)
+        def do_shard(x, y):
+            x = hax.shard_with_axis_mapping(x, resource_map)
+            assert_inside_pjit(x, NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA)))
+
+            y = hax.shard_with_axis_mapping(y, resource_map)
+            assert_inside_pjit(y, NamedSharding(mesh, PartitionSpec(ResourceAxis.DATA, ResourceAxis.MODEL)))
+
+            return x, y
+
+        x, y = do_shard(x, y)
+
+        assert x.array.sharding == NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA))
+        assert y.array.sharding == NamedSharding(mesh, PartitionSpec(ResourceAxis.DATA, ResourceAxis.MODEL))
