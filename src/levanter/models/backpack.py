@@ -1,21 +1,16 @@
-import re
-from collections import OrderedDict
 from dataclasses import dataclass
-from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Union, cast
-import math
+from typing import Callable, Dict, List, Optional, Union, cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-import numpy
 
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
-from haliax import Axis, NamedArray
-from haliax.jax_utils import named_call, shaped_rng_split
+from haliax import Axis, NamedArray, AxisSpec
+from haliax.jax_utils import named_call
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -44,13 +39,11 @@ class BackpackConfig(Gpt2Config):
 
 
 class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
-    Out: Union[Axis, List[Axis]] = eqx.static_field()  # This is needed to output both Embed and Senses
-
     @staticmethod
     def init(
         Embed: Axis,
         Mlp: Axis,
-        Out: Union[Axis, List[Axis]],
+        Out: AxisSpec,
         activation_fn: Union[str, Callable],
         *,
         key,
@@ -63,7 +56,7 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
 
-        return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act, Out=Out)
+        return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act)
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
@@ -269,9 +262,18 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         return senses
 
 
+class BackpackGpt2Embeddings(Gpt2Embeddings):
+    """
+    We want to re-use the Gpt2Embeddings class, but we need to add a new method to only embed the input_ids.
+    """
+
+    def embed_input_ids(self, input_ids):
+        return self.token_embeddings.take("vocab", input_ids)
+
+
 class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     transformer: Gpt2Transformer
-    embeddings: Gpt2Embeddings
+    embeddings: BackpackGpt2Embeddings
     sense_net: BackpackSenses
     kq_selfattention: WeightsOnlyAttention
 
@@ -301,7 +303,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             initializer_range=config.initializer_range,
             embed_pdrop=config.embed_pdrop,
         )
-        embeddings = Gpt2Embeddings.init(
+        embeddings = BackpackGpt2Embeddings.init(
             Vocab=Vocab,
             config=gpt2_config,
             key=k_embeddings,
@@ -337,9 +339,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         )  # (seq, seq, senses)
 
         ## Compute sense vectors
-        sense_input_embeds = self.embeddings.embed(
-            input_ids, inference=None, key=None, input_embeds_only=True
-        )  # (seq, embed
+        sense_input_embeds = self.embeddings.embed_input_ids(input_ids)  # (seq, embed
         sense_vectors = self.sense_net.sense_embed(
             sense_input_embeds, inference=inference, key=k_senses
         )  # (seq, senses, embed)
@@ -348,7 +348,8 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         ## Weight-and-sum
         hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
-        # divide by 1/senses
+
+        # Rescale - this is important for large num_senses
         scale = self.config.Senses.size
         hidden_states = hidden_states / scale
 

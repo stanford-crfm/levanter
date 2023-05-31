@@ -38,10 +38,19 @@ SAFE_TENSORS_MODEL = "model.safetensors"
 
 @dataclass
 class HFAutoMapConfig:
+    """
+    To create a custom AutoModel class, in your model's config.json, 
+    you will need to add a field like this:
+    "auto_map": {
+        "AutoConfig": "backpack_config.BackpackGPT2Config",
+        "AutoModelForCausalLM": "backpack_model.BackpackGPT2LMHeadModel"
+    },
+    """
     AutoConfig: Optional[str] = None  # path of the AutoConfig class
     AutoModelForCausalLM: Optional[str] = None  # path of the AutoModel class
 
     def to_dict(self) -> dict:
+        """A helper function to convert class to dict"""
         return {k: v for k, v in self.__dict__.items() if v is not None}
     
 

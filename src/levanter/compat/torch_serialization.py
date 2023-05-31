@@ -226,7 +226,11 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 def reshape_mlp_linear_layer(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:
-    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
+    """
+    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
+    This is different from reshape_linear_layer as we removed (-1,) from the shape 
+    of the weights and bias.
+    """
     new_dict: StateDict = {}
     weight_key = cast(str, apply_prefix(prefix, "weight"))
     bias_key = cast(str, apply_prefix(prefix, "bias"))

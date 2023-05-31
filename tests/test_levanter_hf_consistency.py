@@ -14,16 +14,18 @@ from levanter.compat.hf_checkpoints import hf_backpack_config_to_levanter, hf_gp
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
-from test_utils import skip_if_no_torch
+from test_utils import skip_if_no_torch, skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible
 
 
-HF_BACKPACK = "ivanzhouyq/levanter-backpacks"
-LEVANTER_BACKPACK_CHECKPOINT = "gs://levanter-checkpoints/backpacks/backpack_170M_100k_steps_run_0424-new/step-100000/"
-HF_GPT2 = "ivanzhouyq/levanter-gpt2-small"
+HF_BACKPACK = "TODO"
+LEVANTER_BACKPACK_CHECKPOINT = "TODO"
+HF_GPT2 = "stanford-crfm/levanter-gpt2-small-for-test"
 LEVANTER_GPT2_CHECKPOINT = "gs://levanter-checkpoints/dev/clean-snowball-990-new/step-10000"
 
 
 @skip_if_no_torch
+@skip_if_checkpoint_not_accessible(LEVANTER_BACKPACK_CHECKPOINT)
+@skip_if_hf_model_not_accessible(HF_BACKPACK)
 def test_hf_backpack_consistency():
     hf_model_config = transformers.AutoConfig.from_pretrained(HF_BACKPACK, trust_remote_code=True)
     hf_model = AutoModelForCausalLM.from_pretrained(HF_BACKPACK, config=hf_model_config, trust_remote_code=True)
@@ -47,6 +49,8 @@ def test_hf_backpack_consistency():
     _compare_models_output(model_1=model_levanter, model_2=hf_model)
 
 
+@skip_if_checkpoint_not_accessible(LEVANTER_GPT2_CHECKPOINT)
+@skip_if_hf_model_not_accessible(HF_GPT2)
 @skip_if_no_torch
 def test_hf_gpt2_consistency():
     hf_model_config = GPT2Config.from_pretrained(HF_GPT2)

@@ -277,11 +277,8 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
 
     @named_call
-    def embed(self, input_ids, inference, *, key, input_embeds_only=False):
+    def embed(self, input_ids, inference, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
-        if input_embeds_only:
-            return input_embeds
-        
         position_embeds = self.position_embeddings
 
         x = input_embeds + position_embeds
