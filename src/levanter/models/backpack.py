@@ -267,7 +267,18 @@ class BackpackGpt2Embeddings(Gpt2Embeddings):
     We want to re-use the Gpt2Embeddings class, but we need to add a new method to only embed the input_ids.
     """
 
-    def embed_input_ids(self, input_ids):
+    @staticmethod
+    def init(Vocab: Axis, config: Gpt2Config, *, key) -> "BackpackGpt2Embeddings":
+        k_wte, k_wpe, k_out = jrandom.split(key, 3)
+
+        token_embeddings = sharded_normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
+        position_embeddings = sharded_normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
+        dropout = hnn.Dropout(pdrop=config.embed_pdrop)
+
+        return BackpackGpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
+
+    @named_call
+    def embed_input_ids(self, input_ids: NamedArray) -> NamedArray:
         return self.token_embeddings.take("vocab", input_ids)
 
 
