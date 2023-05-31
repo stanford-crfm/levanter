@@ -78,10 +78,6 @@ def main(config: EvalGpt2Config):
 
                 return hax.mean(next_token_loss(Pos, Vocab, pred_y, input_ids)).scalar()
 
-        # @named_jit(axis_resources=parameter_axis_mapping)
-        # def eval_loss(model, input_ids):
-        #     return hax.mean(compute_loss(model, input_ids)).scalar()
-
         compute_loss_pjit = named_jit(
             compute_loss,
             out_axis_resources=compute_axis_mapping,
