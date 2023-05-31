@@ -1,6 +1,6 @@
 # ---
 layout: blog
-title: Levanter — Towards Scaling Reproducible Foundational Models with Jax
+title: Levanter —  Scalable, Reproducible, Legible Foundation Models with Jax
 authors:
     - name: David Hall
       url: TODO
@@ -20,7 +20,7 @@ display: False
 
 The growth of artificial intelligence and machine learning has brought about the need for scalable and reproducible models.
 To address this, at the [Center for Research on Foundation Models](https://crfm.stanford.edu), we have created two new tools — [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
-They form a new code base for training foundational models with the promise of flexibility, modularity, efficiency,
+They form a new code base for training foundatiol models with the promise of flexibility, modularity, efficiency,
 and scale, as well as strong guarantees about reproducibility.
 
 Levanter is a [Jax](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
@@ -35,12 +35,16 @@ hope that these libraries will be useful to the community, and we look forward t
 
 ## The Landscape of Foundation Model Training Frameworks
 
-Numerous foundation model training frameworks exist in the community, each with its strengths and focus.
+Numerous foundation model training frameworks exist in the community, each with its strengths and focuses.
 For large language models (LLMs) (the focus of this release),
 the most well-known in the open source community is probably NVIDIA's PyTorch-based [Megatron-LM](https://github.com/NVIDIA/Megatron-LM),
-and its many derivatives, including EleutherAI's [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) codebase. MosaicML
-has recently released [LLM Foundry](https://github.com/mosaicml/llm-foundry), which we used to train
-[BioMedLM](https://crfm.stanford.edu/2022/12/15/biomedlm.html) last autumn.
+and its many derivatives, including EleutherAI's [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) codebase.
+Meta has [MetaSeq](https://github.com/facebookresearch/metaseq) as well as [FairScale](https://github.com/facebookresearch/fairscale),
+with which they trained [Llama](https://github.com/facebookresearch/llama).
+MosaicML has recently released [LLM Foundry](https://github.com/mosaicml/llm-foundry), which we used to train
+[BioMedLM](https://crfm.stanford.edu/2022/12/15/biomedlm.html) last autumn. Previously, we released [Mistral](
+https://github.com/stanford-crfm/mistral) built on [Hugging Face Transformers](https://github.com/huggingface/transformers/)
+and [DeepSpeed](https://github.com/microsoft/DeepSpeed).
 
 In the Jax community, there are a number of libraries popping up. Google has released [T5X](https://github.com/google-research/t5x)
 and [MaxText](https://github.com/google/maxtext). There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
@@ -54,12 +58,13 @@ At CRFM, we wanted to achieve four goals:
 * **Legibility**: We wanted to be able to write code that was easy to read and understand, and that could be composed easily.
 * **Reproducibility**: We wanted to be able to reproduce our results exactly, even in the presence of preemption and
   restarting from checkpoints.
+TODO: try to merge these two into a single bullet
 * **Scalability**: We wanted to be able to fully utilize the Cloud TPU resources we were given as part of Google's TPU Research Cloud program, as well as our own GPU resources.
 * **Efficiency**: We wanted to achieve the other three goals without sacrificing (much) efficiency.
 
 We chose [Jax](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
-and offers strong reproducibility guarantees. Jax works well on TPUs, while we found that PyTorch support was still uneven.
-Jax is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how:" details of
+and offers strong reproducibility guarantees. Jax also works well on TPUs, while we found that PyTorch support was still uneven.
+Jax is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how": details of
 partitioning and communication can be left to the XLA compiler. Finally, Jax makes reproducibility easy, since it uses
 bitwise deterministic PRNGs by default, with careful control over the PRNG state.
 
@@ -88,16 +93,12 @@ Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.se
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible for things like multi-headed attention or flexible attention masking.
 
 Let's take a look at a practical example of how Haliax can be used.
-Here's a minimal attention module implementation in Haliax. For a more detailed introduction,
+Here's a minimal attention implementation in Haliax. For a more detailed introduction,
 please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC).
 
 ```python
-import equinox as eqx
-import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
 import haliax as hax
-import haliax.nn as hnn
 
 # Named Axes for Tensor Dimensions
 Pos = hax.Axis("position", 1024)  # sequence
@@ -106,59 +107,104 @@ Head = hax.Axis("head", 8)  # number of attention heads
 Key = hax.Axis("key", 64)  # key size
 Embed = hax.Axis("embed", 512)  # embedding size
 
-# Despite making no reference to batching or heads, this same implementation is also batch-capable and multi-headed
-# (or multi-query) and even supports attending to or from non-sequential keys (e.g. image patches)
 def attention(Key, KPos, query, key, value, mask):
-  # how similar is each query to each key
-  scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
+    # how similar is each query to each key
+    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
 
-  # mask out invalid positions
-  if mask is not None:
-    scores -= 1E9 * (1.0 - mask)
+    # mask out invalid positions
+    if mask is not None:
+      scores -= 1E9 * (1.0 - mask)
 
-  # convert to probabilities
-  scores = hax.nn.softmax(scores, KPos)
+    # convert to probabilities
+    scores = hax.nn.softmax(scores, KPos)
 
-  # weighted sum of values
-  result = hax.dot(KPos, scores, value)
+    # weighted sum of values
+    return hax.dot(KPos, scores, value)
+```
 
-  return result
+Despite making no reference to batching or heads, this same implementation is also batch-capable and multi-headed
+(or multi-query) and even supports attending to or from non-sequential keys (e.g. image patches):
 
+```python
+Batch = hax.Axis("batch", 8)  # batch size
 
-# Causal Mask means that if pos >= key_pos, then pos can attend to key_pos
-causal_mask = hax.arange(Pos).broadcast_axis(KPos) >= hax.arange(KPos)
+query = hax.random.normal(PRNGKey(0), (Batch, Head, Pos, Key))
+key = hax.random.normal(PRNGKey(1), (Batch, Head, KPos, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, Head, KPos, Key))
 
-class Attention(eqx.Module):
-  proj_qkv: hnn.Linear  # input projection from [Embed] -> [(q, k, v), Head, Key]
-  proj_answer: hnn.Linear  # output projection from [Head, Key] -> [Embed]
+# traditional batched multi-headed attention
+assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 
-  @staticmethod
-  def init(Embed, Head, Key, *, key: PRNGKey):
-    Qkv = hax.Axis("qkv", 3)  # create all three at once
+# multi-query attention
+key = hax.random.normal(PRNGKey(1), (Batch, KPos, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, KPos, Key))
+assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 
-    k_qkv, k_ans = jax.random.split(key, 2)
-    proj_qkv = hnn.Linear.init(In=Embed, Out=(Qkv, Head, Key), key=k_qkv)
-    proj_answer = hnn.Linear.init(In=(Head, Key), Out=Embed, key=k_ans)
-    return Attention(proj_qkv, proj_answer)
+# image patch cross attention
+Height = hax.Axis("height", 32)
+Width = hax.Axis("width", 32)
 
-  def __call__(self, x, mask):
-    qkv_out = self.proj_qkv(x)
-    q, k, v = qkv_out.unbind("qkv")
+key = hax.random.normal(PRNGKey(1), (Batch, Head, Height, Width, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
 
-    # Rename k and v's Pos as Haliax doesn't support unnamed axes or duplicate axes
-    k = k.rename({Pos: KPos})
-    v = v.rename({Pos: KPos})
-
-    answers = attention(Key, KPos, q, k, v, causal_mask)
-
-    x = self.proj_answer(answers)
-    return x
+assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 ```
 
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
-[Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation. FSDP can
-be added to the training code with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
-as many as we can get our hands on) and at least 65b parameters (which is way bigger than we have compute for).
+[Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
+FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
+as many as we can get our hands on) and at least 65b parameters (which is way bigger than we have compute for). FSDP with Haliax
+essentially looks like this:
+
+TODO: turn this into a diff
+
+```python
+# describe how we shard our parameters and our data
+# embed means that we shard the embed axis of our parameters
+param_mapping = {"embed": "data"}
+data_mapping = {"batch": "data"}
+
+# tell Haliax to shard our model and optimizer states
+@named_jit
+def init_model():
+    return hax.shard_with_axis_mapping(MyModel(), param_mapping)
+
+model = init_model()
+
+# initialize optimizer analogously (with optax)
+import optax
+optimizer = optax.adamw(1E-4, weight_decay=0.1)
+
+@named_jit
+def init_optimizer(model):
+    opt_state = optimizer.init(model)
+    return hax.shard_with_axis_mapping(opt_state, param_mapping)
+
+optimizer = init_optimizer(model)
+
+@hax.named_jit
+def train_step(model, opt_state, input_ids):
+  grad_loss = eqx.filter_value_and_grad(compute_loss)
+
+  # ensure that intermediate states are sharded correctly
+  with hax.axis_mapping(data_mapping):
+    loss, grads = grad_loss(model, input_ids)
+
+  ...
+  return loss, model, opt_state
+
+for data in data_iter:
+  data = hax.shard_with_axis_mapping(data, data_axis_mapping)
+  ...
+```
+
+Tensor parallelism can be added by changing the two axis mappings:
+
+```python
+# specifying "head" shards attention and "mlp" shards the feedforward
+param_axis_mapping = {"embed": "data", "head": "model", "mlp": "model"}
+data_axis_mapping = {"batch": "data", "head": "model", "mlp": "model"}
+```
 
 ### Haliax Tutorials
 
@@ -167,21 +213,22 @@ For more details, please see our interactive tutorials on Colab:
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
 * [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in Jax.
 
-## Levanter: Bitwise Determinism with Jax
+## Levanter: Bitwise Reproducible Foundation Models with Jax
 
 Levanter is a library for training foundation models built on top of Haliax. It provides a complete pipeline
-for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and export,
-while maintaining bitwise reproducibility throughout.
+for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and
+export, while maintaining bitwise reproducibility throughout.
 
-We have used Levanter to train models as large as 6.7b parameters on a v3-256, and have run experiments showing that it can scale
-up to least 65b parameters.
+We have used Levanter to train models as large as 6.7b parameters on a v3-256, and have run experiments showing that it
+can scale up to least 65b parameters.
 
 ### Bitwise Reproducibility
 
 One of the benefits of Jax is that it offers strong guarantees for reproducibility. In particular, Jax's fine-grained
 control over random number generation makes it easy to ensure bitwise reproducibility, especially when using TPUs.
-Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. As an example,
-here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
+Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
+the same run on the same set of hardware (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
+preempted and resumed multiple times. As an example, here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
 
 ![plot showing bitwise reproducibility with four training runs superimposed with the exact same loss curve](figures/bitwise_repro_curve.png)
 
@@ -223,11 +270,9 @@ This visualization is logged to WandB as training progresses and can be viewed i
 nice alternative to just staring obsessively at the loss curve, which is what I usually do.
 
 
-#### On-Demand Preprocessing
+#### On-Demand Data Preprocessing
 
-We've found that in many cases, teams would benefit from the ability to preprocess data on the fly, and Levanter
-provides this capability. Levanter can automatically spin up a Ray cluster using the nodes being used for training,
-using the typically impressive CPUs of those machines to preprocess data. This is especially useful for large data sets
+Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data. This is especially useful for large data sets
 like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
 Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
 produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
