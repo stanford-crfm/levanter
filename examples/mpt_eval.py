@@ -67,8 +67,7 @@ def main(config: EvalMptConfig):
         def compute_loss(model: MptLmHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
-                pred_y = model(input_ids, attn_mask=attn_mask)
+                pred_y = model(input_ids)
                 pred_y = mp.cast_to_output(pred_y)
 
                 return next_token_loss(SeqLen, Vocab, pred_y, input_ids).scalar()
