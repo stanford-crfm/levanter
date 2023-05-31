@@ -14,7 +14,7 @@ import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, named_pjit
+from haliax.partitioning import ResourceAxis, named_jit
 from levanter import callbacks
 from levanter.compat.torch_serialization import jax_tree_to_state_dict
 from levanter.config import TrainerConfig
@@ -139,7 +139,7 @@ def main(config: TrainMptConfig):
         # initialize the optimizer
         # This is basically the same as the model.
         optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
@@ -166,7 +166,7 @@ def main(config: TrainMptConfig):
             return hax.mean(per_ex_loss, "batch").scalar()
 
         # training loop
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
@@ -192,7 +192,7 @@ def main(config: TrainMptConfig):
 
         # evaluation loss and loop
 
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
@@ -238,7 +238,7 @@ def main(config: TrainMptConfig):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)

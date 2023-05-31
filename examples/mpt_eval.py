@@ -9,7 +9,7 @@ import tqdm
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.partitioning import named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
@@ -78,7 +78,7 @@ def main(config: EvalMptConfig):
             input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
 
-        compute_loss_pjit = named_pjit(
+        compute_loss_pjit = named_jit(
             mean_loss,
             in_axis_resources=parameter_axis_mapping,
             out_axis_resources=compute_axis_mapping,
@@ -105,7 +105,7 @@ def main(config: EvalMptConfig):
         # initialize the model
         if config.checkpoint_path is not None:
 
-            @named_pjit(axis_resources=parameter_axis_mapping)
+            @named_jit(axis_resources=parameter_axis_mapping)
             def init_model():
                 model = MptLmHeadModel(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)
@@ -124,7 +124,6 @@ def main(config: EvalMptConfig):
             # load the huggingface model
             with jax.default_device(jax.devices("cpu")[0]):
                 hf_model = MptLmHeadModel.from_hf_pretrained(config.hf_checkpoint, parameter_axis_mapping)
-            # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
             loss = evaluate(hf_model)
 
             print("Loss from HF model: ", loss)
