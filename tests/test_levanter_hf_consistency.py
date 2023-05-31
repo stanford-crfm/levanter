@@ -17,15 +17,15 @@ from levanter.models.gpt2 import Gpt2LMHeadModel
 from test_utils import skip_if_no_torch, skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible
 
 
-HF_BACKPACK = "TODO"
-LEVANTER_BACKPACK_CHECKPOINT = "TODO"
+HF_BACKPACK = "stanford-crfm/levanter-backpacks-test"
+LEVANTER_BACKPACK_CHECKPOINT = "gs://levanter-checkpoints/backpacks/backpack_170M_100k_steps_run_0424-new/step-100000/"
 HF_GPT2 = "stanford-crfm/levanter-gpt2-small-for-test"
 LEVANTER_GPT2_CHECKPOINT = "gs://levanter-checkpoints/dev/clean-snowball-990-new/step-10000"
 
 
-@skip_if_no_torch
 @skip_if_checkpoint_not_accessible(LEVANTER_BACKPACK_CHECKPOINT)
 @skip_if_hf_model_not_accessible(HF_BACKPACK)
+@skip_if_no_torch
 def test_hf_backpack_consistency():
     hf_model_config = transformers.AutoConfig.from_pretrained(HF_BACKPACK, trust_remote_code=True)
     hf_model = AutoModelForCausalLM.from_pretrained(HF_BACKPACK, config=hf_model_config, trust_remote_code=True)
