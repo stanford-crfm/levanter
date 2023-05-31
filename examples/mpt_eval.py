@@ -75,7 +75,6 @@ def main(config: EvalMptConfig):
 
         def mean_loss(model: MptLmHeadModel, input_ids):
             # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
 
         compute_loss_pjit = named_jit(
