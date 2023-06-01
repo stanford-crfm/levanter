@@ -12,7 +12,7 @@ import haliax
 import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from levanter.data.sharded import ShardedBatchLoader, check_sharded_consistency
+from levanter.data.loader import ShardedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -118,9 +118,6 @@ class StructuredDataset(levanter.data.ShardableDataset):
         self.end = end
         self.stride = stride
 
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
-
     def __getitem__(self, item):
         return {
             "input_ids": np.arange(self.seq_len, dtype=np.int32) + item * 1000,
@@ -196,9 +193,6 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
         self.begin = begin
         self.end = end
         self.stride = stride
-
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
 
     def _gen_image(self, index):
         image = (
