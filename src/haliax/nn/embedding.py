@@ -13,20 +13,11 @@ class Embedding(eqx.Module):
     Vocab: Axis = eqx.static_field()
     Embed: Axis = eqx.static_field()
 
-    def __init__(
-        self,
-        Vocab: Axis,
-        Embed: Axis,
-        initializer_range: float = 0.02,
-        *,
-        key,
-    ):
-        super().__init__()
-
-        self.Vocab = Vocab
-        self.Embed = Embed
-
-        self.weight = hax.random.generate_sharded(hax.random.normal)(key, (Vocab, Embed)) * initializer_range
+    # TODO: should allow axisspec for Embed
+    @staticmethod
+    def init(Vocab: Axis, Embed: Axis, initializer_range: float = 0.02, *, key):
+        weight = hax.random.normal(key, (Vocab, Embed)) * initializer_range
+        return Embedding(weight=weight, Vocab=Vocab, Embed=Embed)
 
     @named_call
     def __call__(self, input_ids, inference, *, key):
