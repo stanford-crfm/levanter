@@ -106,7 +106,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
-        qkv_out = self.c_attn(x)
+        qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
@@ -183,9 +183,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     def init(config: Gpt2Config, *, key) -> "Gpt2Block":
         k_attn, k_cross, k_mlp = jrandom.split(key, 3)
 
-        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         attn = Gpt2Attention.init(config, key=k_attn)
-        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         mlp = Gpt2Mlp.init(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
         resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
 
@@ -218,7 +218,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return Gpt2Transformer(config, blocks, ln_f)
 
