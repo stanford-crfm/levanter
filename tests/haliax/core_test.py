@@ -414,3 +414,31 @@ def test_rename():
 
     assert jnp.all(jnp.equal(hax.rename(named1, {H: H2, "W": "W2"}).array, named1.array))
     assert hax.rename(named1, {H: H2, "W": "W2"}).axes == (H2, W2, D)
+
+
+def test_slice_nd():
+    # just some basic tests of the new slicing mechanism
+    H = Axis("H", 20)
+    W = Axis("W", 30)
+    D = Axis("D", 40)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(hax.slice_nd(named1, {"H": slice(0, 10, 2)}).array, named1.array[0:10:2, :, :]))
+    assert hax.slice_nd(named1, {"H": slice(0, 10, 2)}).axes == (Axis("H", 5), W, D)
+
+    # try indexing syntax
+    assert jnp.all(jnp.equal(named1[{"H": slice(0, 10, 2)}].array, named1.array[0:10:2, :, :]))
+    assert named1[{"H": slice(0, 10, 2)}].axes == (Axis("H", 5), W, D)
+
+    # try indexing syntax with multiple slices
+    assert jnp.all(
+        jnp.equal(named1[{"H": slice(3, 13, 2), "W": slice(0, 10, 2)}].array, named1.array[3:13:2, 0:10:2, :])
+    )
+
+    # try indexing with 1 slice and 1 integer
+    assert jnp.all(jnp.equal(named1[{"H": slice(0, 10, 2), "W": 0}].array, named1.array[0:10:2, 0, :]))
+    assert named1[{"H": slice(0, 10, 2), "W": 0}].axes == (Axis("H", 5), D)
+
+    # try indexing with 3 integers
+    assert jnp.all(jnp.equal(named1[{"H": 0, "W": 0, "D": 0}].array, named1.array[0, 0, 0]))
