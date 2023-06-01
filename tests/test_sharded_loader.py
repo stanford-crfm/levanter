@@ -84,33 +84,6 @@ def test_sharded_data_loading_model_axis_1():
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
-def test_sharded_data_loading_len_impact():
-    devices = jax.devices()
-    model_axis_size = 1
-
-    mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
-    )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-        cache = _small_dataset(64, num_sequences=NUM_SHARDS_TINY * 8)
-        # 6400 tokens split across NUM_SHARDS_TINY shards
-        Batch = Axis("batch", 8 * len(devices))
-        process_1_len = len(
-            ShardedBatchLoader(cache, mesh, Batch=Batch, override_process_data_pos=0, override_process_data_groups=1)
-        )
-        for process_count in [2, 4, 8]:
-            loader = ShardedBatchLoader(
-                cache,
-                mesh,
-                Batch=Batch,
-                override_process_data_pos=0,
-                override_process_data_groups=process_count,
-            )
-            # we create this dataset with even numbers of shards, so we are guaranteed that the length won't change
-            assert len(loader) == process_1_len
-
-
 class StructuredDataset(levanter.data.ShardableDataset):
     def __init__(self, seq_len, begin, end, stride):
         self.seq_len = seq_len

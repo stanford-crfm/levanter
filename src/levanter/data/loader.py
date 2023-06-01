@@ -2,7 +2,6 @@ import abc
 import itertools
 import logging
 from collections import defaultdict
-from functools import cached_property
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
@@ -10,7 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax._src.array import ArrayImpl
 from jax.experimental import multihost_utils
-from jax.experimental.multihost_utils import process_allgather
 from jax.experimental.pjit import pjit
 from jax.interpreters.pxla import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
@@ -22,6 +20,7 @@ from haliax.util import is_named_array
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
+from levanter.utils.py_utils import non_caching_cycle
 
 
 Ex = TypeVar("Ex")
@@ -91,9 +90,9 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
-        one_item_generator = iter(self.item_dataset)
+        one_item_generator = non_caching_cycle(self.item_dataset)
 
-        for i in range(self._global_min_length):
+        for i, item in enumerate(one_item_generator):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -176,9 +175,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
-    def __len__(self):
-        return self._global_min_length
-
     @property
     def batch_size(self) -> int:
         """Returns the 'global' batch size: the effective number of examples in a batch across all devices/hosts"""
@@ -188,14 +184,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def local_batch_size(self) -> int:
         """Returns the 'local' batch size: the number of examples in a batch on this host"""
         return self.batch_size // self.num_data_process_groups
-
-    @cached_property
-    def _global_min_length(self):
-        # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
-        # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.item_dataset) // self.local_batch_size
-        all_lengths = process_allgather(jnp.array(local_len))
-        return int(jnp.min(all_lengths))
 
     def _stack_leaves_unchecked(self, *leaves):
         assert len(leaves) <= self.Batch.size
@@ -266,9 +254,6 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
             return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
-
-    def __len__(self):
-        return len(self.local_dataset) // self.Batch.size
 
 
 def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
