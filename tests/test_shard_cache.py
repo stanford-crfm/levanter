@@ -93,7 +93,7 @@ def test_cache_remembers_its_cached():
                 return 1
 
         # testing this doesn't throw
-        ds2 = cache_dataset(tmpdir, SimpleShardSource(), ThrowingProcessor())
+        ds2 = cache_dataset(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
         assert list(ds1) == list(ds2)
         # ensure we delete tmpdir, since something is holding onto it
@@ -137,10 +137,10 @@ def test_cache_recover_from_crash():
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        reader1 = cache_dataset(tmpdir, source, TestProcessor(), batch_size=1)
+        reader1 = cache_dataset(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
 
         # compare to the original with no crash
-        reader2 = cache_dataset(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1)
+        reader2 = cache_dataset(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
@@ -224,3 +224,53 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         # make sure there's not a 7th chunk
         chunk = ray.get(cache._broker.get_chunk.remote(6), timeout=0.5)
         assert chunk is None
+
+
+def test_can_get_chunk_before_finished():
+    @ray.remote
+    class Blocker:
+        def __init__(self):
+            self.future = asyncio.Future()
+
+        async def block(self):
+            await self.future
+
+        def unblock(self):
+            self.future.set_result(None)
+
+    blocker_to_wait_on_test = Blocker.remote()
+
+    class SlowShardSource(ShardedDataSource[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return ["shard_0"]
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            for i in range(10):
+                yield [i] * 10
+            ray.get(blocker_to_wait_on_test.block.remote())
+            for i in range(10, 20):
+                yield [i] * 10
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = cache_dataset(
+            tmpdir, SlowShardSource(), TestProcessor(), batch_size=1, rows_per_chunk=10, await_finished=False
+        )
+
+        def back_to_py(batch: pa.RecordBatch):
+            return list(batch["test"].values.to_numpy())
+
+        chunk = [back_to_py(batch) for batch in cache.read_chunk(0)]
+
+        assert [list(x) for x in chunk] == [[i] * 10 for i in range(10)]
+
+        print(chunk)
+
+        with pytest.raises(TimeoutError):
+            cache.get_chunk(1, timeout=0.1)
+
+        ray.get(blocker_to_wait_on_test.unblock.remote())
+
+        chunk = [back_to_py(batch) for batch in cache.read_chunk(1)]
+
+        assert [list(x) for x in chunk] == [[i] * 10 for i in range(10, 20)]

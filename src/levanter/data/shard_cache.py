@@ -689,27 +689,56 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             return self._broker.finished_sentinel.remote()
 
+    def read_chunk(self, chunk_idx: int) -> Iterator[pa.RecordBatch]:
+        """Reads a chunk from the cache"""
+        chunk = self.get_chunk(chunk_idx)
+        yield from self._read_chunk(chunk)
+
+    def get_chunk(self, chunk_idx: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
+        """Returns the metadata for a given chunk index"""
+        if self._ledger is not None:
+            return self._ledger.chunks[chunk_idx]
+        else:
+            assert self._broker is not None
+            chunk = ray.get(self._broker.get_chunk.remote(chunk_idx), timeout=timeout)
+            if chunk is None:
+                raise IndexError(f"Chunk index {chunk_idx} out of bounds")
+            return chunk
+
+    async def get_chunk_async(self, index: int) -> ChunkMetadata:
+        """Returns the metadata for a given chunk index"""
+        if self._ledger is not None:
+            return self._ledger.chunks[index]
+        else:
+            assert self._broker is not None
+            chunk = await self._broker.get_chunk.remote(index)
+            if chunk is None:
+                raise IndexError(f"Chunk index {index} out of bounds")
+            return chunk
+
     def __iter__(self):
         if self._ledger is not None:
             for i in range(len(self._ledger.chunks)):
                 chunk = self._ledger.chunks[i]
-                reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-                for batch in reader:
-                    yield batch
+                yield from self._read_chunk(chunk)
         else:
+            assert self._broker is not None
             i = 0
             while True:
                 try:
-                    chunk = ray.get(self._broker.get_chunk.remote(i))
-                    if chunk is None:
-                        break
+                    chunk = self.get_chunk(i)
                     i += 1
-                    reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-                    for batch in reader:
-                        yield batch
+                    yield from self._read_chunk(chunk)
+                except IndexError:
+                    break
                 except Exception as e:
                     logger.exception("Error while reading from shard cache.")
                     raise e
+
+    def _read_chunk(self, chunk):
+        reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+        for batch in reader:
+            yield batch
 
     def await_finished(self, timeout: Optional[float] = None):
         return ray.get(self.finished_sentinel(), timeout=timeout)
