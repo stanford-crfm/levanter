@@ -339,11 +339,12 @@ XXX something something v3-256 scaling numbers?
 
 ### Data Preparation and Visualization
 
-While collaborating with teams to build domain-specific models, we have found that data preparation can be a significant challenge,
-indeed the largest challenge in many cases.
-In particular, we have found that users want to iterate quickly on different formatting and preprocessing options, and that
-it can be difficult to visualize the effects of different preprocessing options on the data. To address this, we have built
-two features into Levanter: on-demand data preprocessing and live visualization during training.
+While collaborating with teams to build domain-specific models, we have found that data preparation can be a significant challenge.
+Indeed, it is often the biggest challenge.
+In particular, we have found that users want to iterate quickly on different data formats (and more
+generally the entire [ETL pipeline](https://en.wikipedia.org/wiki/Extract,_transform,_load)).
+Moreover, it can be difficult to visualize the effects of different preprocessing options on the data. To address this,
+we have built two features into Levanter: on-demand data preprocessing and live visualization during training.
 
 #### On-Demand Data Preprocessing
 
