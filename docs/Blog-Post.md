@@ -53,14 +53,11 @@ and modified libraries from [Hugging Face Transformers](https://github.com/huggi
 released the Haiku-based [Jaxformer](https://github.com/salesforce/jaxformer).
 
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
-At CRFM, we wanted to achieve four goals:
+At CRFM, we focused on three fundamental goals:
 
-* **Legibility**: We wanted to be able to write code that was easy to read and understand, and that could be composed easily.
-* **Reproducibility**: We wanted to be able to reproduce our results exactly, even in the presence of preemption and
-  restarting from checkpoints.
-TODO: try to merge these two into a single bullet
-* **Scalability**: We wanted to be able to fully utilize the Cloud TPU resources we were given as part of Google's TPU Research Cloud program, as well as our own GPU resources.
-* **Efficiency**: We wanted to achieve the other three goals without sacrificing (much) efficiency.
+* **Legibility and Composability**: We prioritized writing code that is easy to read, understand, and compose.
+* **Reproducibility and Resilience**: We emphasized the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
+* **Scalability and Efficiency**: We aimed to fully utilize the Cloud TPU resources from Google's TPU Research Cloud program, as well as our own GPU resources, without compromising efficiency.
 
 We chose [Jax](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
 and offers strong reproducibility guarantees. Jax also works well on TPUs, while we found that PyTorch support was still uneven.
@@ -79,8 +76,8 @@ restarts.
 
 ## Haliax: Legibility via Named Tensors
 
-Haliax is a Jax library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
-which is a neural network library built on Jax that provides a familiar, PyTorch-like module structure. Haliax uses
+Haliax is a library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
+which is a neural network library for Jax that provides a familiar, PyTorch-like module structure. Haliax uses
 Equinox's module structure for its neural network library, rather than Flax or Haiku.
 
 Named Tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
@@ -88,7 +85,9 @@ make your code more legible, more composable, and less bug-prone. In Haliax, the
 scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) and tensor parallelism.
 (See below for our tutorial!)
 
-Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor). In particular, he argues that:
+Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor),
+which argues that named tensors are a better abstraction than the positional axes that are common in deep learning.
+In particular, he argues that:
 
 * Named axes are more semantically meaningful and rely less on bitrot-prone comments.
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
@@ -174,48 +173,49 @@ In the third example, we can use tuples of axes in many places where we would no
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
 FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
-as many as we can get our hands on) and at least 65b parameters (which is way bigger than we have compute for). FSDP with Haliax
+as many as we can get our hands on) and at least 65B parameters (which is way bigger than we have compute for). FSDP with Haliax
 essentially looks like this:
 
-TODO: turn this into a diff
+```diff
++# describe how we shard our parameters and our data
++# embed means that we shard the embed axis of our parameters
++param_mapping = {"embed": "data"}
++data_mapping = {"batch": "data"}
 
-```python
-# describe how we shard our parameters and our data
-# embed means that we shard the embed axis of our parameters
-param_mapping = {"embed": "data"}
-data_mapping = {"batch": "data"}
-
-# tell Haliax to shard our model and optimizer states
-@hax.named_jit
++# tell Haliax to shard our model and optimizer states
++@hax.named_jit
 def init_model():
-    return hax.shard_with_axis_mapping(MyModel(), param_mapping)
+-    return MyModel()
++    return hax.shard_with_axis_mapping(MyModel(), param_mapping)
 
 model = init_model()
 
-# initialize optimizer analogously (with optax)
+# initialize optimizer
 import optax
 optimizer = optax.adamw(1E-4, weight_decay=0.1)
 
-@hax.named_jit
++@hax.named_jit
 def init_optimizer(model):
     opt_state = optimizer.init(model)
-    return hax.shard_with_axis_mapping(opt_state, param_mapping)
+-    return opt_state
++    return hax.shard_with_axis_mapping(opt_state, param_mapping)
 
 optimizer = init_optimizer(model)
 
-@hax.named_jit
++@hax.named_jit
 def train_step(model, opt_state, input_ids):
-  grad_loss = eqx.filter_value_and_grad(compute_loss)
+  ... # elided for brevity
 
   # ensure that intermediate states are sharded correctly
-  with hax.axis_mapping(data_mapping):
-    loss, grads = grad_loss(model, input_ids)
+-  loss, grads = grad_loss(model, input_ids)
++  with hax.axis_mapping(data_mapping):
++    loss, grads = grad_loss(model, input_ids)
 
   ...
   return loss, model, opt_state
 
 for data in data_iter:
-  data = hax.shard_with_axis_mapping(data, data_axis_mapping)
++  data = hax.shard_with_axis_mapping(data, data_axis_mapping)
   ...
 ```
 
@@ -321,8 +321,8 @@ using distributed preprocessing backed by [Ray](https://www.ray.io/).
 * **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
   (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
-* **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
+* **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library and transparently supports exporting checkpoints from a single machine.
 * **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
 
