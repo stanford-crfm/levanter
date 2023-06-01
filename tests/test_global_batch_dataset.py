@@ -12,7 +12,7 @@ import haliax
 import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from levanter.data.sharded import GlobalBatchDataset, check_sharded_consistency
+from levanter.data.sharded import ShardedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -56,11 +56,11 @@ def test_sharded_data_loading_model_axis_2():
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(cache, mesh, Batch)
+        loader = ShardedBatchLoader(cache, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape.shape
+            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
@@ -76,11 +76,11 @@ def test_sharded_data_loading_model_axis_1():
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(cache, mesh, Batch)
+        loader = ShardedBatchLoader(cache, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape.shape
+            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
@@ -97,10 +97,10 @@ def test_sharded_data_loading_len_impact():
         # 6400 tokens split across NUM_SHARDS_TINY shards
         Batch = Axis("batch", 8 * len(devices))
         process_1_len = len(
-            GlobalBatchDataset(cache, mesh, Batch=Batch, override_process_data_pos=0, override_process_data_groups=1)
+            ShardedBatchLoader(cache, mesh, Batch=Batch, override_process_data_pos=0, override_process_data_groups=1)
         )
         for process_count in [2, 4, 8]:
-            dataset = GlobalBatchDataset(
+            loader = ShardedBatchLoader(
                 cache,
                 mesh,
                 Batch=Batch,
@@ -108,7 +108,7 @@ def test_sharded_data_loading_len_impact():
                 override_process_data_groups=process_count,
             )
             # we create this dataset with even numbers of shards, so we are guaranteed that the length won't change
-            assert len(dataset) == process_1_len
+            assert len(loader) == process_1_len
 
 
 class StructuredDataset(levanter.data.ShardableDataset):
@@ -162,9 +162,9 @@ def test_structured_batches_model_axis_1():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -182,9 +182,9 @@ def test_structured_batches_model_axis_2():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -252,9 +252,9 @@ def test_structured_batches_model_axis_1_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -273,9 +273,9 @@ def test_structured_batches_model_axis_2_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -295,8 +295,8 @@ def test_structured_batches_model_axis_2_subsharded():
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)

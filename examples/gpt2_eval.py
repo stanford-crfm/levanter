@@ -15,7 +15,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data.sharded import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -49,7 +49,7 @@ def main(config: EvalGpt2Config):
     else:
         raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, Batch)
+    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
@@ -95,7 +95,7 @@ def main(config: EvalGpt2Config):
             n = 0
 
             with hax.axis_mapping(compute_axis_mapping):
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
+                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating"):
                     loss += compute_loss_pjit(model, batch).item()
                     n += 1
                     if total is not None and n >= total:
@@ -140,7 +140,7 @@ def main(config: EvalGpt2Config):
 
                 loss = 0.0
                 n = 0
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
+                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
                     torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()

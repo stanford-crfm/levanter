@@ -1,8 +1,9 @@
+import abc
 import itertools
 import logging
 from collections import defaultdict
 from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
@@ -32,9 +33,20 @@ logger = logging.getLogger(__name__)
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[Ex]):
+class BatchLoader(Iterable[Ex]):
+    @abc.abstractmethod
+    def __iter__(self) -> Iterator[Ex]:
+        ...
+
+    def batch_size(self) -> int:
+        return self.Batch.size
+
+    Batch: hax.Axis
+
+
+class ShardedBatchLoader(BatchLoader[Ex]):
     """
-    GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
+    ShardedBatchLoader wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
     but only has the data for some of the chunks of the array (namely, the ones on the local devices).
     Thus, each process loads the data for its devices.
@@ -45,7 +57,7 @@ class GlobalBatchDataset(Dataset[Ex]):
     then some processes will need to load the same data. We use the process_mesh_position to determine which data to
     load, by determining which row(s) of the device mesh the process is responsible for.
 
-    For now GlobalBatchDataset is restricted to datasets that return a single sequence of tokens.
+    For now GlobalBatchLoader is restricted to datasets that return a single sequence of tokens.
 
     :arg local_dataset: a dataset that is shardable and can be iterated over
     :arg mesh: the device mesh
@@ -196,12 +208,11 @@ class GlobalBatchDataset(Dataset[Ex]):
             return np.stack(leaves)
 
 
-class LocalBatchDataset(Dataset[Ex]):
-    """A dataset that creates batches without sharded data loading. All examples are loaded on all machines and then
+class ReplicatedBatchLoader(BatchLoader[Ex]):
+    """A batch loader that creates batches without sharded data loading. All examples are loaded on all machines and then
     sharded. This is useful if you have a small dataset and want to use a large number of devices.
 
-    Note: this class discards remainder batches
-
+    Note: this class discards the final batch if it is smaller than the batch size.
     """
 
     def __init__(

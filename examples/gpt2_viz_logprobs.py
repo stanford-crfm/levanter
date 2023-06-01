@@ -12,7 +12,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.config import TrainerConfig
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data.sharded import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -44,7 +44,7 @@ def main(config: EvalGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
-    eval_dataset = LocalBatchDataset(
+    eval_loader = ReplicatedBatchLoader(
         TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
@@ -97,7 +97,7 @@ def main(config: EvalGpt2Config):
         model, _, _ = ckpt
 
         cb = callbacks.compute_and_visualize_log_probs(
-            eval_dataset, tokenizer, compute_log_probs, config.output_dir, max_docs=config.num_docs
+            eval_loader, tokenizer, compute_log_probs, config.output_dir, max_docs=config.num_docs
         )
         cb(StepInfo(model=model, step=0, opt_state=None, loss=0.0, step_duration=0.0, next_key=0.0))
 
