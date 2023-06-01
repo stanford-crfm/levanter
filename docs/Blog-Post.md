@@ -80,26 +80,27 @@ restarts.
 ## Haliax: Legibility via Named Tensors
 
 Haliax is a Jax library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
-which is a neural network library built on Jax that provides a familiar, PyTorch-like module structure. Haliax uses 
-Equinox's module structure for its neural network library.
+which is a neural network library built on Jax that provides a familiar, PyTorch-like module structure. Haliax uses
+Equinox's module structure for its neural network library, rather than Flax or Haiku.
 
 Named Tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
 make your code more legible, more composable, and less bug-prone. In Haliax, they also form the basis of how we handle
-scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/). (See below for our tutorial.)
+scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) and tensor parallelism.
+(See below for our tutorial!)
 
 Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor). In particular, he argues that:
 
-* Named axes are more semantically meaningful and rely less on bitrot-prone comments. 
+* Named axes are more semantically meaningful and rely less on bitrot-prone comments.
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
 * Broadcasting leads to unreadable strings of `view`s and `squeeze`s.
- 
-To this, I'd add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and 
+
+To this, I'd add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
 that named tensors eliminate many of these bugs.
 
 ### A Quick Example: Attention in Haliax
 
 This blog post isn't the place for a full introduction to Haliax (please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)),
-but here's a quick example of a minimal, but full-featured, attention implementation in Haliax. 
+but here's a quick example of a minimal, but full-featured, attention implementation in Haliax.
 
 ```python
 import jax.numpy as jnp
@@ -131,10 +132,10 @@ In this example, we've defined an axis for each dimension of our tensors. In Hal
 building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
 those axes to perform operations like `softmax` and tensor multiplication (`dot`).
 
-#### Compositionality
+### Compositionality
 
-Despite making no reference to batching or heads, this same implementation is also batch-capable and multi-headed
-(or multi-query) and even supports attending to or from non-sequential keys (e.g. attending to image patches):
+Despite making no reference to batching or heads, this same implementation is also batch-capable and supports multi-headed
+(or multi-query) attention and even attending to or from non-sequential keys (e.g. attending to image patches):
 
 ```python
 Batch = hax.Axis("batch", 8)  # batch size
@@ -146,12 +147,12 @@ value = hax.random.normal(PRNGKey(2), (Batch, Head, KPos, Key))
 # traditional batched multi-headed attention
 assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 
-# multi-query attention
+# multi-query attention. Each key/value pair produces only one head
 key = hax.random.normal(PRNGKey(1), (Batch, KPos, Key))
 value = hax.random.normal(PRNGKey(2), (Batch, KPos, Key))
 assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 
-# image patch cross attention
+# image patch cross-attention from a sequence
 Height = hax.Axis("height", 32)
 Width = hax.Axis("width", 32)
 
@@ -162,8 +163,8 @@ value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
 assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 ```
 
-This compositionality is possible because we've abstracted over the unreferenced dimensions of our tensors. 
-In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over. 
+This compositionality is possible because we've abstracted over the unreferenced dimensions of our tensors.
+In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
 Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
 
@@ -232,27 +233,31 @@ Earlier, I claimed that named tensors can help avoid common bugs. Here's an exam
 and hard to spot in a traditional tensor library. Consider the following simple linear model:
 
 ```python
-import numpy as np
+import jax.numpy as jnp
+import jax.random as jrandom
+from jax.random import PRNGKey
 
-x = np.random.rand(128, 64)
-y = np.random.rand(128)
-W = np.random.rand(64, 1)
+# predict y from x using  a linear model (W)
+x = jrandom.uniform(PRNGKey(0), (128, 64))
+y = jrandom.uniform(PRNGKey(1), (128,))
+W = jrandom.uniform(PRNGKey(2), (64, 1))
 
 def mse(pred, target):
-    return np.mean((pred - target) * (pred - target) )
+    return jnp.mean((pred - target) * (pred - target) )
 
 y_pred = x @ W
 mse(y_pred, y)
 ```
 
-This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same. 
+This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same.
 Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
 (This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
 But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
 
-This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years. 
+This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years,
+in every deep learning framework I've used.
 
-But if we use named tensors, we can avoid this. Here's what this code looks like in Haliax:
+But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
 
 ```python
 import haliax as hax
@@ -272,6 +277,9 @@ W = hax.random.uniform(PRNGKey(2), (Feature,))
 y_pred = hax.dot(Feature, x, W)
 mse(y_pred, y)
 ```
+
+The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
+Instead, it works exactly as we intend.
 
 ### Haliax Tutorials
 
@@ -309,12 +317,12 @@ XXX something something v3-256 scaling numbers?
 ### Other Features
 
 * **Preprocessing**: Levanter uses [Hugging Face Tokenizers](https://github.com/huggingface/tokenizers/) to preprocess text
-using distributed preprocessing backed by [Ray](https://www.ray.io/))
-* **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
+using distributed preprocessing backed by [Ray](https://www.ray.io/).
+* **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
   (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library.
-* **Export**: We also support exporting models to the Hugging Face Hub, with export compatibler with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
+* **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
 * **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
 
