@@ -174,12 +174,13 @@ We use named axes both to improve legibility and to enable scale: named axes are
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
 FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
 as many as we can get our hands on) and at least 65B parameters (which is way bigger than we have compute for). FSDP with Haliax
-essentially looks like this:
+basically amounts to telling Haliax which axes to shard, and specifying a different sharding for computation than for storage.
 
 ```diff
 +# describe how we shard our parameters and our data
-+# embed means that we shard the embed axis of our parameters
++# We store our parameters and optimizer states fully sharded along the embed axis
 +param_mapping = {"embed": "data"}
++# During computation, we instead shard our data along the batch axis, and gather the parameters just-in-time
 +data_mapping = {"batch": "data"}
 
 +# tell Haliax to shard our model and optimizer states
@@ -219,13 +220,22 @@ for data in data_iter:
   ...
 ```
 
-Tensor parallelism can be added by changing the two axis mappings:
+Tensor parallelism can be added by simply changing the two axis mappings:
 
-```python
+```diff
+# Specify which axes we shard for tensor parallelism:
 # specifying "head" shards attention and "mlp" shards the feedforward
-param_axis_mapping = {"embed": "data", "head": "model", "mlp": "model"}
-data_axis_mapping = {"batch": "data", "head": "model", "mlp": "model"}
++tensor_parallel_mapping = {"head": "model", "mlp": "model"}
+# We store our parameters and optimizer states fully sharded along the embed axis
+-param_mapping = {"embed": "data"}
++param_mapping = {"embed": "data", **tensor_parallel_mapping}
+# During computation, we instead shard our data along the batch axis, and gather the parameters just-in-time
+-data_mapping = {"batch": "data"}
++data_mapping = {"batch": "data", **tensor_parallel_mapping}
 ```
+
+This is all that is required to shard a model across multiple GPUs or TPUs. The rest of the training loop remains unchanged.
+You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
 ### Avoiding Bugs
 
