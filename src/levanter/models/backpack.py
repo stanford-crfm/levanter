@@ -363,10 +363,6 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
 
-        # Rescale - this is important for large num_senses
-        scale = self.config.Senses.size
-        hidden_states = hidden_states / scale
-
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
