@@ -24,9 +24,6 @@ def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDat
         def __init__(self, sequences: Sequence[np.ndarray]):
             self.sequences = sequences
 
-        def __len__(self):
-            return len(self.sequences)
-
         def shard(self, shard_idx: int, num_shards: int) -> levanter.data.ShardableDataset[np.ndarray]:
             return SequenceDataset(self.sequences[shard_idx::num_shards])
 

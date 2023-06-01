@@ -12,7 +12,7 @@ import haliax
 import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from levanter.data.sharded import ReplicatedBatchLoader, check_sharded_consistency
+from levanter.data.loader import ReplicatedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -20,9 +20,6 @@ def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDat
     class SequenceDataset(levanter.data.ShardableDataset[np.ndarray]):
         def __init__(self, sequences: Sequence[np.ndarray]):
             self.sequences = sequences
-
-        def __len__(self):
-            return len(self.sequences)
 
         def shard(self, shard_idx: int, num_shards: int) -> levanter.data.ShardableDataset[np.ndarray]:
             return SequenceDataset(self.sequences[shard_idx::num_shards])
@@ -89,9 +86,6 @@ class StructuredDataset(levanter.data.ShardableDataset):
         self.begin = begin
         self.end = end
         self.stride = stride
-
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
 
     def __getitem__(self, item):
         return {
@@ -168,9 +162,6 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
         self.begin = begin
         self.end = end
         self.stride = stride
-
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
 
     def _gen_image(self, index):
         image = (

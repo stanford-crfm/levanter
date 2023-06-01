@@ -97,13 +97,6 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
     def item_shape(self) -> PyTree:
         return NamedShapeSpec((self.Pos,), jnp.int32)
 
-    def __len__(self):
-        total_tokens = self.doc_cache.total_tokens
-        if self.stride is None:
-            return total_tokens // self.seq_len
-        else:
-            return (total_tokens - self.seq_len) // self.stride + 1
-
     @staticmethod
     def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
@@ -153,17 +146,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         self.flatten_docs = flatten_docs
         self.token_counts = [chunk.field_counts["input_ids"] for chunk in chunks]
         self.total_tokens = sum(self.token_counts)
-
-    def __len__(self):
-        if self.flatten_docs:
-            return sum(
-                [
-                    len(_open_arrow_table(os.path.join(self.cache_dir, f"{c.name}.parquet")).to_batches())
-                    for c in self.chunks
-                ]
-            )
-        else:
-            return sum(chunk.num_rows for chunk in self.chunks)
 
     def __iter__(self):
         for chunk in self.chunks:
