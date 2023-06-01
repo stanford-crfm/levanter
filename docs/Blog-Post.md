@@ -79,22 +79,27 @@ restarts.
 
 ## Haliax: Legibility via Named Tensors
 
-Haliax is a Jax library for building neural networks with named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
-which is a neural network library built on Jax that provides a familiar, PyTorch-like module structure.
+Haliax is a Jax library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
+which is a neural network library built on Jax that provides a familiar, PyTorch-like module structure. Haliax uses 
+Equinox's module structure for its neural network library.
 
 Named Tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
-make your code more legible, more composable, and avoid bugs. In Haliax, they also form the basis of how we handle
-scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/). (See below for our tutorial)
+make your code more legible, more composable, and less bug-prone. In Haliax, they also form the basis of how we handle
+scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/). (See below for our tutorial.)
 
 Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor). In particular, he argues that:
 
-* Named axes are more semantically meaningful and rely less on bitrot-prone comments.
-* Broadcasting leads to unreadable strings of `view`s and `squeeze`s. (To this, I'd add implicit broadcasting is a source of bugs.)
-* Named axes allow you to abstract over unreferenced dimensions, making code more flexible for things like multi-headed attention or flexible attention masking.
+* Named axes are more semantically meaningful and rely less on bitrot-prone comments. 
+* Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
+* Broadcasting leads to unreadable strings of `view`s and `squeeze`s.
+ 
+To this, I'd add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and 
+that named tensors eliminate many of these bugs.
 
-Let's take a look at a practical example of how Haliax can be used.
-Here's a minimal attention implementation in Haliax. For a more detailed introduction,
-please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC).
+### A Quick Example: Attention in Haliax
+
+This blog post isn't the place for a full introduction to Haliax (please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)),
+but here's a quick example of a minimal, but full-featured, attention implementation in Haliax. 
 
 ```python
 import jax.numpy as jnp
@@ -104,7 +109,7 @@ import haliax as hax
 Pos = hax.Axis("position", 1024)  # sequence
 KPos = Pos.alias("key_position")  # key sequence for attention
 Head = hax.Axis("head", 8)  # number of attention heads
-Key = hax.Axis("key", 64)  # key size
+Key = hax.Axis("key", 64)  # key/query/value size
 Embed = hax.Axis("embed", 512)  # embedding size
 
 def attention(Key, KPos, query, key, value, mask):
@@ -116,14 +121,20 @@ def attention(Key, KPos, query, key, value, mask):
       scores -= 1E9 * (1.0 - mask)
 
     # convert to probabilities
-    scores = hax.nn.softmax(scores, KPos)
+    scores = hax.nn.softmax(scores, axis=KPos)
 
     # weighted sum of values
     return hax.dot(KPos, scores, value)
 ```
 
+In this example, we've defined an axis for each dimension of our tensors. In Haliax, the named `Axis` is the basic
+building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
+those axes to perform operations like `softmax` and tensor multiplication (`dot`).
+
+#### Compositionality
+
 Despite making no reference to batching or heads, this same implementation is also batch-capable and multi-headed
-(or multi-query) and even supports attending to or from non-sequential keys (e.g. image patches):
+(or multi-query) and even supports attending to or from non-sequential keys (e.g. attending to image patches):
 
 ```python
 Batch = hax.Axis("batch", 8)  # batch size
@@ -147,8 +158,17 @@ Width = hax.Axis("width", 32)
 key = hax.random.normal(PRNGKey(1), (Batch, Head, Height, Width, Key))
 value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
 
+# KPos in attention actually be a tuple of axes.
 assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 ```
+
+This compositionality is possible because we've abstracted over the unreferenced dimensions of our tensors. 
+In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over. 
+Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
+In the third example, we can use tuples of axes in many places where we would normally use a single axis.
+
+
+### Scale via Named Tensors
 
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
@@ -165,7 +185,7 @@ param_mapping = {"embed": "data"}
 data_mapping = {"batch": "data"}
 
 # tell Haliax to shard our model and optimizer states
-@named_jit
+@hax.named_jit
 def init_model():
     return hax.shard_with_axis_mapping(MyModel(), param_mapping)
 
@@ -175,7 +195,7 @@ model = init_model()
 import optax
 optimizer = optax.adamw(1E-4, weight_decay=0.1)
 
-@named_jit
+@hax.named_jit
 def init_optimizer(model):
     opt_state = optimizer.init(model)
     return hax.shard_with_axis_mapping(opt_state, param_mapping)
@@ -206,9 +226,56 @@ param_axis_mapping = {"embed": "data", "head": "model", "mlp": "model"}
 data_axis_mapping = {"batch": "data", "head": "model", "mlp": "model"}
 ```
 
+### Avoiding Bugs
+
+Earlier, I claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
+and hard to spot in a traditional tensor library. Consider the following simple linear model:
+
+```python
+import numpy as np
+
+x = np.random.rand(128, 64)
+y = np.random.rand(128)
+W = np.random.rand(64, 1)
+
+def mse(pred, target):
+    return np.mean((pred - target) * (pred - target) )
+
+y_pred = x @ W
+mse(y_pred, y)
+```
+
+This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same. 
+Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
+(This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
+But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
+
+This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years. 
+
+But if we use named tensors, we can avoid this. Here's what this code looks like in Haliax:
+
+```python
+import haliax as hax
+from jax.random import PRNGKey
+
+Batch = hax.Axis("batch", 128)
+Feature = hax.Axis("feature", 64)
+
+x = hax.random.uniform(PRNGKey(0), (Batch, Feature))
+y = hax.random.uniform(PRNGKey(1), Batch, 0, 2)
+
+def mse(pred, target):
+    return hax.mean((pred - target) * (pred - target), axis=Batch)
+
+W = hax.random.uniform(PRNGKey(2), (Feature,))
+
+y_pred = hax.dot(Feature, x, W)
+mse(y_pred, y)
+```
+
 ### Haliax Tutorials
 
-For more details, please see our interactive tutorials on Colab:
+This is just a taste of what Haliax can do. For more details, please see our interactive tutorials on Colab:
 
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
 * [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in Jax.
