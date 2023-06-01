@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Union, cast
+from typing import Callable, Dict, Optional, Union, cast
 
 import equinox as eqx
 import jax
@@ -9,7 +9,7 @@ import jax.random as jrandom
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
-from haliax import Axis, NamedArray, AxisSpec
+from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -18,10 +18,7 @@ from levanter.compat.torch_serialization import (
     reshape_linear_layer,
     reshape_mlp_linear_layer,
 )
-from levanter.models.gpt2 import Gpt2Transformer, Gpt2Embeddings, Gpt2Config, Gpt2Mlp, ACT2FN
-
-
-sharded_normal = hax.random.generate_sharded(hax.random.normal)
+from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
 
 
 @dataclass(frozen=True)
@@ -271,8 +268,8 @@ class BackpackGpt2Embeddings(Gpt2Embeddings):
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "BackpackGpt2Embeddings":
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
-        token_embeddings = sharded_normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
-        position_embeddings = sharded_normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
+        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
+        position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
         return BackpackGpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
