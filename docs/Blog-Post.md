@@ -331,21 +331,30 @@ a huge advantage for debugging and reproducibility.
 
 XXX something something v3-256 scaling numbers?
 
-### Other Features
+### Data Preparation and Visualization
 
-* **Preprocessing**: Levanter uses [Hugging Face Tokenizers](https://github.com/huggingface/tokenizers/) to preprocess text
-using distributed preprocessing backed by [Ray](https://www.ray.io/).
-* **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
-  (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
-* **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
-* **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
-* **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library and transparently supports exporting checkpoints from a single machine.
-* **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
+While collaborating with teams to build domain-specific models, we have found that data preparation can be a significant challenge,
+indeed the largest challenge in many cases.
+In particular, we have found that users want to iterate quickly on different formatting and preprocessing options, and that
+it can be difficult to visualize the effects of different preprocessing options on the data. To address this, we have built
+two features into Levanter: on-demand data preprocessing and live visualization during training.
 
+#### On-Demand Data Preprocessing
+
+Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data. This is especially useful for large data sets
+like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
+Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
+produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
+is performed on different machines.
+
+TODO: see if we can land this before launch
+
+Soon, we will enable training while tokenization is still in progress, which will allow you to start training
+on a data set before it is fully tokenized. This will be especially useful when iterating on formatting for large data sets,
+where preprocessing can take a long time. We also aim to make resuming from preemption even faster than it is now.
 
 #### Live Visualization during Training
 
-While collaborating with teams to build domain-specific models, we've found that data preparation can be a significant challenge.
 As an example, it can be difficult to identify issues in the data that are causing
 lower than expected loss. As a small step towards addressing this, we have added a feature to Levanter that allows you
 to visualize the probability of each token in a sample of the validation set during training. For novel data sets,
@@ -361,18 +370,16 @@ The darker, more purple the color, the lower the probability of the token. The l
 This visualization is logged to WandB as training progresses and can be viewed interactively. I have found this to be a
 nice alternative to just staring obsessively at the loss curve, which is what I usually do.
 
+### Other Features
 
-#### On-Demand Data Preprocessing
-
-Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data. This is especially useful for large data sets
-like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
-Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
-produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
-is performed on different machines.
-
-Soon, we will enable training while tokenization is still in progress, which will allow you to start training
-on a data set before it is fully tokenized. This will be especially useful when iterating on formatting for large data sets,
-where preprocessing can take a long time. We also aim to make resuming from preemption even faster than it is now.
+[//]: # (* **Preprocessing**: Levanter uses [Hugging Face Tokenizers]&#40;https://github.com/huggingface/tokenizers/&#41; to preprocess text)
+[//]: # (using distributed preprocessing backed by [Ray]&#40;https://www.ray.io/&#41;.)
+* **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
+  (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
+* **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
+* **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
+* **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library and transparently supports exporting checkpoints from a single machine.
+* **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
 ### Getting Started with Levanter
 
