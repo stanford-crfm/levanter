@@ -50,7 +50,11 @@ In the Jax community, there are a number of libraries popping up. Google has rel
 and [MaxText](https://github.com/google/maxtext). There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
 and [JaxSeq](https://github.com/Sea-Snell/JAXSeq), both of which are based on [Flax](https://github.com/google/flax/)
 and modified libraries from [Hugging Face Transformers](https://github.com/huggingface/transformers/). Salesforce has
-released the Haiku-based [Jaxformer](https://github.com/salesforce/jaxformer).
+released the Haiku-based [Jaxformer](https://github.com/salesforce/jaxformer). Previously, Eleuther AI released
+[mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax/), though it is mostly unmaintained now and uses
+older, quasi-deprecated Jax APIs for distributed training.
+
+## A New Codebase for Foundation Model Training
 
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
 At CRFM, we focused on three fundamental goals:
@@ -166,7 +170,6 @@ This compositionality is possible because we've abstracted over the unreferenced
 In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
 Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
-
 
 
 ### Avoiding Bugs
