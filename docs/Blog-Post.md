@@ -317,15 +317,21 @@ can scale up to least 65b parameters.
 ### Bitwise Reproducibility
 
 One of the benefits of Jax is that it offers strong guarantees for reproducibility. In particular, Jax's fine-grained
-control over random number generation makes it easy to ensure bitwise reproducibility, especially when using TPUs.
+control over PRNG states makes it easy to ensure bitwise reproducibility, especially when using TPUs.
 Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
-the same run on the same set of hardware (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
+the same run with the same code on the same set of hardware (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
 preempted and resumed multiple times. As an example, here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
 
 ![plot showing bitwise reproducibility with four training runs superimposed with the exact same loss curve](figures/bitwise_repro_curve.png)
 
 The fact that you can't make out the different lines is the point: the training runs are bitwise identical,
 a huge advantage for debugging and reproducibility.
+
+Levanter also logs to WandB everything necessary to exactly reproduce a run: the git SHA, code, configuration,
+and a pip-freeze of the environment. Checkpoints serialize the entire model state, including the optimizer state,
+as well as the "main" PRNG state, which is used to generate the other PRNG states. This means that you can
+exactly reproduce a run by simply checking out the git SHA, installing the dependencies, and running the code (on the same
+hardware configuration).
 
 ### Efficiency and Scale
 
