@@ -168,13 +168,70 @@ Similarly, in the second example, we omit the `Head` axis from the `key` and `va
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
 
 
+
+### Avoiding Bugs
+
+Earlier, I claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
+and hard to spot in a traditional tensor library. Consider the following simple linear model:
+
+```python
+import jax.numpy as jnp
+import jax.random as jrandom
+from jax.random import PRNGKey
+
+# predict y from x using  a linear model (W)
+x = jrandom.uniform(PRNGKey(0), (128, 64))
+y = jrandom.uniform(PRNGKey(1), (128,))
+W = jrandom.uniform(PRNGKey(2), (64, 1))
+
+def mse(pred, target):
+    return jnp.mean((pred - target) * (pred - target) )
+
+y_pred = x @ W
+mse(y_pred, y)
+```
+
+This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same.
+Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
+(This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
+But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
+
+This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years,
+in every deep learning framework I've used.
+
+But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
+
+```python
+import haliax as hax
+from jax.random import PRNGKey
+
+Batch = hax.Axis("batch", 128)
+Feature = hax.Axis("feature", 64)
+
+x = hax.random.uniform(PRNGKey(0), (Batch, Feature))
+y = hax.random.uniform(PRNGKey(1), Batch, 0, 2)
+
+def mse(pred, target):
+    return hax.mean((pred - target) * (pred - target), axis=Batch)
+
+W = hax.random.uniform(PRNGKey(2), (Feature,))
+
+y_pred = hax.dot(Feature, x, W)
+mse(y_pred, y)
+```
+
+The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
+Instead, it works exactly as we intend.
+
 ### Scale via Named Tensors
 
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
 FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
-as many as we can get our hands on) and at least 65B parameters (which is way bigger than we have compute for). FSDP with Haliax
-basically amounts to telling Haliax which axes to shard, and specifying a different sharding for computation than for storage.
+as many as we can get our hands on) and at least 65B parameters (which is way bigger than we have compute for).
+
+FSDP with Haliax basically amounts to telling Haliax which axes to shard, and specifying a different sharding for computation than for storage.
+A full tutorial is available [here](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), but here's a quick example:
 
 ```diff
 +# describe how we shard our parameters and our data
@@ -237,59 +294,6 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 This is all that is required to shard a model across multiple GPUs or TPUs. The rest of the training loop remains unchanged.
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
-### Avoiding Bugs
-
-Earlier, I claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
-and hard to spot in a traditional tensor library. Consider the following simple linear model:
-
-```python
-import jax.numpy as jnp
-import jax.random as jrandom
-from jax.random import PRNGKey
-
-# predict y from x using  a linear model (W)
-x = jrandom.uniform(PRNGKey(0), (128, 64))
-y = jrandom.uniform(PRNGKey(1), (128,))
-W = jrandom.uniform(PRNGKey(2), (64, 1))
-
-def mse(pred, target):
-    return jnp.mean((pred - target) * (pred - target) )
-
-y_pred = x @ W
-mse(y_pred, y)
-```
-
-This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same.
-Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
-(This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
-But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
-
-This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years,
-in every deep learning framework I've used.
-
-But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
-
-```python
-import haliax as hax
-from jax.random import PRNGKey
-
-Batch = hax.Axis("batch", 128)
-Feature = hax.Axis("feature", 64)
-
-x = hax.random.uniform(PRNGKey(0), (Batch, Feature))
-y = hax.random.uniform(PRNGKey(1), Batch, 0, 2)
-
-def mse(pred, target):
-    return hax.mean((pred - target) * (pred - target), axis=Batch)
-
-W = hax.random.uniform(PRNGKey(2), (Feature,))
-
-y_pred = hax.dot(Feature, x, W)
-mse(y_pred, y)
-```
-
-The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
-Instead, it works exactly as we intend.
 
 ### Haliax Tutorials
 
