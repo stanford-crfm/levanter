@@ -104,6 +104,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
+    ln: hnn.LayerNorm
 
     @staticmethod
     def init(config: Gpt2Config, *, key) -> "WeightsOnlyAttention":
@@ -114,8 +115,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k_c, _ = jrandom.split(key, 2)
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
+        ln = hnn.LayerNorm.init(config.Senses, eps=config.layer_norm_epsilon)
 
-        return WeightsOnlyAttention(config, c_attn, dropout)
+        return WeightsOnlyAttention(config, c_attn, dropout, ln)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
@@ -143,6 +145,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        attn_weights = self.ln(attn_weights)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
@@ -220,6 +223,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
     final_mlp: BackpackMlp
 
     Pos: Axis = eqx.static_field()
+    ln_2: hnn.LayerNorm
 
     @staticmethod
     def init(
@@ -241,6 +245,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
+        ln_2 = hnn.LayerNorm.init(config.Senses, eps=config.layer_norm_epsilon)
 
         return BackpackSenses(
             dropout=dropout,
@@ -248,6 +253,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
             ln=ln,
             final_mlp=final_mlp,
             Pos=config.Pos,
+            ln_2=ln_2,
         )
 
     @named_call
@@ -255,7 +261,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         hidden_states = self.ln(input_embeds)
         hidden_states = self.block(hidden_states, input_embeds, inference=inference, key=key)
         senses = self.final_mlp(hidden_states)
-
+        senses = self.ln_2(senses)
         return senses
 
 
