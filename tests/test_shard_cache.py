@@ -274,3 +274,6 @@ def test_can_get_chunk_before_finished():
         chunk = [back_to_py(batch) for batch in cache.read_chunk(1)]
 
         assert [list(x) for x in chunk] == [[i] * 10 for i in range(10, 20)]
+
+        # now wait until the cache is finished. mostly so that the tempdir cleanup works
+        cache.await_finished(timeout=10)
