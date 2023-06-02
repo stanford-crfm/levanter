@@ -16,7 +16,6 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit
 from levanter import callbacks
-from levanter.compat.torch_serialization import jax_tree_to_state_dict
 from levanter.config import TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
@@ -51,13 +50,6 @@ class TrainMptConfig:
     hf_save_steps: int = 10000
 
 
-def print_sharding_pytree(obj):
-    state_dict = jax_tree_to_state_dict(obj)
-
-    for k, v in state_dict.items():
-        print(f"{k}: {v.shape} {v.sharding}")
-
-
 @levanter.config.main()
 def main(config: TrainMptConfig):
     config.trainer.initialize(config)
@@ -81,9 +73,6 @@ def main(config: TrainMptConfig):
             mpt_config.update({"max_seq_len": config.seq_len})
 
         model = MptLmHeadModel.from_hf_pretrained(config.initialize_from, axis_mapping=parameter_axis_mapping)
-
-        # visualize the model
-        print_sharding_pytree(model)
 
         model_config = model.config
 
