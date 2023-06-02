@@ -85,7 +85,7 @@ def cache_dataset(
     await_finished: bool = True,
 ) -> "ShardCache":
     # first see if we need to do anything
-    cache = ShardCache(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
+    cache = ShardCache.build_or_load(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
 
     while await_finished:
         try:
@@ -354,15 +354,6 @@ class _ShardStatus:
     @property
     def is_producing(self):
         return self.producer_task is not None
-
-
-def _ledger_or_broker(
-    cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
-):
-    try:
-        return _load_cache_ledger(cache_dir)
-    except FileNotFoundError:
-        return _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk)
 
 
 @ray.remote(num_cpus=0)
@@ -659,28 +650,37 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def __init__(
         self,
         cache_dir: str,
+        batch_size: int,
+        _ledger: Optional[CacheLedger],
+        _broker: Optional[ActorHandle],
+    ):
+        self.cache_dir = cache_dir
+        self._ledger = _ledger
+        self._broker = _broker
+        self._batch_size = batch_size
+
+        self._metrics_monitors = []
+        self._monitor_thread = None
+
+    @staticmethod
+    def load(cache_dir: str, batch_size: int) -> "ShardCache":
+        """Loads a cache from disk. Raises FileNotFoundError if the cache doesn't exist"""
+        ledger = _load_cache_ledger(cache_dir)
+        return ShardCache(cache_dir, batch_size, ledger, None)
+
+    @staticmethod
+    def build_or_load(
+        cache_dir: str,
         shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T],
         batch_size: int,
         rows_per_chunk: int,
     ):
-        self.cache_dir = cache_dir
-        self.shard_source = shard_source
-        self.processor = processor
-        self.rows_per_chunk = rows_per_chunk
-
-        ledger_or_broker = _ledger_or_broker(cache_dir, shard_source, processor, rows_per_chunk)
-        if isinstance(ledger_or_broker, CacheLedger):
-            self._ledger = ledger_or_broker
-            self._broker = None
-        else:
-            self._ledger = None
-            self._broker = ledger_or_broker
-
-        self._batch_size = batch_size
-
-        self._metrics_monitors = []
-        self._monitor_thread = None
+        try:
+            return ShardCache.load(cache_dir, batch_size)
+        except FileNotFoundError:
+            broker = _get_broker_actor(cache_dir, shard_source, processor, rows_per_chunk)
+            return ShardCache(cache_dir, batch_size, None, broker)
 
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
