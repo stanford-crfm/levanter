@@ -16,15 +16,15 @@ model:
 trainer:
   wandb:
     project: "levanter"
-    tags: [ "openwebtext", "backpack"]
+    tags: ["openwebtext", "backpack"]
 
   mp: p=f32,c=bfloat16
   learning_rate: 2E-4
   weight_decay: 0.1
   model_axis_size: 1
+  per_device_parallelism: 4
   num_train_steps: 100000
   train_batch_size: 1024
-  per_device_parallelism: 4
 
   axis_resources:
     batch: "data"
