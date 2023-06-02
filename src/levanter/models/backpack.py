@@ -115,7 +115,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k_c, _ = jrandom.split(key, 2)
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
-        ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
+        ln = hnn.LayerNorm.init((config.Pos, config.KeyPos), eps=config.layer_norm_epsilon)
 
         return WeightsOnlyAttention(config, c_attn, dropout, ln)
 
