@@ -548,6 +548,12 @@ class ChunkCacheBroker:
                 self._reader_promises[chunk_idx] = asyncio.Future()
             return await self._reader_promises[chunk_idx]
 
+    async def final_chunk_count(self) -> Optional[int]:
+        if self._is_finished:
+            return len(self.chunks)
+        else:
+            return None
+
     def _append_chunks(self, *chunks: ChunkMetadata):
         for chunk in chunks:
             self.chunks.append(chunk)
@@ -716,11 +722,30 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 raise IndexError(f"Chunk index {index} out of bounds")
             return chunk
 
-    def __iter__(self):
+    def final_chunk_count(self) -> Optional[int]:
+        """Returns the number of chunks in the cache, if known"""
         if self._ledger is not None:
-            for i in range(len(self._ledger.chunks)):
-                chunk = self._ledger.chunks[i]
-                yield from self._read_chunk(chunk)
+            return len(self._ledger.chunks)
+        else:
+            assert self._broker is not None
+            return ray.get(self._broker.final_chunk_count.remote())
+
+    def iter_batches_from_chunks(self, shard_offset: int, num_shards: int, loop: bool = False):
+        if self._ledger is not None:
+            num_chunks = len(self._ledger.chunks)
+
+            if num_chunks == 0:
+                return
+
+            while True:
+                for i in range(shard_offset, num_chunks, num_shards):
+                    chunk = self._ledger.chunks[i]
+                    yield from self._read_chunk(chunk)
+
+                if not loop:
+                    break
+
+                shard_offset = i % num_shards
         else:
             assert self._broker is not None
             i = 0
@@ -730,10 +755,19 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     i += 1
                     yield from self._read_chunk(chunk)
                 except IndexError:
-                    break
+                    if loop:
+                        num_chunks = ray.get(self._broker.final_chunk_count.remote())
+                        assert num_chunks is not None
+
+                        i = i % num_chunks
+                    else:
+                        break
                 except Exception as e:
                     logger.exception("Error while reading from shard cache.")
                     raise e
+
+    def __iter__(self):
+        return self.iter_batches_from_chunks(0, 1)
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
