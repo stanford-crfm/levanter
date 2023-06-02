@@ -23,11 +23,13 @@ from haliax import Axis, NamedArray
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 
+
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import (  # noqa
+    DEFAULT_ROWS_PER_CHUNK,
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
@@ -35,7 +37,6 @@ from levanter.data.shard_cache import (  # noqa
     _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
-    DEFAULT_ROWS_PER_CHUNK,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.hf_utils import load_tokenizer  # noqa
@@ -446,7 +447,7 @@ class LMDatasetConfig:
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
+        cache_dataset(split_cache_dir, source, batch_tokenizer, rows_per_chunk=self.rows_per_chunk)
         return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):
