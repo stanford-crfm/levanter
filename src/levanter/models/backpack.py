@@ -290,7 +290,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     embeddings: BackpackGpt2Embeddings
     sense_net: BackpackSenses
     kq_selfattention: WeightsOnlyAttention
-    rescaler
+    rescaler: jnp.ndarray
 
     @property
     def config(self):
