@@ -332,7 +332,7 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             config=config,
             key=k_attn,
         )
-        rescaler = jnp.array( 1.0 / config.Senses.size)
+        rescaler = jnp.array(config.Senses.size)
 
         return BackpackLMHeadModel(
             transformer=transformer,
@@ -364,10 +364,10 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
         ## Weight-and-sum
         hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
-        hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
+        hidden_states = hax.sum(hidden_states, axis=self.config.Senses) # (seq, embed)
 
         # Rescale 
-        hidden_states = hidden_states * self.rescaler
+        hidden_states = hidden_states / self.rescaler
 
         lm_logits = self.embeddings.unembed(hidden_states)
 
