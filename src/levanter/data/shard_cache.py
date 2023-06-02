@@ -695,6 +695,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             return self._broker.finished_sentinel.remote()
 
+    def is_finished(self):
+        """Returns whether the cache is finished"""
+        if self._broker is None:
+            return True
+        else:
+            return ray.get(self._broker.is_finished.remote())
+
     def read_chunk(self, chunk_idx: int) -> Iterator[pa.RecordBatch]:
         """Reads a chunk from the cache"""
         chunk = self.get_chunk(chunk_idx)

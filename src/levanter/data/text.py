@@ -170,9 +170,16 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         flatten_docs=True,
         enforce_eos=True,
         batch_size=100,
+        rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
     ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
-        cache = cache_dataset(cache_dir, source, bt, await_finished=True, batch_size=batch_size)
+        cache = cache_dataset(cache_dir, source, bt, await_finished=False, batch_size=batch_size, rows_per_chunk=rows_per_chunk)
+        if cache.is_finished:
+            logger.info(f"Cache {cache_dir} is complete.")
+        else:
+            logger.info(
+                f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
+            )
         return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
 
     def shard(self, shard_index, num_shards):
@@ -386,11 +393,12 @@ class LMDatasetConfig:
         return load_tokenizer(self.tokenizer)
 
     def build_or_load_cache(self, split: str):
-        batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer, rows_per_chunk=self.rows_per_chunk)
-        return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        return TokenizedDocumentCache.build_or_load(
+            split_cache_dir, source, self.the_tokenizer, enforce_eos=self.enforce_eos, flatten_docs=True,
+            rows_per_chunk=self.rows_per_chunk
+        )
 
     def doc_iterator(self, split: str):
         if self.id is not None:
