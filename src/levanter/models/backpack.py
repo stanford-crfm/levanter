@@ -143,9 +143,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype) # shape: (seq, seq, senses)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference) # shape: (seq, seq, senses)
-        attn_weights = self.ln(attn_weights) # shape: (seq, seq, senses)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
+        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        attn_weights = self.ln(attn_weights)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
