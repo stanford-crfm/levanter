@@ -115,7 +115,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k_c, _ = jrandom.split(key, 2)
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
-        ln = hnn.LayerNorm.init(config.Senses, eps=config.layer_norm_epsilon)
+        ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
         return WeightsOnlyAttention(config, c_attn, dropout, ln)
 
@@ -143,9 +143,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
-        attn_weights = self.ln(attn_weights)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype) # shape: (seq, seq, senses)
+        attn_weights = self.dropout(attn_weights, key=key, inference=inference) # shape: (seq, seq, senses)
+        attn_weights = self.ln(attn_weights) # shape: (seq, seq, senses)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
@@ -245,7 +245,7 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_2 = hnn.LayerNorm.init(config.Senses, eps=config.layer_norm_epsilon)
+        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon)
 
         return BackpackSenses(
             dropout=dropout,
