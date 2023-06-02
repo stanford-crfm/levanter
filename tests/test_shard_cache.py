@@ -150,3 +150,57 @@ def test_no_hang_if_empty_shard_source():
     with tempfile.TemporaryDirectory() as tmpdir:
         reader = cache_dataset(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
         assert list(reader) == []
+
+
+def test_chunk_ordering_is_correct_with_slow_shards():
+    @ray.remote
+    class Blocker:
+        def __init__(self):
+            self.future = asyncio.Future()
+
+        async def block(self):
+            await self.future
+
+        def unblock(self):
+            self.future.set_result(None)
+
+    blocker_to_wait_on_test = Blocker.remote()
+
+    class SlowShardSource(ShardedDataSource[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return ["shard_0", "shard_1"]
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            if shard_name == "shard_1":
+                ray.get(blocker_to_wait_on_test.block.remote())
+            for i in range(0, 20):
+                yield [i] * 10
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = cache_dataset(
+            tmpdir, SlowShardSource(), TestProcessor(), batch_size=1, rows_per_chunk=10, await_finished=False
+        )
+
+        # bit hacky, but watch for the cache to create the two chunks for shard 0
+        # we'll use a file watcher to do this
+        def wait_for_chunk_creation():
+           import watchdog
+
+        def back_to_py(batch: pa.RecordBatch):
+            return list(batch["test"].values.to_numpy())
+
+        chunk = [back_to_py(batch) for batch in cache.read_chunk(0)]
+
+        assert [list(x) for x in chunk] == [[i] * 10 for i in range(10)]
+
+        print(chunk)
+
+        with pytest.raises(TimeoutError):
+            cache.get_chunk(1, timeout=0.1)
+
+        ray.get(blocker_to_wait_on_test.unblock.remote())
+
+        chunk = [back_to_py(batch) for batch in cache.read_chunk(1)]
+
+        assert [list(x) for x in chunk] == [[i] * 10 for i in range(10, 20)]
