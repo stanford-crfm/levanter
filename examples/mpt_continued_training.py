@@ -276,7 +276,6 @@ def main(config: TrainMptConfig):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
