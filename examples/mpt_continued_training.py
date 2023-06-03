@@ -74,7 +74,9 @@ def main(config: TrainMptConfig):
         if config.seq_len is not None:
             mpt_config.update({"max_seq_len": config.seq_len})
 
-        model = MptLmHeadModel.from_hf_pretrained(config.initialize_from, axis_mapping=parameter_axis_mapping)
+        model = MptLmHeadModel.from_hf_pretrained(
+            config.initialize_from, axis_mapping=parameter_axis_mapping, config=mpt_config
+        )
 
         if vocab_size != model.Vocab.size:
             logger.warn(f"Resizing model vocab from {model.Vocab.size} to {vocab_size}")
