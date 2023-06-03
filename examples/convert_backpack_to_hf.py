@@ -63,7 +63,7 @@ def main(config: ConvertConfig):
     Vocab = Axis("vocab", vocab_size)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        model = BackpackLMHeadModel(Vocab, config.model, key=key)
+        model = BackpackLMHeadModel.init(Vocab, config.model, key=key)
 
         if config.old_style_model:
             raise NotImplementedError("old-style model serialization not implemented for backpack models")
