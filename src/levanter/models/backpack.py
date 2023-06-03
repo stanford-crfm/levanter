@@ -61,9 +61,13 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
         d = {}
+        if isinstance(self.c_proj.Out, Axis):
+            proj_out_sizes = (self.c_proj.Out.size,)
+        else:
+            proj_out_sizes = tuple([axis.size for axis in self.c_proj.Out])
         d.update(
             reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
+                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), proj_out_sizes
             )
         )
         d.update(
@@ -77,9 +81,13 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
+        if isinstance(self.c_proj.Out, Axis):
+            proj_out_sizes = (self.c_proj.Out.size,)
+        else:
+            proj_out_sizes = tuple([axis.size for axis in self.c_proj.Out])
         my_dict.update(
             reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
+                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), proj_out_sizes
             )
         )
         my_dict.update(
