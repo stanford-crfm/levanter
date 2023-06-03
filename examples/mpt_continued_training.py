@@ -147,7 +147,7 @@ def main(config: TrainMptConfig):
 
                 return next_token_loss(SeqLen, model.Vocab, pred_y, input_ids)
 
-        def train_batch_loss(model, input_ids, attn_mask, key):
+        def train_batch_loss(model, input_ids, attn_mask):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask)
             return hax.mean(per_ex_loss, "batch").scalar()
 
@@ -165,7 +165,6 @@ def main(config: TrainMptConfig):
                 model,
                 input_ids,
                 attn_mask,
-                keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
