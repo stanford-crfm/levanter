@@ -65,14 +65,25 @@ def main(config: TrainMptConfig):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
-        data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+        data_key, loader_key, model_key, training_key, resize_key = jrandom.split(jrandom.PRNGKey(seed), 5)
 
         mpt_config = AutoConfig.from_pretrained(config.initialize_from, trust_remote_code=True)
+
+        vocab_size = len(tokenizer)
 
         if config.seq_len is not None:
             mpt_config.update({"max_seq_len": config.seq_len})
 
         model = MptLmHeadModel.from_hf_pretrained(config.initialize_from, axis_mapping=parameter_axis_mapping)
+
+        if vocab_size != model.Vocab.size:
+            logger.warn(f"Resizing model vocab from {model.Vocab.size} to {vocab_size}")
+
+            @named_jit(axis_resources=parameter_axis_mapping)
+            def resize_axis(model):
+                return haliax.tree_util.resize_axis(model, model.Vocab.resize(vocab_size), resize_key)
+
+            model = resize_axis(model)
 
         model_config = model.config
 
@@ -95,20 +106,6 @@ def main(config: TrainMptConfig):
             EvalBatch,
             compute_axis_mapping,
         )
-
-        # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
-        # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
-        # tokens: gpt-2 has 50257, for example. So we round up.
-        vocab_size = len(tokenizer)
-        Vocab = model.Vocab
-
-        assert vocab_size <= Vocab.size, f"Vocab size mismatch: {vocab_size} != {Vocab.size}. Probably wrong tokenizer"
-        if vocab_size != Vocab.size:
-            logger.warning(
-                "Vocab size mismatch: %d != %d. Pretrained MPT was trained this way, so it's ok",
-                vocab_size,
-                Vocab.size,
-            )
 
         # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
         # 1) compute (typically bfloat16)
@@ -148,7 +145,7 @@ def main(config: TrainMptConfig):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+                return next_token_loss(SeqLen, model.Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
