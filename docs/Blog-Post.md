@@ -359,20 +359,22 @@ the entire data set. However, streaming, especially when coupled with sequence p
 resuming from preemption, since the data stream must be restarted from the beginning (or one must take care to track byte offsets).
 
 In Levanter, we take a hybrid approach. We preprocess the data online, but we cache the results of preprocessing so
-that resumes are much faster and so that subsequent runs are even faster (when preprocessing is a bottleneck). Our cache
-format also allows for iterating on sequence length without retokenizing, which in our experience is a commonly requested feature.
+that resumes are much faster and so that subsequent runs are even faster (when preprocessing is a bottleneck). As soon
+as the first part of the cache is complete. Levanter will start training, and will continue to preprocess the rest of
+the data in the background. This allows us to start training as soon as possible, while still allowing us to iterate
+on the data format. Moreover, we can resume from preemption without having to reprocess the entire data set.
+Our cache format also allows for iterating on sequence length without retokenizing, which in our experience is a commonly requested feature.
 
-Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data.
+Levanter's preprocessing works by spinning up a Ray cluster using the nodes being used for training,
+exploiting the typically impressive CPUs of those machines to preprocess data.
 This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
+
 Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
 produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
 is performed on different machines.
 
-TODO: see if we can land this before launch
-
-Soon, we will enable training while tokenization is still in progress, which will allow you to start training
-on a data set before it is fully tokenized. This will be especially useful when iterating on formatting for large data sets,
-where preprocessing can take a long time. We also aim to make resuming from preemption even faster than it is now.
+Levanter works out of the box with either [Hugging Face Datasets](https://huggingface.co/datasets) (including streaming) or urls of (compressed)
+jsonl files. Caches can be stored in any fsspec-compatible file system, including GCS and local file systems.
 
 #### Live Visualization during Training
 
