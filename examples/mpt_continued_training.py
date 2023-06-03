@@ -138,17 +138,17 @@ def main(config: TrainMptConfig):
             return causal_mask
 
         # loss function: this computes the loss with respect to a single example
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
+        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, key=key, inference=inference)
+                pred_y = model(input_ids, attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
                 return next_token_loss(SeqLen, model.Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
-            per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
+            per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask)
             return hax.mean(per_ex_loss, "batch").scalar()
 
         # training loop
@@ -181,7 +181,7 @@ def main(config: TrainMptConfig):
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            return hax.mean(compute_loss(model, input_ids, mask, None, True))
+            return hax.mean(compute_loss(model, input_ids, mask))
 
         # Set up evaluation
         def evaluate_step(info: StepInfo):
