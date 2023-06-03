@@ -276,6 +276,8 @@ def main(config: TrainMptConfig):
 
         # finally, run the training loop
         for step in range(initial_step, config.trainer.num_train_steps):
+            if step < 10 or step % 50 == 0:
+                print(f"step {step}/{config.trainer.num_train_steps}")
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
@@ -287,6 +289,8 @@ def main(config: TrainMptConfig):
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
                 step_loss = jax_step_loss.item()
+                if step < 10 or step % 50 == 0:
+                    print(f"step loss: {step_loss:.3f}")
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
