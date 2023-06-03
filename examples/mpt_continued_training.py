@@ -231,9 +231,9 @@ def main(config: TrainMptConfig):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = model(input_ids, attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, reduction=None)
+                loss = next_token_loss(SeqLen, model.Vocab, pred_y, input_ids, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, SeqLen)
