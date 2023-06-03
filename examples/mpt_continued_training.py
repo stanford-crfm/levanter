@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.random as jrandom
 import jmp
 from jax.interpreters.pxla import PartitionSpec
-from transformers import AutoConfig, GPT2Tokenizer
+from transformers import AutoConfig
 
 import haliax as hax
 import haliax.random
@@ -54,7 +54,7 @@ class TrainMptConfig:
 def main(config: TrainMptConfig):
     config.trainer.initialize(config)
 
-    tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+    tokenizer = config.data.the_tokenizer
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
