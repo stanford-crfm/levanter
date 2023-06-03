@@ -344,11 +344,23 @@ Indeed, it is often the biggest challenge.
 In particular, we have found that users want to iterate quickly on different data formats (and more
 generally the entire [ETL pipeline](https://en.wikipedia.org/wiki/Extract,_transform,_load)).
 Moreover, it can be difficult to visualize the effects of different preprocessing options on the data. To address this,
-we have built two features into Levanter: on-demand data preprocessing and live visualization during training.
+we have built two features into Levanter: cached on-demand data preprocessing and live visualization during training.
 
-#### On-Demand Data Preprocessing
+#### Cached On-Demand Data Preprocessing
 
-Typically, data preprocessing is done in one of two ways: either it is performed offline, or it is performed
+Training a language model involves taking a large corpus of text and converting it into a sequence of integers. When training
+large autoregressive models, it is typical to concatenate (or "pack") short sequences and break apart longer sequences
+so that the resulting sequences are all of the same length.
+
+Data preprocessing is done in one of two ways: either it is performed offline as a separate preprocessing step, or it is
+performed streaming, so that the data is processed on-the-fly as it is being used for training. The former is typically
+faster, but the latter is more flexible, since it allows you to iterate on the data format without having to reprocess
+the entire data set. However, streaming, especially when coupled with sequence packing, is difficult to pair with
+resuming from preemption, since the data stream must be restarted from the beginning (or one must take care to track byte offsets).
+
+In Levanter, we take a hybrid approach. We preprocess the data online, but we cache the results of preprocessing so
+that resumes are much faster and so that subsequent runs are even faster (when preprocessing is a bottleneck). Our cache
+format also allows for iterating on sequence length without retokenizing, which in our experience is a commonly requested feature.
 
 Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data.
 This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
