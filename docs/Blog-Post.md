@@ -212,7 +212,7 @@ Batch = hax.Axis("batch", 128)
 Feature = hax.Axis("feature", 64)
 
 x = hax.random.uniform(PRNGKey(0), (Batch, Feature))
-y = hax.random.uniform(PRNGKey(1), Batch, 0, 2)
+y = hax.random.uniform(PRNGKey(1), Batch)
 
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
@@ -348,9 +348,9 @@ we have built two features into Levanter: on-demand data preprocessing and live 
 
 #### On-Demand Data Preprocessing
 
-Typically, data preprocessing is done in one of two ways: either it is performed offline, or it is performed 
+Typically, data preprocessing is done in one of two ways: either it is performed offline, or it is performed
 
-Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data. 
+Levanter can automatically spin up a Ray cluster using the nodes being used for training, using the typically impressive CPUs of those machines to preprocess data.
 This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
 Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
 produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
