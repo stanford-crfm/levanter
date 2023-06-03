@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 import haliax.random as random
 from haliax import nn as nn
+from haliax import tree_util as tree_util
 
 from .core import (
     NamedArray,
