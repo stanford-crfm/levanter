@@ -94,14 +94,14 @@ def main(config: TrainMptConfig):
         KeySeqLen = model_config.KeySeqLen
 
         dataset = GlobalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.max_seq_len),
+            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.SeqLen),
             config.trainer.device_mesh,
             Batch,
             compute_axis_mapping,
         )
 
         eval_dataset = LocalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.max_seq_len),
+            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.SeqLen),
             config.trainer.device_mesh,
             EvalBatch,
             compute_axis_mapping,
@@ -180,7 +180,6 @@ def main(config: TrainMptConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
             return hax.mean(compute_loss(model, input_ids, mask, None, True))
 
@@ -226,7 +225,6 @@ def main(config: TrainMptConfig):
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
