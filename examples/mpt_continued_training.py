@@ -223,28 +223,28 @@ def main(config: TrainMptConfig):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_log_probs(model, input_ids):
-            attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
-            attn_mask = hax.auto_sharded(attn_mask)
-
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-
-                pred_y = model(input_ids, attn_mask)
-                pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(SeqLen, model.Vocab, pred_y, input_ids, reduction=None)
-                logprobs = -loss
-                # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, SeqLen)
-                return logprobs.rearrange(("batch", SeqLen)).array
-
-        engine.add_hook(
-            callbacks.compute_and_visualize_log_probs(
-                eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
-            ),
-            every=config.trainer.steps_per_eval,
-        )
+        # @named_jit(axis_resources=parameter_axis_mapping)
+        # def compute_log_probs(model, input_ids):
+        #     attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
+        #     attn_mask = hax.auto_sharded(attn_mask)
+        #
+        #     with hax.axis_mapping(compute_axis_mapping):
+        #         model = mp.cast_to_compute(model)
+        #
+        #         pred_y = model(input_ids, attn_mask)
+        #         pred_y = mp.cast_to_output(pred_y)
+        #         loss = next_token_loss(SeqLen, model.Vocab, pred_y, input_ids, reduction=None)
+        #         logprobs = -loss
+        #         # roll forward to get the loss for each predicted token
+        #         logprobs = haliax.roll(logprobs, 1, SeqLen)
+        #         return logprobs.rearrange(("batch", SeqLen)).array
+        #
+        # engine.add_hook(
+        #     callbacks.compute_and_visualize_log_probs(
+        #         eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+        #     ),
+        #     every=config.trainer.steps_per_eval,
+        # )
 
         # data loader
         iter_data = non_caching_cycle(dataset)
