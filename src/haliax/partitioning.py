@@ -171,7 +171,11 @@ def infer_resource_partitions(
             elif sharding is not None:
                 return sharding
             else:
-                return AUTO(mesh)
+                # compat between 0.4.10 and 0.4.11
+                if isinstance(AUTO, typing.Callable):  # type: ignore
+                    return AUTO(mesh)
+                else:
+                    return AUTO
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 
