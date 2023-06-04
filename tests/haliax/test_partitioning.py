@@ -192,3 +192,35 @@ def test_shard_with_axis_mapping_inside_jit():
 
         assert x.array.sharding == NamedSharding(mesh, PartitionSpec(None, ResourceAxis.DATA))
         assert y.array.sharding == NamedSharding(mesh, PartitionSpec(ResourceAxis.DATA, ResourceAxis.MODEL))
+
+
+def test_shard_scalar_in_module():
+    with axis_mapping(resource_map):
+
+        class MyModule(eqx.Module):
+            scalar: jnp.ndarray
+
+            def __init__(self):
+                self.scalar = jnp.zeros(
+                    (),
+                )
+
+        devices = jax.devices()
+        with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+            mod = named_jit(MyModule)()
+            assert mod.scalar.sharding.is_fully_replicated
+
+
+def test_shard_plain_array_in_module():
+    with axis_mapping(resource_map):
+
+        class MyModule(eqx.Module):
+            array: jnp.ndarray
+
+            def __init__(self):
+                self.array = jnp.zeros((8, 8))
+
+        devices = jax.devices()
+        with Mesh(np.array(devices).reshape(-1, 1), (ResourceAxis.DATA, ResourceAxis.MODEL)):
+            mod = named_jit(MyModule)()
+            assert mod.array.sharding.is_fully_replicated
