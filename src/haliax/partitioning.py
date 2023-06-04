@@ -10,9 +10,8 @@ import jax
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import PartitionSpec
 from jax.lax import with_sharding_constraint
-from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
+from jax.sharding import Mesh, NamedSharding, PartitionSpec, SingleDeviceSharding
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -172,7 +171,7 @@ def infer_resource_partitions(
             elif sharding is not None:
                 return sharding
             else:
-                return AUTO
+                return AUTO(mesh)
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 

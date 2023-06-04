@@ -2,7 +2,7 @@ import time
 
 import jax
 import numpy as np
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 
 import haliax as hax
 from haliax.partitioning import named_jit
