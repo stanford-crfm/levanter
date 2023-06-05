@@ -1,8 +1,8 @@
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import jax
 import numpy as np
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 
 
 def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:

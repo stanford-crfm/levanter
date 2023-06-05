@@ -1,12 +1,20 @@
+import asyncio
 import os
 import tempfile
+import time
 from typing import Iterator, List, Sequence
 
 import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import BatchProcessor, ShardedDataSource, _get_broker_actor, cache_dataset
+from levanter.data.shard_cache import (
+    BatchProcessor,
+    ChunkMetadata,
+    ShardedDataSource,
+    _get_broker_actor,
+    cache_dataset,
+)
 
 
 def setup_module(module):
@@ -150,3 +158,69 @@ def test_no_hang_if_empty_shard_source():
     with tempfile.TemporaryDirectory() as tmpdir:
         reader = cache_dataset(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
         assert list(reader) == []
+
+
+def test_chunk_ordering_is_correct_with_slow_shards():
+    @ray.remote
+    class Blocker:
+        def __init__(self):
+            self.future = asyncio.Future()
+
+        async def block(self):
+            await self.future
+
+        def unblock(self):
+            self.future.set_result(None)
+
+    blocker_to_wait_on_test = Blocker.remote()
+
+    class SlowShardSource(ShardedDataSource[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return ["shard_0", "shard_1"]
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            if shard_name == "shard_1":
+                ray.get(blocker_to_wait_on_test.block.remote())
+            max_count = 40 if shard_name == "shard_1" else 20
+            for i in range(0, max_count):
+                yield [i] * 10
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = cache_dataset(
+            tmpdir, SlowShardSource(), TestProcessor(), batch_size=1, rows_per_chunk=10, await_finished=False
+        )
+
+        # bit hacky, but watch for the cache to create the two chunks for shard 0
+        # we'll use a file watcher to do this
+        shard_0_files = [f"{tmpdir}/shard_0/chunk-{i}.parquet" for i in range(2)]
+        shard_1_files = [f"{tmpdir}/shard_1/chunk-{i}.parquet" for i in range(4)]
+
+        def wait_for_chunk_creation(chunk_files):
+            max_wait = 100
+            while not all(os.path.exists(f) for f in chunk_files):
+                max_wait -= 1
+                if max_wait == 0:
+                    raise TimeoutError("Timed out waiting for chunks to be created")
+                time.sleep(0.5)
+
+        wait_for_chunk_creation(shard_0_files)
+        ray.get(blocker_to_wait_on_test.unblock.remote())
+        wait_for_chunk_creation(shard_1_files)
+
+        # now block until the cache is done
+        cache.await_finished(timeout=10)
+
+        # now check that the chunks are in the right order
+        # TODO: this is a bit gross
+        chunks: List[ChunkMetadata] = ray.get([cache._broker.get_chunk.remote(i) for i in range(6)])
+        assert chunks[0].name == "shard_0/chunk-0"
+        assert chunks[1].name == "shard_1/chunk-0"
+        assert chunks[2].name == "shard_0/chunk-1"
+        assert chunks[3].name == "shard_1/chunk-1"
+        assert chunks[4].name == "shard_1/chunk-2"
+        assert chunks[5].name == "shard_1/chunk-3"
+
+        # make sure there's not a 7th chunk
+        chunk = ray.get(cache._broker.get_chunk.remote(6), timeout=0.5)
+        assert chunk is None

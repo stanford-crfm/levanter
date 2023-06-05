@@ -1,18 +1,18 @@
 # Various Pyrallis configs
 import atexit
+import copy
 import dataclasses
 import inspect
 import logging
 import os
 import sys
 import tempfile
-import typing
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import List, Mapping, Optional, Union
+from typing import Dict, List, Mapping, Optional, Tuple, TypeVar, Union
 
 import fsspec
 import jax
@@ -23,7 +23,7 @@ import pyrallis
 from fsspec import AbstractFileSystem
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 from pyrallis import field, parse
 
 import levanter.logging
@@ -36,8 +36,14 @@ from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 logger = logging.getLogger(__name__)
 
-M = typing.TypeVar("M")
-S = typing.TypeVar("S")
+M = TypeVar("M")
+S = TypeVar("S")
+
+DEFAULT_JAX_CONFIG = {
+    "jax_threefry_partitionable": True,
+}
+
+JsonAtom = Union[str, int, float, bool, None]
 
 
 @dataclass
@@ -99,6 +105,14 @@ class WandbConfig:
             logger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
+            # for some reason, wandb isn't populating the git commit, so we do it here
+            try:
+                repo = Repo(code_dir)
+                other_settings["git_commit"] = repo.head.commit.hexsha
+                hparams_to_save["git_commit"] = repo.head.commit.hexsha
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.warning(f"Could not find git repo at {code_dir}")
+                pass
 
         r = wandb.init(
             entity=self.entity,
@@ -141,6 +155,14 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
+        # generate a pip freeze
+        with tempfile.TemporaryDirectory() as tmpdir:
+            requirements_path = f"{tmpdir}/requirements.txt"
+            requirements = _generate_pip_freeze()
+            with open(requirements_path, "w") as f:
+                f.write(requirements)
+            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
+
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
         wandb.summary["backend"] = jax.default_backend()
@@ -169,6 +191,13 @@ class WandbConfig:
                 logger.debug(f"Skipping {dirname} since it's not a git root")
                 pass
         return top_git_root
+
+
+def _generate_pip_freeze():
+    from importlib.metadata import distributions
+
+    dists = distributions()
+    return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
 
 
 @dataclass
@@ -330,19 +359,9 @@ class TrainerConfig:
 
     # config related to partitioning
 
-    batch_axis: Optional[
-        str
-    ] = (  # if set, we'll use this as the batch axis. (You can achieve the same thing with axis_resources, but this is simpler)
-        "batch"
-    )
-    fsdp_axis: Optional[
-        Union[str, List[str]]
-    ] = (  # if set, we'll use fsdp for model sharding. (You can achieve the same thing with parameter_axis_resources, but this is simpler)
-        "embed"
-    )
-    tensor_parallel_axes: Optional[
-        List[str]
-    ] = None  # axes to use tensor parallelism on. If None, we won't use tensor parallelism
+    batch_axis: Optional[str] = "batch"  # Batch axis for data parallel.
+    fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
+    tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
     axis_resources: Mapping[str, str] = field(default_factory=dict)
@@ -370,8 +389,9 @@ class TrainerConfig:
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
 
-    use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
-    use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
+    jax_config: Dict[str, JsonAtom] = field(
+        default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
+    )  # config to pass to jax.config.update
 
     distributed: DistributedConfig = DistributedConfig()
     ray: RayConfig = RayConfig()
@@ -462,15 +482,14 @@ class TrainerConfig:
         return mapping
 
     def _initialize_jax_config(self):
-        """Initialize global jax config with settings we like, based on config"""
-        jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_array", self.use_jax_array)
+        for key, value in self.jax_config.items():
+            jax.config.update(key, value)
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
-    def maybe_load_checkpoint(self, model: M, training_state: S) -> typing.Tuple[M, S, Optional[int]]:
+    def maybe_load_checkpoint(self, model: M, training_state: S) -> Tuple[M, S, Optional[int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
