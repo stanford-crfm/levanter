@@ -16,7 +16,7 @@ display: False
 > </div>
 
 
-## Introduction
+# Introduction
 
 The growth of artificial intelligence and machine learning has brought about the need for scalable and reproducible models.
 To address this, at the [Center for Research on Foundation Models](https://crfm.stanford.edu), we have created two new tools — [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
@@ -78,7 +78,7 @@ addition to the goals of legibility, efficiency, and scalability, Levanter furth
 meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and
 restarts.
 
-## Haliax: Legibility via Named Tensors
+# Haliax: Legibility via Named Tensors
 
 Haliax is a library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
 which is a neural network library for Jax that provides a familiar, PyTorch-like module structure. Haliax uses
@@ -100,7 +100,7 @@ In particular, he argues that:
 To this, I'd add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
 that named tensors eliminate many of these bugs.
 
-### A Quick Example: Attention in Haliax
+## A Quick Example: Attention in Haliax
 
 This blog post isn't the place for a full introduction to Haliax (please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)),
 but here's a quick example of a minimal, but full-featured, attention implementation in Haliax.
@@ -135,7 +135,7 @@ In this example, we've defined an axis for each dimension of our tensors. In Hal
 building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
 those axes to perform operations like `softmax` and tensor multiplication (`dot`).
 
-### Compositionality
+## Compositionality
 
 Despite making no reference to batching or heads, this same implementation is also batch-capable and supports multi-headed
 (or multi-query) attention and even attending to or from non-sequential keys (e.g. attending to image patches):
@@ -172,7 +172,7 @@ Similarly, in the second example, we omit the `Head` axis from the `key` and `va
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
 
 
-### Avoiding Bugs
+## Avoiding Bugs
 
 Earlier, I claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
 and hard to spot in a traditional tensor library. Consider the following simple linear model:
@@ -226,7 +226,7 @@ mse(y_pred, y)
 The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
 Instead, it works exactly as we intend.
 
-### Scale via Named Tensors
+## Scale via Named Tensors
 
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
@@ -297,7 +297,7 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 This is all that is required to shard a model across multiple GPUs or TPUs. The rest of the training loop remains unchanged.
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
-### Named Tensors Elsewhere
+## Named Tensors Elsewhere
 Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
@@ -312,14 +312,14 @@ Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://gith
 [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted"
 I'm aware, and don't help with model partitioning, which is one of their main use cases in Haliax.
 
-### Haliax Tutorials
+## Haliax Tutorials
 
 This is just a taste of what Haliax can do. For more details, please see our interactive tutorials on Colab:
 
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
 * [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in Jax.
 
-## Levanter: Bitwise Reproducible Foundation Models with Jax
+# Levanter: Bitwise Reproducible Foundation Models with Jax
 
 Levanter is a library for training foundation models built on top of Haliax. It provides a complete pipeline
 for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and
@@ -328,7 +328,7 @@ export, while maintaining bitwise reproducibility throughout.
 We have used Levanter to train models as large as 6.7b parameters on a v3-256, and have run experiments showing that it
 can scale up to least 65b parameters.
 
-### Bitwise Reproducibility
+## Bitwise Reproducibility
 
 One of the benefits of Jax is that it offers strong guarantees for reproducibility. In particular, Jax's fine-grained
 control over PRNG states makes it easy to ensure bitwise reproducibility, especially when using TPUs.
@@ -347,11 +347,11 @@ as well as the "main" PRNG state, which is used to generate the other PRNG state
 exactly reproduce a run by simply checking out the git SHA, installing the dependencies, and running the code (on the same
 hardware configuration).
 
-### Efficiency and Scale
+## Efficiency and Scale
 
 XXX something something v3-256 scaling numbers?
 
-### Data Preparation and Visualization
+## Data Preparation and Visualization
 
 While collaborating with teams to build domain-specific models, we have found that data preparation can be a significant challenge.
 Indeed, it is often the biggest challenge.
@@ -360,7 +360,7 @@ generally the entire [ETL pipeline](https://en.wikipedia.org/wiki/Extract,_trans
 Moreover, it can be difficult to visualize the effects of different preprocessing options on the data. To address this,
 we have built two features into Levanter: cached on-demand data preprocessing and live visualization during training.
 
-#### Cached On-Demand Data Preprocessing
+### Cached On-Demand Data Preprocessing
 
 Training a language model involves taking a large corpus of text and converting it into a sequence of integers. When training
 large autoregressive models, it is typical to concatenate (or "pack") short sequences and break apart longer sequences
@@ -390,7 +390,7 @@ is performed on different machines.
 Levanter works out of the box with either [Hugging Face Datasets](https://huggingface.co/datasets) (including streaming) or urls of (compressed)
 jsonl files. Caches can be stored in any fsspec-compatible file system, including GCS and local file systems.
 
-#### Live Visualization during Training
+### Live Visualization during Training
 
 As an example, it can be difficult to identify issues in the data that are causing
 lower than expected loss. As a small step towards addressing this, we have added a feature to Levanter that allows you
@@ -418,11 +418,14 @@ nice alternative to just staring obsessively at the loss curve, which is what I 
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library and transparently supports exporting checkpoints from a single machine.
 * **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
-### Getting Started with Levanter
+## Getting Started with Levanter
 
-XXX
+### Installation
 
-### Released Models
+
+
+
+## Released Models
 
 Along with the release of the code, we are releasing a few models trained using Levanter. These models are available on
 the [HF model hub](XXX) and can be used with the Hugging Face Transformers library. We have more in development and will
@@ -433,7 +436,7 @@ XXX TODO: verify this is what we're releasing, add links
 - XXX music model (link to other blog post XXX)
 - Backpacks? XXX
 
-## Future and Conclusion
+# Future and Conclusion
 
 This is just the beginning for Levanter. In the future, look for:
 * more models on interesting problem domains,
