@@ -112,8 +112,6 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
-    ln_q: hnn.LayerNorm
-    ln_k: hnn.LayerNorm
 
     @staticmethod
     def init(config: Gpt2Config, *, key) -> "WeightsOnlyAttention":
@@ -124,18 +122,13 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k_c, _ = jrandom.split(key, 2)
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
-        ln_q = hnn.LayerNorm.init((config.Pos, config.SenseHeadDim), eps=config.layer_norm_epsilon)
-        ln_k = hnn.LayerNorm.init((config.Pos, config.SenseHeadDim), eps=config.layer_norm_epsilon)
-
-        return WeightsOnlyAttention(config, c_attn, dropout, ln_q, ln_k)
+        
+        return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
-
-        q = self.ln_q(q)
-        k = self.ln_k(k)
 
         # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({"position": "key_position"})
