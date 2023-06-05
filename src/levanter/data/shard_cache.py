@@ -83,14 +83,22 @@ def cache_dataset(
     batch_size: int = 1,
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
     await_finished: bool = True,
+    monitors: Optional[Sequence["MetricsMonitor"]] = None,
 ) -> "ShardCache":
     # first see if we need to do anything
     cache = ShardCache.build_or_load(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
 
-    while await_finished:
+    if cache.is_finished:
+        logger.info("Cache already finished. Skipping.")
+        return cache
+
+    if monitors is not None:
+        for monitor in monitors:
+            cache.attach_metrics_monitor(monitor)
+
+    if await_finished:
         try:
             cache.await_finished(4.0)
-            break
         except TimeoutError:
             pass
 
