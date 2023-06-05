@@ -10,7 +10,7 @@ import numpy as np
 from jax._src.array import ArrayImpl
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import Mesh, PartitionSpec
+from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax

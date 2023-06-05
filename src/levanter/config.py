@@ -23,7 +23,7 @@ import pyrallis
 from fsspec import AbstractFileSystem
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 from pyrallis import field, parse
 
 import levanter.logging
