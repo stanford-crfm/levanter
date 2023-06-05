@@ -758,6 +758,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
             i = shard_offset
             while True:
                 try:
+                    logger.warning(f"Reading chunk {i}")
                     chunk = self.get_chunk(i)
                     i += num_shards
                     yield from self._read_chunk(chunk)
