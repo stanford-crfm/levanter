@@ -33,8 +33,11 @@ from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
+    LoggerMetricsMonitor,
+    MetricsMonitor,
     ShardCache,
     ShardedDataSource,
+    WandbMetricsMonitor,
     _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
@@ -171,15 +174,26 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         enforce_eos=True,
         batch_size=100,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
+        monitors=None,
     ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
-        cache = cache_dataset(cache_dir, source, bt, await_finished=False, batch_size=batch_size, rows_per_chunk=rows_per_chunk)
+        monitors = monitors or []
+        cache = cache_dataset(
+            cache_dir,
+            source,
+            bt,
+            await_finished=False,
+            batch_size=batch_size,
+            rows_per_chunk=rows_per_chunk,
+            monitors=monitors,
+        )
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
         else:
             logger.info(
                 f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
             )
+
         return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
 
     def shard(self, shard_index, num_shards):
@@ -384,7 +398,6 @@ class LMDatasetConfig:
 
     create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
-
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
@@ -392,12 +405,26 @@ class LMDatasetConfig:
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return load_tokenizer(self.tokenizer)
 
-    def build_or_load_cache(self, split: str):
+    def build_or_load_cache(self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True):
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
+
+        if monitors is True:
+            monitors = [
+                WandbMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{split}"),
+            ]
+        elif monitors is False:
+            monitors = []
+
         return TokenizedDocumentCache.build_or_load(
-            split_cache_dir, source, self.the_tokenizer, enforce_eos=self.enforce_eos, flatten_docs=True,
-            rows_per_chunk=self.rows_per_chunk
+            split_cache_dir,
+            source,
+            self.the_tokenizer,
+            enforce_eos=self.enforce_eos,
+            flatten_docs=True,
+            rows_per_chunk=self.rows_per_chunk,
+            monitors=monitors,
         )
 
     def doc_iterator(self, split: str):

@@ -7,7 +7,7 @@ import sys
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar
+from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import fsspec.core
 import pyarrow as pa
@@ -142,7 +142,6 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
-    print(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
     with fsspec.open(os.path.join(cache_dir, f"{chunk_name}.parquet"), "wb") as file:
         with pq.ParquetWriter(file, record_batch.schema, version="2.6", compression="ZSTD") as writer:
             writer.write_batch(record_batch)
@@ -318,7 +317,7 @@ class RichMetricsMonitor(MetricsMonitor):
 
 
 class WandbMetricsMonitor(MetricsMonitor):
-    def __init__(self, prefix: str = "preprocessing", commit=False):
+    def __init__(self, prefix: str = "preproc", commit=False):
         """
         :param prefix:
         :param commit: Forwarded to wandb.log. Use False (default) if it's part of a simultaneous training run,
@@ -330,14 +329,29 @@ class WandbMetricsMonitor(MetricsMonitor):
     def __call__(self, metrics: InProgressCacheMetrics):
         to_log = {}
 
-        to_log[f"{self.prefix}/shards_finished"] = metrics.shards_finished
-        to_log[f"{self.prefix}/chunks_finished"] = metrics.chunks_finished
-        to_log[f"{self.prefix}/rows_finished"] = metrics.rows_finished
+        to_log[f"{self.prefix}/shards"] = metrics.shards_finished
+        to_log[f"{self.prefix}/chunks"] = metrics.chunks_finished
+        to_log[f"{self.prefix}/rows"] = metrics.rows_finished
 
         for field, count in metrics.field_counts.items():
             to_log[f"{self.prefix}/{field}"] = count
 
         wandb.log(to_log, commit=self.commit)
+
+
+class LoggerMetricsMonitor(MetricsMonitor):
+    # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
+    # we have separate logging
+    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None):
+        if isinstance(logger, str):
+            logger = logging.getLogger(logger)
+        self.logger = logger or logging.getLogger(__name__)
+
+    def __call__(self, metrics: InProgressCacheMetrics):
+        self.logger.info(
+            f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
+            f" {metrics.rows_finished}"
+        )
 
 
 @dataclass
@@ -706,6 +720,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             return self._broker.finished_sentinel.remote()
 
+    @property
     def is_finished(self):
         """Returns whether the cache is finished"""
         if self._broker is None:
@@ -769,7 +784,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
             i = shard_offset
             while True:
                 try:
-                    logger.warning(f"Reading chunk {i}")
+                    logger.debug(f"Reading chunk {i}")
                     chunk = self.get_chunk(i)
                     i += num_shards
                     yield from self._read_chunk(chunk)
