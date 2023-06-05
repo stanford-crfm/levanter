@@ -10,9 +10,8 @@ import jax
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import PartitionSpec
 from jax.lax import with_sharding_constraint
-from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
+from jax.sharding import Mesh, NamedSharding, PartitionSpec, SingleDeviceSharding
 from jaxtyping import PyTree
 
 from .core import NamedArray
@@ -128,6 +127,7 @@ def infer_resource_partitions(
     tree: PyTree,
     resource_mapping: Optional[ResourceMapping] = None,
     preserve_existing_shardings: bool = True,
+    use_auto_sharding: bool = True,
     mesh: Optional[Mesh] = None,
 ) -> PyTree:
     """
@@ -137,6 +137,10 @@ def infer_resource_partitions(
     If preserve_existing_shardings is True, then NamedArrays that are already sharded are left alone.
 
     If resource_mapping is not provided, this function attempts to use the global resource mapping.
+
+    If use_auto_sharding is True, then we use the new experimental AUTO-sharding feature, which is not yet
+    fully supported by JAX. If it is False, then we will guess fully replicated for any unnamed arrays that
+    don't have a sharding.
     """
     if resource_mapping is None:
         resource_mapping = _mapping_holder.thread_data.resource_mapping
@@ -171,8 +175,16 @@ def infer_resource_partitions(
                 return NamedSharding(mesh, PartitionSpec(None))
             elif sharding is not None:
                 return sharding
-            else:
-                return AUTO
+            elif node.shape == ():
+                return NamedSharding(mesh, PartitionSpec())
+            elif use_auto_sharding:
+                # TODO: auto doesn't seem to really work reliably yet
+                #     compat between 0.4.10 and 0.4.11
+                if isinstance(AUTO, typing.Callable):  # type: ignore
+                    return AUTO(mesh)
+                else:
+                    return AUTO
+            return NamedSharding(mesh, PartitionSpec(None))
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 
@@ -270,7 +282,8 @@ def named_jit(
             my_pjit_args["in_shardings"] = in_resources
 
         if out_axis_resources is not None:
-            out_resources = infer_resource_partitions(output_shape, out_axis_resources)
+            # TODO: when AUTO is fixed (or eval_shape can give shardings), use it here
+            out_resources = infer_resource_partitions(output_shape, out_axis_resources, use_auto_sharding=False)
             my_pjit_args["out_shardings"] = out_resources
 
         if axis_resources is not None:
