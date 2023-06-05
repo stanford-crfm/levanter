@@ -755,11 +755,11 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 shard_offset = i % num_shards
         else:
             assert self._broker is not None
-            i = 0
+            i = shard_offset
             while True:
                 try:
                     chunk = self.get_chunk(i)
-                    i += 1
+                    i += num_shards
                     yield from self._read_chunk(chunk)
                 except IndexError:
                     if loop:
