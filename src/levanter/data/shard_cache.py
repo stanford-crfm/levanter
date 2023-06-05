@@ -96,9 +96,10 @@ def cache_dataset(
         for monitor in monitors:
             cache.attach_metrics_monitor(monitor)
 
-    if await_finished:
+    while await_finished:
         try:
             cache.await_finished(4.0)
+            break
         except TimeoutError:
             pass
 

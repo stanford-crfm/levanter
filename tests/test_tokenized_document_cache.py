@@ -71,7 +71,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
