@@ -134,6 +134,7 @@ def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str,
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
+    print(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
     with fsspec.open(os.path.join(cache_dir, f"{chunk_name}.parquet"), "wb") as file:
         with pq.ParquetWriter(file, record_batch.schema, version="2.6", compression="ZSTD") as writer:
             writer.write_batch(record_batch)
