@@ -297,6 +297,20 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 This is all that is required to shard a model across multiple GPUs or TPUs. The rest of the training loop remains unchanged.
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
+### Named Tensors Elsewhere
+Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
+I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
+and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
+of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated.
+
+Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
+their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
+tensor parallism and FSDP. I think this is a bit of a missed opportunity (relative to what we have in Haliax, but it's
+still useful.
+
+Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh). PyTorch has
+[Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted"
+I'm aware, and don't help with model partitioning, which is one of their main use cases in Haliax.
 
 ### Haliax Tutorials
 
