@@ -23,10 +23,6 @@ from levanter.compat.torch_serialization import (
 )
 
 
-# we use sharded_normal here so that the random initialization can be split across devices
-sharded_normal = hax.random.generate_sharded(hax.random.normal)
-
-
 @dataclass(frozen=True)
 class Gpt2Config:
     seq_len: int = 512
@@ -110,7 +106,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
-        qkv_out = self.c_attn(x)
+        qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
@@ -270,8 +266,8 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
-        token_embeddings = sharded_normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
-        position_embeddings = sharded_normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
+        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
+        position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
         return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)

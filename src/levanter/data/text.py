@@ -31,6 +31,7 @@ from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
+    DEFAULT_ROWS_PER_CHUNK,
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
@@ -455,7 +456,7 @@ class LMDatasetConfig:
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
         except FileNotFoundError:
             logger.info(f"Building cache for {split}...")
-            cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
+            cache_dataset(split_cache_dir, source, batch_tokenizer, rows_per_chunk=self.rows_per_chunk)
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):
