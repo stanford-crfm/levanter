@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import fsspec.core
+import jax
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
@@ -337,6 +338,9 @@ class WandbMetricsMonitor(MetricsMonitor):
         for field, count in metrics.field_counts.items():
             to_log[f"{self.prefix}/{field}"] = count
 
+        if metrics.is_finished:
+            to_log[f"{self.prefix}/finished"] = 1
+
         wandb.log(to_log, commit=self.commit)
 
 
@@ -349,10 +353,14 @@ class LoggerMetricsMonitor(MetricsMonitor):
         self.logger = logger or logging.getLogger(__name__)
 
     def __call__(self, metrics: InProgressCacheMetrics):
-        self.logger.info(
-            f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
-            f" {metrics.rows_finished}"
-        )
+        if jax.process_index() == 0:
+            self.logger.info(
+                f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
+                f" {metrics.rows_finished}"
+            )
+
+        if metrics.is_finished:
+            self.logger.info("Cache creation finished")
 
 
 @dataclass
