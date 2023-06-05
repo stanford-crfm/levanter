@@ -461,18 +461,21 @@ class ChunkCacheBuilder:
             if status.is_finished:
                 # we're done with this shard, so we can remove it from the roundrobin
                 self._current_round_robin.pop(0)
+                print(f"Shard {name} is finished, removing from round robin")
                 continue
 
             # now let's see if we can send a chunk from this shard
             next_chunk = status.pop_chunk_to_send()
             if next_chunk is not None:
                 # we can send a chunk from this shard
+                print(f"Sending chunk from {name}")
                 self._current_round_robin.pop(0)
                 self._current_round_robin.append(name)
                 chunks_to_send.append(next_chunk)
                 continue
             else:
                 logger.debug(f"Shard {name} has no chunks to send and is not known to be finished")
+                print(f"Shard {name} has no chunks to send and is not known to be finished")
                 # we can't send a chunk from this shard, so we can't send any additional chunks
                 break
 
