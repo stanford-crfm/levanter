@@ -10,7 +10,7 @@ display: False
 ---
 > <div class="blog-tagline">
     <strong> We introduce our projects
-        <a href="https://github.com/stanford-mercury/levanter" target="_blank">Haliax and Levanter</a>, our code
+        <a href="https://github.com/stanford-crfm/levanter" target="_blank">Haliax and Levanter</a>, our code
         and infrastructure for training reproducible, legible foundation models models using Jax. We also are
         releasing a number of checkpoints] for models trained with Levanter, including new architectures, on our
         <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
