@@ -420,21 +420,78 @@ nice alternative to just staring obsessively at the loss curve, which is what I 
 
 ## Getting Started with Levanter
 
+<!-- Current -->
+
+Please check out the [README for Levanter](https://github.com/stanford-crfm/levanter#installing-levanter)
+or the specific guides for [TPU](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-TPU-VM.md)
+or [CUDA](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-CUDA.md).
+
+<!-- Aspirational
 ### Installation
 
+Levanter is available on PyPI and can be installed with `pip install levanter`.
+It is also available on [GitHub](https://github.com/stanford-mercury/levanter).
+
+### Quickstart GPT-2
+
+To get started with the simplest possible GPT-2 nano "hello world" on a single machine:
+
+```bash
+levanter train \
+    --model gpt2-nano \
+    --dataset dlwh/wikitext_103_detokenized \
+```
+
+This will train a GPT-2 model on the WikiText-103 dataset, using the GPT-2 "nano" model.
+
+For more fine-grained control, you can also use a yaml configuration file:
+
+```yaml
+data:
+  cache_dir: /path/to/tokenized_cache # or gs://bucket/path/to/cache
+  id: dlwh/wikitext_103_detokenized  # hf dataset
+  # or you can specify urls directly:
+  train_urls:
+      - "gs://my_bucket/my_fancy_data.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+      - "https://my_domain/my_fancy_val.{1..8}-of-8.jsonl.gz"
+model:
+  hidden_dim: 32
+  num_heads: 4
+  num_layers: 2
+trainer:
+  mp: compute=bfloat16,param=f32  # mixed precision using deepmind's jmp
+  num_train_steps: 10000
+
+  checkpointer:
+    keep:
+      - every: 1000
+    save_interval: 5m
+    base_path: gs://my_bucket/my_model
+
+  train_batch_size: 32
+```
+
+```bash
+levanter train --model gpt2 --config_path /path/to/config.yaml
+```
+
+-->
 
 
 
 ## Released Models
 
 Along with the release of the code, we are releasing a few models trained using Levanter. These models are available on
-the [HF model hub](XXX) and can be used with the Hugging Face Transformers library. We have more in development and will
-be releasing them as they become available.
+the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used with the Hugging Face Transformers library.
+We have more in development and will releae them as they become available.
 
-XXX TODO: verify this is what we're releasing, add links
-- GPT-2-1536 (1.45B parameters) XXX, including checkpoints every 10,000 steps
-- XXX music model (link to other blog post XXX)
-- Backpacks? XXX
+- We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
+ Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
+- We also have a new 1.4 billion parameter of the [Backpack Model](http://backpackmodels.science/) architecture developed by [John Hewitt](https://nlp.stanford.edu/~johnhew/) and coauthors.
+  This model is available [here](https://huggingface.co/stanford-crfm/levanter-backpack-1b).
+- [Levanter GPT](https://huggingface.co/stanford-crfm/levanter-gpt) is a ~1.5B parameter GPT-2 model trained on the
+  [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
 
 # Future and Conclusion
 
@@ -442,7 +499,7 @@ This is just the beginning for Levanter. In the future, look for:
 * more models on interesting problem domains,
 * scaled up versions of new architectures developed here at Stanford and elsewhere,
 * new training techniques, including the newly released [Sofia](https://arxiv.org/abs/2305.14342) optimizer,
-* and larger models
+* and larger models!
 
 Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will be
 useful to others who are interested in training foundation models using Jax and TPUs. Please join us on our journey! You
