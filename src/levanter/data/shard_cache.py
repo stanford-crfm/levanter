@@ -665,8 +665,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
         The global ordering is defined by taking chunks round-robin from each shard. This allows us to read shards
         in parallel and deterministically.
 
-        # TODO: (2) isn't implemented just yet
-
         ShardCache achieves (4) also via the chunking mechanism. As soon as all shards have written a chunk, the next
         chunk can be read. This allows us to read and write in parallel.
 
