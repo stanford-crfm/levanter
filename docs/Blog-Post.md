@@ -1,6 +1,6 @@
 # ---
 layout: blog
-title: Levanter —  Scalable, Reproducible, Legible Foundation Models with Jax
+title: Levanter —  Scalable, Reproducible, Legible Foundation Models with JAX
 authors:
     - name: David Hall
       url: TODO
@@ -11,7 +11,7 @@ display: False
 > <div class="blog-tagline">
     <strong> We introduce our projects
         <a href="https://github.com/stanford-crfm/levanter" target="_blank">Haliax and Levanter</a>, our code
-        and infrastructure for training reproducible, legible foundation models models using Jax. We also are
+        and infrastructure for training reproducible, legible foundation models models using JAX. We also are
         releasing a number of checkpoints] for models trained with Levanter, including new architectures, on our
         <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
     </strong>
@@ -31,7 +31,7 @@ and scale, as well as strong guarantees about reproducibility.
 XXX Positioning?
 
 Today, we are excited to announce the release of two new libraries for training foundation models: [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
-Levanter is a [Jax](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
+Levanter is a [JAX](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
 flexible, modular, and accessible, while still being performant and scalable. In particular, Levanter is designed to be
 able to train models on a variety of different hardware, including GPUs, TPUs, and TPU pods.
 Levanter also offers strong guarantees about reproducibility.
@@ -54,13 +54,13 @@ MosaicML has recently released [LLM Foundry](https://github.com/mosaicml/llm-fou
 https://github.com/stanford-crfm/mistral) built on [Hugging Face Transformers](https://github.com/huggingface/transformers/)
 and [DeepSpeed](https://github.com/microsoft/DeepSpeed).
 
-In the Jax community, there are a number of libraries popping up. Google has released [T5X](https://github.com/google-research/t5x)
+In the JAX community, there are a number of libraries popping up. Google has released [T5X](https://github.com/google-research/t5x)
 and [MaxText](https://github.com/google/maxtext). There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
-and [JaxSeq](https://github.com/Sea-Snell/JAXSeq), both of which are based on [Flax](https://github.com/google/flax/)
+and [JAXSeq](https://github.com/Sea-Snell/JAXSeq), both of which are based on [Flax](https://github.com/google/flax/)
 and modified libraries from [Hugging Face Transformers](https://github.com/huggingface/transformers/). Salesforce has
-released the Haiku-based [Jaxformer](https://github.com/salesforce/jaxformer). Previously, Eleuther AI released
+released the Haiku-based [JAXformer](https://github.com/salesforce/jaxformer). Previously, Eleuther AI released
 [mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax/), though it is mostly unmaintained now and uses
-older, quasi-deprecated Jax APIs for distributed training.
+older, quasi-deprecated JAX APIs for distributed training.
 
 ## A New Codebase for Foundation Model Training
 
@@ -71,13 +71,13 @@ At CRFM, we focused on three fundamental goals:
 * **Reproducibility and Resilience**: We emphasized the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
 * **Scalability and Efficiency**: We aimed to fully utilize the Cloud TPU resources from Google's TPU Research Cloud program, as well as our own GPU resources, without compromising efficiency.
 
-We chose [Jax](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
-and offers strong reproducibility guarantees. Jax also works well on TPUs, while we found that PyTorch support was still uneven.
-Jax is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how": details of
-partitioning and communication can be left to the XLA compiler. Finally, Jax makes reproducibility easy, since it uses
+We chose [JAX](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
+and offers strong reproducibility guarantees. JAX also works well on TPUs, while we found that PyTorch support was still uneven.
+JAX is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how": details of
+partitioning and communication can be left to the XLA compiler. Finally, JAX makes reproducibility easy, since it uses
 bitwise deterministic PRNGs by default, with careful control over the PRNG state.
 
-However, Jax is a low-level framework, and we found that, by itself, it did not provide the legibility that we wanted.
+However, JAX is a low-level framework, and we found that, by itself, it did not provide the legibility that we wanted.
 
 For us, legibility is a top concern. We therefore created two new libraries: **Haliax** and **Levanter**. Haliax is a
 named tensor library that focuses on improving the legibility and compositionality of deep learning code while still
@@ -88,8 +88,8 @@ restarts.
 
 # Haliax: Legibility via Named Tensors
 
-Haliax is a library for named tensors, built on Jax and [Equinox](https://github.com/patrick-kidger/equinox),
-which is a neural network library for Jax that provides a familiar, PyTorch-like module structure. Haliax uses
+Haliax is a library for named tensors, built on JAX and [Equinox](https://github.com/patrick-kidger/equinox),
+which is a neural network library for JAX that provides a familiar, PyTorch-like module structure. Haliax uses
 Equinox's module structure for its neural network library, rather than Flax or Haiku.
 
 Named Tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
@@ -306,7 +306,7 @@ This is all that is required to shard a model across multiple GPUs or TPUs. The 
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
 ## Named Tensors Elsewhere
-Jax already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
+JAX already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
 of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated.
@@ -325,9 +325,9 @@ I'm aware, and don't help with model partitioning, which is one of their main us
 This is just a taste of what Haliax can do. For more details, please see our interactive tutorials on Colab:
 
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
-* [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in Jax.
+* [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in JAX.
 
-# Levanter: Bitwise Reproducible Foundation Models with Jax
+# Levanter: Bitwise Reproducible Foundation Models with JAX
 
 Levanter is a library for training foundation models built on top of Haliax. It provides a complete pipeline
 for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and
@@ -338,7 +338,7 @@ can scale up to least 65b parameters.
 
 ## Bitwise Reproducibility
 
-One of the benefits of Jax is that it offers strong guarantees for reproducibility. In particular, Jax's fine-grained
+One of the benefits of JAX is that it offers strong guarantees for reproducibility. In particular, JAX's fine-grained
 control over PRNG states makes it easy to ensure bitwise reproducibility, especially when using TPUs.
 Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
 the same run with the same code on the same set of hardware (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
@@ -419,7 +419,7 @@ nice alternative to just staring obsessively at the loss curve, which is what I 
 
 [//]: # (* **Preprocessing**: Levanter uses [Hugging Face Tokenizers]&#40;https://github.com/huggingface/tokenizers/&#41; to preprocess text)
 [//]: # (using distributed preprocessing backed by [Ray]&#40;https://www.ray.io/&#41;.)
-* **Training**: In addition to Jax and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
+* **Training**: In addition to JAX and Haliax, Levanter uses [Optax](https://github.com/deepmind/optax) for optimization.
   (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
@@ -510,9 +510,9 @@ This is just the beginning for Levanter. In the future, look for:
 * and larger models!
 
 Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will be
-useful to others who are interested in training foundation models using Jax and TPUs. Please join us on our journey! You
+useful to others who are interested in training foundation models using JAX and TPUs. Please join us on our journey! You
 can find us on [GitHub](https://github.com/stanford-crfm/levanter), [Twitter](https://twitter.com/StanfordCRFM), or on
-the (unofficial) [Jax LLM Discord](https://discord.gg/CKazXcbbBm). (And by the way, [we're hiring](https://crfm.stanford.edu/apply.html)!)
+the (unofficial) [JAX LLM Discord](https://discord.gg/CKazXcbbBm). (And by the way, [we're hiring](https://crfm.stanford.edu/apply.html)!)
 
 ## Acknowledgements
 
@@ -521,5 +521,5 @@ In addition to the generous support of the Google TPU Research Cloud, we would l
 * John Thickstun, Sidi Lu, John Hewitt, and others for being early adopters and providing feedback. We really appreciate your patience, support, and feedback.
 * Yifan Mai, Tony Lee, Jason Bolton, Ivan Zhou, and the rest of the CRFM engineering team for support and discussions.
 * The TRC team for support getting spun up on TPUs and for making the Cloud TPUs available to us.
-* Roy Frostig, Sholto Douglas, Skye Wanderman-Miln, and the rest of the Jax team for help with debugging and support.
+* Roy Frostig, Sholto Douglas, Skye Wanderman-Miln, and the rest of the JAX team for help with debugging and support.
 * Sidd Karamcheti for support and conversations
