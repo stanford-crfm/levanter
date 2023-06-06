@@ -1,6 +1,5 @@
 data:
   id: dlwh/wikitext_103_detokenized
-  cache_dir: zzzzz
 model:
   hidden_dim: 32
   num_heads: 4
