@@ -16,7 +16,7 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
-from levanter.config import TrainerConfig
+from levanter.config import OptimizerConfig, TrainerConfig
 from levanter.data.sharded import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
@@ -36,6 +36,7 @@ class TrainBackpackConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: BackpackConfig = BackpackConfig()
+    optimizer: OptimizerConfig = OptimizerConfig()
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
@@ -114,7 +115,7 @@ def main(config: TrainBackpackConfig):
 
         # initialize the optimizer
         # This is basically the same as the model.
-        optimizer = config.trainer.optimizer()
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
         opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss

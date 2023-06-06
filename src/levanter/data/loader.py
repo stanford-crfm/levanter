@@ -50,13 +50,13 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     but only has the data for some of the chunks of the array (namely, the ones on the local devices).
     Thus, each process loads the data for its devices.
 
+    **NOTE: ShardedBatchLoader loops forever since it's hard to do coordination.**
+
     The details are a bit complex: We have a device mesh of shape (data, model). We want each row of the device mesh to
     get batch_size//num_rows examples. Usually, a process will be responsible for one or more entire rows, meaning
     that it wil load data that is distinct from every other process. However, if num_cols > num_devices_per_process,
     then some processes will need to load the same data. We use the process_mesh_position to determine which data to
     load, by determining which row(s) of the device mesh the process is responsible for.
-
-    For now GlobalBatchLoader is restricted to datasets that return a single sequence of tokens.
 
     :arg local_dataset: a dataset that is shardable and can be iterated over
     :arg mesh: the device mesh
@@ -198,7 +198,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
 class ReplicatedBatchLoader(BatchLoader[Ex]):
     """A batch loader that creates batches without sharded data loading. All examples are loaded on all machines and then
-    sharded. This is useful if you have a small dataset and want to use a large number of devices.
+    sharded. This is useful if you have a small dataset and want to make a single pass over it.
 
     Note: this class discards the final batch if it is smaller than the batch size.
     """
