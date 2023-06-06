@@ -28,6 +28,8 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.data.dataset import ShardableDataset  # noqa
+from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
+from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     DEFAULT_ROWS_PER_CHUNK,
     BatchProcessor,
@@ -185,7 +187,11 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     @staticmethod
     def load(cache_dir, flatten_docs=True):
         """
-        Load a TokenizedDocumentCache from a directory.
+        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
+        FileNotFoundError.
+
+        NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.
+
         :param cache_dir:
         :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
         concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
@@ -197,7 +203,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             try:
                 ledger = _load_old_ledger(cache_dir)
                 ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE), ledger)
+                _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
             except FileNotFoundError:
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
@@ -433,7 +439,6 @@ class LMDatasetConfig:
     num_train_shards: int = 128
     num_val_shards: int = 32
 
-    create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
@@ -447,8 +452,12 @@ class LMDatasetConfig:
         batch_tokenizer = BatchTokenizer(self.the_tokenizer)
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer, rows_per_chunk=self.rows_per_chunk)
-        return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        try:
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        except FileNotFoundError:
+            logger.info(f"Building cache for {split}...")
+            cache_dataset(split_cache_dir, source, batch_tokenizer, rows_per_chunk=self.rows_per_chunk)
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -489,11 +498,6 @@ class LMDatasetConfig:
 
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
-
-    def __post_init__(self):
-        if self.id is not None and self.create_sharded_cache:
-            # TODO: this is doable now in a reasonable-ish way but it's not implemented yet
-            raise ValueError("Cannot currently create sharded cache for HF datasets")
 
     def get_shard_source(self, split) -> ShardedDataSource[str]:
         if self.id is not None:
