@@ -5,9 +5,10 @@ import logging
 import os
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import fsspec.core
 import jax
@@ -319,6 +320,9 @@ class RichMetricsMonitor(MetricsMonitor):
 
 
 class WandbMetricsMonitor(MetricsMonitor):
+    last_metrics: Optional[InProgressCacheMetrics]
+    last_time: Optional[float]
+
     def __init__(self, prefix: str = "preproc", commit=False):
         """
         :param prefix:
@@ -327,9 +331,11 @@ class WandbMetricsMonitor(MetricsMonitor):
         """
         self.prefix = prefix
         self.commit = commit
+        self.last_metrics = None
+        self.last_time = None
 
     def __call__(self, metrics: InProgressCacheMetrics):
-        to_log = {}
+        to_log: Dict[str, Any] = {}
 
         to_log[f"{self.prefix}/shards"] = metrics.shards_finished
         to_log[f"{self.prefix}/chunks"] = metrics.chunks_finished
@@ -340,6 +346,20 @@ class WandbMetricsMonitor(MetricsMonitor):
 
         if metrics.is_finished:
             to_log[f"{self.prefix}/finished"] = 1
+
+        # estimate the rate of progress
+        if self.last_metrics is not None:
+            assert self.last_time is not None
+            elapsed = time.time() - self.last_time
+            to_log[f"{self.prefix}/shards/s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
+            to_log[f"{self.prefix}/chunks/s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
+            to_log[f"{self.prefix}/rows/s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
+
+            for field, count in metrics.field_counts.items():
+                to_log[f"{self.prefix}/{field}/s"] = (count - self.last_metrics.field_counts[field]) / elapsed
+
+        self.last_metrics = metrics
+        self.last_time = time.time()
 
         wandb.log(to_log, commit=self.commit)
 
