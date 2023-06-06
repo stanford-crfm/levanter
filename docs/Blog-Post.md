@@ -11,22 +11,30 @@ display: False
 > <div class="blog-tagline">
     <strong> We introduce our projects
         <a href="https://github.com/stanford-mercury/levanter" target="_blank">Haliax and Levanter</a>, our code
-        and infrastructure for training reproducible, legible foundation models models using Jax. We also XXX checkpoints.
+        and infrastructure for training reproducible, legible foundation models models using Jax. We also are
+        releasing a number of checkpoints] for models trained with Levanter, including new architectures, on our
+        <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
     </strong>
 > </div>
 
 
 # Introduction
 
+<!--
+
 The growth of artificial intelligence and machine learning has brought about the need for scalable and reproducible models.
 To address this, at the [Center for Research on Foundation Models](https://crfm.stanford.edu), we have created two new tools — [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
-They form a new code base for training foundatiol models with the promise of flexibility, modularity, efficiency,
+They form a new code base for training foundation models with the promise of flexibility, modularity, efficiency,
 and scale, as well as strong guarantees about reproducibility.
+-->
 
+XXX Positioning?
+
+Today, we are excited to announce the release of two new libraries for training foundation models: [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
 Levanter is a [Jax](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
 flexible, modular, and accessible, while still being performant and scalable. In particular, Levanter is designed to be
-able to train models on a variety of different hardware, including GPUs, TPUs, and TPU pods. Levanter also offers strong
-guarantees about reproducibility, and we have released checkpoints for a number of models trained with Levanter.
+able to train models on a variety of different hardware, including GPUs, TPUs, and TPU pods.
+Levanter also offers strong guarantees about reproducibility.
 Haliax is a named tensor library that we developed to make it easier to write legible, composable code while
 still maintaining efficiency and scalability.
 
