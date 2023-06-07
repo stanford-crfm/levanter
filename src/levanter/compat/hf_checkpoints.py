@@ -259,13 +259,20 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         self,
         lm_model_cls: Type[LmWithHFSer],
         ref: Optional[Union[str, RemoteRef]] = None,
-        Vocab: Optional[Axis] = None,
         axis_mapping: Optional[ResourceMapping] = None,
     ) -> LmWithHFSer:
+        """
+        Loads a levanter model from a huggingface checkpoint.
+
+        Args:
+            lm_model_cls: The model class to load
+            ref: The reference to load from. If None, will use the reference_checkpoint
+            axis_mapping: The axis mapping to use for sharding. If None, will use the default axis mapping
+        """
         state_dict = self.load_state_dict(ref)
         config = self.config_from_hf_checkpoint(ref)
 
-        Vocab = Vocab or self.default_Vocab
+        Vocab = self.default_Vocab
 
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
