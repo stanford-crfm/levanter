@@ -42,14 +42,14 @@ def main(config: EvalMptConfig):
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.SeqLen)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.SeqLen)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
     eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    SeqLen = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping

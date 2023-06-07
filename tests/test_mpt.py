@@ -53,7 +53,7 @@ def test_mpt_nano_compare(use_bias):
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(model_dict)
 
-    hax_input = haliax.named(input, lev_config.SeqLen)
+    hax_input = haliax.named(input, lev_config.Pos)
     with jax.disable_jit():
         lev_out = lev_model(hax_input).array
 

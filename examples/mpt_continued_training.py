@@ -93,18 +93,18 @@ def main(config: TrainMptConfig):
         # some axes we need
         Batch = Axis("batch", config.trainer.train_batch_size)
         EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-        SeqLen = model_config.SeqLen
-        KeySeqLen = model_config.KeySeqLen
+        SeqLen = model_config.Pos
+        KeySeqLen = model_config.KeyPos
 
         dataset = GlobalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.SeqLen),
+            TokenSeqDataset(config.data.build_or_load_cache("train"), model_config.Pos),
             config.trainer.device_mesh,
             Batch,
             compute_axis_mapping,
         )
 
         eval_dataset = LocalBatchDataset(
-            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.SeqLen),
+            TokenSeqDataset(config.data.build_or_load_cache("validation"), model_config.Pos),
             config.trainer.device_mesh,
             EvalBatch,
             compute_axis_mapping,

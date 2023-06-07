@@ -1,7 +1,7 @@
 # implements the necessary variations of GPT-2 to work with https://huggingface.co/mosaicml/mpt-7b in haliax/levanter
 import math
-from dataclasses import dataclass
-from typing import Dict, Optional, Union
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Union
 
 import equinox as eqx
 import jax
@@ -173,29 +173,13 @@ class MPTConfig(PretrainedConfig):
         # if self.attn_config['attn_uses_sequence_id'] and self.attn_config['attn_impl'] not in ['torch', 'triton']:
         #     raise NotImplementedError('attn_uses_sequence_id only implemented with torch and triton attention.')
         # no attn_uses_sequence_id for now
-        if self.attn_config["attn_uses_sequence_id"]:
-            raise NotImplementedError("attn_uses_sequence_id not implemented yet.")
-        # no clip_qkv for now
-        if self.attn_config["clip_qkv"]:
-            raise NotImplementedError("clip_qkv not implemented yet.")
-        # no softmax_scale
-        if self.attn_config["softmax_scale"]:
-            raise NotImplementedError("softmax_scale not implemented yet.")
-        # no qk_ln
-        if self.attn_config["qk_ln"]:
-            raise NotImplementedError("qk_ln not implemented yet.")
+
         if self.embedding_fraction > 1 or self.embedding_fraction <= 0:
             raise ValueError("model.embedding_fraction must be between 0 (exclusive) and 1 (inclusive)!")
         if isinstance(self.logit_scale, str) and self.logit_scale != "inv_sqrt_d_model":
             raise ValueError(
                 f"self.logit_scale={self.logit_scale!r} is not recognized as an option; use numeric value or"
                 " 'inv_sqrt_d_model'."
-            )
-        if self.init_config.get("name", None) is None:
-            raise ValueError(f"self.init_config={self.init_config!r} 'name' needs to be set.")
-        if not self.learned_pos_emb and (not self.attn_config["alibi"]):
-            raise ValueError(
-                "Positional information must be provided to the model using either learned_pos_emb or alibi."
             )
 
 
@@ -237,23 +221,50 @@ class MptConfig:
     n_layers: int = 12
     expansion_ratio: int = 4
     max_seq_len: int = 2048
-    resid_pdrop: float = 0.0
-    emb_pdrop: float = 0.0
     learned_pos_emb: bool = True
     attn_config: MptAttentionConfig = MptAttentionConfig()
-
+    logit_scale: Optional[Union[float, str]] = None
     use_bias: bool = True
+
+    # these aren't supported but are here to detect incompatible configs
+    embedding_fraction: float = 1.0
+    resid_pdrop: float = 0.0
+    emb_pdrop: float = 0.0
+    init_config: Dict[str, Any] = field(default_factory=lambda: {})
 
     Embed = property(lambda self: Axis("embed", self.d_model))
     Head = property(lambda self: Axis("head", self.n_heads))
     Layers = property(lambda self: Axis("layer", self.n_layers))
-    SeqLen = property(lambda self: Axis("seqlen", self.max_seq_len))
-    KeySeqLen = property(lambda self: Axis("key_seqlen", self.max_seq_len))
+    Pos = property(lambda self: Axis("position", self.max_seq_len))
+    KeyPos = property(lambda self: Axis("key_position", self.max_seq_len))
     Mlp = property(lambda self: Axis("mlp", self.expansion_ratio * self.d_model))
     HeadDim = property(lambda self: Axis("head_dim", self.d_model // self.n_heads))
 
+    _logit_scale = property(
+        lambda self: self.logit_scale if isinstance(self.logit_scale, float) else 1 / jnp.sqrt(self.d_model)
+    )
+
+    def __post_init__(self):
+        if self.embedding_fraction != 1.0:
+            raise ValueError("embedding_fraction not supported yet.")
+
+        if self.resid_pdrop != 0.0:
+            raise ValueError("resid_pdrop not supported yet.")
+
+        if self.emb_pdrop != 0.0:
+            raise ValueError("emb_pdrop not supported yet.")
+
+        if isinstance(self.logit_scale, str) and self.logit_scale != "inv_sqrt_d_model":
+            raise ValueError(
+                f"self.logit_scale={self.logit_scale!r} is not recognized as an option; use numeric value or"
+                " 'inv_sqrt_d_model'."
+            )
+
+        if self.init_config and self.init_config != init_config_defaults:
+            raise ValueError("init_config_defaults not supported yet.")
+
     @staticmethod
-    def from_torch_config(config):
+    def from_torch_config(config: MPTConfig):
         return MptConfig(
             d_model=config.d_model,
             n_heads=config.n_heads,
@@ -265,6 +276,9 @@ class MptConfig:
             learned_pos_emb=config.learned_pos_emb,
             attn_config=MptAttentionConfig.from_dict(config.attn_config),
             use_bias=not config.no_bias,
+            embedding_fraction=config.embedding_fraction,
+            logit_scale=config.logit_scale,
+            init_config=config.init_config,
         )
 
 
@@ -384,8 +398,8 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.config.SeqLen: self.config.KeySeqLen})
-        v = v.rename({self.config.SeqLen: self.config.KeySeqLen})
+        k = k.rename({self.config.Pos: self.config.KeyPos})
+        v = v.rename({self.config.Pos: self.config.KeyPos})
 
         # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
@@ -403,10 +417,10 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis="key_seqlen").astype(hidden_states.dtype)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
         # attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        attn_output = hax.dot("key_seqlen", attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
 
         attn_output = self.out_proj(attn_output)
         return attn_output
@@ -493,9 +507,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
         if self.config.attn_config.alibi:
-            bias = _mpt_build_alibi_bias(
-                self.config.Head, self.config.KeySeqLen, self.config.attn_config.alibi_bias_max
-            )
+            bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
             bias = None
 
@@ -540,7 +552,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
     @staticmethod
     def init(Vocab: Axis, config: MptConfig, *, key):
         k_transformer, k_wte = jrandom.split(key, 2)
-        wte = hnn.Embedding(Vocab, config.Embed, key=k_wte)
+        wte = hnn.Embedding.init(Vocab, config.Embed, key=k_wte)
         transformer = MptTransformer.init(config, key=k_transformer)
 
         assert config.emb_pdrop == 0.0, "embedding dropout not supported"
@@ -552,7 +564,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, input_ids: NamedArray, attention_mask: Optional[NamedArray] = None) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
-        causal = hnn.attention.causal_mask(self.config.SeqLen, self.config.KeySeqLen)
+        causal = hnn.attention.causal_mask(self.config.Pos, self.config.KeyPos)
         attention_mask = hnn.attention.combine_masks_and(causal, attention_mask)
         hidden_states = self.transformer(hidden_states, attention_mask=attention_mask)
         output_logits = self.wte.unembed(hidden_states)
@@ -578,7 +590,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
 
         del model
 
-        lev_config = MptConfig.from_torch_config(config)
+        lev_config = MptConfig.from_torch_config(config)  # type: ignore
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):
