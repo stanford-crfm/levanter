@@ -165,6 +165,11 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     def config_from_hf_config(self, hf_config) -> LevConfig:
         return self.LevConfigClass.from_hf_config(hf_config)
 
+    def hf_config_from_config(self, config: LevConfig, vocab_size: Optional[int] = None) -> HfConfig:
+        if vocab_size is None:
+            vocab_size = len(self.load_tokenizer())
+        return config.to_hf_config(vocab_size=vocab_size, config_overrides=self.config_overrides)
+
     def config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> LevConfig:
         config = self.hf_config_from_hf_checkpoint(ref)
         return self.config_from_hf_config(config)
@@ -252,16 +257,6 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     return config, checkpoint
 
 
-def hf_gpt2_config_to_levanter(config: HfGpt2Config):
-    from levanter.models.gpt2 import Gpt2Config
-
-    return Gpt2Config.from_hf_config(config)
-
-
-def gpt2_config_to_hf(vocab_size: int, config) -> HfGpt2Config:
-    return config.to_hf_config(vocab_size)
-
-
 def backpack_config_to_hf(vocab_size: int, config, auto_map_config: Optional[HFAutoMapConfig] = None) -> HfConfig:
     config = HfConfig(
         vocab_size=vocab_size,
@@ -310,9 +305,10 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
     config = HfGpt2Config.from_dict(config)
 
     Vocab = Axis("vocab", config.vocab_size)
-    lev_config = hf_gpt2_config_to_levanter(config)
+    from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+
+    lev_config = Gpt2Config.from_hf_config(config)
     key = PRNGKey(0)
-    from levanter.models.gpt2 import Gpt2LMHeadModel
 
     model = Gpt2LMHeadModel.init(Vocab, lev_config, key=key)
 
@@ -334,7 +330,7 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
 
 def _save_hf_gpt2_checkpoint_local(model, path):
     os.makedirs(path, exist_ok=True)
-    config = gpt2_config_to_hf(model.vocab_size, model.config)
+    config = model.config.to_hf_config(model.vocab_size)
     with open(f"{path}/config.json", "w") as f:
         json.dump(config.to_dict(), f)
 

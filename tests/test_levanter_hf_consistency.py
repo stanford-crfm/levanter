@@ -8,7 +8,7 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.hf_checkpoints import hf_backpack_config_to_levanter, hf_gpt2_config_to_levanter
+from levanter.compat.hf_checkpoints import hf_backpack_config_to_levanter
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
@@ -54,7 +54,9 @@ def test_hf_gpt2_consistency():
     hf_model = GPT2LMHeadModel.from_pretrained(HF_GPT2)
     hf_model.cuda().eval()
 
-    model_config: GPT2Config = hf_gpt2_config_to_levanter(hf_model_config)
+    from levanter.models.gpt2 import Gpt2Config
+
+    model_config: GPT2Config = Gpt2Config.from_hf_config(hf_model_config)
     trainer_config = TrainerConfig()
 
     vocab_size = hf_model_config.vocab_size
