@@ -62,6 +62,17 @@ class RemoteRef:
         return f"RemoteRev({self.model_name_or_path!r}, {self.revision!r})"
 
 
+class ConfigWithHFSer(abc.ABC):
+    @abc.abstractmethod
+    def to_hf_config(self) -> HfConfig:
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def from_hf_config(cls, hf_config: HfConfig):
+        pass
+
+
 def _coerce_to_rr(s: Union[str, RemoteRef]) -> RemoteRef:
     if isinstance(s, RemoteRef):
         return s
@@ -88,7 +99,7 @@ class HFAutoMapConfig:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
-LevConfig = TypeVar("LevConfig")
+LevConfig = TypeVar("LevConfig", bound=ConfigWithHFSer)
 
 
 @dataclass
@@ -154,7 +165,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         return tokenizer
 
     def config_from_hf_config(self, hf_config) -> LevConfig:
-        return self.LevConfigClass.from_hf_config(hf_config)  # type: ignore
+        return self.LevConfigClass.from_hf_config(hf_config)
 
     def config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> LevConfig:
         config = self.hf_config_from_hf_checkpoint(ref)
