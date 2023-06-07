@@ -33,6 +33,7 @@ import haliax
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
+from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.trainer_hooks import StepInfo
 
 
@@ -77,7 +78,7 @@ class ConfigWithHFSer(abc.ABC):
 MConfig = TypeVar("MConfig", bound=ConfigWithHFSer)
 
 
-class LmWithHFSer(abc.ABC, Generic[MConfig]):
+class LmWithHFSer(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
     config: MConfig
 
     def get_hf_config(self):
@@ -290,6 +291,39 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
 
         return lev_model
+
+    def save_model_local(self, model: LmWithHFSer, path: str):
+        os.makedirs(path, exist_ok=True)
+        config = model.config.to_hf_config(model.Vocab.size)
+        dict_config = config.to_dict()
+
+        if self.config_overrides:
+            dict_config.update(self.config_overrides)
+
+        with open(f"{path}/config.json", "w") as f:
+            json.dump(dict_config, f)
+
+        def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
+            if isinstance(arr, np.ndarray):
+                return arr
+            elif "cpu" in arr.device().device_kind:
+                return np.array(arr)
+            elif arr.is_fully_addressable:
+                r = np.array(arr)
+                return r
+            else:
+                return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+
+        # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+        model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
+
+        # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+        state_dict = model.to_state_dict()
+
+        # now that we've moved the model to the CPU, we don't need to do this on all processes
+        if jax.process_index() == 0:
+            # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+            safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
 
 
 def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
