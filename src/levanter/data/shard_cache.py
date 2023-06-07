@@ -337,6 +337,31 @@ class WandbMetricsMonitor(MetricsMonitor):
         wandb.log(to_log, commit=self.commit)
 
 
+@dataclass
+class _ShardStatus:
+    producer_task: Optional[ray.ObjectRef]
+    num_chunks_sent: int = 0
+    current_buffer: List[ChunkMetadata] = dataclasses.field(default_factory=list)
+
+    def pop_chunk_to_send(self) -> Optional[ChunkMetadata]:
+        if len(self.current_buffer) == 0:
+            return None
+        else:
+            self.num_chunks_sent += 1
+            return self.current_buffer.pop(0)
+
+    def total_chunks_prod(self) -> int:
+        return self.num_chunks_sent + len(self.current_buffer)
+
+    @property
+    def is_finished(self):
+        return not self.is_producing and len(self.current_buffer) == 0
+
+    @property
+    def is_producing(self):
+        return self.producer_task is not None
+
+
 def _ledger_or_broker(
     cache_dir: str, input_shards: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
 ):
@@ -368,8 +393,8 @@ class ChunkCacheBuilder:
     ):
         logging.basicConfig(level=logging.INFO)
         self.broker_ref = broker_ref
-        self.buffered_shard_chunks: Dict[str, List[ChunkMetadata]] = {}
-        self.current_shard_tasks: Dict[str, ray.ObjectRef] = dict()
+        self.shard_status: Dict[str, _ShardStatus] = dict()
+        self._current_round_robin = []
         self.source = source
         self._metrics = InProgressCacheMetrics()
 
@@ -381,17 +406,18 @@ class ChunkCacheBuilder:
         else:
             logger.info(f"Starting cache build for {len(source.shard_names)} shards")
             for shard_name in source.shard_names:
-                self.buffered_shard_chunks[shard_name] = []
+                self._current_round_robin.append(shard_name)
 
-                self.current_shard_tasks[shard_name] = _produce_cache_for_shard.remote(
+                task = _produce_cache_for_shard.remote(
                     self_ref, source, shard_name, processor, cache_dir, rows_per_chunk
                 )
 
+                self.shard_status[shard_name] = _ShardStatus(task)
+
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         """Callback method for when a shard worker has produced a new chunk."""
-        assert shard_name in self.current_shard_tasks
-        assert shard_name in self.buffered_shard_chunks
-        self.buffered_shard_chunks[shard_name] += chunks
+        assert self.shard_status[shard_name].is_producing
+        self.shard_status[shard_name].current_buffer.extend(chunks)
 
         # if we have buffered chunks, we need to check if we can send them to the broker
         self._attempt_to_flush_buffers()
@@ -408,27 +434,26 @@ class ChunkCacheBuilder:
 
     def shard_finished(self, shard_name: str):
         """Callback method for when a shard worker has finished."""
-        assert shard_name in self.current_shard_tasks
-        # we're done with this shard, so remove it from the list of active shards
-        del self.current_shard_tasks[shard_name]
+        shard_status = self.shard_status[shard_name]
+        # we should only get this message if we're still producing
+        assert shard_status.is_producing
+        shard_status.producer_task = None
+
         # we might still have buffered chunks, so we need to check if we can append them
-
-        if len(self.buffered_shard_chunks[shard_name]) == 0:
-            # we don't have to worry about this shard anymore
-            del self.buffered_shard_chunks[shard_name]
-
         self._attempt_to_flush_buffers()
         self._metrics.shards_finished += 1
         ray.get(self.broker_ref._new_metrics.remote(self._metrics))
 
         # if there are no more active shards, we're done
-        if len(self.current_shard_tasks) == 0:
-            assert len(self.buffered_shard_chunks) == 0, f"Buffered chunks: {self.buffered_shard_chunks}"
+        if all(status.is_finished for status in self.shard_status.values()):
+            assert len(self._current_round_robin) == 0
+            assert all(len(status.current_buffer) == 0 for status in self.shard_status.values())
             # we're done, so tell the broker to finalize
             self._finish()
 
     def shard_failed(self, shard_name: str, error: _ExcInfo):
         """Callback method for when a shard worker has failed."""
+        assert self.shard_status[shard_name].is_producing
         ray.get(self.broker_ref._writer_exception.remote(shard_name, error))
 
     def _attempt_to_flush_buffers(self):
@@ -436,40 +461,36 @@ class ChunkCacheBuilder:
         # The global order on chunks is defined as "round robin" over shards, until one shard is done.
         # after that, that shard is removed from the round robin and the process continues.
         # round robin order is determined by self.source.shard_names
-        # So we loop over the shards in order. If we find a shard that has buffered chunks, we send
-        # the first chunk to the broker. If we find a shard that has no buffered chunks, we check
-        # if it's done. If it's done, we remove it from the list of buffered shards. If it's not done,
+
+        # we are happy to send chunks that form a prefix of the global order
+        # to do that, we find the first shard that is not "finished" and that has sent the minimum number of chunks that any shard has sent
+        # if it has a chunk, we queue it to send and keep looking.
+        # if it doesn't have a chunk, we stop.
+
+        # here "finished" means that the shard has sent all of its chunks and has told us that it's done.
+
         chunks_to_send = []
-        done = False
-        while not done:
-            found_one = False
-            for name in self.source.shard_names:
-                assert not done
-                if name not in self.buffered_shard_chunks:
-                    continue
 
-                shard_is_finished = name not in self.current_shard_tasks
+        while len(self._current_round_robin) > 0:
+            name = self._current_round_robin[0]
+            status = self.shard_status[name]
+            if status.is_finished:
+                # we're done with this shard, so we can remove it from the roundrobin
+                self._current_round_robin.pop(0)
+                continue
 
-                if len(self.buffered_shard_chunks[name]) == 0:
-                    if shard_is_finished:
-                        # we're done with this shard, so we can remove it
-                        del self.buffered_shard_chunks[name]
-                    else:
-                        # we can't send any chunks yet because we're waiting for a chunk from this shard
-                        done = True
-                        break
-
-                chunk = self.buffered_shard_chunks[name].pop(0)
-                chunks_to_send.append(chunk)
-                found_one = True
-
-                # check again
-                if len(self.buffered_shard_chunks[name]) == 0:
-                    if shard_is_finished:
-                        # we're done with this shard, so we can remove it
-                        del self.buffered_shard_chunks[name]
-
-            done = done or not found_one
+            # now let's see if we can send a chunk from this shard
+            next_chunk = status.pop_chunk_to_send()
+            if next_chunk is not None:
+                # we can send a chunk from this shard
+                self._current_round_robin.pop(0)
+                self._current_round_robin.append(name)
+                chunks_to_send.append(next_chunk)
+                continue
+            else:
+                logger.debug(f"Shard {name} has no chunks to send and is not known to be finished")
+                # we can't send a chunk from this shard, so we can't send any additional chunks
+                break
 
         if len(chunks_to_send) > 0:
             logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
