@@ -214,11 +214,11 @@ def main(config: TrainMptConfig):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
+                loss = next_token_loss(SeqLen, model.Vocab, pred_y, input_ids, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, Pos)
-                return logprobs.rearrange((EvalBatch, Pos)).array
+                logprobs = haliax.roll(logprobs, 1, SeqLen)
+                return logprobs.rearrange((EvalBatch, SeqLen)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
