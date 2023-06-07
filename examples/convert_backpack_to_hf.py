@@ -12,7 +12,7 @@ import haliax as hax
 import levanter
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
-from levanter.compat.hf_checkpoints import HFAutoMapConfig, _save_hf_checkpoint_local
+from levanter.compat.hf_checkpoints import HFAutoMapConfig, _save_backpack_hf_checkpoint_local
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 from levanter.utils.hf_utils import load_tokenizer
@@ -82,7 +82,7 @@ def main(config: ConvertConfig):
             with commit_and_upload_manager:
                 # commit_and_upload_manager will automatically upload the checkpoint to the hub
                 # it also cd's into the repo, so we can just save the checkpoint to the current directory
-                _save_hf_checkpoint_local(
+                _save_backpack_hf_checkpoint_local(
                     model=model,
                     path=".",
                     model_type=config.model_type,
@@ -91,7 +91,7 @@ def main(config: ConvertConfig):
                 if config.save_tokenizer:
                     tokenizer.save_pretrained(".")
         else:
-            _save_hf_checkpoint_local(
+            _save_backpack_hf_checkpoint_local(
                 model=model,
                 path=config.output_dir,
                 model_type=config.model_type,

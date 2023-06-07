@@ -30,8 +30,6 @@ from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
 from haliax import Axis
-from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_hooks import StepInfo
 
 
@@ -64,7 +62,7 @@ class RemoteRef:
 
 class ConfigWithHFSer(abc.ABC):
     @abc.abstractmethod
-    def to_hf_config(self) -> HfConfig:
+    def to_hf_config(self, vocab_size: int, config_overrides: Optional[dict] = None) -> HfConfig:
         pass
 
     @classmethod
@@ -254,47 +252,17 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     return config, checkpoint
 
 
-def hf_gpt2_config_to_levanter(config: HfGpt2Config) -> Gpt2Config:
-    levanter_config = Gpt2Config(
-        seq_len=config.n_positions,
-        # vocab_size=config.vocab_size,
-        num_layers=config.n_layer,
-        num_heads=config.n_head,
-        hidden_dim=config.n_embd,
-        initializer_range=config.initializer_range,
-        attn_pdrop=config.attn_pdrop,
-        embed_pdrop=config.embd_pdrop,
-        layer_norm_epsilon=config.layer_norm_epsilon,
-        activation_function=config.activation_function,
-        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-        upcast_attn=config.reorder_and_upcast_attn,
-    )
+def hf_gpt2_config_to_levanter(config: HfGpt2Config):
+    from levanter.models.gpt2 import Gpt2Config
 
-    return levanter_config
+    return Gpt2Config.from_hf_config(config)
 
 
-def gpt2_config_to_hf(vocab_size: int, config: Gpt2Config) -> HfGpt2Config:
-    hf_config = HfGpt2Config(
-        vocab_size=vocab_size,
-        n_positions=config.seq_len,
-        n_layer=config.num_layers,
-        n_head=config.num_heads,
-        n_embd=config.hidden_dim,
-        initializer_range=config.initializer_range,
-        attn_pdrop=config.attn_pdrop,
-        embd_pdrop=config.embed_pdrop,
-        layer_norm_epsilon=config.layer_norm_epsilon,
-        activation_function=config.activation_function,
-        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-        reorder_and_upcast_attn=config.upcast_attn,
-    )
-
-    return hf_config
+def gpt2_config_to_hf(vocab_size: int, config) -> HfGpt2Config:
+    return config.to_hf_config(vocab_size)
 
 
-def backpack_config_to_hf(
-    vocab_size: int, config: BackpackConfig, auto_map_config: Optional[HFAutoMapConfig] = None
-) -> HfConfig:
+def backpack_config_to_hf(vocab_size: int, config, auto_map_config: Optional[HFAutoMapConfig] = None) -> HfConfig:
     config = HfConfig(
         vocab_size=vocab_size,
         n_positions=config.seq_len,
@@ -316,7 +284,9 @@ def backpack_config_to_hf(
     return config
 
 
-def hf_backpack_config_to_levanter(config: HfConfig) -> BackpackConfig:
+def hf_backpack_config_to_levanter(config: HfConfig):
+    from levanter.models.backpack import BackpackConfig
+
     return BackpackConfig(
         seq_len=config.n_positions,
         num_layers=config.n_layer,
@@ -342,6 +312,8 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
     Vocab = Axis("vocab", config.vocab_size)
     lev_config = hf_gpt2_config_to_levanter(config)
     key = PRNGKey(0)
+    from levanter.models.gpt2 import Gpt2LMHeadModel
+
     model = Gpt2LMHeadModel.init(Vocab, lev_config, key=key)
 
     has_transformer_prefix = False
@@ -360,7 +332,7 @@ def load_hf_gpt2_checkpoint(location_or_id, device=None, revision=None):
     return model
 
 
-def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
+def _save_hf_gpt2_checkpoint_local(model, path):
     os.makedirs(path, exist_ok=True)
     config = gpt2_config_to_hf(model.vocab_size, model.config)
     with open(f"{path}/config.json", "w") as f:
@@ -389,8 +361,8 @@ def _save_hf_gpt2_checkpoint_local(model: Gpt2LMHeadModel, path):
         safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
 
 
-def _save_hf_checkpoint_local(
-    model: BackpackLMHeadModel,
+def _save_backpack_hf_checkpoint_local(
+    model,
     path: str,
     model_type: Optional[str] = None,
     auto_map_config: Optional[HFAutoMapConfig] = None,
@@ -427,7 +399,7 @@ def _is_url_like(path):
     return urllib.parse.urlparse(path).scheme != ""
 
 
-def save_hf_gpt2_checkpoint(model: Gpt2LMHeadModel, path, hf_repo: Optional[str] = None, **hf_upload_kwargs):
+def save_hf_gpt2_checkpoint(model, path, hf_repo: Optional[str] = None, **hf_upload_kwargs):
     """
     If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
     any additional kwargs to the huggingface_hub.upload_folder function.
@@ -448,6 +420,8 @@ def save_hf_gpt2_checkpoint(model: Gpt2LMHeadModel, path, hf_repo: Optional[str]
 
     try:
         logger.info(f"Saving HF-compatible checkpoint to {local_path}")
+        from levanter.models.gpt2 import Gpt2LMHeadModel
+
         _save_hf_gpt2_checkpoint_local(cast(Gpt2LMHeadModel, model), local_path)
         logger.debug(f"Finished saving HF-compatible checkpoint to {local_path}")
 
@@ -493,6 +467,8 @@ def save_hf_gpt2_checkpoint_callback(base_path, hf_repo: Optional[str] = None, *
             my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
         else:
             my_upload_kwargs = hf_upload_kwargs
+        from levanter.models.gpt2 import Gpt2LMHeadModel
+
         save_hf_gpt2_checkpoint(
             cast(Gpt2LMHeadModel, step.model), f"{base_path}/step-{step.step}", hf_repo=hf_repo, **my_upload_kwargs
         )
