@@ -329,7 +329,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
-class Gpt2LMHeadModel(eqx.Module, StateDictSerializationMixin, LmWithHFSer[Gpt2Config]):
+class Gpt2LMHeadModel(eqx.Module, LmWithHFSer[Gpt2Config]):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
 
