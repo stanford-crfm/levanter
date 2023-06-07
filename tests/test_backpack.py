@@ -1,5 +1,6 @@
 import glob
 import os
+import tempfile
 
 import jax
 import numpy as np
@@ -11,7 +12,11 @@ import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from levanter.compat.hf_checkpoints import backpack_config_to_hf, hf_backpack_config_to_levanter
+from levanter.compat.hf_checkpoints import (
+    backpack_config_to_hf,
+    hf_backpack_config_to_levanter,
+    load_hf_model_checkpoint,
+)
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 
@@ -84,17 +89,19 @@ def test_backpack_nano_compare():
 
     # now compare levanter
     lev_config = hf_backpack_config_to_levanter(config)
-    model_dict = model.state_dict()
+    # model_dict = model.state_dict()
 
-    roundtrip_hf_config = backpack_config_to_hf(vocab_size, lev_config)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model.save_pretrained(tmpdir)
+        loaded_config, loaded_checkpoint = load_hf_model_checkpoint(tmpdir)
+        roundtrip_hf_config = backpack_config_to_hf(vocab_size, lev_config)
 
-    for k, v in roundtrip_hf_config.__dict__.items():
-        assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
+        for k, v in roundtrip_hf_config.__dict__.items():
+            assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
 
-    Vocab = haliax.Axis("vocab", vocab_size)
-    lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    model_dict = {k: v.cpu().numpy() for k, v in model_dict.items()}
-    lev_model = lev_model.from_state_dict(model_dict)
+        Vocab = haliax.Axis("vocab", vocab_size)
+        lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
+        lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     attn_mask = hax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
@@ -111,10 +118,15 @@ def test_backpack_nano_compare():
         lev_model[k] = torch.from_numpy(np.array(v))
 
     model = cls(config)
-    lev_model["backpack.word_embeddings.weight"] = lev_model["backpack.gpt2_model.wte.weight"]
-    lev_model["backpack.position_embeddings.weight"] = lev_model["backpack.gpt2_model.wpe.weight"]
-    # TODO: switch to HF serialization in this test
     model.load_state_dict(lev_model, strict=False)
+
+    # # TODO: switch to HF serialization in this test
+    # with tempfile.TemporaryDirectory() as tmpdir:
+    #     _save_hf_checkpoint_local(lev_model, tmpdir, model_type="backpack-gpt2", auto_map_config=HFAutoMapConfig(
+    #         AutoConfig="backpack_config.BackpackGPT2Config",
+    #         AutoModelForCausalLM="backpack_model.BackpackGPT2LMHeadModel"
+    #     ))
+    #     model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()
     with torch.no_grad():

@@ -67,7 +67,10 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
         elif os.path.exists(f"{location_or_id}/{PYTORCH_MODEL}"):
             import torch
 
+            if isinstance(device, str):
+                device = torch.device(device)
             checkpoint = torch.load(f"{location_or_id}/{PYTORCH_MODEL}", map_location=device)
+            checkpoint = {k: v.cpu().numpy() for k, v in checkpoint.items()}
         else:
             raise ValueError(f"Could not find model file for {location_or_id}")
     else:
@@ -84,6 +87,7 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
             if isinstance(device, str):
                 device = torch.device(device)
             checkpoint = torch.load(model_path, map_location=device)
+            checkpoint = {k: v.cpu().numpy() for k, v in checkpoint.items()}
 
     return config, checkpoint
 
@@ -228,7 +232,6 @@ def _save_hf_checkpoint_local(
     path: str,
     model_type: Optional[str] = None,
     auto_map_config: Optional[HFAutoMapConfig] = None,
-    remap_state_dict_func=None,
 ):
     # Extract and save the model configuration
     to_hf_config_func = backpack_config_to_hf
@@ -248,9 +251,6 @@ def _save_hf_checkpoint_local(
 
     # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
     state_dict = model.to_state_dict()
-
-    if remap_state_dict_func is not None:
-        state_dict = remap_state_dict_func(state_dict, model.config)
 
     # now that we've moved the model to the CPU, we don't need to do this on all processes
     if jax.process_index() != 0:

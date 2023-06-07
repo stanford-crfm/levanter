@@ -365,3 +365,15 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
             "sense_net": "backpack.sense_network",
             "kq_selfattention": "backpack.sense_weight_net",
         }
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        state_dict = super().update_state_dict(state_dict, prefix=prefix)
+        # In levanter's implementation, we have a shared embedding matrix for both the word
+        # embeddings and the sense embeddings
+        state_dict[apply_prefix(prefix, "word_embeddings.weight")] = state_dict[
+            apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
+        ]
+        state_dict[apply_prefix(prefix, "position_embeddings.weight")] = state_dict[
+            apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
+        ]
+        return state_dict
