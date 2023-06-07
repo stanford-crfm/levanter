@@ -1,7 +1,8 @@
 # implements the necessary variations of GPT-2 to work with https://huggingface.co/mosaicml/mpt-7b in haliax/levanter
+import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Type, Union
 
 import equinox as eqx
 import jax
@@ -38,6 +39,15 @@ init_config_defaults: Dict = {
     "name": "kaiming_normal_",
     "verbose": 0,
 }
+
+LazyHfMPTConfig: Optional[Type] = None
+
+
+def _load_hf_mpt_config():
+    global LazyHfMPTConfig
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+    LazyHfMPTConfig = get_class_from_dynamic_module("modeling_mpt.MPTConfig", "mosaicml/mpt-7b", "modeling_mpt.py")
 
 
 @dataclass
@@ -121,7 +131,7 @@ class MptConfig:
             raise ValueError("init_config_defaults not supported yet.")
 
     @staticmethod
-    def from_torch_config(config):
+    def from_hf_config(config):
         return MptConfig(
             d_model=config.d_model,
             n_heads=config.n_heads,
@@ -138,47 +148,26 @@ class MptConfig:
             init_config=config.init_config,
         )
 
+    def to_hf_config(self, vocab_size):
+        if LazyHfMPTConfig is None:
+            _load_hf_mpt_config()
 
-# Torch code:
-# class MPTMLP(nn.Module):
-#
-#     def __init__(self, d_model: int, expansion_ratio: int, device: Optional[str]=None):
-#         super().__init__()
-#         self.up_proj = nn.Linear(d_model, expansion_ratio * d_model, device=device)
-#         self.act = nn.GELU(approximate='none')
-#         self.down_proj = nn.Linear(expansion_ratio * d_model, d_model, device=device)
-#         self.down_proj._is_residual = True
-#
-#     def forward(self, x):
-#         return self.down_proj(self.act(self.up_proj(x)))
-#
-# class MPTBlock(nn.Module):
-#
-#     def __init__(self, d_model: int, n_heads: int, expansion_ratio: int, attn_config: Dict={'attn_type': 'multihead_attention', 'attn_pdrop': 0.0, 'attn_impl': 'triton', 'qk_ln': False, 'clip_qkv': None, 'softmax_scale': None, 'prefix_lm': False, 'attn_uses_sequence_id': False, 'alibi': False, 'alibi_bias_max': 8}, resid_pdrop: float=0.0, norm_type: str='low_precision_layernorm', device: Optional[str]=None, **kwargs):
-#         del kwargs
-#         super().__init__()
-#         norm_class = NORM_CLASS_REGISTRY[norm_type.lower()]
-#         attn_class = ATTN_CLASS_REGISTRY[attn_config['attn_type']]
-#         self.norm_1 = norm_class(d_model, device=device)
-#         self.attn = attn_class(attn_impl=attn_config['attn_impl'], clip_qkv=attn_config['clip_qkv'], qk_ln=attn_config['qk_ln'], softmax_scale=attn_config['softmax_scale'], attn_pdrop=attn_config['attn_pdrop'], d_model=d_model, n_heads=n_heads, device=device)
-#         self.norm_2 = norm_class(d_model, device=device)
-#         self.ffn = MPTMLP(d_model=d_model, expansion_ratio=expansion_ratio, device=device)
-#         self.resid_attn_dropout = nn.Dropout(resid_pdrop)
-#         self.resid_ffn_dropout = nn.Dropout(resid_pdrop)
-#
-#     def forward(self, x: torch.Tensor, past_key_value: Optional[Tuple[torch.Tensor]]=None, attn_bias: Optional[torch.Tensor]=None, attention_mask: Optional[torch.ByteTensor]=None, is_causal: bool=True) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor]]]:
-#         a = self.norm_1(x)
-#         (b, _, past_key_value) = self.attn(a, past_key_value=past_key_value, attn_bias=attn_bias, attention_mask=attention_mask, is_causal=is_causal)
-#         x = x + self.resid_attn_dropout(b)
-#         m = self.norm_2(x)
-#         n = self.ffn(m)
-#         x = x + self.resid_ffn_dropout(n)
-#         return (x, past_key_value)
-
-# Haliax code:
-# the MLP is the same as GPT-2 MLP with the following settings:
-# * non-approximate GELU
-# * no bias terms by default
+        return LazyHfMPTConfig(
+            d_model=self.d_model,
+            n_heads=self.n_heads,
+            n_layers=self.n_layers,
+            expansion_ratio=self.expansion_ratio,
+            max_seq_len=self.max_seq_len,
+            resid_pdrop=self.resid_pdrop,
+            emb_pdrop=self.emb_pdrop,
+            learned_pos_emb=self.learned_pos_emb,
+            attn_config=dataclasses.asdict(self.attn_config),
+            no_bias=not self.use_bias,
+            embedding_fraction=self.embedding_fraction,
+            logit_scale=self.logit_scale,
+            init_config=self.init_config,
+            vocab_size=vocab_size,
+        )
 
 
 class MptMlp(eqx.Module, StateDictSerializationMixin):
@@ -447,7 +436,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
 
         del model
 
-        lev_config = MptConfig.from_torch_config(config)  # type: ignore
+        lev_config = MptConfig.from_hf_config(config)  # type: ignore
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):

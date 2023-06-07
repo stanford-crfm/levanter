@@ -47,8 +47,13 @@ def test_mpt_nano_compare(use_bias):
         torch_out = torch_out.logits[0].detach().cpu().numpy()
 
     # now compare levanter
-    lev_config = MptConfig.from_torch_config(config)
+    lev_config = MptConfig.from_hf_config(config)
     model_dict = model.state_dict()
+
+    roundtrip_hf_config = lev_config.to_hf_config(vocab_size)
+    # for reasons I don't understand, this flag is present in the config but not in the model
+    setattr(roundtrip_hf_config, "dropout", 0.0)
+    assert config == roundtrip_hf_config
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
