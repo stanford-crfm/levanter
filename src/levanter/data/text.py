@@ -199,12 +199,21 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         try:
             ledger = _load_cache_ledger(cache_dir)
         except FileNotFoundError:
+            logger.info("new cache format not found, trying to convert from old format")
             try:
                 ledger = _load_old_ledger(cache_dir)
+                logger.info("old cache format found, converting to new format")
                 ledger = _convert_to_new_ledger(cache_dir, ledger)
                 _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
             except FileNotFoundError:
+                logger.warning("old cache format not found, creating new cache")
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+            except Exception:
+                logger.exception("error converting cache")
+                raise
+        except Exception:
+            logger.exception("error loading cache")
+            raise
 
         return TokenizedDocumentCache(cache_dir, ledger.chunks, flatten_docs)
 

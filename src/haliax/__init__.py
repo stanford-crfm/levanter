@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 import haliax.random as random
 from haliax import nn as nn
+from haliax import tree_util as tree_util
 
 from .core import (
     NamedArray,
@@ -86,6 +87,29 @@ def stack(axis: AxisSelector, arrays: Sequence[NamedArray]) -> NamedArray:
         return zeros(axis)
     arrays = [a.rearrange(arrays[0].axes) for a in arrays]
     return NamedArray(jnp.stack([a.array for a in arrays], axis=0), (axis,) + arrays[0].axes)
+
+
+def concatenate(axis: AxisSelector, arrays: Sequence[NamedArray]) -> NamedArray:
+    """Version of jnp.concatenate that returns a NamedArray"""
+    total_size = _sum(a.resolve_axis(axis).size for a in arrays)
+    if isinstance(axis, str):
+        axis = Axis(axis, total_size)
+    elif total_size != axis.size:
+        raise ValueError(
+            f"Cannot concatenate arrays along axis {axis.name} of size {axis.size} with total size {total_size}"
+        )
+
+    if len(arrays) == 0:
+        return zeros(axis)
+
+    arrays = [a.rearrange(arrays[0].axes) for a in arrays]
+    axis_index = arrays[0]._lookup_indices(axis.name)
+
+    if axis_index is None:
+        raise ValueError(f"Axis {axis.name} not found in 0th array {arrays[0]}")
+
+    new_axes = arrays[0].axes[:axis_index] + (axis,) + arrays[0].axes[axis_index + 1 :]
+    return NamedArray(jnp.concatenate([a.array for a in arrays], axis=axis_index), new_axes)
 
 
 # elementwise unary operations
@@ -180,6 +204,7 @@ ptp: ReductionFunction = wrap_reduction_call(jnp.ptp)
 product: ReductionFunction = wrap_reduction_call(jnp.product)
 sometrue: ReductionFunction = wrap_reduction_call(jnp.sometrue)
 std: ReductionFunction = wrap_reduction_call(jnp.std)
+_sum = sum
 sum: ReductionFunction = wrap_reduction_call(jnp.sum)
 var: ReductionFunction = wrap_reduction_call(jnp.var)
 
@@ -388,4 +413,6 @@ __all__ = [
     "are_shape_checks_enabled",
     "isclose",
     "pad_left",
+    "stack",
+    "concatenate",
 ]
