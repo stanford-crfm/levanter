@@ -1,12 +1,10 @@
 import numpy as onp
 import transformers
-
 from jax.random import PRNGKey
-from transformers import AutoModelForCausalLM
-from transformers import GPT2LMHeadModel, GPT2Config
+from test_utils import skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible, skip_if_no_torch
+from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel
 
 import haliax as hax
-
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
@@ -14,7 +12,6 @@ from levanter.compat.hf_checkpoints import hf_backpack_config_to_levanter, hf_gp
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
-from test_utils import skip_if_no_torch, skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible
 
 
 HF_BACKPACK = "stanford-crfm/levanter-backpacks-test"

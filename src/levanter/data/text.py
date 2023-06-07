@@ -31,7 +31,6 @@ from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
-    DEFAULT_ROWS_PER_CHUNK,
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
