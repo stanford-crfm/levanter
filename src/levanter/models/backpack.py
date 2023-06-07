@@ -11,6 +11,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
+from haliax.util import ensure_tuple
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -56,15 +57,10 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act)
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-
         d = {}
+        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
         d.update(
-            reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
-            )
+            reshape_mlp_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), out_dims)
         )
         d.update(
             reshape_mlp_linear_layer(
@@ -151,7 +147,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         num_heads = self.config.Senses.size
         sense_head_size = self.config.SenseHeadDim.size
         d.update(
-            reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, num_heads, sense_head_size))
+            reshape_mlp_linear_layer(
+                state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, num_heads, sense_head_size)
+            )
         )
         return super().from_state_dict(d, prefix)
 
@@ -366,4 +364,9 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return lm_logits
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
-        return {"transformer": None, "embeddings": None}
+        return {
+            "transformer": "backpack.gpt2_model",
+            "embeddings": "backpack.gpt2_model",
+            "sense_net": "backpack.sense_network",
+            "kq_selfattention": "backpack.sense_weight_net",
+        }

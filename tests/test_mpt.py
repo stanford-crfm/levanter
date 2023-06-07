@@ -28,7 +28,6 @@ def test_mpt_nano_compare(use_bias):
         max_seq_len=512,
         n_heads=8,
         n_layers=2,
-        dropout=0.0,
         attn_config={"attn_impl": "torch", "alibi": True},
         vocab_size=vocab_size,
         no_bias=not use_bias,
@@ -52,7 +51,6 @@ def test_mpt_nano_compare(use_bias):
 
     roundtrip_hf_config = lev_config.to_hf_config(vocab_size)
     # for reasons I don't understand, this flag is present in the config but not in the model
-    setattr(roundtrip_hf_config, "dropout", 0.0)
     assert config == roundtrip_hf_config
 
     Vocab = haliax.Axis("vocab", vocab_size)
