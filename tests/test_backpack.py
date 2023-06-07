@@ -55,10 +55,10 @@ def test_backpack_nano_compare():
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = get_class_from_dynamic_module(
-        "modeling_backpack_gpt2.BackpackGPT2LMHeadModel", "stanfordnlp/backpack-gpt2", "modeling_backpack_gpt2.py"
+        "backpack_model.BackpackGPT2LMHeadModel", "stanford-crfm/levanter-backpack-1b", "backpack_model.py"
     )
     HFConfig = get_class_from_dynamic_module(
-        "configuration_backpack_gpt2.BackpackGPT2Config", "stanfordnlp/backpack-gpt2", "configuration_backpack_gpt2.py"
+        "backpack_config.BackpackGPT2Config", "stanford-crfm/levanter-backpack-1b", "backpack_config.py"
     )
     config = HFConfig(
         n_embd=32,
@@ -70,6 +70,7 @@ def test_backpack_nano_compare():
     )
 
     model = cls(config)
+    model.tie_weights()
 
     # conjure a fake input
     input = jax.random.randint(PRNGKey(0), (512,), 0, vocab_size)
@@ -92,6 +93,7 @@ def test_backpack_nano_compare():
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
+    model_dict = {k: v.cpu().numpy() for k, v in model_dict.items()}
     lev_model = lev_model.from_state_dict(model_dict)
 
     hax_input = haliax.named(input, lev_config.Pos)
@@ -109,6 +111,8 @@ def test_backpack_nano_compare():
         lev_model[k] = torch.from_numpy(np.array(v))
 
     model = cls(config)
+    lev_model["backpack.word_embeddings.weight"] = lev_model["backpack.gpt2_model.wte.weight"]
+    lev_model["backpack.position_embeddings.weight"] = lev_model["backpack.gpt2_model.wpe.weight"]
     model.load_state_dict(lev_model)
 
     model.eval()

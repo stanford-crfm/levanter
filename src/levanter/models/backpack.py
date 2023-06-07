@@ -1,5 +1,6 @@
+import math
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Union, cast
+from typing import Callable, Dict, Optional, Union
 
 import equinox as eqx
 import jax
@@ -16,8 +17,9 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    reshape_linear_layer,
+    flatten_linear_layer,
     reshape_mlp_linear_layer,
+    unflatten_linear_layer,
 )
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
 
@@ -73,9 +75,11 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
+        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
+
         my_dict.update(
             reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
+                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (math.prod(out_dims),)
             )
         )
         my_dict.update(
@@ -142,13 +146,10 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        es = cast(Axis, self.c_attn.In).size
         d = {}
-        num_heads = self.config.Senses.size
-        sense_head_size = self.config.SenseHeadDim.size
         d.update(
-            reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, num_heads, sense_head_size)
+            unflatten_linear_layer(
+                apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
             )
         )
         return super().from_state_dict(d, prefix)
@@ -159,13 +160,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        es = cast(Axis, self.c_attn.In).size
-        num_heads = self.config.Senses.size
-        sense_head_size = self.config.SenseHeadDim.size
-
-        my_dict.update(
-            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * num_heads * sense_head_size,))
-        )
+        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
 
         state_dict.update(my_dict)
         return state_dict
