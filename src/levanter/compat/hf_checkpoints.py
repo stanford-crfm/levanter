@@ -71,6 +71,26 @@ class ConfigWithHFSer(abc.ABC):
         pass
 
 
+MConfig = TypeVar("MConfig", bound=ConfigWithHFSer)
+
+
+class LmWithHFSer(abc.ABC, Generic[MConfig]):
+    config: MConfig
+
+    def get_hf_config(self):
+        return self.config.to_hf_config(self.Vocab.size)
+
+    @property
+    @abc.abstractmethod
+    def Vocab(self) -> Axis:
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHFSer":
+        pass
+
+
 def _coerce_to_rr(s: Union[str, RemoteRef]) -> RemoteRef:
     if isinstance(s, RemoteRef):
         return s
