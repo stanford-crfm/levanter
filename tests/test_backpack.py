@@ -113,7 +113,8 @@ def test_backpack_nano_compare():
     model = cls(config)
     lev_model["backpack.word_embeddings.weight"] = lev_model["backpack.gpt2_model.wte.weight"]
     lev_model["backpack.position_embeddings.weight"] = lev_model["backpack.gpt2_model.wpe.weight"]
-    model.load_state_dict(lev_model)
+    # TODO: switch to HF serialization in this test
+    model.load_state_dict(lev_model, strict=False)
 
     model.eval()
     with torch.no_grad():
