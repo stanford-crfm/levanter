@@ -15,7 +15,13 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
 import haliax as hax
 from haliax import Axis
-from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint, save_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import (
+    HFCheckpointConverter,
+    RemoteRef,
+    load_hf_gpt2_checkpoint,
+    load_hf_model_checkpoint,
+    save_hf_gpt2_checkpoint,
+)
 from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -42,8 +48,9 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     if torch.cuda.is_available():
         device = "cuda"
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision, device=device)
-    config = HfGpt2Config.from_dict(config)
+    converter = HFCheckpointConverter(Gpt2Config, RemoteRef(model_id, revision), HfGpt2Config)
+
+    config = converter.default_hf_config
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
     torch_model.eval()
 

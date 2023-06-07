@@ -124,13 +124,16 @@ LevConfig = TypeVar("LevConfig", bound=ConfigWithHFSer)
 class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     LevConfigClass: Type[LevConfig]
     reference_checkpoint: Optional[Union[str, RemoteRef]] = None
-    hf_config_class: Optional[Union[str, Type]] = None
     "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
+
+    hf_config_class: Optional[Union[str, Type]] = None
+    "The HFConfig class to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
     "A dictionary of config overrides to apply to the HFConfig when saving. typically used for auto_map"
 
     trust_remote_code: bool = False
+    "If True, will trust the remote code and not download it locally."
 
     def __post_init__(self):
         self.reference_checkpoint = _coerce_to_rr(self.reference_checkpoint)
@@ -156,6 +159,15 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
             return HFConfig
         else:
             return self.hf_config_class
+
+    @cached_property
+    def default_hf_config(self) -> HfConfig:
+        path, rev = self._get_ref(None)
+        return AutoConfig.from_pretrained(
+            path,
+            revision=rev,
+            trust_remote_code=self.trust_remote_code,
+        )
 
     def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
         # figure out the
