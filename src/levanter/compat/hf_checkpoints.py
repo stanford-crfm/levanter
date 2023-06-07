@@ -123,6 +123,9 @@ class HFAutoMapConfig:
 
 LevConfig = TypeVar("LevConfig", bound=ConfigWithHFSer)
 
+# just for generating unique ids
+_GLOBAL_SAVE_COUNT = 0
+
 
 @dataclass
 class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
@@ -271,9 +274,12 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
             axis_mapping: The axis mapping to use for sharding. If None, will use the default axis mapping
         """
         state_dict = self.load_state_dict(ref)
-        config = self.config_from_hf_checkpoint(ref)
+        hf_config = self.hf_config_from_hf_checkpoint(ref)
+        config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.default_Vocab
+        vocab_size = hf_config.vocab_size
+
+        Vocab = self.default_Vocab.resize(vocab_size)
 
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
@@ -293,6 +299,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         return lev_model
 
     def save_model_local(self, model: LmWithHFSer, path: str):
+        logger.info(f"Saving HF-compatible checkpoint to {path}")
         os.makedirs(path, exist_ok=True)
         config = model.config.to_hf_config(model.Vocab.size)
         dict_config = config.to_dict()
@@ -324,6 +331,66 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         if jax.process_index() == 0:
             # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
             safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
+
+        global _GLOBAL_SAVE_COUNT
+        sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
+        _GLOBAL_SAVE_COUNT += 1
+        logger.info(f"Finished saving HF-compatible checkpoint to {path}")
+
+    def save_model(
+        self, model: LmWithHFSer, path, upload_to_hf: Union[bool, str, RemoteRef] = False, **hf_upload_kwargs
+    ):
+        """
+        If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
+        any additional kwargs to the huggingface_hub.upload_folder function.
+
+        :param path: the path to save the checkpoint to. path may be a GCS bucket path or other fsspec path,
+        in which case the checkpoint will be uploaded to GCS after being written to a tmpdir
+        :param model: the model to save
+        :param hf_repo: if provided, the checkpoint will be uploaded to the huggingface hub. If True, will use
+        the reference_checkpoint as the repo name
+        :param hf_upload_kwargs: any additional kwargs to pass to huggingface_hub.upload_folder
+        :return:
+        """
+        tmpdir: Optional[str] = None
+        if _is_url_like(path):
+            tmpdir = tempfile.mkdtemp()
+            logger.info(f"Saving model to {path} via temp path {tmpdir}")
+            local_path = tmpdir
+        else:
+            local_path = path
+
+        if isinstance(upload_to_hf, (str, RemoteRef)):
+            hf_repo, hf_branch = self._get_ref(upload_to_hf)
+        elif upload_to_hf is True:
+            hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
+        else:
+            hf_repo = None
+
+        self.save_model_local(model, local_path)
+
+        try:
+            if jax.process_index() == 0:
+                if tmpdir is not None:  # we're uploading to GCS or similar
+                    logger.info(f"Copying HF-compatible checkpoint to {path}")
+                    fs: AbstractFileSystem
+                    fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
+                    fs.put(os.path.join(local_path, "*"), path, recursive=True)
+                    logger.info(f"Finished copying HF-compatible checkpoint to {path}")
+
+                if hf_repo is not None:
+                    logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
+                    huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+                    logger.info(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
+            else:
+                logger.info(f"Waiting for process 0 to finish saving checkpoint to {path}")
+
+            global _GLOBAL_SAVE_COUNT
+            sync_global_devices(f"upload? {path}{_GLOBAL_SAVE_COUNT}")
+            _GLOBAL_SAVE_COUNT += 1
+        finally:
+            if tmpdir is not None:
+                shutil.rmtree(tmpdir)
 
 
 def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
