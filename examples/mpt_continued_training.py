@@ -16,7 +16,7 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit
 from levanter import callbacks
-from levanter.config import TrainerConfig
+from levanter.config import OptimizerConfig, TrainerConfig
 from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
@@ -40,6 +40,7 @@ class TrainMptConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     initialize_from: str = "mosaicml/mpt-7b"
+    optimizer: OptimizerConfig = OptimizerConfig()
 
     seq_len: Optional[int] = None
 
@@ -126,7 +127,7 @@ def main(config: TrainMptConfig):
 
         # initialize the optimizer
         # This is basically the same as the model.
-        optimizer = config.trainer.optimizer()
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
         opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
@@ -177,42 +178,20 @@ def main(config: TrainMptConfig):
 
             return loss, model, opt_state
 
-        # evaluation loss and loop
-
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
             mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            return hax.mean(compute_loss(model, input_ids, mask))
-
-        # Set up evaluation
-        def evaluate_step(info: StepInfo):
-            with hax.axis_mapping(compute_axis_mapping):
-                # standard evaluation loop
-                loss = 0.0
-                n = 0
-
-                for batch in eval_dataset:
-                    this_loss = eval_loss(model, batch)
-                    loss += this_loss.item()
-                    n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
-                        break
-
-                if n > 0:
-                    loss /= n
-
-            logger.info(f"validation loss: {loss:.3f}")
-            if wandb.run is not None:
-                wandb.log({"eval/loss": loss}, step=info.step)
-
-            return loss
+            return hax.mean(compute_loss(model, input_ids, mask, None, True)).scalar()
 
         # boilerplate hooks and such
         engine = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(SeqLen.size, config.trainer.train_batch_size), every=1)
-        engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        engine.add_hook(
+            callbacks.compute_validation_loss(eval_loss, eval_dataset, max_batches=config.trainer.max_eval_batches),
+            every=config.trainer.steps_per_eval,
+        )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
@@ -224,28 +203,29 @@ def main(config: TrainMptConfig):
             engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
 
         # visualize log probs
-        # @named_jit(axis_resources=parameter_axis_mapping)
-        # def compute_log_probs(model, input_ids):
-        #     attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
-        #     attn_mask = hax.auto_sharded(attn_mask)
-        #
-        #     with hax.axis_mapping(compute_axis_mapping):
-        #         model = mp.cast_to_compute(model)
-        #
-        #         pred_y = model(input_ids, attn_mask)
-        #         pred_y = mp.cast_to_output(pred_y)
-        #         loss = next_token_loss(SeqLen, model.Vocab, pred_y, input_ids, reduction=None)
-        #         logprobs = -loss
-        #         # roll forward to get the loss for each predicted token
-        #         logprobs = haliax.roll(logprobs, 1, SeqLen)
-        #         return logprobs.rearrange(("batch", SeqLen)).array
-        #
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def compute_log_probs(model, input_ids):
+            """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
+            attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
+            attn_mask = hax.auto_sharded(attn_mask)
+
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+
+                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = mp.cast_to_output(pred_y)
+                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
+                logprobs = -loss
+                # roll forward to get the loss for each predicted token
+                logprobs = haliax.roll(logprobs, 1, Pos)
+                return logprobs.rearrange((EvalBatch, Pos)).array
+
+        engine.add_hook(
+            callbacks.compute_and_visualize_log_probs(
+                eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+            ),
+            every=config.trainer.steps_per_eval,
+        )
 
         # data loader
         iter_data = non_caching_cycle(dataset)

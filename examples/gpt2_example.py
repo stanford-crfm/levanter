@@ -7,7 +7,6 @@ import equinox as eqx
 import jax.random as jrandom
 import jmp
 from jax.sharding import PartitionSpec
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.random
@@ -52,7 +51,7 @@ class TrainGpt2Config:
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
 
-    tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+    tokenizer = config.data.the_tokenizer
 
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
