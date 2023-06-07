@@ -43,13 +43,12 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
 
-    converter = HFCheckpointConverter(Gpt2Config, RemoteRef(model_id, revision), HfGpt2Config)
+    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
 
-    config = converter.default_hf_config
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
+    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel)
+    model = converter.load_lm_model(Gpt2LMHeadModel, RemoteRef(model_id, revision=revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -71,7 +70,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     with tempfile.TemporaryDirectory() as tmpdir:
         save_hf_gpt2_checkpoint(model, tmpdir)
 
-        torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir, config=config)
+        torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
 
         torch_out2 = torch_model2(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
@@ -91,13 +90,11 @@ def test_hf_gradient():
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
 
-    converter = HFCheckpointConverter(Gpt2Config, RemoteRef(model_id, revision), HfGpt2Config)
-
-    config = converter.default_hf_config
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
+    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
+    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel)
+    model = converter.load_lm_model(Gpt2LMHeadModel, RemoteRef(model_id, revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 

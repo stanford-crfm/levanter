@@ -138,6 +138,10 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     trust_remote_code: bool = False
     "If True, will trust the remote code and not download it locally."
 
+    ignore_prefix: Optional[str] = None
+    """A prefix to optionally ignore when loading checkpoints. Typically this is 'transformer' to deal with the
+    fact that some models are saved as XXXPreTrainedModel and others are saved as XXXLMHeadModel"""
+
     def __post_init__(self):
         self.reference_checkpoint = _coerce_to_rr(self.reference_checkpoint)
 
@@ -165,12 +169,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
 
     @cached_property
     def default_hf_config(self) -> HfConfig:
-        path, rev = self._get_ref(None)
-        return AutoConfig.from_pretrained(
-            path,
-            revision=rev,
-            trust_remote_code=self.trust_remote_code,
-        )
+        return self.hf_config_from_hf_checkpoint(None)
 
     def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
         # figure out the
@@ -259,8 +258,8 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     def load_lm_model(
         self,
         lm_model_cls: Type[LmWithHFSer],
-        Vocab: Optional[Axis] = None,
         ref: Optional[Union[str, RemoteRef]] = None,
+        Vocab: Optional[Axis] = None,
         axis_mapping: Optional[ResourceMapping] = None,
     ) -> LmWithHFSer:
         state_dict = self.load_state_dict(ref)
@@ -268,10 +267,17 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
 
         Vocab = Vocab or self.default_Vocab
 
+        ignore_prefix: Optional[str] = None
+        if self.ignore_prefix:
+            for k in state_dict.keys():
+                if k.startswith(f"{self.ignore_prefix}."):
+                    ignore_prefix = self.ignore_prefix
+                    break
+
         # TODO: i still think this isn't the best way to do this
         with jax.default_device(jax.devices("cpu")[0]):
             lev_model = filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-            lev_model = lev_model.from_state_dict(state_dict)
+            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
         if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
