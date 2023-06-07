@@ -8,7 +8,7 @@ from test_utils import skip_if_no_torch
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 import haliax
-from levanter.models.mpt import MPTConfig, MptConfig, MptLmHeadModel
+from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
 @skip_if_no_torch
@@ -22,6 +22,7 @@ def test_mpt_nano_compare(use_bias):
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = get_class_from_dynamic_module("modeling_mpt.MPTForCausalLM", "mosaicml/mpt-7b", "modeling_mpt.py")
+    MPTConfig = get_class_from_dynamic_module("modeling_mpt.MPTConfig", "mosaicml/mpt-7b", "modeling_mpt.py")
     config = MPTConfig(
         d_model=32,
         max_seq_len=512,
