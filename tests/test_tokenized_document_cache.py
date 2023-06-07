@@ -3,11 +3,10 @@ from typing import List, Sequence, TypeVar
 
 import pytest
 import ray
-
-from haliax import Axis
 from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 from transformers import AutoTokenizer, BatchEncoding
 
+from haliax import Axis
 from levanter.data.shard_cache import ShardedDataSource, cache_dataset
 from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 
