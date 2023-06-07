@@ -20,8 +20,7 @@ trainer:
     tags: ["pile", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1.2E-4
-  weight_decay: 0.1
+
 
   per_device_parallelism: 4
   per_device_eval_parallelism: 4
@@ -38,3 +37,8 @@ trainer:
   # ZERO-3
   parameter_axis_resources:
     embed: "data"
+
+optimizer:
+  learning_rate: 1.2E-4
+  weight_decay: 0.1
+  min_lr_ratio: 0.1

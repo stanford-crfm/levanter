@@ -17,10 +17,11 @@ trainer:
     tags: [ "openwebtext", "gpt2", "itest"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1E-3
-  weight_decay: 0.1
   model_axis_size: 1
   per_device_parallelism: 8
 
   train_batch_size: 256
   num_train_steps: 20000
+optimizer:
+  learning_rate: 1E-3
+  weight_decay: 0.1

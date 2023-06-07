@@ -17,6 +17,7 @@ trainer:
     tags: [ "pubmed", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1E-4
   model_axis_size: 2
   per_device_parallelism: 1
+optimizer:
+  learning_rate: 1E-4
