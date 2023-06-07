@@ -1,3 +1,4 @@
+import abc
 import json
 import logging
 import os
@@ -5,7 +6,8 @@ import shutil
 import tempfile
 import urllib.parse
 from dataclasses import dataclass
-from typing import Optional, Union, cast
+from functools import cached_property
+from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 
 import fsspec
 import huggingface_hub
@@ -20,8 +22,12 @@ from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import GPT2Config as HfGpt2Config
 from transformers import PretrainedConfig as HfConfig
+from transformers import PreTrainedTokenizer
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers.models.auto.auto_factory import _get_model_class
 
 from haliax import Axis
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
@@ -34,6 +40,33 @@ logger = logging.getLogger(__name__)
 
 PYTORCH_MODEL = "pytorch_model.bin"
 SAFE_TENSORS_MODEL = "model.safetensors"
+
+
+@dataclass
+class RemoteRef:
+    model_name_or_path: str
+    revision: Optional[str] = None
+
+    @staticmethod
+    def from_string(s: str) -> "RemoteRef":
+        """syntax is <model_name_or_path>@<revision>"""
+        if "@" not in s:
+            return RemoteRef(s)
+        model_name_or_path, revision = s.split("@")
+        return RemoteRef(model_name_or_path, revision)
+
+    def __str__(self) -> str:
+        return f"{self.model_name_or_path}@{self.revision}"
+
+    def __repr__(self) -> str:
+        return f"RemoteRev({self.model_name_or_path!r}, {self.revision!r})"
+
+
+def _coerce_to_rr(s: Union[str, RemoteRef]) -> RemoteRef:
+    if isinstance(s, RemoteRef):
+        return s
+    else:
+        return RemoteRef.from_string(s)
 
 
 @dataclass
@@ -55,13 +88,134 @@ class HFAutoMapConfig:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
+LevConfig = TypeVar("LevConfig")
+
+
+@dataclass
+class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
+    LevConfigClass: Type[LevConfig]
+    reference_checkpoint: Optional[Union[str, RemoteRef]] = None
+    hf_config_class: Optional[Union[str, Type]] = None
+    "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
+
+    config_overrides: Optional[dict] = None
+    "A dictionary of config overrides to apply to the HFConfig when saving. typically used for auto_map"
+
+    trust_remote_code: bool = False
+
+    def __post_init__(self):
+        self.reference_checkpoint = _coerce_to_rr(self.reference_checkpoint)
+
+    @cached_property
+    def HFConfigClass(self) -> Type:
+        if self.hf_config_class is None:
+            path, rev = self._get_ref(None)
+            config = AutoConfig.from_pretrained(
+                path,
+                revision=rev,
+                trust_remote_code=self.trust_remote_code,
+            )
+            return type(config)
+        elif isinstance(self.hf_config_class, str):
+            path, rev = self._get_ref(None)
+            HFConfig = get_class_from_dynamic_module(
+                self.hf_config_class,
+                path,
+                revision=rev,
+                local_files_only=not self.trust_remote_code,
+            )
+            return HFConfig
+        else:
+            return self.hf_config_class
+
+    def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
+        # figure out the
+        config = self.hf_config_from_hf_checkpoint()
+        cls_name = auto_class.__name__
+        if hasattr(config, "auto_map") and cls_name in config.auto_map:
+            class_ref = config.auto_map[cls_name]
+            path, rev = self._get_ref(None)
+            model_class = get_class_from_dynamic_module(
+                class_ref,
+                path,
+                revision=rev,
+                local_files_only=not self.trust_remote_code,
+            )
+            return model_class  # type: ignore
+        elif type(config) in auto_class._model_mapping.keys():
+            model_class = _get_model_class(config, auto_class._model_mapping)
+            return model_class
+
+        raise ValueError(f"Could not find model class {auto_class} for {config}")
+
+    def load_tokenizer(self, ref: Optional[Union[str, RemoteRef]] = None) -> PreTrainedTokenizer:
+        path, rev = self._get_ref(ref)
+        tokenizer = AutoTokenizer.from_pretrained(rev, revision=rev, trust_remote_code=self.trust_remote_code)
+        return tokenizer
+
+    def config_from_hf_config(self, hf_config) -> LevConfig:
+        return self.LevConfigClass.from_hf_config(hf_config)  # type: ignore
+
+    def config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> LevConfig:
+        config = self.hf_config_from_hf_checkpoint(ref)
+        return self.config_from_hf_config(config)
+
+    def hf_config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> HfConfig:
+        path, rev = self._get_ref(ref)
+        config = AutoConfig.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
+        return config
+
+    def _get_ref(self, ref) -> Tuple[str, Optional[str]]:
+        if ref is None:
+            if self.reference_checkpoint is None:
+                raise ValueError("Must provide a reference checkpoint to load HFConfig from")
+            ref = self.reference_checkpoint
+        ref = _coerce_to_rr(ref)
+        return ref.model_name_or_path, ref.revision
+
+    def load_state_dict(self, ref: Optional[Union[str, RemoteRef]] = None):
+        if ref is None:
+            ref = self.reference_checkpoint
+        if ref is None:
+            raise ValueError("Must provide a checkpoint to load from")
+
+        if os.path.exists(f"{ref}/{SAFE_TENSORS_MODEL}"):
+            state_dict = safetensors.numpy.load_file(f"{ref}/{SAFE_TENSORS_MODEL}")
+        elif os.path.exists(f"{ref}/{PYTORCH_MODEL}"):
+            import torch
+
+            device = torch.device("cpu")
+            state_dict = torch.load(f"{ref}/{PYTORCH_MODEL}", map_location=device)
+            state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+        else:
+            ref = _coerce_to_rr(ref)
+            try:
+                model_path = hf_hub_download(ref.model_name_or_path, SAFE_TENSORS_MODEL, revision=ref.revision)
+                state_dict = safetensors.numpy.load_file(model_path)
+            except EntryNotFoundError:  # noqa: E722
+                model_path = hf_hub_download(ref.model_name_or_path, PYTORCH_MODEL, revision=ref.revision)
+                import torch
+
+                device = torch.device("cpu")
+                state_dict = torch.load(model_path, map_location=device)
+                state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+
+        return state_dict
+
+
 def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
     """
     Loads a safetensors or PyTorch model checkpoint.
     If model_file is None, this function attempts to load via safetensors first, then PyTorch.
     """
-    if os.path.exists(f"{location_or_id}/config.json"):
+    local = os.path.exists(f"{location_or_id}/config.json")
+    if local:
         config = json.load(open(f"{location_or_id}/config.json"))
+    else:
+        config_path = hf_hub_download(location_or_id, "config.json", revision=revision)
+        config = json.load(open(config_path))
+
+    if local:
         if os.path.exists(f"{location_or_id}/{SAFE_TENSORS_MODEL}"):
             checkpoint = safetensors.numpy.load_file(f"{location_or_id}/{SAFE_TENSORS_MODEL}")
         elif os.path.exists(f"{location_or_id}/{PYTORCH_MODEL}"):
@@ -74,9 +228,6 @@ def load_hf_model_checkpoint(location_or_id, device=None, revision=None):
         else:
             raise ValueError(f"Could not find model file for {location_or_id}")
     else:
-        config_path = hf_hub_download(location_or_id, "config.json", revision=revision)
-        config = json.load(open(config_path))
-
         try:
             model_path = hf_hub_download(location_or_id, SAFE_TENSORS_MODEL, revision=revision)
             checkpoint = safetensors.numpy.load_file(model_path)

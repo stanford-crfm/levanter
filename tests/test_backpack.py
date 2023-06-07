@@ -6,17 +6,12 @@ import jax
 import numpy as np
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from levanter.compat.hf_checkpoints import (
-    backpack_config_to_hf,
-    hf_backpack_config_to_levanter,
-    load_hf_model_checkpoint,
-)
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, backpack_config_to_hf, hf_backpack_config_to_levanter
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 
@@ -58,14 +53,11 @@ def test_backpack_nano_compare():
     vocab_size = 5257
     torch.manual_seed(0)
 
+    converter = HFCheckpointConverter(BackpackConfig, "stanford-crfm/levanter-backpack-1b", trust_remote_code=True)
+
     # a bit hacky, using some internal-y APIs of transformers
-    cls = get_class_from_dynamic_module(
-        "backpack_model.BackpackGPT2LMHeadModel", "stanford-crfm/levanter-backpack-1b", "backpack_model.py"
-    )
-    HFConfig = get_class_from_dynamic_module(
-        "backpack_config.BackpackGPT2Config", "stanford-crfm/levanter-backpack-1b", "backpack_config.py"
-    )
-    config = HFConfig(
+    cls = converter.HFAutoModelClass()
+    config = converter.HFConfigClass(
         n_embd=32,
         n_positions=512,
         n_head=8,
@@ -93,15 +85,16 @@ def test_backpack_nano_compare():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         model.save_pretrained(tmpdir)
-        loaded_config, loaded_checkpoint = load_hf_model_checkpoint(tmpdir)
-        roundtrip_hf_config = backpack_config_to_hf(vocab_size, lev_config)
+        loaded_checkpoint = converter.load_state_dict(tmpdir)
 
-        for k, v in roundtrip_hf_config.__dict__.items():
-            assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
+    roundtrip_hf_config = backpack_config_to_hf(vocab_size, lev_config)
 
-        Vocab = haliax.Axis("vocab", vocab_size)
-        lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-        lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    for k, v in roundtrip_hf_config.__dict__.items():
+        assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
+
+    Vocab = haliax.Axis("vocab", vocab_size)
+    lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
+    lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     attn_mask = hax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
