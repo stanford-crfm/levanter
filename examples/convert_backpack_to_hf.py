@@ -2,22 +2,18 @@ import logging
 import re
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional, Dict, Any, OrderedDict
+from typing import Any, Dict, Optional, OrderedDict
 
-import fsspec
 import jax
 import jax.numpy as jnp
-from equinox import default_deserialise_filter_spec
 from huggingface_hub import Repository
-from jaxtyping import PyTree
 from transformers import GPT2Tokenizer
 
 import haliax as hax
 import levanter
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
-from levanter.checkpoint import _assert_same
-from levanter.compat.hf_checkpoints import _save_hf_checkpoint_local, HFAutoMapConfig
+from levanter.compat.hf_checkpoints import HFAutoMapConfig, _save_hf_checkpoint_local
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 from levanter.utils.hf_utils import load_tokenizer
@@ -88,21 +84,21 @@ def main(config: ConvertConfig):
                 # commit_and_upload_manager will automatically upload the checkpoint to the hub
                 # it also cd's into the repo, so we can just save the checkpoint to the current directory
                 _save_hf_checkpoint_local(
-                    model=model, 
-                    path=".", 
-                    model_type=config.model_type, 
-                    auto_map_config=config.auto_map, 
-                    remap_state_dict_func=remap_state_dict_levanter_to_hf
+                    model=model,
+                    path=".",
+                    model_type=config.model_type,
+                    auto_map_config=config.auto_map,
+                    remap_state_dict_func=remap_state_dict_levanter_to_hf,
                 )
                 if config.save_tokenizer:
                     tokenizer.save_pretrained(".")
         else:
             _save_hf_checkpoint_local(
-                model=model, 
-                path=config.output_dir, 
-                model_type=config.model_type, 
-                auto_map_config=config.auto_map, 
-                remap_state_dict_func=remap_state_dict_levanter_to_hf
+                model=model,
+                path=config.output_dir,
+                model_type=config.model_type,
+                auto_map_config=config.auto_map,
+                remap_state_dict_func=remap_state_dict_levanter_to_hf,
             )
             if config.save_tokenizer:
                 tokenizer.save_pretrained(config.output_dir)
@@ -124,24 +120,25 @@ def patch_vocab_size(inner: jnp.ndarray, like: NamedArray):
 def remap_state_dict_levanter_to_hf(state_dict: Dict[str, Any], config: BackpackConfig):
     def key_mapping(key):
         # MLP
-        key = re.sub(r'^h.(\d+).', r'gpt2_model.h.\1.', key)
-        key = re.sub(r'^ln_f.', r'gpt2_model.ln_f.', key)
-        key = re.sub(r'^wpe.weight', r'gpt2_model.wpe.weight', key)
-        key = re.sub(r'^wte.weight', r'gpt2_model.wte.weight', key)
+        key = re.sub(r"^h.(\d+).", r"gpt2_model.h.\1.", key)
+        key = re.sub(r"^ln_f.", r"gpt2_model.ln_f.", key)
+        key = re.sub(r"^wpe.weight", r"gpt2_model.wpe.weight", key)
+        key = re.sub(r"^wte.weight", r"gpt2_model.wte.weight", key)
 
         # Sense net
-        key = re.sub(r'^sense_net.', r'sense_network.', key)
+        key = re.sub(r"^sense_net.", r"sense_network.", key)
         # kq_selfattention.c_attn to sense_weight_net.c_attn
-        key = re.sub(r'^kq_selfattention.c_attn.', r'sense_weight_net.c_attn.', key)
+        key = re.sub(r"^kq_selfattention.c_attn.", r"sense_weight_net.c_attn.", key)
         return key
+
     state_dict = OrderedDict((key_mapping(k), v) for k, v in state_dict.items())
 
-    # In levanter's implementation, we have a shared embedding matrix for both the word 
+    # In levanter's implementation, we have a shared embedding matrix for both the word
     # embeddings and the sense embeddings
     state_dict["word_embeddings.weight"] = state_dict["gpt2_model.wte.weight"]
     state_dict["position_embeddings.weight"] = state_dict["gpt2_model.wpe.weight"]
     # transpose the self attention weights
-    state_dict['sense_weight_net.c_attn.weight'] = state_dict.pop('sense_weight_net.c_attn.weight').T
+    state_dict["sense_weight_net.c_attn.weight"] = state_dict.pop("sense_weight_net.c_attn.weight").T
     return state_dict
 
 

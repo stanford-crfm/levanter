@@ -228,7 +228,7 @@ def reshape_mlp_linear_layer(
 ) -> StateDict:
     """
     Reshape the weights and bias for a linear layer in a torch dict to a new shape.
-    This is different from reshape_linear_layer as we removed (-1,) from the shape 
+    This is different from reshape_linear_layer as we removed (-1,) from the shape
     of the weights and bias.
     """
     new_dict: StateDict = {}
