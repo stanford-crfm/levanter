@@ -29,7 +29,10 @@ from transformers import PreTrainedTokenizer
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
+import haliax
 from haliax import Axis
+from haliax.jax_utils import filter_eval_shape
+from haliax.partitioning import ResourceMapping
 from levanter.trainer_hooks import StepInfo
 
 
@@ -191,8 +194,13 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
 
     def load_tokenizer(self, ref: Optional[Union[str, RemoteRef]] = None) -> PreTrainedTokenizer:
         path, rev = self._get_ref(ref)
-        tokenizer = AutoTokenizer.from_pretrained(rev, revision=rev, trust_remote_code=self.trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
         return tokenizer
+
+    @cached_property
+    def default_Vocab(self) -> Axis:
+        tokenizer = self.load_tokenizer()
+        return Axis("vocab", len(tokenizer))
 
     def config_from_hf_config(self, hf_config) -> LevConfig:
         return self.LevConfigClass.from_hf_config(hf_config)
@@ -234,12 +242,12 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
             state_dict = torch.load(f"{ref}/{PYTORCH_MODEL}", map_location=device)
             state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
         else:
-            ref = _coerce_to_rr(ref)
+            id, rev = self._get_ref(ref)
             try:
-                model_path = hf_hub_download(ref.model_name_or_path, SAFE_TENSORS_MODEL, revision=ref.revision)
+                model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
                 state_dict = safetensors.numpy.load_file(model_path)
             except EntryNotFoundError:  # noqa: E722
-                model_path = hf_hub_download(ref.model_name_or_path, PYTORCH_MODEL, revision=ref.revision)
+                model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
                 import torch
 
                 device = torch.device("cpu")
@@ -247,6 +255,28 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
                 state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
 
         return state_dict
+
+    def load_lm_model(
+        self,
+        lm_model_cls: Type[LmWithHFSer],
+        Vocab: Optional[Axis] = None,
+        ref: Optional[Union[str, RemoteRef]] = None,
+        axis_mapping: Optional[ResourceMapping] = None,
+    ) -> LmWithHFSer:
+        state_dict = self.load_state_dict(ref)
+        config = self.config_from_hf_checkpoint(ref)
+
+        Vocab = Vocab or self.default_Vocab
+
+        # TODO: i still think this isn't the best way to do this
+        with jax.default_device(jax.devices("cpu")[0]):
+            lev_model = filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = lev_model.from_state_dict(state_dict)
+
+        if axis_mapping is not None:
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+
+        return lev_model
 
 
 def load_hf_model_checkpoint(location_or_id, device=None, revision=None):

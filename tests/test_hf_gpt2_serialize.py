@@ -19,7 +19,6 @@ from levanter.compat.hf_checkpoints import (
     HFCheckpointConverter,
     RemoteRef,
     load_hf_gpt2_checkpoint,
-    load_hf_model_checkpoint,
     save_hf_gpt2_checkpoint,
 )
 from levanter.config import OptimizerConfig
@@ -44,17 +43,13 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
 
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
-
     converter = HFCheckpointConverter(Gpt2Config, RemoteRef(model_id, revision), HfGpt2Config)
 
     config = converter.default_hf_config
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision, device=device)
+    model = converter.load_lm_model(Gpt2LMHeadModel)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -96,12 +91,13 @@ def test_hf_gradient():
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision)
-    config = HfGpt2Config.from_dict(config)
+    converter = HFCheckpointConverter(Gpt2Config, RemoteRef(model_id, revision), HfGpt2Config)
+
+    config = converter.default_hf_config
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision)
+    model = converter.load_lm_model(Gpt2LMHeadModel)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
