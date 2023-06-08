@@ -46,12 +46,18 @@ SAFE_TENSORS_MODEL = "model.safetensors"
 
 @dataclass
 class RepoRef:
+    """Represents a reference to a model (or similar) in a remote repository or local file system, and
+    optionally a revision. This lets you load particular revisions or branches of a model.
+
+    The string syntax is <model_name_or_path>@<revision>.
+
+    """
+
     model_name_or_path: str
     revision: Optional[str] = None
 
     @staticmethod
     def from_string(s: str) -> "RepoRef":
-        """syntax is <model_name_or_path>@<revision>"""
         if "@" not in s:
             return RepoRef(s)
         model_name_or_path, revision = s.split("@")
