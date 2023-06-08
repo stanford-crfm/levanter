@@ -626,14 +626,19 @@ def save_hf_gpt2_checkpoint(model, path, hf_repo: Optional[str] = None, **hf_upl
             shutil.rmtree(tmpdir)
 
 
-def save_hf_gpt2_checkpoint_callback(base_path, hf_repo: Optional[str] = None, **hf_upload_kwargs):
+def save_hf_checkpoint_callback(
+    base_path,
+    converter: HFCheckpointConverter,
+    upload_to_hf: Union[bool, str, RepoRef] = False,
+    **hf_upload_kwargs,
+):
     """
     If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
     any additional kwargs to the huggingface_hub.upload_folder function.
 
     :param base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
     may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
-    :param hf_repo:
+    :param upload_to_hf:
     :param hf_upload_kwargs:
     :return:
     """
@@ -642,15 +647,16 @@ def save_hf_gpt2_checkpoint_callback(base_path, hf_repo: Optional[str] = None, *
         nonlocal hf_upload_kwargs
         if step.step == 0:
             return
-        if hf_repo is not None and "commit_message" not in hf_upload_kwargs:
+        if upload_to_hf is not None and "commit_message" not in hf_upload_kwargs:
             my_upload_kwargs = hf_upload_kwargs.copy()
             my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
         else:
             my_upload_kwargs = hf_upload_kwargs
-        from levanter.models.gpt2 import Gpt2LMHeadModel
-
-        save_hf_gpt2_checkpoint(
-            cast(Gpt2LMHeadModel, step.model), f"{base_path}/step-{step.step}", hf_repo=hf_repo, **my_upload_kwargs
+        converter.save_model(
+            cast(LmWithHFSer, step.model),
+            f"{base_path}/step-{step.step}",
+            upload_to_hf=upload_to_hf,
+            **my_upload_kwargs,
         )
 
     return cb
