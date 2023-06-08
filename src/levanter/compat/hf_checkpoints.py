@@ -76,7 +76,7 @@ pyrallis.decode.register(RepoRef, RepoRef.from_string)
 pyrallis.encode.register(RepoRef, str)
 
 
-class ConfigWithHFSer(abc.ABC):
+class HFCompatConfig(abc.ABC):
     @abc.abstractmethod
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[dict] = None) -> HfConfig:
         pass
@@ -87,7 +87,7 @@ class ConfigWithHFSer(abc.ABC):
         pass
 
 
-MConfig = TypeVar("MConfig", bound=ConfigWithHFSer)
+MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
 class LmWithHFSer(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
@@ -133,7 +133,7 @@ class HFAutoMapConfig:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
-LevConfig = TypeVar("LevConfig", bound=ConfigWithHFSer)
+LevConfig = TypeVar("LevConfig", bound=HFCompatConfig)
 
 # just for generating unique ids
 _GLOBAL_SAVE_COUNT = 0

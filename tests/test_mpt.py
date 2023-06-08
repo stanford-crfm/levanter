@@ -1,13 +1,13 @@
+import tempfile
+
 import jax
 import numpy as np
 import pytest
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
 
-# from transformers import AutoModelForCausalLM
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
 import haliax
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
@@ -21,9 +21,9 @@ def test_mpt_nano_compare(use_bias):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    cls = get_class_from_dynamic_module("modeling_mpt.MPTForCausalLM", "mosaicml/mpt-7b", "modeling_mpt.py")
-    MPTConfig = get_class_from_dynamic_module("modeling_mpt.MPTConfig", "mosaicml/mpt-7b", "modeling_mpt.py")
-    config = MPTConfig(
+    converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+    cls = converter.HFAutoModelClass()
+    config = converter.HFConfigClass(
         d_model=32,
         max_seq_len=512,
         n_heads=8,
@@ -46,16 +46,19 @@ def test_mpt_nano_compare(use_bias):
         torch_out = torch_out.logits[0].detach().cpu().numpy()
 
     # now compare levanter
-    lev_config = MptConfig.from_hf_config(config)
-    model_dict = model.state_dict()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        lev_config = converter.config_from_hf_config(config)
+        model.save_pretrained(tmpdir)
+        loaded_checkpoint = converter.load_state_dict(tmpdir)
 
-    roundtrip_hf_config = lev_config.to_hf_config(vocab_size)
-    # for reasons I don't understand, this flag is present in the config but not in the model
-    assert config == roundtrip_hf_config
+    roundtrip_hf_config = converter.hf_config_from_config(lev_config)
+
+    for k, v in roundtrip_hf_config.__dict__.items():
+        assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    lev_model = lev_model.from_state_dict(model_dict)
+    lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     with jax.disable_jit():

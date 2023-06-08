@@ -17,6 +17,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -82,7 +83,7 @@ class MptAttentionConfig:
 
 # Haliax-style data class version
 @dataclass
-class MptConfig:
+class MptConfig(HFCompatConfig):
     d_model: int = 768
     n_heads: int = 12
     n_layers: int = 12
@@ -130,8 +131,8 @@ class MptConfig:
         if self.init_config and self.init_config != init_config_defaults:
             raise ValueError("init_config_defaults not supported yet.")
 
-    @staticmethod
-    def from_hf_config(config):
+    @classmethod
+    def from_hf_config(cls, config):
         return MptConfig(
             d_model=config.d_model,
             n_heads=config.n_heads,
@@ -148,9 +149,12 @@ class MptConfig:
             init_config=config.init_config,
         )
 
-    def to_hf_config(self, vocab_size):
+    def to_hf_config(self, vocab_size, config_overrides=None):
         if LazyHfMPTConfig is None:
             _load_hf_mpt_config()
+
+        if config_overrides is None:
+            config_overrides = {}
 
         return LazyHfMPTConfig(
             d_model=self.d_model,
@@ -167,6 +171,7 @@ class MptConfig:
             logit_scale=self.logit_scale,
             init_config=self.init_config,
             vocab_size=vocab_size,
+            **config_overrides,
         )
 
 

@@ -15,7 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.hf_checkpoints import ConfigWithHFSer, LmWithHFSer
+from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHFSer
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -27,7 +27,7 @@ from levanter.compat.torch_serialization import (
 
 
 @dataclass(frozen=True)
-class Gpt2Config(ConfigWithHFSer):
+class Gpt2Config(HFCompatConfig):
     seq_len: int = 512
     hidden_dim: int = 768
     num_layers: int = 12
