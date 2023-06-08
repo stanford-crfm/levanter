@@ -14,7 +14,7 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RemoteRef
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
@@ -28,9 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EvalGpt2Config:
     checkpoint_path: Optional[str] = None
-    hf_checkpoint: Optional[RemoteRef] = None
-    # hf_checkpoint: Optional[str] = None
-    # hf_revision: Optional[str] = None
+    hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()

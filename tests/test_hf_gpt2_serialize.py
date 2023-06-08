@@ -15,7 +15,7 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
 import haliax as hax
 from haliax import Axis
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RemoteRef
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -43,7 +43,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel, RemoteRef(model_id, revision=revision))
+    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -89,7 +89,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel, RemoteRef(model_id, revision))
+    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 

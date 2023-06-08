@@ -46,17 +46,17 @@ SAFE_TENSORS_MODEL = "model.safetensors"
 
 
 @dataclass
-class RemoteRef:
+class RepoRef:
     model_name_or_path: str
     revision: Optional[str] = None
 
     @staticmethod
-    def from_string(s: str) -> "RemoteRef":
+    def from_string(s: str) -> "RepoRef":
         """syntax is <model_name_or_path>@<revision>"""
         if "@" not in s:
-            return RemoteRef(s)
+            return RepoRef(s)
         model_name_or_path, revision = s.split("@")
-        return RemoteRef(model_name_or_path, revision)
+        return RepoRef(model_name_or_path, revision)
 
     def __str__(self) -> str:
         return f"{self.model_name_or_path}@{self.revision}"
@@ -66,8 +66,8 @@ class RemoteRef:
 
 
 # register pyrallis parsing
-pyrallis.decode.register(RemoteRef, RemoteRef.from_string)
-pyrallis.encode.register(RemoteRef, str)
+pyrallis.decode.register(RepoRef, RepoRef.from_string)
+pyrallis.encode.register(RepoRef, str)
 
 
 class ConfigWithHFSer(abc.ABC):
@@ -101,11 +101,11 @@ class LmWithHFSer(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
         pass
 
 
-def _coerce_to_rr(s: Union[str, RemoteRef]) -> RemoteRef:
-    if isinstance(s, RemoteRef):
+def _coerce_to_rr(s: Union[str, RepoRef]) -> RepoRef:
+    if isinstance(s, RepoRef):
         return s
     else:
-        return RemoteRef.from_string(s)
+        return RepoRef.from_string(s)
 
 
 @dataclass
@@ -136,7 +136,7 @@ _GLOBAL_SAVE_COUNT = 0
 @dataclass
 class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     LevConfigClass: Type[LevConfig]
-    reference_checkpoint: Optional[Union[str, RemoteRef]] = None
+    reference_checkpoint: Optional[Union[str, RepoRef]] = None
     "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
 
     hf_config_class: Optional[Union[str, Type]] = None
@@ -201,7 +201,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
 
         raise ValueError(f"Could not find model class {auto_class} for {config}")
 
-    def load_tokenizer(self, ref: Optional[Union[str, RemoteRef]] = None) -> PreTrainedTokenizer:
+    def load_tokenizer(self, ref: Optional[Union[str, RepoRef]] = None) -> PreTrainedTokenizer:
         path, rev = self._get_ref(ref)
         tokenizer = AutoTokenizer.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
         return tokenizer
@@ -219,11 +219,11 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
             vocab_size = len(self.load_tokenizer())
         return config.to_hf_config(vocab_size=vocab_size, config_overrides=self.config_overrides)
 
-    def config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> LevConfig:
+    def config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> LevConfig:
         config = self.hf_config_from_hf_checkpoint(ref)
         return self.config_from_hf_config(config)
 
-    def hf_config_from_hf_checkpoint(self, ref: Optional[Union[str, RemoteRef]] = None) -> HfConfig:
+    def hf_config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> HfConfig:
         path, rev = self._get_ref(ref)
         config = AutoConfig.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
         return config
@@ -236,7 +236,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         ref = _coerce_to_rr(ref)
         return ref.model_name_or_path, ref.revision
 
-    def load_state_dict(self, ref: Optional[Union[str, RemoteRef]] = None):
+    def load_state_dict(self, ref: Optional[Union[str, RepoRef]] = None):
         if ref is None:
             ref = self.reference_checkpoint
         if ref is None:
@@ -268,7 +268,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
     def load_lm_model(
         self,
         lm_model_cls: Type[LmWithHFSer],
-        ref: Optional[Union[str, RemoteRef]] = None,
+        ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
     ) -> LmWithHFSer:
         """
@@ -346,7 +346,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_model(
-        self, model: LmWithHFSer, path, upload_to_hf: Union[bool, str, RemoteRef] = False, **hf_upload_kwargs
+        self, model: LmWithHFSer, path, upload_to_hf: Union[bool, str, RepoRef] = False, **hf_upload_kwargs
     ):
         """
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
@@ -368,7 +368,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         else:
             local_path = path
 
-        if isinstance(upload_to_hf, (str, RemoteRef)):
+        if isinstance(upload_to_hf, (str, RepoRef)):
             hf_repo, hf_branch = self._get_ref(upload_to_hf)
         elif upload_to_hf is True:
             hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
