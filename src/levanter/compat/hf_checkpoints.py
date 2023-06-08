@@ -370,6 +370,14 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def save_model_local(
         self, model: LmWithHFSer, path: str, save_tokenizer: bool = True, save_reference_code: bool = True
     ):
+        """
+        Saves a HF-compatible checkpoint to a local path.
+        :param model:
+        :param path:
+        :param save_tokenizer: Save the tokenizer to the checkpoint
+        :param save_reference_code: Save any code from the reference checkpoint
+        :return:
+        """
         logger.info(f"Saving HF-compatible checkpoint to {path}")
         os.makedirs(path, exist_ok=True)
 
@@ -432,6 +440,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         **hf_upload_kwargs,
     ):
         """
+        Saves a Levanter model to a huggingface checkpoint.
+
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
         any additional kwargs to the huggingface_hub.upload_folder function.
 
