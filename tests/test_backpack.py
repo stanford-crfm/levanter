@@ -11,7 +11,7 @@ import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, hf_backpack_config_to_levanter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 
@@ -80,10 +80,8 @@ def test_backpack_nano_compare():
         torch_out = torch_out.logits[0].detach().cpu().numpy()
 
     # now compare levanter
-    lev_config = hf_backpack_config_to_levanter(config)
-    # model_dict = model.state_dict()
-
     with tempfile.TemporaryDirectory() as tmpdir:
+        lev_config = converter.config_from_hf_config(config)
         model.save_pretrained(tmpdir)
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 

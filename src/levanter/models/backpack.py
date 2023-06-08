@@ -6,6 +6,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from transformers import PretrainedConfig
+from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.jax_utils
@@ -36,6 +38,45 @@ class BackpackConfig(Gpt2Config):
     SenseIntermediate = property(
         lambda self: Axis(name="concat_senses", size=self.sense_intermediate_scale * self.hidden_dim)
     )
+
+    def to_hf_config(self, vocab_size, config_overrides=None):
+        if config_overrides is None:
+            config_overrides = {}
+
+        return PretrainedConfig(
+            vocab_size=vocab_size,
+            n_positions=self.seq_len,
+            n_layer=self.num_layers,
+            n_head=self.num_heads,
+            n_embd=self.hidden_dim,
+            initializer_range=self.initializer_range,
+            attn_pdrop=self.attn_pdrop,
+            embd_pdrop=self.embed_pdrop,
+            layer_norm_epsilon=self.layer_norm_epsilon,
+            activation_function=self.activation_function,
+            scale_attn_by_inverse_layer_idx=self.scale_attn_by_inverse_layer_idx,
+            reorder_and_upcast_attn=self.upcast_attn,
+            num_senses=self.num_senses,
+            sense_intermediate_scale=self.sense_intermediate_scale,
+        )
+
+    @classmethod
+    def from_hf_config(cls, hf_config: HfConfig):
+        return cls(
+            seq_len=hf_config.n_positions,
+            num_layers=hf_config.n_layer,
+            num_heads=hf_config.n_head,
+            hidden_dim=hf_config.n_embd,
+            initializer_range=hf_config.initializer_range,
+            attn_pdrop=hf_config.attn_pdrop,
+            embed_pdrop=hf_config.embd_pdrop,
+            layer_norm_epsilon=hf_config.layer_norm_epsilon,
+            activation_function=hf_config.activation_function,
+            scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
+            upcast_attn=hf_config.reorder_and_upcast_attn,
+            num_senses=hf_config.num_senses,
+            sense_intermediate_scale=hf_config.sense_intermediate_scale,
+        )
 
 
 class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
