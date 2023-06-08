@@ -75,6 +75,10 @@ class BatchProcessor(Generic[T_contra], ABC):
     def num_gpus(self) -> int:
         return 0
 
+    @property
+    def batch_size(self) -> int:
+        return 1024
+
 
 class ShardedDataSource(Generic[T_co]):
     @property
@@ -201,18 +205,6 @@ class _ChunkWriter:
         return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts)
 
 
-@ray.remote(num_cpus=0)
-def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
-    logging.basicConfig(level=logging.INFO)
-    process_task = _mk_process_task(processor)
-    record_batch = ray.get(process_task.remote(batch))
-    logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
-    with _ChunkWriter(cache_dir, chunk_name, record_batch.schema) as writer:
-        writer.write_batch(record_batch)
-
-    return writer.get_metadata()
-
-
 @ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
     sink: ActorHandle,
@@ -227,62 +219,112 @@ def _produce_cache_for_shard(
     logging.basicConfig(level=logging.INFO)
     # load or create shard metadata (for recovery)
     try:
-        shard_metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
-        try:
-            with fsspec.open(shard_metadata_path, "r") as file:
-                shard_metadata = ShardMetadata.from_json(file.read())  # type: ignore
-        except FileNotFoundError:
-            shard_metadata = ShardMetadata()
-
-        was_finished = shard_metadata.is_finished
-
-        total_rows_written = sum(chunk.num_rows for chunk in shard_metadata.chunks)
-        if not was_finished:
-            logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
-            shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
+        metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
+        shard_writer = _ShardWriter(metadata_path)
+        was_finished = shard_writer.is_finished
 
         # yield from existing chunks
-        logger.info(f"Yielding {len(shard_metadata.chunks)} chunks from {shard_name}")
-        sink.new_chunk.remote(shard_name, *shard_metadata.chunks)
-
-        def yield_chunk(chunk: ChunkMetadata):
-            nonlocal total_rows_written
-            total_rows_written += chunk.num_rows
-            logger.info(f"Yielding new chunk {chunk.name} from {shard_name}")
-            sink.new_chunk.remote(shard_name, chunk)
-            shard_metadata.chunks.append(chunk)
-            _serialize_json_and_commit(os.path.join(cache_dir, f"{shard_name}.json"), shard_metadata)
+        if len(shard_writer.chunks) > 0:
+            logger.info(f"Yielding {len(shard_writer.chunks)} chunks from {shard_name}")
+            sink.new_chunk.remote(shard_name, *shard_writer.chunks)
 
         if not was_finished:
-            count = len(shard_metadata.chunks)
-            batch = []
-            for row in shard_iter:
-                batch.append(row)
-                if len(batch) == rows_per_chunk:
-                    # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
-                    # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
-                    # other shards since we want to stream them round-robin
-                    chunk_name = os.path.join(shard_name, f"chunk-{count}")
-                    count += 1
-                    logger.info(f"Forking process to produce chunk {chunk_name} from {shard_name}")
-                    chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
-                    yield_chunk(chunk)
-
-                    batch = []
-
-            if batch:
-                chunk_name = os.path.join(shard_name, f"chunk-{count}")
-                chunk = ray.get(_produce_chunk.remote(batch, processor, cache_dir, chunk_name))
-                yield_chunk(chunk)
-
-            shard_metadata.is_finished = True
-            _serialize_json_and_commit(os.path.join(cache_dir, f"{shard_name}.json"), shard_metadata)
+            _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name, processor, rows_per_chunk)
+            shard_writer.finish()
 
         sink.shard_finished.remote(shard_name)
+
     except Exception as e:
         logger.exception(f"Error while processing shard {shard_name}")
         ray.get(sink.shard_failed.remote(shard_name, _exc_info()))
         raise e
+
+
+class _ShardWriter:
+    def __init__(self, metadata_path):
+        self.metadata_path = metadata_path
+        try:
+            with fsspec.open(self.metadata_path, "r") as file:
+                self.metadata = ShardMetadata.from_json(file.read())  # type: ignore
+        except FileNotFoundError:
+            self.metadata = ShardMetadata()
+
+    @property
+    def is_finished(self):
+        return self.metadata.is_finished
+
+    @property
+    def chunks(self):
+        return self.metadata.chunks
+
+    @property
+    def num_chunks(self):
+        return len(self.metadata.chunks)
+
+    def commit_chunk(self, chunk: ChunkMetadata):
+        assert not self.metadata.is_finished
+        self.metadata.chunks.append(chunk)
+        self._commit()
+
+    def finish(self):
+        self.metadata.is_finished = True
+        self._commit()
+
+    def _commit(self):
+        _serialize_json_and_commit(self.metadata_path, self.metadata)
+
+
+def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name, processor, rows_per_chunk):
+    total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)
+    logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
+    shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
+    process_task = _mk_process_task(processor)
+    target_batch_size = min(processor.batch_size, rows_per_chunk)
+    writer: Optional[_ChunkWriter] = None
+    batch = []
+
+    def yield_chunk(chunk: ChunkMetadata):
+        nonlocal total_rows_written
+        total_rows_written += chunk.num_rows
+        logger.info(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
+        sink.new_chunk.remote(shard_name, chunk)
+        shard_writer.commit_chunk(chunk)
+
+    def do_write(batch):
+        nonlocal writer
+
+        # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
+        # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
+        # other shards since we want to stream them round-robin
+        record_batch = ray.get(process_task.remote(batch))
+
+        if writer is None:
+            chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
+            writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
+            writer.__enter__()
+
+        writer.write_batch(record_batch)
+
+        if writer.num_rows >= rows_per_chunk:
+            writer.__exit__(None, None, None)
+            chunk = writer.get_metadata()
+            writer = None
+            yield_chunk(chunk)
+
+    for row in shard_iter:
+        batch.append(row)
+
+        if len(batch) == target_batch_size:
+            do_write(batch)
+            batch = []
+
+    if batch:
+        do_write(batch)
+    if writer is not None:
+        writer.__exit__(None, None, None)
+        chunk = writer.get_metadata()
+        writer = None
+        yield_chunk(chunk)
 
 
 def _serialize_json_and_commit(path, obj):
