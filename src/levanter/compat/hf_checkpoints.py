@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import urllib.parse
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
@@ -18,7 +19,7 @@ import pyrallis
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
@@ -348,17 +349,26 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         return lev_model
 
-    def save_model_local(self, model: LmWithHFSer, path: str):
+    def save_model_local(
+        self, model: LmWithHFSer, path: str, save_tokenizer: bool = True, save_reference_code: bool = True
+    ):
         logger.info(f"Saving HF-compatible checkpoint to {path}")
         os.makedirs(path, exist_ok=True)
         config = model.config.to_hf_config(model.Vocab.size)
         dict_config = config.to_dict()
+
+        # save code first because we'll likely be overwriting it
+        if save_reference_code:
+            self._save_code_local(path)
 
         if self.config_overrides:
             dict_config.update(self.config_overrides)
 
         with open(f"{path}/config.json", "w") as f:
             json.dump(dict_config, f)
+
+        if save_tokenizer:
+            self.tokenizer.save_pretrained(path)
 
         def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
             if isinstance(arr, np.ndarray):
@@ -388,7 +398,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_model(
-        self, model: LmWithHFSer, path, upload_to_hf: Union[bool, str, RepoRef] = False, **hf_upload_kwargs
+        self,
+        model: LmWithHFSer,
+        path,
+        upload_to_hf: Union[bool, str, RepoRef] = False,
+        save_reference_code: bool = True,
+        save_tokenizer: bool = True,
+        **hf_upload_kwargs,
     ):
         """
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
@@ -400,6 +416,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         :param hf_repo: if provided, the checkpoint will be uploaded to the huggingface hub. If True, will use
         the reference_checkpoint as the repo name
         :param hf_upload_kwargs: any additional kwargs to pass to huggingface_hub.upload_folder
+        :param save_reference_code: if True, will save the reference code (from reference_checkpoint) to the checkpoint.
+        This is useful when using custom architectures, as it will allow the model to be loaded without the custom
+        architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS
         :return:
         """
         tmpdir: Optional[str] = None
@@ -417,7 +436,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             hf_repo = None
 
-        self.save_model_local(model, local_path)
+        self.save_model_local(
+            model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
+        )
 
         try:
             if jax.process_index() == 0:
@@ -440,6 +461,72 @@ class HFCheckpointConverter(Generic[LevConfig]):
         finally:
             if tmpdir is not None:
                 shutil.rmtree(tmpdir)
+
+    def _save_code_local(self, path):
+        if self.reference_checkpoint is None:
+            warnings.warn("No reference checkpoint provided, so no code will be saved")
+            return
+
+        repo, revision = self._get_ref(self.reference_checkpoint)
+
+        # first we're going to decide what code to save
+        # as a heuristic, we'll use .gitattributes to decide what to save: anything not in LFS will be saved
+        # need to also save the .gitattributes file itself
+        # TODO: .gitignore too? it's not used a lot with the hub
+        if os.path.exists(repo):
+            # local path
+            if revision is not None:
+                warnings.warn("Ignoring revision because this is a local path. We don't handle this case well yet")
+            attributes_path = os.path.join(repo, ".gitattributes")
+            if not os.path.exists(attributes_path):
+                attributes_path = None
+        else:
+            # check hub
+            try:
+                attributes_path = hf_hub_download(repo_id=repo, path=".gitattributes", revision=revision)
+            except EntryNotFoundError:
+                attributes_path = None
+
+        if attributes_path is None:
+            warnings.warn("HF Export - No .gitattributes file found, using a heuristic to decide what to save")
+            ignore_files = [
+                ".git",
+                "*.bin.*",
+                "*.lfs.*",
+                "*.bin",
+                "*.h5",
+                "*.tflite",
+                "*.tar.gz",
+                "*.ot",
+                "*.onnx",
+                "*.msgpack",
+                "model.safetensors",
+            ]
+        else:
+            # read the attributes file and get the globs
+            with open(attributes_path) as f:
+                attributes = f.read()
+            ignore_files = [".git"]
+            for line in attributes.split("\n"):
+                line = line.strip()
+                if line.startswith("#") or line == "":
+                    continue
+                # NB: this is not a full implementation of .gitattributes, but it's good enough for our purposes
+                if "filter=lfs" in line:
+                    ignore_files.append(line.split()[0])
+
+        if os.path.exists(repo):
+            local_code_path = repo
+        else:
+            local_code_path = snapshot_download(repo, path, revision=revision, ignore_patterns=ignore_files)
+
+        # now we'll save the code
+        os.makedirs(path, exist_ok=True)
+
+        shutil_ignore = shutil.ignore_patterns(*ignore_files)
+        shutil.copytree(local_code_path, path, ignore=shutil_ignore, dirs_exist_ok=True)
+
+        logger.debug(f"Saved code to {path}")
 
 
 def _save_backpack_hf_checkpoint_local(
