@@ -1,0 +1,16 @@
+checkpoint_path: gs://levanter-checkpoints/backpacks/backpack_levanter_exp_48-36-20-1280-7-0.0002-100000-run_0605/step-100000
+output_dir: /home/ivanzhou/dev/levanter-backpack-gpt2-large-ln/
+model:
+  hidden_dim: 1280
+  num_heads: 20
+  num_layers: 36
+  seq_len: 512
+  gradient_checkpointing: true
+  scale_attn_by_inverse_layer_idx: true
+  num_senses: 48
+  sense_intermediate_scale: 7
+override_vocab_size: 50264
+model_type: backpack-gpt2
+auto_map:
+  AutoConfig: backpack_config.BackpackGPT2Config
+  AutoModelForCausalLM: backpack_model.BackpackGPT2LMHeadModel
