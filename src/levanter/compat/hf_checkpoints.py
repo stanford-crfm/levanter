@@ -145,6 +145,18 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
 
 @dataclass
 class HFCheckpointConverter(Generic[LevConfig]):
+    """
+    A class to convert between Levanter and HF models. This class establishes a bidirectional mapping
+    between Levanter and HF models, and provides methods to convert between them.
+
+    This mapping supports:
+    * translating between Levanter and HF configs
+    * loading a Levanter model from an HF checkpoint
+    * saving a HF checkpoint from a Levanter model
+
+    HF checkpoints can be saved with params and config, and optionally with the tokenizer and code.
+    """
+
     LevConfigClass: Type[LevConfig]
     reference_checkpoint: Optional[RepoRef]
     "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
