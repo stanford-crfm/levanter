@@ -2,8 +2,8 @@ import tempfile
 
 import numpy as np
 import numpy.testing
-import torch
 from jax.random import PRNGKey
+from test_utils import skip_if_no_torch
 
 import haliax
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -11,7 +11,10 @@ from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
+@skip_if_no_torch
 def test_save_model_with_code():
+    import torch
+
     converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
@@ -63,7 +66,10 @@ def test_save_model_with_code():
         )
 
 
+@skip_if_no_torch
 def test_save_backpack_model_with_code():
+    import torch
+
     converter = HFCheckpointConverter(BackpackConfig, "stanford-crfm/levanter-backpack-1b", trust_remote_code=True)
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
