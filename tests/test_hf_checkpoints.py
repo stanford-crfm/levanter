@@ -2,6 +2,7 @@ import tempfile
 
 import numpy as np
 import numpy.testing
+import torch
 from jax.random import PRNGKey
 
 import haliax
@@ -52,3 +53,10 @@ def test_save_model_with_code():
 
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
         np.testing.assert_equal(np.array(lev_model(input).array), np.array(loaded_model(input).array))
+
+        # now double check that the pytorch model is the same
+        loaded_model = cls.from_pretrained(tmpdir)
+        torch_input = torch.from_numpy(np.array(input.array)).to(torch.int64).unsqueeze(0)
+        np.testing.assert_allclose(
+            model(torch_input).logits[0].detach().numpy(), loaded_model(torch_input).logits[0].detach().numpy()
+        )
