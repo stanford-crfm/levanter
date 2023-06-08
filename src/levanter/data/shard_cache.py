@@ -8,7 +8,21 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Generic, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import (
+    IO,
+    Any,
+    Dict,
+    Generic,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import fsspec.core
 import jax
@@ -141,28 +155,62 @@ def _mk_process_task(processor: BatchProcessor[T]):
     return process_task
 
 
+class _ChunkWriter:
+    def __init__(self, cache_dir: str, chunk_name: str, schema: pa.Schema):
+        self.cache_dir = cache_dir
+        self.chunk_name = chunk_name
+        self.schema = schema
+        self.file: Optional[IO] = None
+        self.writer: Optional[pq.ParquetWriter] = None
+        self.num_rows = 0
+        self.field_counts: Dict[str, int] = {}
+
+        self.is_finished = False
+
+    def __enter__(self):
+        self.file = fsspec.open(os.path.join(self.cache_dir, f"{self.chunk_name}.parquet"), "wb").__enter__()
+        self.writer = pq.ParquetWriter(self.file, self.schema, version="2.6", compression="ZSTD").__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.writer is not None:
+            self.writer.__exit__(exc_type, exc_val, exc_tb)
+        if self.file is not None:
+            self.file.__exit__(exc_type, exc_val, exc_tb)
+
+        self.is_finished = True
+
+    def write_batch(self, batch: pa.RecordBatch):
+        assert not self.is_finished
+        assert self.writer is not None
+        self.writer.write_batch(batch)
+        self.num_rows += batch.num_rows
+
+        for i in range(batch.num_columns):
+            name = batch.field(i).name
+            value = batch.column(i)
+            if isinstance(value, pa.ListArray):
+                value = value.flatten()
+                self.field_counts[name] = len(value)
+            elif isinstance(value, pa.ChunkedArray):
+                self.field_counts[name] = value.length()
+
+    def get_metadata(self) -> ChunkMetadata:
+        if not self.is_finished:
+            raise RuntimeError("Cannot get metadata for unfinished chunk")
+        return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts)
+
+
 @ray.remote(num_cpus=0)
 def _produce_chunk(batch: List[T], processor: BatchProcessor[T], cache_dir: str, chunk_name: str) -> ChunkMetadata:
     logging.basicConfig(level=logging.INFO)
     process_task = _mk_process_task(processor)
     record_batch = ray.get(process_task.remote(batch))
     logger.debug(f"Produced chunk {chunk_name} with {record_batch.num_rows} rows. Writing to {cache_dir}/{chunk_name}")
-    with fsspec.open(os.path.join(cache_dir, f"{chunk_name}.parquet"), "wb") as file:
-        with pq.ParquetWriter(file, record_batch.schema, version="2.6", compression="ZSTD") as writer:
-            writer.write_batch(record_batch)
+    with _ChunkWriter(cache_dir, chunk_name, record_batch.schema) as writer:
+        writer.write_batch(record_batch)
 
-        field_counts = {}
-
-        for i in range(record_batch.num_columns):
-            name = record_batch.field(i).name
-            value = record_batch.column(i)
-            if isinstance(value, pa.ListArray):
-                value = value.flatten()
-                field_counts[name] = len(value)
-            elif isinstance(value, pa.ChunkedArray):
-                field_counts[name] = value.length()
-
-        return ChunkMetadata(chunk_name, record_batch.num_rows, field_counts)
+    return writer.get_metadata()
 
 
 @ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
@@ -402,11 +450,12 @@ class _ShardStatus:
             self.num_chunks_sent += 1
             return self.current_buffer.pop(0)
 
-    def total_chunks_prod(self) -> int:
+    @property
+    def total_chunks_produced(self) -> int:
         return self.num_chunks_sent + len(self.current_buffer)
 
     @property
-    def is_finished(self):
+    def is_finished_and_buffer_empty(self):
         return not self.is_producing and len(self.current_buffer) == 0
 
     @property
@@ -417,9 +466,8 @@ class _ShardStatus:
 @ray.remote(num_cpus=0)
 class ChunkCacheBuilder:
     """
-    Actor that manages the in-progress global ordering on chunks.
-    ChunkCacheWriter's job is to hold the list of all chunks as well as chunks from each shard while
-    caching is running.
+    Actor that manages the in-progress global ordering on chunks. ChunkCacheWriter's job is to hold the list of all
+    chunks as well as chunks from each shard while caching is running.
 
     This is a separate actor from the ChunkCacheBroker because
     we need something that gets messages from shards in-order, and async methods make actors
@@ -488,10 +536,9 @@ class ChunkCacheBuilder:
         ray.get(self.broker_ref._new_metrics.remote(self._metrics))
 
         # if there are no more active shards, we're done
-        if all(status.is_finished for status in self.shard_status.values()):
+        if all(status.is_finished_and_buffer_empty for status in self.shard_status.values()):
             assert len(self._current_round_robin) == 0
             assert all(len(status.current_buffer) == 0 for status in self.shard_status.values())
-            # we're done, so tell the broker to finalize
             self._finish()
 
     def shard_failed(self, shard_name: str, error: _ExcInfo):
@@ -501,14 +548,17 @@ class ChunkCacheBuilder:
 
     def _attempt_to_flush_buffers(self):
         # this is the most complex logic in this class.
-        # The global order on chunks is defined as "round robin" over shards, until one shard is done.
-        # after that, that shard is removed from the round robin and the process continues.
-        # round robin order is determined by self.source.shard_names
+        # The global order on chunks is defined as "roundrobin" over shards, until one shard is done.
+        # after that, that shard is removed from the roundrobin and the process continues.
+        # roundrobin order is determined by self.source.shard_names
 
-        # we are happy to send chunks that form a prefix of the global order
-        # to do that, we find the first shard that is not "finished" and that has sent the minimum number of chunks that any shard has sent
-        # if it has a chunk, we queue it to send and keep looking.
-        # if it doesn't have a chunk, we stop.
+        # we are happy to release chunks that form a prefix of the global order so that they can be read
+        # to do that, we maintain the roundrobin order in self._current_round_robin
+        # and we maintain the current buffer for each shard in self.shard_status
+        # when we get a new chunk, we append it to the buffer for that shard
+        # when we get a finished message, we mark that shard as finished
+        # in either case, we check if we can send any chunks from the front of the roundrobin
+        # if we can, we send them to the broker
 
         # here "finished" means that the shard has sent all of its chunks and has told us that it's done.
 
@@ -517,7 +567,7 @@ class ChunkCacheBuilder:
         while len(self._current_round_robin) > 0:
             name = self._current_round_robin[0]
             status = self.shard_status[name]
-            if status.is_finished:
+            if status.is_finished_and_buffer_empty:
                 # we're done with this shard, so we can remove it from the roundrobin
                 self._current_round_robin.pop(0)
                 logger.debug(f"Shard {name} is finished, removing from round robin")
