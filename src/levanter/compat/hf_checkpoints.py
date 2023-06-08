@@ -37,6 +37,7 @@ from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.trainer_hooks import StepInfo
+from levanter.utils.py_utils import dataclass_with_default_init
 
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ PYTORCH_MODEL = "pytorch_model.bin"
 SAFE_TENSORS_MODEL = "model.safetensors"
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoRef:
     """Represents a reference to a model (or similar) in a remote repository or local file system, and
     optionally a revision. This lets you load particular revisions or branches of a model.
@@ -145,7 +146,7 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
 }
 
 
-@dataclass(frozen=True, init=False)
+@dataclass_with_default_init(frozen=True)
 class HFCheckpointConverter(Generic[LevConfig]):
     """
     A class to convert between Levanter and HF models. This class establishes a bidirectional mapping
@@ -189,21 +190,21 @@ class HFCheckpointConverter(Generic[LevConfig]):
         trust_remote_code: bool = False,
         ignore_prefix: Optional[str] = None,
     ):
-        # stupid python won't let you have a custom construct with a frozen dataclass without setattr
+        # stupid python won't let you have a custom constructor with a frozen dataclass
 
-        # this needs to be early because it's used in _infer_config_class and _infer_tokenizer
-        setattr(self, "trust_remote_code", trust_remote_code)
+        ref = _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None
+        HFConfigClass = HFCheckpointConverter._infer_config_class(HFConfigClass, ref, trust_remote_code)
+        tokenizer = HFCheckpointConverter._infer_tokenizer(tokenizer, ref, trust_remote_code)
 
-        setattr(self, "LevConfigClass", LevConfigClass)
-        setattr(
-            self,
-            "reference_checkpoint",
-            _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None,
+        self.__default_init__(  # type: ignore
+            LevConfigClass=LevConfigClass,
+            reference_checkpoint=ref,
+            HfConfigClass=HFConfigClass,
+            tokenizer=tokenizer,
+            config_overrides=config_overrides,
+            trust_remote_code=trust_remote_code,
+            ignore_prefix=ignore_prefix,
         )
-        setattr(self, "HFConfigClass", self._infer_config_class(HFConfigClass))
-        setattr(self, "tokenizer", self._infer_tokenizer(tokenizer))
-        setattr(self, "config_overrides", config_overrides)
-        setattr(self, "ignore_prefix", ignore_prefix)
 
     def replaced(
         self,
@@ -226,17 +227,22 @@ class HFCheckpointConverter(Generic[LevConfig]):
             config_overrides = {**self.config_overrides, **config_overrides}
         return dataclasses.replace(self, config_overrides=config_overrides)
 
-    def _infer_config_class(self, hf_config_class):
+    @staticmethod
+    def _infer_config_class(hf_config_class, ref, trust_remote_code):
         if hf_config_class is None:
-            path, rev = self._get_ref(None)
+            if ref is None:
+                raise ValueError("Must provide either config class or reference_checkpoint")
+            path, rev = ref.model_name_or_path, ref.revision
             config = AutoConfig.from_pretrained(
                 path,
                 revision=rev,
-                trust_remote_code=self.trust_remote_code,
+                trust_remote_code=trust_remote_code,
             )
             clss = type(config)
         elif isinstance(hf_config_class, str):
-            path, rev = self._get_ref(None)
+            if ref is None:
+                raise ValueError("Must provide either config class or reference_checkpoint")
+            path, rev = ref.model_name_or_path, ref.revision
             HFConfig = get_class_from_dynamic_module(
                 hf_config_class,
                 path,
@@ -248,21 +254,29 @@ class HFCheckpointConverter(Generic[LevConfig]):
             clss = hf_config_class
         return clss
 
-    def _infer_tokenizer(self, tokenizer):
+    @staticmethod
+    def _infer_tokenizer(tokenizer, ref, trust_remote_code: bool = False):
         if tokenizer is None:
-            path, rev = self._get_ref(None)
+            if ref is None:
+                raise ValueError("Must provide either tokenizer or reference_checkpoint")
+            path, rev = ref.model_name_or_path, ref.revision
             tokenizer = AutoTokenizer.from_pretrained(
                 path,
                 revision=rev,
-                trust_remote_code=self.trust_remote_code,
+                trust_remote_code=trust_remote_code,
             )
         elif isinstance(tokenizer, str):
-            path, rev = self._get_ref(None)
+            if ref is None:
+                raise ValueError("Must provide either tokenizer or reference_checkpoint")
+            path, rev = ref.model_name_or_path, ref.revision
             tokenizer = AutoTokenizer.from_pretrained(
                 tokenizer,
                 revision=rev,
-                trust_remote_code=self.trust_remote_code,
+                trust_remote_code=trust_remote_code,
             )
+        else:
+            pass
+
         return tokenizer
 
     @cached_property
