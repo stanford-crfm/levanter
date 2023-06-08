@@ -134,7 +134,7 @@ _GLOBAL_SAVE_COUNT = 0
 
 
 @dataclass
-class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
+class HFCheckpointConverter(Generic[LevConfig]):
     LevConfigClass: Type[LevConfig]
     reference_checkpoint: Optional[Union[str, RepoRef]] = None
     "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
