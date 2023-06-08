@@ -1,4 +1,5 @@
 import abc
+import dataclasses
 import json
 import logging
 import os
@@ -144,7 +145,7 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
 }
 
 
-@dataclass
+@dataclass(frozen=True, init=False)
 class HFCheckpointConverter(Generic[LevConfig]):
     """
     A class to convert between Levanter and HF models. This class establishes a bidirectional mapping
@@ -188,15 +189,42 @@ class HFCheckpointConverter(Generic[LevConfig]):
         trust_remote_code: bool = False,
         ignore_prefix: Optional[str] = None,
     ):
-        # this needs to be early because it's used in _infer_config_class and _infer_tokenizer
-        self.trust_remote_code = trust_remote_code
+        # stupid python won't let you have a custom construct with a frozen dataclass without setattr
 
-        self.LevConfigClass = LevConfigClass
-        self.reference_checkpoint = _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None
-        self.HFConfigClass = self._infer_config_class(HFConfigClass)
-        self.tokenizer = self._infer_tokenizer(tokenizer)
-        self.config_overrides = config_overrides
-        self.ignore_prefix = ignore_prefix
+        # this needs to be early because it's used in _infer_config_class and _infer_tokenizer
+        setattr(self, "trust_remote_code", trust_remote_code)
+
+        setattr(self, "LevConfigClass", LevConfigClass)
+        setattr(
+            self,
+            "reference_checkpoint",
+            _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None,
+        )
+        setattr(self, "HFConfigClass", self._infer_config_class(HFConfigClass))
+        setattr(self, "tokenizer", self._infer_tokenizer(tokenizer))
+        setattr(self, "config_overrides", config_overrides)
+        setattr(self, "ignore_prefix", ignore_prefix)
+
+    def replaced(
+        self,
+        reference_checkpoint: Optional[Union[RepoRef, str]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        trust_remote_code: Optional[bool] = None,
+    ) -> "HFCheckpointConverter":
+        replacements: dict = {}
+        if reference_checkpoint is not None:
+            replacements["reference_checkpoint"] = reference_checkpoint
+        if tokenizer is not None:
+            replacements["tokenizer"] = tokenizer
+        if trust_remote_code is not None:
+            replacements["trust_remote_code"] = trust_remote_code
+
+        return dataclasses.replace(self, **replacements)
+
+    def with_config_overrides(self, config_overrides: dict, merge: bool = True) -> "HFCheckpointConverter":
+        if self.config_overrides is not None and merge:
+            config_overrides = {**self.config_overrides, **config_overrides}
+        return dataclasses.replace(self, config_overrides=config_overrides)
 
     def _infer_config_class(self, hf_config_class):
         if hf_config_class is None:
@@ -562,42 +590,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         shutil.copytree(local_code_path, path, ignore=shutil_ignore, dirs_exist_ok=True)
 
         logger.debug(f"Saved code to {path}")
-
-
-def _save_backpack_hf_checkpoint_local(
-    model,
-    path: str,
-    model_type: Optional[str] = None,
-    auto_map_config: Optional[HFAutoMapConfig] = None,
-):
-    # Extract and save the model configuration
-    os.makedirs(path, exist_ok=True)
-    from levanter.models.backpack import BackpackConfig
-
-    to_hf_config_func = BackpackConfig.to_hf_config
-    config = to_hf_config_func(model.vocab_size, model.config, {"auto_map": auto_map_config})
-    config = config.to_dict()
-    if model_type is not None:
-        config["model_type"] = model_type
-
-    with open(f"{path}/config.json", "w") as f:
-        json.dump(config, f)
-
-    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-    model = jax.tree_map(
-        lambda arr: np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True))), model
-    )
-
-    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
-    state_dict = model.to_state_dict()
-
-    # now that we've moved the model to the CPU, we don't need to do this on all processes
-    if jax.process_index() != 0:
-        return
-
-    # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-    safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
-    print(f"Saved checkpoint to {path}")
 
 
 def _is_url_like(path):
