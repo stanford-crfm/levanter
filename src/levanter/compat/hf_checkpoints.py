@@ -14,6 +14,7 @@ import huggingface_hub
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pyrallis
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
@@ -62,6 +63,11 @@ class RemoteRef:
 
     def __repr__(self) -> str:
         return f"RemoteRev({self.model_name_or_path!r}, {self.revision!r})"
+
+
+# register pyrallis parsing
+pyrallis.decode.register(RemoteRef, RemoteRef.from_string)
+pyrallis.encode.register(RemoteRef, str)
 
 
 class ConfigWithHFSer(abc.ABC):
@@ -271,7 +277,7 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
         Args:
             lm_model_cls: The model class to load
             ref: The reference to load from. If None, will use the reference_checkpoint
-            axis_mapping: The axis mapping to use for sharding. If None, will use the default axis mapping
+            axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
         state_dict = self.load_state_dict(ref)
         hf_config = self.hf_config_from_hf_checkpoint(ref)
@@ -295,6 +301,8 @@ class HFCheckpointConverter(abc.ABC, Generic[LevConfig]):
 
         if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+        else:
+            lev_model = haliax.auto_sharded(lev_model)
 
         return lev_model
 

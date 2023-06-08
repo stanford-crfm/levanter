@@ -31,8 +31,6 @@ class ConvertGpt2Config:
     hf_checkpoint: Optional[str] = None  # if specified, attempt to upload this checkpoint to the hf hub
     hf_revision: Optional[str] = None  # if specified, use this branch name when uploading a checkpoint
 
-    old_style_model: bool = False  # if True, use the old-style model serialization format (equinox-native
-
     model: Gpt2Config = Gpt2Config()
 
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
@@ -58,23 +56,20 @@ def main(config: ConvertGpt2Config):
 
     with jax.default_device(jax.devices("cpu")[0]):
         # we want to call this in case we're on a TPU node
-        jax.process_index()
+        jax.distributed.initialize()
 
         model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
 
-        if config.old_style_model:
-            model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
-        else:
-            with hax.enable_shape_checks(False):
-                model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+        with hax.enable_shape_checks(False):
+            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
-            def patch_vocab(array):
-                if is_named_array(array):
-                    return patch_vocab_size(array.array, array)
-                else:
-                    return array
+        def patch_vocab(array):
+            if is_named_array(array):
+                return patch_vocab_size(array.array, array)
+            else:
+                return array
 
-            model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
+        model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
 
         save_hf_gpt2_checkpoint(model, config.output_dir, hf_repo=config.hf_checkpoint, hf_revision=config.hf_revision)
 
