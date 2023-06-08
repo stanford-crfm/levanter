@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import urllib.parse
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
@@ -18,7 +19,7 @@ import pyrallis
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
