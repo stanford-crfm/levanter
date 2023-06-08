@@ -17,7 +17,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import OptimizerConfig, TrainerConfig
-from levanter.data.sharded import ReplicatedBatchLoader, ShardedBatchLoader
+from levanter.data.loader import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
