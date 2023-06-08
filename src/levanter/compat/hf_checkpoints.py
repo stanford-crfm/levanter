@@ -141,11 +141,14 @@ _GLOBAL_SAVE_COUNT = 0
 @dataclass
 class HFCheckpointConverter(Generic[LevConfig]):
     LevConfigClass: Type[LevConfig]
-    reference_checkpoint: Optional[Union[str, RepoRef]] = None
+    reference_checkpoint: Optional[RepoRef]
     "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
 
-    hf_config_class: Optional[Union[str, Type]] = None
-    "The HFConfig class to use. If None, will be inferred from the reference_checkpoint"
+    HfConfigClass: Type
+    "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
+
+    tokenizer: PreTrainedTokenizer
+    "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
     "A dictionary of config overrides to apply to the HFConfig when saving. typically used for auto_map"
@@ -157,30 +160,64 @@ class HFCheckpointConverter(Generic[LevConfig]):
     """A prefix to optionally ignore when loading checkpoints. For "gpt2" this is 'transformer' to deal with the
     fact that some models are saved as XXXPreTrainedModel and others are saved as XXXLMHeadModel"""
 
-    def __post_init__(self):
-        self.reference_checkpoint = _coerce_to_rr(self.reference_checkpoint)
+    def __init__(
+        self,
+        LevConfigClass: Type[LevConfig],
+        reference_checkpoint: Optional[Union[RepoRef, str]] = None,
+        HFConfigClass: Optional[Union[str, Type]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        config_overrides: Optional[dict] = None,
+        trust_remote_code: bool = False,
+        ignore_prefix: Optional[str] = None,
+    ):
+        # this needs to be early because it's used in _infer_config_class and _infer_tokenizer
+        self.trust_remote_code = trust_remote_code
 
-    @cached_property
-    def HFConfigClass(self) -> Type:
-        if self.hf_config_class is None:
+        self.LevConfigClass = LevConfigClass
+        self.reference_checkpoint = _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None
+        self.HFConfigClass = self._infer_config_class(HFConfigClass)
+        self.tokenizer = self._infer_tokenizer(tokenizer)
+        self.config_overrides = config_overrides
+        self.ignore_prefix = ignore_prefix
+
+    def _infer_config_class(self, hf_config_class):
+        if hf_config_class is None:
             path, rev = self._get_ref(None)
             config = AutoConfig.from_pretrained(
                 path,
                 revision=rev,
                 trust_remote_code=self.trust_remote_code,
             )
-            return type(config)
-        elif isinstance(self.hf_config_class, str):
+            clss = type(config)
+        elif isinstance(hf_config_class, str):
             path, rev = self._get_ref(None)
             HFConfig = get_class_from_dynamic_module(
-                self.hf_config_class,
+                hf_config_class,
                 path,
                 revision=rev,
                 local_files_only=not self.trust_remote_code,
             )
-            return HFConfig
+            clss = HFConfig
         else:
-            return self.hf_config_class
+            clss = hf_config_class
+        return clss
+
+    def _infer_tokenizer(self, tokenizer):
+        if tokenizer is None:
+            path, rev = self._get_ref(None)
+            tokenizer = AutoTokenizer.from_pretrained(
+                path,
+                revision=rev,
+                trust_remote_code=self.trust_remote_code,
+            )
+        elif isinstance(tokenizer, str):
+            path, rev = self._get_ref(None)
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer,
+                revision=rev,
+                trust_remote_code=self.trust_remote_code,
+            )
+        return tokenizer
 
     @cached_property
     def default_hf_config(self) -> HfConfig:
