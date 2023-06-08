@@ -148,7 +148,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     "If True, will trust the remote code and not download it locally."
 
     ignore_prefix: Optional[str] = None
-    """A prefix to optionally ignore when loading checkpoints. Typically this is 'transformer' to deal with the
+    """A prefix to optionally ignore when loading checkpoints. For "gpt2" this is 'transformer' to deal with the
     fact that some models are saved as XXXPreTrainedModel and others are saved as XXXLMHeadModel"""
 
     def __post_init__(self):
@@ -380,8 +380,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             if jax.process_index() == 0:
                 if tmpdir is not None:  # we're uploading to GCS or similar
                     logger.info(f"Copying HF-compatible checkpoint to {path}")
-                    fs: AbstractFileSystem
-                    fs = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
+                    fs: AbstractFileSystem = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
                     fs.put(os.path.join(local_path, "*"), path, recursive=True)
                     logger.info(f"Finished copying HF-compatible checkpoint to {path}")
 

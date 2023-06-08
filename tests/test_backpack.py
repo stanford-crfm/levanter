@@ -11,7 +11,7 @@ import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, backpack_config_to_hf, hf_backpack_config_to_levanter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, hf_backpack_config_to_levanter
 from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 
@@ -87,7 +87,7 @@ def test_backpack_nano_compare():
         model.save_pretrained(tmpdir)
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
-    roundtrip_hf_config = backpack_config_to_hf(vocab_size, lev_config)
+    roundtrip_hf_config = converter.hf_config_from_config(lev_config)
 
     for k, v in roundtrip_hf_config.__dict__.items():
         assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
