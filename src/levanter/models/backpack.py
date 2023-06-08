@@ -1,5 +1,6 @@
+import math
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Union, cast
+from typing import Callable, Dict, Optional, Union
 
 import equinox as eqx
 import jax
@@ -11,12 +12,14 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
+from haliax.util import ensure_tuple
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    reshape_linear_layer,
+    flatten_linear_layer,
     reshape_mlp_linear_layer,
+    unflatten_linear_layer,
 )
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
 
@@ -56,18 +59,10 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act)
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-
         d = {}
-        if isinstance(self.c_proj.Out, Axis):
-            proj_out_sizes = (self.c_proj.Out.size,)
-        else:
-            proj_out_sizes = tuple([axis.size for axis in self.c_proj.Out])
         d.update(
             reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), proj_out_sizes
+                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
             )
         )
         d.update(
@@ -81,13 +76,10 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        if isinstance(self.c_proj.Out, Axis):
-            proj_out_sizes = (self.c_proj.Out.size,)
-        else:
-            proj_out_sizes = tuple([axis.size for axis in self.c_proj.Out])
+        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
         my_dict.update(
             reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), proj_out_sizes
+                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (math.prod(out_dims),)
             )
         )
         my_dict.update(
@@ -154,12 +146,11 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        es = cast(Axis, self.c_attn.In).size
         d = {}
-        num_heads = self.config.Senses.size
-        sense_head_size = self.config.SenseHeadDim.size
         d.update(
-            reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (2, num_heads, sense_head_size))
+            unflatten_linear_layer(
+                apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
+            )
         )
         return super().from_state_dict(d, prefix)
 
@@ -169,13 +160,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        es = cast(Axis, self.c_attn.In).size
-        num_heads = self.config.Senses.size
-        sense_head_size = self.config.SenseHeadDim.size
-
-        my_dict.update(
-            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (2 * num_heads * sense_head_size,))
-        )
+        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
 
         state_dict.update(my_dict)
         return state_dict
@@ -373,4 +358,21 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return lm_logits
 
     def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
-        return {"transformer": None, "embeddings": None}
+        return {
+            "transformer": "backpack.gpt2_model",
+            "embeddings": "backpack.gpt2_model",
+            "sense_net": "backpack.sense_network",
+            "kq_selfattention": "backpack.sense_weight_net",
+        }
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        state_dict = super().update_state_dict(state_dict, prefix=prefix)
+        # In levanter's implementation, we have a shared embedding matrix for both the word
+        # embeddings and the sense embeddings
+        state_dict[apply_prefix(prefix, "word_embeddings.weight")] = state_dict[
+            apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
+        ]
+        state_dict[apply_prefix(prefix, "position_embeddings.weight")] = state_dict[
+            apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
+        ]
+        return state_dict

@@ -127,7 +127,9 @@ class Checkpointer:
             my_should_save = True
             my_save_permanent_ckpt = False
 
-        should_save, save_permanent_ckpt = multihost_broadcast_sync((my_should_save, my_save_permanent_ckpt))
+        should_save, save_permanent_ckpt = multihost_broadcast_sync(
+            (my_should_save, my_save_permanent_ckpt), timeout=500
+        )
 
         # log the decision
         if should_save:

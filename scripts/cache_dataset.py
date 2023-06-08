@@ -1,10 +1,8 @@
 import os
-
 from dataclasses import dataclass
 
-import wandb
-
 import levanter
+import wandb
 from levanter.config import RayConfig
 from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, cache_dataset
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
@@ -28,7 +26,6 @@ def main(args: RayCachedLMDatasetConfig):
 
     for split in args.splits:
         print(f"Caching {split} to {args.cache_dir}.")
-
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer)
         split_cache_dir = os.path.join(args.cache_dir, split)

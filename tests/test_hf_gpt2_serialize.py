@@ -16,7 +16,7 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 from haliax import Axis
 from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint, save_hf_gpt2_checkpoint
-from levanter.config import TrainerConfig
+from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 
@@ -130,21 +130,21 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
         assert onp.isclose(jax_g, torch_g.detach().cpu().numpy(), rtol=1e-2, atol=1e-2).all(), f"{jax_g} != {torch_g}"
 
     # now we also want to check that the optimizers do similar things
-    trainer_config = TrainerConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0)
+    optimizer_config = OptimizerConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0, lr_schedule="constant")
 
-    if trainer_config.max_grad_norm is not None:
-        torch.nn.utils.clip_grad_norm_(torch_model.parameters(), trainer_config.max_grad_norm)
+    if optimizer_config.max_grad_norm is not None:
+        torch.nn.utils.clip_grad_norm_(torch_model.parameters(), optimizer_config.max_grad_norm)
     torch_optimizer = torch.optim.AdamW(
         torch_model.parameters(),
-        lr=trainer_config.learning_rate,
-        weight_decay=trainer_config.weight_decay,
-        betas=(trainer_config.beta1, trainer_config.beta2),
-        eps=trainer_config.epsilon,
+        lr=optimizer_config.learning_rate,
+        weight_decay=optimizer_config.weight_decay,
+        betas=(optimizer_config.beta1, optimizer_config.beta2),
+        eps=optimizer_config.epsilon,
     )
 
     torch_optimizer.step()
 
-    jax_optimizer = trainer_config.optimizer()
+    jax_optimizer = optimizer_config.build(1000)
     state = jax_optimizer.init(model)
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
