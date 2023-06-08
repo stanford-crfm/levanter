@@ -399,48 +399,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 shutil.rmtree(tmpdir)
 
 
-def backpack_config_to_hf(vocab_size: int, config, auto_map_config: Optional[HFAutoMapConfig] = None) -> HfConfig:
-    config = HfConfig(
-        vocab_size=vocab_size,
-        n_positions=config.seq_len,
-        n_layer=config.num_layers,
-        n_head=config.num_heads,
-        n_embd=config.hidden_dim,
-        initializer_range=config.initializer_range,
-        attn_pdrop=config.attn_pdrop,
-        embd_pdrop=config.embed_pdrop,
-        layer_norm_epsilon=config.layer_norm_epsilon,
-        activation_function=config.activation_function,
-        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-        reorder_and_upcast_attn=config.upcast_attn,
-        num_senses=config.num_senses,
-        sense_intermediate_scale=config.sense_intermediate_scale,
-    )
-    if auto_map_config is not None:
-        config.auto_map = auto_map_config.to_dict()
-    return config
-
-
-def hf_backpack_config_to_levanter(config: HfConfig):
-    from levanter.models.backpack import BackpackConfig
-
-    return BackpackConfig(
-        seq_len=config.n_positions,
-        num_layers=config.n_layer,
-        num_heads=config.n_head,
-        hidden_dim=config.n_embd,
-        initializer_range=config.initializer_range,
-        attn_pdrop=config.attn_pdrop,
-        embed_pdrop=config.embd_pdrop,
-        layer_norm_epsilon=config.layer_norm_epsilon,
-        activation_function=config.activation_function,
-        scale_attn_by_inverse_layer_idx=config.scale_attn_by_inverse_layer_idx,
-        upcast_attn=config.reorder_and_upcast_attn,
-        num_senses=config.num_senses,
-        sense_intermediate_scale=config.sense_intermediate_scale,
-    )
-
-
 def _save_backpack_hf_checkpoint_local(
     model,
     path: str,
@@ -448,9 +406,11 @@ def _save_backpack_hf_checkpoint_local(
     auto_map_config: Optional[HFAutoMapConfig] = None,
 ):
     # Extract and save the model configuration
-    to_hf_config_func = backpack_config_to_hf
     os.makedirs(path, exist_ok=True)
-    config = to_hf_config_func(model.vocab_size, model.config, auto_map_config)
+    from levanter.models.backpack import BackpackConfig
+
+    to_hf_config_func = BackpackConfig.to_hf_config
+    config = to_hf_config_func(model.vocab_size, model.config, {"auto_map": auto_map_config})
     config = config.to_dict()
     if model_type is not None:
         config["model_type"] = model_type
