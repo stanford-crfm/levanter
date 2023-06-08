@@ -184,7 +184,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         self,
         LevConfigClass: Type[LevConfig],
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
-        HFConfigClass: Optional[Union[str, Type]] = None,
+        HfConfigClass: Optional[Union[str, Type]] = None,
         tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
         config_overrides: Optional[dict] = None,
         trust_remote_code: bool = False,
@@ -193,13 +193,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # stupid python won't let you have a custom constructor with a frozen dataclass
 
         ref = _coerce_to_rr(reference_checkpoint) if reference_checkpoint is not None else None
-        HFConfigClass = HFCheckpointConverter._infer_config_class(HFConfigClass, ref, trust_remote_code)
+        HfConfigClass = HFCheckpointConverter._infer_config_class(HfConfigClass, ref, trust_remote_code)
         tokenizer = HFCheckpointConverter._infer_tokenizer(tokenizer, ref, trust_remote_code)
 
         self.__default_init__(  # type: ignore
             LevConfigClass=LevConfigClass,
             reference_checkpoint=ref,
-            HfConfigClass=HFConfigClass,
+            HfConfigClass=HfConfigClass,
             tokenizer=tokenizer,
             config_overrides=config_overrides,
             trust_remote_code=trust_remote_code,
@@ -560,7 +560,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             # check hub
             try:
-                attributes_path = hf_hub_download(repo_id=repo, path=".gitattributes", revision=revision)
+                attributes_path = hf_hub_download(repo_id=repo, filename=".gitattributes", revision=revision)
             except EntryNotFoundError:
                 attributes_path = None
 
@@ -595,7 +595,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if os.path.exists(repo):
             local_code_path = repo
         else:
-            local_code_path = snapshot_download(repo, path, revision=revision, ignore_patterns=ignore_files)
+            local_code_path = snapshot_download(repo, revision=revision, ignore_patterns=ignore_files)
 
         # now we'll save the code
         os.makedirs(path, exist_ok=True)

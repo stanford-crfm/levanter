@@ -57,7 +57,7 @@ def test_backpack_nano_compare():
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = converter.HFAutoModelClass()
-    config = converter.HFConfigClass(
+    config = converter.HfConfigClass(
         n_embd=32,
         n_positions=512,
         n_head=8,

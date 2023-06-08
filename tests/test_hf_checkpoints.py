@@ -14,7 +14,7 @@ def test_save_model_with_code():
     converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
-    config = converter.HFConfigClass(
+    config = converter.HfConfigClass(
         d_model=32,
         max_seq_len=512,
         n_heads=8,

@@ -23,7 +23,7 @@ def test_mpt_nano_compare(use_bias):
     # a bit hacky, using some internal-y APIs of transformers
     converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
     cls = converter.HFAutoModelClass()
-    config = converter.HFConfigClass(
+    config = converter.HfConfigClass(
         d_model=32,
         max_seq_len=512,
         n_heads=8,
