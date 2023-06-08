@@ -15,6 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
 from haliax.util import ensure_tuple
+from levanter.compat.hf_checkpoints import LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -52,6 +53,7 @@ class BackpackConfig(Gpt2Config):
             initializer_range=self.initializer_range,
             attn_pdrop=self.attn_pdrop,
             embd_pdrop=self.embed_pdrop,
+            resid_pdrop=self.resid_pdrop,
             layer_norm_epsilon=self.layer_norm_epsilon,
             activation_function=self.activation_function,
             scale_attn_by_inverse_layer_idx=self.scale_attn_by_inverse_layer_idx,
@@ -70,6 +72,7 @@ class BackpackConfig(Gpt2Config):
             initializer_range=hf_config.initializer_range,
             attn_pdrop=hf_config.attn_pdrop,
             embed_pdrop=hf_config.embd_pdrop,
+            resid_pdrop=hf_config.resid_pdrop,
             layer_norm_epsilon=hf_config.layer_norm_epsilon,
             activation_function=hf_config.activation_function,
             scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
@@ -313,7 +316,7 @@ class BackpackGpt2Embeddings(Gpt2Embeddings):
         return self.token_embeddings.take("vocab", input_ids)
 
 
-class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
+class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     transformer: Gpt2Transformer
     embeddings: BackpackGpt2Embeddings
     sense_net: BackpackSenses
@@ -339,15 +342,15 @@ class BackpackLMHeadModel(StateDictSerializationMixin, eqx.Module):
     def init(Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
         transformer = Gpt2Transformer.init(config, key=k_t)
-        gpt2_config = Gpt2Config(
-            hidden_dim=config.hidden_dim,
-            seq_len=config.seq_len,
-            initializer_range=config.initializer_range,
-            embed_pdrop=config.embed_pdrop,
-        )
+        # gpt2_config = Gpt2Config(
+        #     hidden_dim=config.hidden_dim,
+        #     seq_len=config.seq_len,
+        #     initializer_range=config.initializer_range,
+        #     embed_pdrop=config.embed_pdrop,
+        # )
         embeddings = BackpackGpt2Embeddings.init(
             Vocab=Vocab,
-            config=gpt2_config,
+            config=config,
             key=k_embeddings,
         )
         sense_net = BackpackSenses.init(

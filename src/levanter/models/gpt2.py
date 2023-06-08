@@ -15,7 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHFSer
+from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -329,7 +329,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
-class Gpt2LMHeadModel(eqx.Module, LmWithHFSer[Gpt2Config]):
+class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
 

@@ -17,7 +17,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.hf_checkpoints import HFCompatConfig
+from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -388,13 +388,10 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
+class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
     wte: hnn.Embedding
     transformer: MptTransformer
-
-    @property
-    def config(self) -> MptConfig:
-        return self.transformer.config
+    config: MptConfig = eqx.static_field()
 
     @property
     def Vocab(self) -> Axis:
@@ -410,7 +407,7 @@ class MptLmHeadModel(StateDictSerializationMixin, eqx.Module):
         assert config.resid_pdrop == 0.0, "residual dropout not supported"
         assert config.attn_config.alibi, "alibi attention is required for now"
 
-        return MptLmHeadModel(wte, transformer)
+        return MptLmHeadModel(wte, transformer, config)
 
     @named_call
     def __call__(self, input_ids: NamedArray, attention_mask: Optional[NamedArray] = None) -> NamedArray:

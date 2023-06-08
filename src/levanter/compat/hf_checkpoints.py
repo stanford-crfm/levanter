@@ -92,7 +92,7 @@ class HFCompatConfig(abc.ABC):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class LmWithHFSer(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
+class LmWithHfSerializationMixin(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
     config: MConfig
 
     def get_hf_config(self):
@@ -105,7 +105,7 @@ class LmWithHFSer(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHFSer":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHfSerializationMixin":
         pass
 
 
@@ -247,7 +247,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 hf_config_class,
                 path,
                 revision=rev,
-                local_files_only=not self.trust_remote_code,
+                local_files_only=not trust_remote_code,
             )
             clss = HFConfig
         else:
@@ -370,10 +370,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def load_lm_model(
         self,
-        lm_model_cls: Type[LmWithHFSer],
+        lm_model_cls: Type[LmWithHfSerializationMixin],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
-    ) -> LmWithHFSer:
+    ) -> LmWithHfSerializationMixin:
         """
         Loads a levanter model from a huggingface checkpoint.
 
@@ -410,7 +410,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return lev_model
 
     def save_model_local(
-        self, model: LmWithHFSer, path: str, save_tokenizer: bool = True, save_reference_code: bool = True
+        self,
+        model: LmWithHfSerializationMixin,
+        path: str,
+        save_tokenizer: bool = True,
+        save_reference_code: bool = True,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -474,7 +478,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def save_model(
         self,
-        model: LmWithHFSer,
+        model: LmWithHfSerializationMixin,
         path,
         upload_to_hf: Union[bool, str, RepoRef] = False,
         save_reference_code: bool = True,
@@ -637,7 +641,7 @@ def save_hf_checkpoint_callback(
         else:
             my_upload_kwargs = hf_upload_kwargs
         converter.save_model(
-            cast(LmWithHFSer, step.model),
+            cast(LmWithHfSerializationMixin, step.model),
             f"{base_path}/step-{step.step}",
             upload_to_hf=upload_to_hf,
             **my_upload_kwargs,
