@@ -28,8 +28,6 @@ class ConvertConfig:
     hf_checkpoint: Optional[str] = None  # if specified, attempt to upload this checkpoint to the hf hub
     hf_revision: Optional[str] = None  # if specified, use this branch name when uploading a checkpoint
 
-    old_style_model: bool = False  # if True, use the old-style model serialization format (equinox-native
-
     model: BackpackConfig = BackpackConfig()
 
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
@@ -60,19 +58,16 @@ def main(config: ConvertConfig):
     with jax.default_device(jax.devices("cpu")[0]):
         model = BackpackLMHeadModel(Vocab, config.model, key=key)
 
-        if config.old_style_model:
-            raise NotImplementedError("old-style model serialization not implemented for backpack models")
-        else:
-            with hax.enable_shape_checks(False):
-                model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+        with hax.enable_shape_checks(False):
+            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
-            def patch_vocab(array):
-                if is_named_array(array):
-                    return patch_vocab_size(array.array, array)
-                else:
-                    return array
+        def patch_vocab(array):
+            if is_named_array(array):
+                return patch_vocab_size(array.array, array)
+            else:
+                return array
 
-            model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
+        model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
 
         if config.hf_checkpoint is not None:
             repo: Repository = Repository(
