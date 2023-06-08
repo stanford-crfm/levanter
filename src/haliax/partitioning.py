@@ -107,7 +107,7 @@ def shard_with_axis_mapping(x: T, mapping: ResourceMapping, mesh: Optional[Mesh]
                 x, mapping, mesh=mesh, preserve_existing_shardings=False
             ).array
 
-            if current_sharding == desired_sharding:
+            if current_sharding.is_equivalent_to(desired_sharding, ndim=raw_x.ndim):
                 return x
             elif desired_sharding.is_fully_addressable:
                 raw_x = jax.device_put(raw_x, desired_sharding)

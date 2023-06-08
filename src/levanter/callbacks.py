@@ -21,7 +21,6 @@ from tqdm import tqdm
 import levanter.visualization as viz
 import wandb
 from levanter.config import WandbConfig
-from levanter.data import Dataset
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
 
@@ -237,7 +236,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     return log_memory_usage
 
 
-def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
+def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
     """
     Computes log probabilities for a dataset and visualizes them using visdom.
     :param test_data:
