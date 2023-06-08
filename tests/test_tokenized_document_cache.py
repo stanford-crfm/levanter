@@ -8,7 +8,7 @@ from transformers import AutoTokenizer, BatchEncoding
 
 from haliax import Axis
 from levanter.data.shard_cache import ShardedDataSource, cache_dataset
-from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
+from levanter.data.text import TokenizedDocumentCache
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -72,7 +72,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
+        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
@@ -151,30 +151,6 @@ def test_doc_cache_sharding():
             for i in range(len(reconstructed)):
                 as_listed = BatchEncoding(data={k: [vv.tolist() for vv in v] for k, v in reconstructed[i].items()})
                 assert as_listed == docs[i]
-
-
-@pytest.mark.parametrize("flatten_docs", [True, False])
-@pytest.mark.parametrize(
-    ["num_docs", "seq_len", "doc_length"],
-    [(3, 10, 7), (3, 10, 1), (3, 10, 10), (1, 10, 10), (1, 10, 5), (1, 10, 1), (1, 10, 7), (3, 10, 20), (2, 10, 21)],
-)
-def test_token_seq_dataset_len_is_correct(flatten_docs, num_docs, seq_len, doc_length):
-    Pos = Axis("Pos", seq_len)
-    docs = [
-        BatchEncoding(data=dict(input_ids=[list(range(i * doc_length, (i + 1) * doc_length))]))
-        for i in range(num_docs)
-    ]
-    total_tokens_in_docs = sum([len(d["input_ids"][0]) for d in docs])
-    source = SingleShardDocumentSource(docs)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_dataset(f"{tmpdir}/cache", source, IdentityProcessor())
-        cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=flatten_docs)
-
-        ds = TokenSeqDataset(cache, Pos)
-        assert len(ds) == (total_tokens_in_docs // seq_len)
-        all_examples = list(ds)
-        assert len(all_examples) == (total_tokens_in_docs // seq_len)
 
 
 def _unbatch_encoding(enc: BatchEncoding):
