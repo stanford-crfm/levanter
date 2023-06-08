@@ -60,10 +60,9 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         d = {}
+        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
         d.update(
-            reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (self.c_proj.Out.size,)
-            )
+            reshape_mlp_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), out_dims)
         )
         d.update(
             reshape_mlp_linear_layer(
@@ -77,6 +76,7 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         super().update_state_dict(my_dict, prefix)
 
         out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
+
         my_dict.update(
             reshape_mlp_linear_layer(
                 my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (math.prod(out_dims),)
@@ -114,7 +114,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         k_c, _ = jrandom.split(key, 2)
         c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
         dropout = hnn.Dropout(config.attn_pdrop)
-        
+
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
