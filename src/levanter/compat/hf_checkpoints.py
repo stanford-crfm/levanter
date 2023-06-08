@@ -5,7 +5,6 @@ import os
 import shutil
 import tempfile
 import urllib.parse
-import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
@@ -19,7 +18,7 @@ import pyrallis
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
@@ -138,6 +137,11 @@ LevConfig = TypeVar("LevConfig", bound=HFCompatConfig)
 # just for generating unique ids
 _GLOBAL_SAVE_COUNT = 0
 
+KEYS_TO_COPY_FROM_BASE_CONFIG = {
+    "architectures",
+    "auto_map",
+}
+
 
 @dataclass
 class HFCheckpointConverter(Generic[LevConfig]):
@@ -250,7 +254,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return tokenizer
 
     @cached_property
-    def default_Vocab(self) -> Axis:
+    def Vocab(self) -> Axis:
         tokenizer = self.load_tokenizer()
         return Axis("vocab", len(tokenizer))
 
@@ -285,16 +289,17 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if ref is None:
             raise ValueError("Must provide a checkpoint to load from")
 
-        if os.path.exists(f"{ref}/{SAFE_TENSORS_MODEL}"):
-            state_dict = safetensors.numpy.load_file(f"{ref}/{SAFE_TENSORS_MODEL}")
-        elif os.path.exists(f"{ref}/{PYTORCH_MODEL}"):
+        id, rev = self._get_ref(ref)
+
+        if os.path.exists(f"{id}/{SAFE_TENSORS_MODEL}"):
+            state_dict = safetensors.numpy.load_file(f"{id}/{SAFE_TENSORS_MODEL}")
+        elif os.path.exists(f"{id}/{PYTORCH_MODEL}"):
             import torch
 
             device = torch.device("cpu")
-            state_dict = torch.load(f"{ref}/{PYTORCH_MODEL}", map_location=device)
+            state_dict = torch.load(f"{id}/{PYTORCH_MODEL}", map_location=device)
             state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
         else:
-            id, rev = self._get_ref(ref)
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
                 state_dict = safetensors.numpy.load_file(model_path)
@@ -328,7 +333,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         vocab_size = hf_config.vocab_size
 
-        Vocab = self.default_Vocab.resize(vocab_size)
+        Vocab = self.Vocab.resize(vocab_size)
 
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
@@ -357,9 +362,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
         config = model.config.to_hf_config(model.Vocab.size)
         dict_config = config.to_dict()
 
-        # save code first because we'll likely be overwriting it
-        if save_reference_code:
-            self._save_code_local(path)
+        # copy over the default keys
+        for k in KEYS_TO_COPY_FROM_BASE_CONFIG:
+            attr = getattr(self.default_hf_config, k, None)
+            if attr is not None:
+                dict_config[k] = attr
 
         if self.config_overrides:
             dict_config.update(self.config_overrides)
@@ -461,72 +468,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         finally:
             if tmpdir is not None:
                 shutil.rmtree(tmpdir)
-
-    def _save_code_local(self, path):
-        if self.reference_checkpoint is None:
-            warnings.warn("No reference checkpoint provided, so no code will be saved")
-            return
-
-        repo, revision = self._get_ref(self.reference_checkpoint)
-
-        # first we're going to decide what code to save
-        # as a heuristic, we'll use .gitattributes to decide what to save: anything not in LFS will be saved
-        # need to also save the .gitattributes file itself
-        # TODO: .gitignore too? it's not used a lot with the hub
-        if os.path.exists(repo):
-            # local path
-            if revision is not None:
-                warnings.warn("Ignoring revision because this is a local path. We don't handle this case well yet")
-            attributes_path = os.path.join(repo, ".gitattributes")
-            if not os.path.exists(attributes_path):
-                attributes_path = None
-        else:
-            # check hub
-            try:
-                attributes_path = hf_hub_download(repo_id=repo, path=".gitattributes", revision=revision)
-            except EntryNotFoundError:
-                attributes_path = None
-
-        if attributes_path is None:
-            warnings.warn("HF Export - No .gitattributes file found, using a heuristic to decide what to save")
-            ignore_files = [
-                ".git",
-                "*.bin.*",
-                "*.lfs.*",
-                "*.bin",
-                "*.h5",
-                "*.tflite",
-                "*.tar.gz",
-                "*.ot",
-                "*.onnx",
-                "*.msgpack",
-                "model.safetensors",
-            ]
-        else:
-            # read the attributes file and get the globs
-            with open(attributes_path) as f:
-                attributes = f.read()
-            ignore_files = [".git"]
-            for line in attributes.split("\n"):
-                line = line.strip()
-                if line.startswith("#") or line == "":
-                    continue
-                # NB: this is not a full implementation of .gitattributes, but it's good enough for our purposes
-                if "filter=lfs" in line:
-                    ignore_files.append(line.split()[0])
-
-        if os.path.exists(repo):
-            local_code_path = repo
-        else:
-            local_code_path = snapshot_download(repo, path, revision=revision, ignore_patterns=ignore_files)
-
-        # now we'll save the code
-        os.makedirs(path, exist_ok=True)
-
-        shutil_ignore = shutil.ignore_patterns(*ignore_files)
-        shutil.copytree(local_code_path, path, ignore=shutil_ignore, dirs_exist_ok=True)
-
-        logger.debug(f"Saved code to {path}")
 
 
 def _save_backpack_hf_checkpoint_local(
