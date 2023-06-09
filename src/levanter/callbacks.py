@@ -35,8 +35,6 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
     pbar = tqdm(dataset, desc="eval", position=1, leave=False)
     for batch in pbar:
         loss = loss_fn(model, batch)
-        # this mean is over the devices, somewhat confusingly
-        loss = jnp.mean(loss)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
