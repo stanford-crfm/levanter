@@ -15,7 +15,7 @@ import levanter
 from haliax import Axis, NamedArray
 from haliax.util import is_named_array
 from levanter.checkpoint import _assert_same
-from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 from levanter.utils.hf_utils import load_tokenizer
@@ -28,10 +28,7 @@ logger = logging.getLogger(__name__)
 class ConvertGpt2Config:
     checkpoint_path: str
     output_dir: str
-    hf_checkpoint: Optional[str] = None  # if specified, attempt to upload this checkpoint to the hf hub
-    hf_revision: Optional[str] = None  # if specified, use this branch name when uploading a checkpoint
-
-    old_style_model: bool = False  # if True, use the old-style model serialization format (equinox-native
+    upload_to_hf: Optional[RepoRef] = None
 
     model: Gpt2Config = Gpt2Config()
 
@@ -58,25 +55,23 @@ def main(config: ConvertGpt2Config):
 
     with jax.default_device(jax.devices("cpu")[0]):
         # we want to call this in case we're on a TPU node
-        jax.process_index()
+        jax.distributed.initialize()
 
         model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
 
-        if config.old_style_model:
-            model = deserialize_checkpoint_and_patch_vocab_dim(f"{config.checkpoint_path}/model.eqx", model)
-        else:
-            with hax.enable_shape_checks(False):
-                model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+        with hax.enable_shape_checks(False):
+            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
-            def patch_vocab(array):
-                if is_named_array(array):
-                    return patch_vocab_size(array.array, array)
-                else:
-                    return array
+        def patch_vocab(array):
+            if is_named_array(array):
+                return patch_vocab_size(array.array, array)
+            else:
+                return array
 
-            model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
+        model = jax.tree_util.tree_map(patch_vocab, model, is_leaf=is_named_array)
+        converter = HFCheckpointConverter(Gpt2Config, "gpt2")
 
-        save_hf_gpt2_checkpoint(model, config.output_dir, hf_repo=config.hf_checkpoint, hf_revision=config.hf_revision)
+        converter.save_model(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
 
 
 def deserialize_checkpoint_and_patch_vocab_dim(

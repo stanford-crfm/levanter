@@ -15,7 +15,7 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
 import haliax as hax
 from haliax import Axis
-from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint, load_hf_model_checkpoint, save_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -38,16 +38,12 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
 
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
+    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision, device=device)
-    config = HfGpt2Config.from_dict(config)
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
+    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision, device=device)
+    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -67,9 +63,9 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        save_hf_gpt2_checkpoint(model, tmpdir)
+        converter.save_model(model, tmpdir)
 
-        torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir, config=config)
+        torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
 
         torch_out2 = torch_model2(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
@@ -89,12 +85,11 @@ def test_hf_gradient():
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
 
-    config, data = load_hf_model_checkpoint(model_id, revision=revision)
-    config = HfGpt2Config.from_dict(config)
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, config=config, revision=revision)
+    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
+    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = load_hf_gpt2_checkpoint(model_id, revision=revision)
+    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -167,8 +162,9 @@ def test_hf_save_to_fs_spec():
     Vocab = Axis("Vocab", 128)
     config = Gpt2Config(hidden_dim=32, num_heads=2, num_layers=2)
     simple_model = Gpt2LMHeadModel.init(Vocab, config, key=PRNGKey(0))
+    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
 
-    save_hf_gpt2_checkpoint(simple_model, "memory://model")
+    converter.save_model(simple_model, "memory://model")
 
     with tempfile.TemporaryDirectory() as tmpdir:
 
@@ -176,7 +172,7 @@ def test_hf_save_to_fs_spec():
         fs: AbstractFileSystem = fsspec.filesystem("memory")
         fs.get("model/", f"{tmpdir}/test", recursive=True)
 
-        loaded_model = load_hf_gpt2_checkpoint(f"{tmpdir}/test")
+        loaded_model = converter.load_lm_model(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
         simple_dict = simple_model.to_state_dict()
         loaded_dict = loaded_model.to_state_dict()
@@ -185,7 +181,7 @@ def test_hf_save_to_fs_spec():
 
         for key, simple_p in simple_dict.items():
             loaded_p = loaded_dict[key]
-            assert onp.isclose(simple_p, loaded_p).all(), f"{key}: {onp.linalg.norm(simple_p - loaded_p, ord=onp.inf)}"
+            assert onp.allclose(simple_p, loaded_p), f"{key}: {onp.linalg.norm(simple_p - loaded_p, ord=onp.inf)}"
 
 
 # TODO: would be nice to have a test that tests hf upload?
