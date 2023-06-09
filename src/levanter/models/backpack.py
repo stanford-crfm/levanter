@@ -343,12 +343,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     def init(Vocab: Axis, config: BackpackConfig, *, key):
         k_t, k_embeddings, k_attn = jrandom.split(key, 3)
         transformer = Gpt2Transformer.init(config, key=k_t)
-        # gpt2_config = Gpt2Config(
-        #     hidden_dim=config.hidden_dim,
-        #     seq_len=config.seq_len,
-        #     initializer_range=config.initializer_range,
-        #     embed_pdrop=config.embed_pdrop,
-        # )
+
         embeddings = BackpackGpt2Embeddings.init(
             Vocab=Vocab,
             config=config,
