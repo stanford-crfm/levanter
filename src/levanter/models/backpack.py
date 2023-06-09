@@ -60,6 +60,7 @@ class BackpackConfig(Gpt2Config):
             reorder_and_upcast_attn=self.upcast_attn,
             num_senses=self.num_senses,
             sense_intermediate_scale=self.sense_intermediate_scale,
+            **config_overrides,
         )
 
     @classmethod
@@ -395,7 +396,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         ## Weight-and-sum
         hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
-        hidden_states = hax.sum(hidden_states, axis=self.config.Senses) # (seq, embed)
+        hidden_states = hax.sum(hidden_states, axis=self.config.Senses)  # (seq, embed)
 
         lm_logits = self.embeddings.unembed(hidden_states)
 
@@ -413,10 +414,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         state_dict = super().update_state_dict(state_dict, prefix=prefix)
         # In levanter's implementation, we have a shared embedding matrix for both the word
         # embeddings and the sense embeddings
-        state_dict[apply_prefix(prefix, "word_embeddings.weight")] = state_dict[
+        state_dict[apply_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
             apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
         ]
-        state_dict[apply_prefix(prefix, "position_embeddings.weight")] = state_dict[
+        state_dict[apply_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
             apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
         ]
         return state_dict
