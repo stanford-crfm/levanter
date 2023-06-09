@@ -30,12 +30,15 @@ def teardown_module(module):
 
 
 class TestProcessor(BatchProcessor[Sequence[int]]):
+    def __init__(self, batch_size: int = 8):
+        self._batch_size = batch_size
+
     def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
         return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
 
     @property
     def batch_size(self) -> int:
-        return 8
+        return self._batch_size
 
     @property
     def num_cpus(self) -> int:
@@ -188,7 +191,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = cache_dataset(
-            tmpdir, SlowShardSource(), TestProcessor(), batch_size=1, rows_per_chunk=10, await_finished=False
+            tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
         # bit hacky, but watch for the cache to create the two chunks for shard 0
@@ -254,7 +257,7 @@ def test_can_get_chunk_before_finished():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = cache_dataset(
-            tmpdir, SlowShardSource(), TestProcessor(), batch_size=1, rows_per_chunk=10, await_finished=False
+            tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
         def back_to_py(batch: pa.RecordBatch):
@@ -263,8 +266,6 @@ def test_can_get_chunk_before_finished():
         chunk = [back_to_py(batch) for batch in cache.read_chunk(0)]
 
         assert [list(x) for x in chunk] == [[i] * 10 for i in range(10)]
-
-        print(chunk)
 
         with pytest.raises(TimeoutError):
             cache.get_chunk(1, timeout=0.1)
