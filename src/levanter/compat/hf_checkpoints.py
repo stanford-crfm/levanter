@@ -284,22 +284,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         raise ValueError(f"Could not find model class {auto_class} for {config}")
 
-    def load_tokenizer(self, ref: Optional[Union[str, RepoRef]] = None) -> PreTrainedTokenizer:
-        path, rev = self._get_ref(ref)
-        tokenizer = AutoTokenizer.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
-        return tokenizer
-
     @cached_property
     def Vocab(self) -> Axis:
-        tokenizer = self.load_tokenizer()
-        return Axis("vocab", len(tokenizer))
+        return Axis("vocab", len(self.tokenizer))
 
     def config_from_hf_config(self, hf_config) -> LevConfig:
         return self.LevConfigClass.from_hf_config(hf_config)
 
     def hf_config_from_config(self, config: LevConfig, vocab_size: Optional[int] = None) -> HfConfig:
         if vocab_size is None:
-            vocab_size = len(self.load_tokenizer())
+            vocab_size = self.Vocab.size
         return config.to_hf_config(vocab_size=vocab_size, config_overrides=self.config_overrides)
 
     def config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> LevConfig:
@@ -411,10 +405,12 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # save code first because we'll likely be overwriting it
         if save_reference_code:
             self._save_code_local(path)
-        config = model.config.to_hf_config(
-            model.Vocab.size, 
-            config_overrides=self.config_overrides
-        )
+
+        if save_tokenizer:
+            self.tokenizer.save_pretrained(path)
+
+        # Config
+        config = model.config.to_hf_config(model.Vocab.size)
         dict_config = config.to_dict()
 
         # copy over the default keys
@@ -429,8 +425,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         with open(f"{path}/config.json", "w") as f:
             json.dump(dict_config, f)
 
-        if save_tokenizer:
-            self.tokenizer.save_pretrained(path)
+        # Model
 
         def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
             if isinstance(arr, np.ndarray):
