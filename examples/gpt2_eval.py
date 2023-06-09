@@ -16,7 +16,7 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import TrainerConfig
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -49,7 +49,7 @@ def main(config: EvalGpt2Config):
     else:
         raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, Batch)
+    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
@@ -98,7 +98,7 @@ def main(config: EvalGpt2Config):
 
             # TODO: switch to throwing instead of returning None
             model, _, _ = load_checkpoint(model, None, config.checkpoint_path)  # type: ignore
-            loss = callbacks.eval_loss_loop(compute_loss_pjit, model, eval_dataset, max_batches=total)
+            loss = callbacks.eval_loss_loop(compute_loss_pjit, model, eval_loader, max_batches=total)
 
             del model
             print("Loss from Levanter model: ", loss)
@@ -107,7 +107,7 @@ def main(config: EvalGpt2Config):
             # load the huggingface model
             converter = HFCheckpointConverter(Gpt2Config, config.hf_checkpoint)
             hf_model = converter.load_lm_model(Gpt2LMHeadModel, config.hf_checkpoint)
-            loss = callbacks.eval_loss_loop(compute_loss_pjit, hf_model, eval_dataset, max_batches=total)
+            loss = callbacks.eval_loss_loop(compute_loss_pjit, hf_model, eval_loader, max_batches=total)
 
             print("Loss from HF model: ", loss)
 
@@ -123,7 +123,7 @@ def main(config: EvalGpt2Config):
 
                 loss = 0.0
                 n = 0
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
+                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
                     torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()

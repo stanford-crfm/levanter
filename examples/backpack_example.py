@@ -16,7 +16,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.config import OptimizerConfig, TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
+from levanter.data.loader import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
@@ -61,14 +61,14 @@ def main(config: TrainBackpackConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    dataset = GlobalBatchDataset(
+    train_loader = ShardedBatchLoader(
         TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
 
-    eval_dataset = LocalBatchDataset(
+    eval_loader = ReplicatedBatchLoader(
         TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
@@ -179,7 +179,7 @@ def main(config: TrainBackpackConfig):
                 loss = 0.0
                 n = 0
 
-                for batch in eval_dataset:
+                for batch in eval_loader:
                     this_loss = eval_loss(model, batch)
                     loss += this_loss.item()
                     n += 1
@@ -238,13 +238,13 @@ def main(config: TrainBackpackConfig):
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
-                eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+                eval_loader, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
             ),
             every=config.trainer.steps_per_eval,
         )
 
         # data loader
-        iter_data = non_caching_cycle(dataset)
+        iter_data = non_caching_cycle(train_loader)
 
         # load the last checkpoint and resume if we want
         model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
