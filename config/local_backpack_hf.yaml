@@ -10,7 +10,8 @@ model:
   num_senses: 48
   sense_intermediate_scale: 7
 override_vocab_size: 50264
-model_type: backpack-gpt2
-auto_map:
-  AutoConfig: backpack_config.BackpackGPT2Config
-  AutoModelForCausalLM: backpack_model.BackpackGPT2LMHeadModel
+config_overrides:
+  model_type: backpack-gpt2
+  auto_map:
+    AutoConfig: backpack_config.BackpackGPT2Config
+    AutoModelForCausalLM: backpack_model.BackpackGPT2LMHeadModel
