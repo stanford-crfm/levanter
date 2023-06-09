@@ -225,7 +225,7 @@ def _produce_cache_for_shard(
 
         # yield from existing chunks
         if len(shard_writer.chunks) > 0:
-            logger.info(f"Yielding {len(shard_writer.chunks)} chunks from {shard_name}")
+            logger.info(f"Yielding {len(shard_writer.chunks)} already finished chunks from {shard_name}")
             sink.new_chunk.remote(shard_name, *shard_writer.chunks)
 
         if not was_finished:
@@ -290,7 +290,8 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
 
-    def do_write(batch):
+    def do_tokenize(batch):
+        logger.info(f"Ready to tokenize for {shard_name} /{shard_writer.num_chunks}")
         nonlocal writer
 
         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
@@ -311,15 +312,16 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
             writer = None
             yield_chunk(chunk)
 
+    logger.info(f"Ready to get rows for {shard_name}")
     for row in shard_iter:
         batch.append(row)
 
         if len(batch) == target_batch_size:
-            do_write(batch)
+            do_tokenize(batch)
             batch = []
 
     if batch:
-        do_write(batch)
+        do_tokenize(batch)
     if writer is not None:
         writer.__exit__(None, None, None)
         chunk = writer.get_metadata()
