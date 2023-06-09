@@ -8,6 +8,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from queue import PriorityQueue
 from typing import (
     IO,
     Any,
@@ -158,6 +159,59 @@ def _mk_process_task(processor: BatchProcessor[T]):
 
     return process_task
 
+def _mk_queue_processor(queue: ActorHandle, ):
+
+
+@dataclass(order=True, frozen=True)
+class _QueueItem:
+    priority: float
+    t: ray.ObjectRef
+    task_id: int
+
+
+@ray.remote
+class _BatchProcessorQueue(Generic[T]):
+    """
+    A queue of tasks to be processed by a BatchProcessor.
+
+    BatchProcessorQueue spins up tasks to process batches of data.
+    It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
+    It then waits for a task to finish before spinning up another one.
+    """
+    pqueue: PriorityQueue[_QueueItem]
+    processor: BatchProcessor[T]
+    task_futures: Dict[int, asyncio.Future]
+    _next_task_id: int
+    ready: bool  # whether or not we can spin up a new task
+
+
+    def __init__(self, batch_processor: BatchProcessor[T]):
+        self.pqueue = PriorityQueue()
+        self.processor = batch_processor
+        self.task_futures = {}
+        self._next_task_id = 0
+        self.ready = True
+
+    async def submit(self, priority: float, t: ray.ObjectRef):
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        self.pqueue.put(_QueueItem(priority, t, task_id))
+        self.task_futures[task_id] = asyncio.Future()
+        self._maybe_start_task()
+        return await self.task_futures[task_id]
+
+    def _maybe_start_task(self):
+        if self.ready and not self.pqueue.empty():
+            self.ready = False
+            item = self.pqueue.get()
+            task_id = item.task_id
+            task = item.t
+            self.task_futures[task_id].set_result(ray.get(task.remote()))
+            self.ready = True
+            self._maybe_start_task()
+
+
+
 
 class _ChunkWriter:
     def __init__(self, cache_dir: str, chunk_name: str, schema: pa.Schema):
@@ -205,7 +259,7 @@ class _ChunkWriter:
         return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts)
 
 
-@ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
+@ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
     sink: ActorHandle,
     source: ShardedDataSource[T],
@@ -276,7 +330,10 @@ class _ShardWriter:
 
 def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name, processor, rows_per_chunk):
     total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)
-    logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
+    if total_rows_written > 0:
+        logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
+    else:
+        logger.info(f"Starting shard {shard_name}")
     shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
     process_task = _mk_process_task(processor)
     target_batch_size = min(processor.batch_size, rows_per_chunk)
@@ -291,7 +348,7 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
         shard_writer.commit_chunk(chunk)
 
     def do_tokenize(batch):
-        logger.info(f"Ready to tokenize for {shard_name} /{shard_writer.num_chunks}")
+        logger.info(f"Ready to tokenize for {shard_name}/{shard_writer.num_chunks}")
         nonlocal writer
 
         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
@@ -312,7 +369,7 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
             writer = None
             yield_chunk(chunk)
 
-    logger.info(f"Ready to get rows for {shard_name}")
+    logger.info(f"Starting to get rows for shard {shard_name}")
     for row in shard_iter:
         batch.append(row)
 
