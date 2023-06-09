@@ -116,25 +116,6 @@ def _coerce_to_rr(s: Union[str, RepoRef]) -> RepoRef:
         return RepoRef.from_string(s)
 
 
-@dataclass
-class HFAutoMapConfig:
-    """
-    To create a custom AutoModel class, in your model's config.json,
-    you will need to add a field like this:
-    "auto_map": {
-        "AutoConfig": "backpack_config.BackpackGPT2Config",
-        "AutoModelForCausalLM": "backpack_model.BackpackGPT2LMHeadModel"
-    },
-    """
-
-    AutoConfig: Optional[str] = None  # path of the AutoConfig class
-    AutoModelForCausalLM: Optional[str] = None  # path of the AutoModel class
-
-    def to_dict(self) -> dict:
-        """A helper function to convert class to dict"""
-        return {k: v for k, v in self.__dict__.items() if v is not None}
-
-
 LevConfig = TypeVar("LevConfig", bound=HFCompatConfig)
 
 # just for generating unique ids
@@ -418,8 +399,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
-        :param model:
-        :param path:
+        :param model: The model to convert and save
+        :param path: The path to save the output to
         :param save_tokenizer: Save the tokenizer to the checkpoint
         :param save_reference_code: Save any code from the reference checkpoint
         :return:
@@ -430,8 +411,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # save code first because we'll likely be overwriting it
         if save_reference_code:
             self._save_code_local(path)
-
-        config = model.config.to_hf_config(model.Vocab.size)
+        config = model.config.to_hf_config(
+            model.Vocab.size, 
+            config_overrides=self.config_overrides
+        )
         dict_config = config.to_dict()
 
         # copy over the default keys
