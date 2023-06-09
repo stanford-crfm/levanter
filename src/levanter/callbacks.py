@@ -43,9 +43,9 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
             break
 
     if n > 0:
-        loss /= n
+        total_loss /= n
 
-    return loss
+    return total_loss
 
 
 def compute_validation_loss(
