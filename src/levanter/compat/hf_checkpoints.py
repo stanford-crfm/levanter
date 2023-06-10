@@ -404,10 +404,14 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:
+            logger.info(f"Copying reference code from {self.reference_checkpoint}")
             self._save_code_local(path)
+            print(os.listdir(path))
 
         if save_tokenizer:
+            logger.info("Saving tokenizer")
             self.tokenizer.save_pretrained(path)
+            print(os.listdir(path))
 
         # Config
         config = model.config.to_hf_config(model.Vocab.size)
@@ -424,6 +428,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         with open(f"{path}/config.json", "w") as f:
             json.dump(dict_config, f)
+
+        print(os.listdir(path))
 
         # Model
 

@@ -42,7 +42,7 @@ class ConvertMptConfig:
 
 @levanter.config.main()
 def main(config: ConvertMptConfig):
-    logger.setLevel(logging.INFO)
+    levanter.logging.init_logger("convert.log", logging.INFO)
     tokenizer: GPT2Tokenizer = config.the_tokenizer
 
     vocab_size = config.override_vocab_size or len(tokenizer)
