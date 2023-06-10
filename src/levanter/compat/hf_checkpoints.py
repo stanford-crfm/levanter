@@ -67,6 +67,8 @@ class RepoRef:
         return RepoRef(model_name_or_path, revision)
 
     def __str__(self) -> str:
+        if self.revision is None:
+            return self.model_name_or_path
         return f"{self.model_name_or_path}@{self.revision}"
 
     def __repr__(self) -> str:

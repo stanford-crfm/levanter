@@ -53,7 +53,7 @@ def main(config: ConvertMptConfig):
     with jax.default_device(jax.devices("cpu")[0]):
         # we want to call this in case we're on a TPU node
         jax.distributed.initialize()
-        converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+        converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True, tokenizer=tokenizer)
         if config.model is None:
             model_config = converter.config_from_hf_config(converter.default_hf_config)
         else:
