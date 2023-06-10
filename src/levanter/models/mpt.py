@@ -128,8 +128,8 @@ class MptConfig(HFCompatConfig):
                 " 'inv_sqrt_d_model'."
             )
 
-        if self.init_config and self.init_config != init_config_defaults:
-            raise ValueError("init_config_defaults not supported yet.")
+        # if self.init_config and self.init_config != init_config_defaults:
+        #     raise ValueError("init_config_defaults not supported yet.")
 
     @classmethod
     def from_hf_config(cls, config):
