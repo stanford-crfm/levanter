@@ -67,6 +67,7 @@ def main(config: ConvertMptConfig):
         with hax.enable_shape_checks(False):
             model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
+        print(f"Resizing model to vocab size from {model.Vocab.size} to {Vocab.size}...")
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
 
         converter.save_model(
