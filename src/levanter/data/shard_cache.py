@@ -151,15 +151,6 @@ class CacheLedger:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
 
 
-def _mk_process_task(processor: BatchProcessor[T]):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        return processor(batch)
-
-    return process_task
-
-
 class _ChunkWriter:
     def __init__(self, cache_dir: str, chunk_name: str, schema: pa.Schema):
         self.cache_dir = cache_dir
@@ -518,6 +509,25 @@ class _ShardStatus:
         return self.producer_task is not None
 
 
+def _mk_process_task(processor: BatchProcessor[T]):
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
+        return processor(batch)
+
+    return process_task
+
+
+def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
+        ray.get(queue.task_running.remote())
+        return processor(batch)
+
+    return process_task
+
+
 @dataclass(order=True, frozen=True)
 class _QueueItem:
     priority: float
@@ -533,7 +543,7 @@ class _RefBox:
     ref: ray.ObjectRef
 
 
-@ray.remote
+@ray.remote(num_cpus=0)
 class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     """
     A queue of tasks to be processed by a BatchProcessor.
@@ -559,8 +569,9 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
         self.processor = batch_processor
         self.task_futures = {}
         self._next_task_id = 0
-        self.ready = True
-        self._task_processor = _mk_process_task(batch_processor)
+        self.ready = True  # whether we're ready to ask ray to start a new task
+        self_ref = ray.runtime_context.get_runtime_context().current_actor
+        self._task_processor = _mk_queue_aware_process_task(batch_processor, self_ref)
 
     # we don't need/want to dereference the batch, so we wrap it in a RefBox
     # one virtue of doing things this way is that we can let Ray try to schedule the compute near the data.
@@ -576,11 +587,15 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
     def _maybe_start_task(self):
         if self.ready and not self.pqueue.empty():
-            # self.ready = False
+            self.ready = False
             item = self.pqueue.get()
             task_id = item.task_id
             batch = item.batch
             self.task_futures[task_id].set_result(self._task_processor.remote(batch))
+
+    def task_running(self):
+        self.ready = True
+        self._maybe_start_task()
 
 
 @ray.remote(num_cpus=0)
