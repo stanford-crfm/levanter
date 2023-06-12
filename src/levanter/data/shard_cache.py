@@ -12,6 +12,7 @@ from queue import PriorityQueue
 from typing import (
     IO,
     Any,
+    Callable,
     Dict,
     Generic,
     Iterable,
@@ -201,7 +202,8 @@ class _ChunkWriter:
 def _produce_cache_for_shard(
     sink: ActorHandle,  # _ChunkCacheBuilder
     source: ShardedDataSource[T],
-    shard_name: str,
+    priority_fn: Callable[[int, int], float],
+    shard_idx: int,
     processor: BatchProcessor,
     process_queue: ActorHandle,  # _BatchProcessorQueue
     cache_dir: str,
@@ -212,18 +214,18 @@ def _produce_cache_for_shard(
     logging.basicConfig(level=logging.INFO)
     # load or create shard metadata (for recovery)
     try:
+        shard_name = source.shard_names[shard_idx]
         metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
         shard_writer = _ShardWriter(metadata_path)
-        was_finished = shard_writer.is_finished
 
         # yield from existing chunks
         if len(shard_writer.chunks) > 0:
             logger.info(f"Yielding {len(shard_writer.chunks)} already finished chunks from {shard_name}")
             sink.new_chunk.remote(shard_name, *shard_writer.chunks)
 
-        if not was_finished:
+        if not shard_writer.is_finished:
             _produce_chunks_for_shard(
-                sink, cache_dir, shard_writer, source, shard_name, processor, process_queue, rows_per_chunk
+                sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
             )
             shard_writer.finish()
 
@@ -270,8 +272,9 @@ class _ShardWriter:
 
 
 def _produce_chunks_for_shard(
-    sink, cache_dir, shard_writer, source, shard_name, processor, process_queue, rows_per_chunk
+    sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
 ):
+    shard_name = source.shard_names[shard_idx]
     total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)
     if total_rows_written > 0:
         logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
@@ -297,7 +300,8 @@ def _produce_chunks_for_shard(
         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
         # other shards since we want to stream them round-robin
         # record_batch = ray.get(process_task.remote(batch))
-        record_batch_future = ray.get(process_queue.submit.remote(priority=0, batch=_RefBox(batch)))
+        priority = priority_fn(shard_idx, shard_writer.num_chunks)
+        record_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
         logger.info("Started processing batch")
         record_batch = ray.get(record_batch_future)
 
@@ -632,11 +636,24 @@ class ChunkCacheBuilder:
             self._finish()
         else:
             logger.info(f"Starting cache build for {len(source.shard_names)} shards")
-            for shard_name in source.shard_names:
+
+            num_shards = len(source.shard_names)
+
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
+
+            for shard_idx, shard_name in enumerate(source.shard_names):
                 self._current_round_robin.append(shard_name)
 
                 task = _produce_cache_for_shard.remote(
-                    self_ref, source, shard_name, processor, self._processor_actor, cache_dir, rows_per_chunk
+                    self_ref,
+                    source,
+                    priority_fn,
+                    shard_idx,
+                    processor,
+                    self._processor_actor,
+                    cache_dir,
+                    rows_per_chunk,
                 )
 
                 self.shard_status[shard_name] = _ShardStatus(task)
