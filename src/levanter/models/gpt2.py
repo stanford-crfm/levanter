@@ -6,6 +6,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from transformers import GPT2Config as HfGpt2Config
+from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.jax_utils
@@ -13,6 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -24,7 +27,7 @@ from levanter.compat.torch_serialization import (
 
 
 @dataclass(frozen=True)
-class Gpt2Config:
+class Gpt2Config(HFCompatConfig):
     seq_len: int = 512
     hidden_dim: int = 768
     num_layers: int = 12
@@ -58,6 +61,43 @@ class Gpt2Config:
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * self.mlp_scale))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+
+    def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
+        if config_overrides is None:
+            config_overrides = {}
+
+        return HfGpt2Config(
+            vocab_size=vocab_size,
+            n_positions=self.seq_len,
+            n_layer=self.num_layers,
+            n_head=self.num_heads,
+            n_embd=self.hidden_dim,
+            initializer_range=self.initializer_range,
+            attn_pdrop=self.attn_pdrop,
+            embd_pdrop=self.embed_pdrop,
+            layer_norm_epsilon=self.layer_norm_epsilon,
+            activation_function=self.activation_function,
+            scale_attn_by_inverse_layer_idx=self.scale_attn_by_inverse_layer_idx,
+            reorder_and_upcast_attn=self.upcast_attn,
+            **config_overrides,
+        )
+
+    @classmethod
+    def from_hf_config(cls, hf_config: HfConfig):
+        return Gpt2Config(
+            seq_len=hf_config.n_positions,
+            # vocab_size=config.vocab_size,
+            num_layers=hf_config.n_layer,
+            num_heads=hf_config.n_head,
+            hidden_dim=hf_config.n_embd,
+            initializer_range=hf_config.initializer_range,
+            attn_pdrop=hf_config.attn_pdrop,
+            embed_pdrop=hf_config.embd_pdrop,
+            layer_norm_epsilon=hf_config.layer_norm_epsilon,
+            activation_function=hf_config.activation_function,
+            scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
+            upcast_attn=hf_config.reorder_and_upcast_attn,
+        )
 
 
 class Gpt2Mlp(eqx.Module):
@@ -289,7 +329,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
-class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
+class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
 
@@ -309,8 +349,8 @@ class Gpt2LMHeadModel(StateDictSerializationMixin, eqx.Module):
     def Pos(self) -> Axis:
         return self.config.Pos
 
-    @staticmethod
-    def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2LMHeadModel":
+    @classmethod
+    def init(cls, Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2LMHeadModel":
         k_t, k_embeddings = jrandom.split(key, 2)
         transformer = Gpt2Transformer.init(config, key=k_t)
         embeddings = Gpt2Embeddings.init(Vocab, config, key=k_embeddings)
