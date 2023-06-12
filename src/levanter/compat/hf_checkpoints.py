@@ -345,7 +345,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         return state_dict
 
-    def load_lm_model(
+    def load_pretrained(
         self,
         lm_model_cls: Type[LmWithHfSerializationMixin],
         ref: Optional[Union[str, RepoRef]] = None,

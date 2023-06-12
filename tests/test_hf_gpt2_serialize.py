@@ -43,7 +43,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
+    model = converter.load_pretrained(Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -89,7 +89,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision):
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_lm_model(Gpt2LMHeadModel, RepoRef(model_id, revision))
+    model = converter.load_pretrained(Gpt2LMHeadModel, RepoRef(model_id, revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -172,7 +172,7 @@ def test_hf_save_to_fs_spec():
         fs: AbstractFileSystem = fsspec.filesystem("memory")
         fs.get("model/", f"{tmpdir}/test", recursive=True)
 
-        loaded_model = converter.load_lm_model(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
+        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
         simple_dict = simple_model.to_state_dict()
         loaded_dict = loaded_model.to_state_dict()

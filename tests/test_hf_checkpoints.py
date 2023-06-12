@@ -50,7 +50,7 @@ def test_save_model_with_code():
         new_converter = HFCheckpointConverter(MptConfig, tmpdir, trust_remote_code=True)
 
         assert new_converter.config_from_hf_config(config) == lev_config
-        loaded_model = new_converter.load_lm_model(MptLmHeadModel)
+        loaded_model = new_converter.load_pretrained(MptLmHeadModel)
 
         assert loaded_model.config == lev_model.config
         assert loaded_model.Vocab == lev_model.Vocab
@@ -105,7 +105,7 @@ def test_save_backpack_model_with_code():
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 
         assert new_converter.config_from_hf_config(config) == lev_config
-        loaded_model = new_converter.load_lm_model(BackpackLMHeadModel)
+        loaded_model = new_converter.load_pretrained(BackpackLMHeadModel)
 
         assert loaded_model.config == lev_model.config
         assert loaded_model.Vocab == lev_model.Vocab

@@ -106,8 +106,10 @@ def main(config: EvalGpt2Config):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             converter = HFCheckpointConverter(Gpt2Config, config.hf_checkpoint)
-            hf_model = converter.load_lm_model(Gpt2LMHeadModel, config.hf_checkpoint)
-            loss = callbacks.eval_loss_loop(compute_loss_pjit, hf_model, eval_loader, max_batches=total)
+            model_from_hf_checkpoint = converter.load_pretrained(Gpt2LMHeadModel, config.hf_checkpoint)
+            loss = callbacks.eval_loss_loop(
+                compute_loss_pjit, model_from_hf_checkpoint, eval_loader, max_batches=total
+            )
 
             print("Loss from HF model: ", loss)
 
