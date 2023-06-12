@@ -143,7 +143,7 @@ In this example, we've defined an axis for each dimension of our tensors. In Hal
 building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
 those axes to perform operations like `softmax` and tensor multiplication (`dot`).
 
-## Compositionality
+## Generalizing to Attention Variants
 
 Despite making no reference to batching or heads, this same implementation is also batch-capable and supports multi-headed
 (or multi-query) attention and even attending to or from non-sequential keys (e.g. attending to image patches):
@@ -170,11 +170,11 @@ Width = hax.Axis("width", 32)
 key = hax.random.normal(PRNGKey(1), (Batch, Head, Height, Width, Key))
 value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
 
-# KPos in attention actually be a tuple of axes.
+# KPos in attention can actually be a tuple of axes.
 assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
 ```
 
-This compositionality is possible because we've abstracted over the unreferenced dimensions of our tensors.
+This automatic generalization is possible because we've abstracted over the unreferenced dimensions of our tensors.
 In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
 Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
