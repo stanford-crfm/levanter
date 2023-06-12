@@ -33,7 +33,7 @@ XXX Positioning?
 Today, we are excited to announce the release of two new libraries for training foundation models: [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
 Levanter is a [JAX](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
 flexible, modular, and accessible, while still being performant and scalable. In particular, Levanter is designed to be
-able to train models on a variety of different hardware, including GPUs, TPUs, and TPU pods.
+able to train models on a variety of different hardware, including GPUs and TPUs.
 Levanter also offers strong guarantees about reproducibility.
 Haliax is a named tensor library that we developed to make it easier to write legible, composable code while
 still maintaining efficiency and scalability.
@@ -47,12 +47,14 @@ Numerous foundation model training frameworks exist in the community, each with 
 For large language models (LLMs) (the focus of this release),
 the most well-known in the open source community is probably NVIDIA's PyTorch-based [Megatron-LM](https://github.com/NVIDIA/Megatron-LM),
 and its many derivatives, including EleutherAI's [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) codebase.
+Andrej Karpathy has released [MinGPT](https://github.com/karpathy/minGPT), a PyTorch-based library that aims
+to be minimal and legible.
 Meta has [MetaSeq](https://github.com/facebookresearch/metaseq) as well as [FairScale](https://github.com/facebookresearch/fairscale),
 with which they trained [Llama](https://github.com/facebookresearch/llama).
 MosaicML has recently released [LLM Foundry](https://github.com/mosaicml/llm-foundry), which we used to train
 [BioMedLM](https://crfm.stanford.edu/2022/12/15/biomedlm.html) last autumn. Previously, we released [Mistral](
 https://github.com/stanford-crfm/mistral) built on [Hugging Face Transformers](https://github.com/huggingface/transformers/)
-and [DeepSpeed](https://github.com/microsoft/DeepSpeed).
+and [DeepSpeed](https://github.com/microsoft/DeepSpeed). There are, to be sure, many more.
 
 In the JAX community, there are a number of libraries popping up. Google has released [T5X](https://github.com/google-research/t5x)
 and [MaxText](https://github.com/google/maxtext). There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
@@ -67,9 +69,9 @@ older, quasi-deprecated JAX APIs for distributed training.
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
 At CRFM, we focused on three fundamental goals:
 
-* **Legibility and Composability**: We prioritized writing code that is easy to read, understand, and compose.
-* **Reproducibility and Resilience**: We emphasized the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
-* **Scalability and Efficiency**: We aimed to fully utilize the Cloud TPU resources from Google's TPU Research Cloud program, as well as our own GPU resources, without compromising efficiency.
+* **Legibility**: We prioritize writing code that is easy to read, understand, and compose, while not sacrificing (much) efficiency.
+* **Reproducibility**: We emphasize **bitwise determinism**, the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
+* **Scalability**: We aimed to fully utilize the hardware we had available, including TPUs and NVIDIA GPUs.
 
 We chose [JAX](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
 and offers strong reproducibility guarantees. JAX also works well on TPUs, while we found that PyTorch support was still uneven.
@@ -78,12 +80,13 @@ partitioning and communication can be left to the XLA compiler. Finally, JAX mak
 bitwise deterministic PRNGs by default, with careful control over the PRNG state.
 
 However, JAX is a low-level framework, and we found that, by itself, it did not provide the legibility that we wanted.
-
-For us, legibility is a top concern. We therefore created two new libraries: **Haliax** and **Levanter**. Haliax is a
-named tensor library that focuses on improving the legibility and compositionality of deep learning code while still
-maintaining efficiency and scalability. Levanter is a library for training foundation models built on top of Haliax. In
-addition to the goals of legibility, efficiency, and scalability, Levanter further strives for bitwise reproducibility,
-meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and
+We therefore created two new libraries: **Haliax** and **Levanter**. Haliax is a
+named tensor library that focuses on improving the legibility of deep learning code while still
+maintaining efficiency and scalability. Levanter is a library for training foundation models built on top of Haliax that
+incorporates a number of features that we found useful for training foundation models: sharded data loading;
+online, but cached, data preprocessing; WandB integration; distributed checkpointing; automatic export to the Hugging
+Face Hub; and more. Levanter further strives for bitwise reproducibility, meaning that the same code with the same data
+will produce the exact same result, even in the presence of preemption and
 restarts.
 
 # Haliax: Legibility via Named Tensors
