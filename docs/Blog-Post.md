@@ -1,6 +1,6 @@
 # ---
 layout: blog
-title: Levanter —  Scalable, Reproducible, Legible Foundation Models with JAX
+title: Levanter —  Legible, Scalable, Reproducible Foundation Models with JAX
 authors:
     - name: David Hall
       url: TODO
@@ -20,25 +20,17 @@ display: False
 
 # Introduction
 
-<!--
-
-The growth of artificial intelligence and machine learning has brought about the need for scalable and reproducible models.
-To address this, at the [Center for Research on Foundation Models](https://crfm.stanford.edu), we have created two new tools — [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
-They form a new code base for training foundation models with the promise of flexibility, modularity, efficiency,
-and scale, as well as strong guarantees about reproducibility.
--->
-
 XXX Positioning?
 
-Today, we are excited to announce the release of two new libraries for training foundation models: [Levanter and Haliax](https://github.com/stanford-crfm/levanter).
+Today, we are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new codebase for training foundation models.
 Levanter is a [JAX](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
-flexible, modular, and accessible, while still being performant and scalable. In particular, Levanter is designed to be
-able to train models on a variety of different hardware, including GPUs and TPUs.
-Levanter also offers strong guarantees about reproducibility.
-Haliax is a named tensor library that we developed to make it easier to write legible, composable code while
-still maintaining efficiency and scalability.
+legible, scalable, and reproducible:
 
-Today, we're releasing the first version of Levanter and Haliax, along with several models trained with Levanter. We
+1. Legible: Levanter has a named tensor module named Haliax that makes it easy to write legible, composable deep learning code, while still maintaining efficiency and scalability.
+2. Scalable: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
+3. Reproducible: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+
+Today, we're releasing the first version of Levanter, along with several models trained with Levanter. We
 hope that these libraries will be useful to the community, and we look forward to seeing what people do with them.
 
 ## The Landscape of Foundation Model Training Frameworks
