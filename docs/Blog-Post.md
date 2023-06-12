@@ -61,15 +61,15 @@ older, quasi-deprecated JAX APIs for distributed training.
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
 At CRFM, we focused on three fundamental goals:
 
-* **Legibility**: We prioritize writing code that is easy to read, understand, and compose, while not sacrificing (much) efficiency.
+* **Legibility**: We prioritize writing code that is easy to read, understand, and compose.
 * **Reproducibility**: We emphasize **bitwise determinism**, the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
-* **Scalability**: We aimed to fully utilize the hardware we had available, including TPUs and NVIDIA GPUs.
+* **Scalability**: We want to fully utilize the compute we had available, including TPUs and NVIDIA GPUs.
 
 We chose [JAX](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
 and offers strong reproducibility guarantees. JAX also works well on TPUs, while we found that PyTorch support was still uneven.
 JAX is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how": details of
 partitioning and communication can be left to the XLA compiler. Finally, JAX makes reproducibility easy, since it uses
-bitwise deterministic PRNGs by default, with careful control over the PRNG state.
+bitwise deterministic PRNGs by default along with careful control over the PRNG state.
 
 However, JAX is a low-level framework, and we found that, by itself, it did not provide the legibility that we wanted.
 We therefore created two new libraries: **Haliax** and **Levanter**. Haliax is a
@@ -85,9 +85,11 @@ restarts.
 
 Haliax is a library for named tensors, built on JAX and [Equinox](https://github.com/patrick-kidger/equinox),
 which is a neural network library for JAX that provides a familiar, PyTorch-like module structure. Haliax uses
-Equinox's module structure for its neural network library, rather than Flax or Haiku.
+Equinox's module structure for its neural network library, rather than Flax or Haiku. (Equinox is a great library, but
+you can get started with Haliax without knowing anything about Equinox beyond what's in this blogpost.)
 
-Named tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
+Named tensors are a powerful abstraction where the axes of tensors are given names, and operations on those
+tensors reference those names. These names help
 make your code more legible, more composable, and less bug-prone. In Haliax, they also form the basis of how we handle
 scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) and tensor parallelism.
 (See below for our tutorial!)
@@ -98,7 +100,7 @@ In particular, he argues that:
 
 * Named axes are more semantically meaningful and rely less on bitrot-prone comments.
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
-* Broadcasting leads to unreadable strings of `view`s and `squeeze`s.
+* Broadcasting leads to unreadable strings of `reshape`s, `view`s and (`un`)`squeeze`s that obfuscate the intent of the code.
 
 To this, we would add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
 that named tensors eliminate many of these bugs.
@@ -137,6 +139,10 @@ def attention(Key, KPos, query, key, value, mask):
 In this example, we've defined an axis for each dimension of our tensors. In Haliax, the named `Axis` is the basic
 building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
 those axes to perform operations like `softmax` and tensor multiplication (`dot`).
+
+
+
+
 
 ## Generalizing to Attention Variants
 
@@ -228,6 +234,39 @@ mse(y_pred, y)
 
 The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
 Instead, it works exactly as we intend.
+
+## Comparison with Positional Axes: `minGPT`'s Attention
+
+Now let's compare our implementation of attention to a real-world example. Here's the [attention implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#LL61C8-L67C101) in `minGPT` (which aims for interpretability and pedagogy):
+(We don't mean to pick on `minGPT` too much here. It's actually a great library, and this implementation is actually more legible
+than many others.)
+
+```python
+    # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+    att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+    att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+    att = F.softmax(att, dim=-1)
+    att = self.attn_dropout(att)
+    y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+    y = y.contiguous().view(B, T, C) # re-assemble all head outputs side by side
+```
+
+Aside from dropout, which we had omitted for brevity, this is the same as the attention implementation we showed above,
+except with positional axes in PyTorch. The code's intent is obscured by the transposes and reshapes: what axis is
+the `(q @ k.transpose(-2, -1))` expression multiplying over? The comments help, but they have to be maintained and can be wrong.
+
+Also, if you were just skimming (and even if you weren't), we actually introduced a bug: the last line
+is missing a `transpose` call. It should be (and is in the original):
+
+```python
+    y = y.transpose(1, 2).contiguous().view(B, T, C)
+```
+
+It would have been easy to miss this bug, and it would have been hard to spot in testing without testing
+against a reference implementation: the `view` suppresses any error we might get.
+
+With named tensors, this kind of reshaping juggling is obviated. We can just write the logic of our code
+and let the library (and XLA compiler) handle the reshaping for us.
 
 ## Scale via Named Tensors
 
