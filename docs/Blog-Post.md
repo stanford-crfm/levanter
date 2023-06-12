@@ -89,13 +89,13 @@ Face Hub; and more. Levanter further strives for bitwise reproducibility, meanin
 will produce the exact same result, even in the presence of preemption and
 restarts.
 
-# Haliax: Legibility via Named Tensors
+# Legibility: Named Tensors with Haliax
 
 Haliax is a library for named tensors, built on JAX and [Equinox](https://github.com/patrick-kidger/equinox),
 which is a neural network library for JAX that provides a familiar, PyTorch-like module structure. Haliax uses
 Equinox's module structure for its neural network library, rather than Flax or Haiku.
 
-Named Tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
+Named tensors are a powerful abstraction that allow you to give names to the axes of your tensors. These names help
 make your code more legible, more composable, and less bug-prone. In Haliax, they also form the basis of how we handle
 scale with [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) and tensor parallelism.
 (See below for our tutorial!)
@@ -108,7 +108,7 @@ In particular, he argues that:
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
 * Broadcasting leads to unreadable strings of `view`s and `squeeze`s.
 
-To this, I'd add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
+To this, we would add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
 that named tensors eliminate many of these bugs.
 
 ## A Quick Example: Attention in Haliax
@@ -210,8 +210,8 @@ Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of sha
 (This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
 But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
 
-This is a common bug in deep learning code, and it's easy to miss. We, and anecdotally many others we have spoken to, have lost
-multiple days to this exact bug, in every deep learning framework.
+This is a common bug in deep learning code, and it's easy to miss. We, and anecdotally many others we have spoken to, have
+individually lost multiple days to this exact bug, and it shows up in every deep learning framework.
 
 But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
 
@@ -242,7 +242,7 @@ Instead, it works exactly as we intend.
 We use named axes both to improve legibility and to enable scale: named axes are the basis of our
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
 FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
-as many as we can get our hands on) and at least 65B parameters (which is way bigger than we have compute for).
+as many as we can get our hands on) and at least 65B parameters (which is much bigger than we have compute for).
 
 FSDP with Haliax basically amounts to telling Haliax which axes to shard, and specifying a different sharding for computation than for storage.
 A full tutorial is available [here](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), but here's a quick example:
@@ -312,17 +312,18 @@ You can do fancier things like sharded data loading (which we do in Levanter), b
 JAX already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
 We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
-of the main model code itself. Ultimately harder it's reason about this mixed positional/named code (where the axis names are implicit)
+of the main model code itself. Ultimately, it's harder reason about this mixed positional/named code (where the axis names are implicit)
 than just using names the whole way through.
 
 Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
 their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
-tensor parallism and FSDP. To us, this seems like a bit of a missed opportunity (relative to what we have in Haliax, but it's
+tensor parallism and FSDP. To us, this seems like a bit of a missed opportunity (relative to what we have in Haliax), but it's
 still useful.
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh). PyTorch has
-[Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted"
-I'm aware, and don't help with model partitioning, which is one of their main use cases in Haliax.
+[Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted on" to the existing
+positional tensors. They also don't help with model partitioning, which is one of the main use cases for named axes in
+Haliax.
 
 ## Haliax Tutorials
 
