@@ -1,13 +1,14 @@
+import tempfile
+
 import jax
 import numpy as np
 import pytest
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
-
-# from transformers import AutoModelForCausalLM
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers import AutoModelForCausalLM
 
 import haliax
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
@@ -21,14 +22,13 @@ def test_mpt_nano_compare(use_bias):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    cls = get_class_from_dynamic_module("modeling_mpt.MPTForCausalLM", "mosaicml/mpt-7b", "modeling_mpt.py")
-    MPTConfig = get_class_from_dynamic_module("modeling_mpt.MPTConfig", "mosaicml/mpt-7b", "modeling_mpt.py")
-    config = MPTConfig(
+    converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+    cls = converter.HFAutoModelClass()
+    config = converter.HfConfigClass(
         d_model=32,
         max_seq_len=512,
         n_heads=8,
         n_layers=2,
-        dropout=0.0,
         attn_config={"attn_impl": "torch", "alibi": True},
         vocab_size=vocab_size,
         no_bias=not use_bias,
@@ -47,17 +47,19 @@ def test_mpt_nano_compare(use_bias):
         torch_out = torch_out.logits[0].detach().cpu().numpy()
 
     # now compare levanter
-    lev_config = MptConfig.from_hf_config(config)
-    model_dict = model.state_dict()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        lev_config = converter.config_from_hf_config(config)
+        model.save_pretrained(tmpdir)
+        loaded_checkpoint = converter.load_state_dict(tmpdir)
 
-    roundtrip_hf_config = lev_config.to_hf_config(vocab_size)
-    # for reasons I don't understand, this flag is present in the config but not in the model
-    setattr(roundtrip_hf_config, "dropout", 0.0)
-    assert config == roundtrip_hf_config
+    roundtrip_hf_config = converter.hf_config_from_config(lev_config)
+
+    for k, v in roundtrip_hf_config.__dict__.items():
+        assert getattr(roundtrip_hf_config, k) == v, f"{k} {getattr(roundtrip_hf_config, k)} != {v}"
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    lev_model = lev_model.from_state_dict(model_dict)
+    lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     with jax.disable_jit():
@@ -66,14 +68,10 @@ def test_mpt_nano_compare(use_bias):
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
     # now test round trip
-    lev_model = lev_model.to_state_dict()
-
     # convert all values to torch
-    for k, v in lev_model.items():
-        lev_model[k] = torch.from_numpy(np.array(v))
-
-    model = cls(config)
-    model.load_state_dict(lev_model)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        converter._save_pretrained_local(lev_model, tmpdir)
+        model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()
     with torch.no_grad():
