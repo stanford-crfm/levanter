@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
+from transformers import AutoModelForCausalLM
 
 import haliax
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -67,14 +68,10 @@ def test_mpt_nano_compare(use_bias):
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
     # now test round trip
-    lev_model = lev_model.to_state_dict()
-
     # convert all values to torch
-    for k, v in lev_model.items():
-        lev_model[k] = torch.from_numpy(np.array(v))
-
-    model = cls(config)
-    model.load_state_dict(lev_model)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        converter.save_model_local(lev_model, tmpdir)
+        model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()
     with torch.no_grad():
