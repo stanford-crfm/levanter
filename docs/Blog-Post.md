@@ -182,7 +182,7 @@ In the third example, we can use tuples of axes in many places where we would no
 
 ## Avoiding Bugs
 
-Earlier, I claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
+Earlier, we claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
 and hard to spot in a traditional tensor library. Consider the following simple linear model:
 
 ```python
@@ -207,8 +207,8 @@ Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of sha
 (This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
 But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
 
-This is a common bug in deep learning code, and it's easy to miss. I have personally lost multiple days to this exact bug over the years,
-in every deep learning framework I've used.
+This is a common bug in deep learning code, and it's easy to miss. We, and anecdotally many others we have spoken to, have lost
+multiple days to this exact bug, in every deep learning framework.
 
 But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
 
@@ -307,13 +307,14 @@ You can do fancier things like sharded data loading (which we do in Levanter), b
 
 ## Named Tensors Elsewhere
 JAX already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
-I was super excited about `xmap` when I first heard about it, but 1) they seem to be deprioritizing it in favor of `pjit`
+We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it in favor of `pjit`
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
-of the main model code itself. I think it's ultimately harder to reason about than named tensors that are fully integrated.
+of the main model code itself. Ultimately harder it's reason about this mixed positional/named code (where the axis names are implicit)
+than just using names the whole way through.
 
 Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
 their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
-tensor parallism and FSDP. I think this is a bit of a missed opportunity (relative to what we have in Haliax, but it's
+tensor parallism and FSDP. To us, this seems like a bit of a missed opportunity (relative to what we have in Haliax, but it's
 still useful.
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh). PyTorch has
@@ -412,8 +413,8 @@ Here is an example of the token probability visualization in action on a small, 
 ![video showing heat map of token probabilities for a sample of the validation set evolving as training progresses](figures/token_probabilities.mov)
 
 The darker, more purple the color, the lower the probability of the token. The lighter, more yellow the color, the higher the probability.
-This visualization is logged to WandB as training progresses and can be viewed interactively. I have found this to be a
-nice alternative to just staring obsessively at the loss curve, which is what I usually do.
+This visualization is logged to WandB as training progresses and can be viewed interactively. We have found this to be a
+nice alternative to just staring obsessively at the loss curve, not that we ever do that.
 
 ### Other Features
 
