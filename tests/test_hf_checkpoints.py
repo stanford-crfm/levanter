@@ -45,7 +45,7 @@ def test_save_model_with_code():
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_model_local(lev_model, tmpdir)
+        converter._save_pretrained_local(lev_model, tmpdir)
 
         new_converter = HFCheckpointConverter(MptConfig, tmpdir, trust_remote_code=True)
 
@@ -100,7 +100,7 @@ def test_save_backpack_model_with_code():
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_model_local(lev_model, tmpdir)
+        converter._save_pretrained_local(lev_model, tmpdir)
 
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 

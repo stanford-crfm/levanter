@@ -63,7 +63,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_model(model, tmpdir)
+        converter.save_pretrained(model, tmpdir)
 
         torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
@@ -164,7 +164,7 @@ def test_hf_save_to_fs_spec():
     simple_model = Gpt2LMHeadModel.init(Vocab, config, key=PRNGKey(0))
     converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
 
-    converter.save_model(simple_model, "memory://model")
+    converter.save_pretrained(simple_model, "memory://model")
 
     with tempfile.TemporaryDirectory() as tmpdir:
 

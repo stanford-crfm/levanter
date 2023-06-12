@@ -68,7 +68,7 @@ def main(config: ConvertConfig):
 
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=PRNGKey(0))
 
-        converter.save_model(
+        converter.save_pretrained(
             model,
             config.output_dir,
             save_tokenizer=True,

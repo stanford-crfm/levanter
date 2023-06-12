@@ -62,7 +62,7 @@ def main(config: ConvertGpt2Config):
 
         converter = HFCheckpointConverter(Gpt2Config, "gpt2")
 
-        converter.save_model(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
+        converter.save_pretrained(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
 
 
 if __name__ == "__main__":

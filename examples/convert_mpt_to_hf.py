@@ -70,7 +70,7 @@ def main(config: ConvertMptConfig):
         print(f"Resizing model to vocab size from {model.Vocab.size} to {Vocab.size}...")
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
 
-        converter.save_model(
+        converter.save_pretrained(
             model, config.output_dir, upload_to_hf=config.upload_to_hf or False, save_tokenizer=config.save_tokenizer
         )
 

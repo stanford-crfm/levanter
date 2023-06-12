@@ -70,7 +70,7 @@ def test_mpt_nano_compare(use_bias):
     # now test round trip
     # convert all values to torch
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_model_local(lev_model, tmpdir)
+        converter._save_pretrained_local(lev_model, tmpdir)
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()

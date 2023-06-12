@@ -386,7 +386,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         return lev_model
 
-    def save_model_local(
+    def _save_pretrained_local(
         self,
         model: LmWithHfSerializationMixin,
         path: str,
@@ -462,7 +462,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         _GLOBAL_SAVE_COUNT += 1
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
-    def save_model(
+    def save_pretrained(
         self,
         model: LmWithHfSerializationMixin,
         path,
@@ -472,7 +472,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         **hf_upload_kwargs,
     ):
         """
-        Saves a Levanter model to a huggingface checkpoint.
+        Saves a Levanter model to a huggingface "pretrained model" checkpoint.
 
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
         any additional kwargs to the huggingface_hub.upload_folder function.
@@ -503,7 +503,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             hf_repo = None
 
-        self.save_model_local(
+        self._save_pretrained_local(
             model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
         )
 
@@ -626,7 +626,7 @@ def save_hf_checkpoint_callback(
             my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
         else:
             my_upload_kwargs = hf_upload_kwargs
-        converter.save_model(
+        converter.save_pretrained(
             cast(LmWithHfSerializationMixin, step.model),
             f"{base_path}/step-{step.step}",
             upload_to_hf=upload_to_hf,
