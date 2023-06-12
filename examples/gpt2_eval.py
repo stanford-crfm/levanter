@@ -14,7 +14,7 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import TrainerConfig
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
@@ -28,8 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EvalGpt2Config:
     checkpoint_path: Optional[str] = None
-    hf_checkpoint: Optional[str] = None
-    hf_revision: Optional[str] = None
+    hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
@@ -106,10 +105,11 @@ def main(config: EvalGpt2Config):
 
         if config.hf_checkpoint is not None:
             # load the huggingface model
-            with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
-            # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
-            loss = callbacks.eval_loss_loop(compute_loss_pjit, hf_model, eval_loader, max_batches=total)
+            converter = HFCheckpointConverter(Gpt2Config, config.hf_checkpoint)
+            model_from_hf_checkpoint = converter.load_pretrained(Gpt2LMHeadModel, config.hf_checkpoint)
+            loss = callbacks.eval_loss_loop(
+                compute_loss_pjit, model_from_hf_checkpoint, eval_loader, max_batches=total
+            )
 
             print("Loss from HF model: ", loss)
 
@@ -117,7 +117,9 @@ def main(config: EvalGpt2Config):
                 import torch
                 from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
 
-                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(config.hf_checkpoint)
+                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(
+                    config.hf_checkpoint.model_name_or_path, revision=config.hf_checkpoint.revision
+                )
                 torch_model.eval()
                 torch_model.to("cpu")
 

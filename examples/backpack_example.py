@@ -1,5 +1,4 @@
 import logging
-import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -209,10 +208,16 @@ def main(config: TrainBackpackConfig):
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
-            from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint_callback
+            # full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
+            # from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
+            raise NotImplementedError("HF checkpointing is not yet supported")
 
-            engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
+            # engine.add_hook(
+            #     save_hf_checkpoint_callback(
+            #         full_save_path,
+            #     ),
+            #     every=config.hf_save_steps,
+            # )
 
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)

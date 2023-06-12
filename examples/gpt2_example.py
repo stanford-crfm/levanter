@@ -15,6 +15,7 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.config import OptimizerConfig, TrainerConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
@@ -189,9 +190,14 @@ def main(config: TrainGpt2Config):
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
-            from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint_callback
+            from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
-            engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
+            converter = HFCheckpointConverter(Gpt2Config, "gpt2")
+
+            engine.add_hook(
+                save_hf_checkpoint_callback(full_save_path, converter),
+                every=config.hf_save_steps,
+            )
 
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
