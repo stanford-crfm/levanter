@@ -18,7 +18,8 @@ from pyrallis import field
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import CheckpointerConfig
-from levanter.config import DistributedConfig, JsonAtom, RayConfig, WandbConfig, logger
+from levanter.config import DistributedConfig, JsonAtom, RayConfig, logger
+from levanter.logging import WandbConfig
 from levanter.utils import cloud_utils
 
 
