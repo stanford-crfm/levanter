@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar, Union
 
 import jax
 import jmp
@@ -17,18 +17,16 @@ from pyrallis import field
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
-from levanter.config import (
-    DEFAULT_JAX_CONFIG,
-    CheckpointerConfig,
-    DistributedConfig,
-    JsonAtom,
-    M,
-    RayConfig,
-    S,
-    WandbConfig,
-    logger,
-)
+from levanter.checkpoint import CheckpointerConfig
+from levanter.config import DistributedConfig, JsonAtom, RayConfig, WandbConfig, logger
 from levanter.utils import cloud_utils
+
+
+M = TypeVar("M")
+S = TypeVar("S")
+DEFAULT_JAX_CONFIG = {
+    "jax_threefry_partitionable": True,
+}
 
 
 @dataclass
