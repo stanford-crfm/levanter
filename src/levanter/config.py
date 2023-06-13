@@ -1,83 +1,23 @@
 import atexit
 import inspect
-import logging
 import os
 import sys
 import tempfile
 import urllib.parse
-from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import List, Optional, Type, Union
+from typing import Type, Union
 
 import fsspec
-import jax
 import jmp
 import pyrallis
 from fsspec import AbstractFileSystem
-from jax._src.clusters import SlurmCluster, TpuCluster
 from pyrallis import parse
 
-from levanter.distributed import LevanterSlurmCluster, auto_ray_cluster
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
-logger = logging.getLogger(__name__)
-
 JsonAtom = Union[str, int, float, bool, None]
-
-
-@dataclass(frozen=True)
-class DistributedConfig:
-    coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
-    num_processes: Optional[int] = None
-    process_id: Optional[int] = None
-    local_device_ids: Optional[Union[int, List[int]]] = None
-
-    def _is_distributed(self):
-        if (
-            (self.coordinator_address is not None)
-            or (self.num_processes is not None)
-            or (self.process_id is not None)
-            or (self.local_device_ids is not None)
-        ):
-            return True
-
-        # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
-        # since it depends on the jax internals, but it's the best we can do
-        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
-            return True
-
-        return False
-
-    def initialize(self):
-        if self._is_distributed():
-            device_ids = self.local_device_ids
-            coordinator_address = self.coordinator_address
-
-            if LevanterSlurmCluster.is_env_present():
-                if device_ids is None:
-                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
-
-                if coordinator_address is None:
-                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
-
-            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
-            logger.info(
-                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
-                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
-            )
-
-
-@dataclass
-class RayConfig:
-    address: Optional[str] = None
-    start_workers: bool = True
-    auto_start_cluster: bool = True
-
-    def initialize(self):
-        if self.auto_start_cluster:
-            auto_ray_cluster(address=self.address, start_workers=self.start_workers)
 
 
 def register_codecs():
