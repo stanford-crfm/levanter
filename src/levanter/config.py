@@ -1,4 +1,3 @@
-# Various Pyrallis configs
 import atexit
 import dataclasses
 import inspect
@@ -10,7 +9,7 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import List, Optional, Type, TypeVar, Union
+from typing import List, Optional, Type, Union
 
 import fsspec
 import jax
@@ -21,20 +20,12 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
 from pyrallis import field, parse
 
-from levanter.checkpoint import Checkpointer, CheckpointInterval
 from levanter.distributed import LevanterSlurmCluster, auto_ray_cluster
 from levanter.utils import jax_utils
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
-
-M = TypeVar("M")
-S = TypeVar("S")
-
-DEFAULT_JAX_CONFIG = {
-    "jax_threefry_partitionable": True,
-}
 
 JsonAtom = Union[str, int, float, bool, None]
 
@@ -191,42 +182,6 @@ def _generate_pip_freeze():
 
     dists = distributions()
     return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
-
-
-@dataclass
-class CheckpointerConfig:
-    base_path: str = "checkpoints/"
-    save_interval: timedelta = timedelta(hours=6)
-    # TODO: I'd like to write this, but it's not supported by pyrallis
-    # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
-    keep: List[dict] = field(
-        default_factory=lambda: [dict(every=10000)]
-    )  # list of dicts with two keys: every and until
-
-    def expanded_path(self, run_name):
-        return os.path.expanduser(os.path.join(self.base_path, run_name))
-
-    def create(self, run_name) -> Checkpointer:
-        keeps = [CheckpointInterval(**k) for k in self.keep]
-        return Checkpointer(
-            base_path=self.expanded_path(run_name),
-            save_interval=self.save_interval,
-            step_policies=keeps,
-        )
-
-    def __post_init__(self):
-        self.base_path = os.path.expanduser(self.base_path)
-
-        # validate the checkpoint intervals.
-        # we want to make sure that the intervals are monotonic. only the last one can be None
-        prev_interval = None
-        for interval in self.keep:
-            if prev_interval is not None:
-                assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
-                assert (
-                    interval["until"] is None or interval["until"] > prev_interval["until"]
-                ), "Checkpoint intervals must be monotonic"
-            prev_interval = interval
 
 
 @dataclass(frozen=True)
