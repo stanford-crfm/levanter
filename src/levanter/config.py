@@ -5,6 +5,7 @@ import sys
 import tempfile
 import urllib.parse
 from datetime import timedelta
+
 from functools import wraps
 from typing import Type, Union
 
@@ -65,12 +66,14 @@ def config_registry(cls: Type):
 
     ModelConfig.register_subclass("gpt", GPTConfig)
 
+
     the syntax for a yaml file would be:
     ```yaml
     model:
       gpt:
          <config for gpt>
     ```
+
 
     :param cls:
     :return: the decorated classes.
