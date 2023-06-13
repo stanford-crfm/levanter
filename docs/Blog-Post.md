@@ -105,87 +105,10 @@ In particular, he argues that:
 To this, we would add that the implicit broadcasting so common in deep learning code is a source of easy-to-miss bugs, and
 that named tensors eliminate many of these bugs.
 
-## A Quick Example: Attention in Haliax
+## A Simple, but Incorrect, Example with Positional Axes
 
-This blog post isn't the place for a full introduction to Haliax (please see the [Haliax tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)),
-but here's a quick example of a minimal, but full-featured, attention implementation in Haliax.
-
-```python
-import jax.numpy as jnp
-import haliax as hax
-
-# Named Axes for Tensor Dimensions
-Pos = hax.Axis("position", 1024)  # sequence
-KPos = Pos.alias("key_position")  # key sequence for attention
-Head = hax.Axis("head", 8)  # number of attention heads
-Key = hax.Axis("key", 64)  # key/query/value size
-Embed = hax.Axis("embed", 512)  # embedding size
-
-def attention(Key, KPos, query, key, value, mask):
-    # how similar is each query to each key
-    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
-
-    # mask out invalid positions
-    if mask is not None:
-      scores -= 1E9 * (1.0 - mask)
-
-    # convert to probabilities
-    scores = hax.nn.softmax(scores, axis=KPos)
-
-    # weighted sum of values
-    return hax.dot(KPos, scores, value)
-```
-
-In this example, we've defined an axis for each dimension of our tensors. In Haliax, the named `Axis` is the basic
-building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
-those axes to perform operations like `softmax` and tensor multiplication (`dot`).
-
-
-
-
-
-## Generalizing to Attention Variants
-
-Despite making no reference to batching or heads, this same implementation is also batch-capable and supports multi-headed
-(or multi-query) attention and even attending to or from non-sequential keys (e.g. attending to image patches):
-
-```python
-Batch = hax.Axis("batch", 8)  # batch size
-
-query = hax.random.normal(PRNGKey(0), (Batch, Head, Pos, Key))
-key = hax.random.normal(PRNGKey(1), (Batch, Head, KPos, Key))
-value = hax.random.normal(PRNGKey(2), (Batch, Head, KPos, Key))
-
-# traditional batched multi-headed attention
-assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
-
-# multi-query attention. Each key/value pair produces only one head
-key = hax.random.normal(PRNGKey(1), (Batch, KPos, Key))
-value = hax.random.normal(PRNGKey(2), (Batch, KPos, Key))
-assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
-
-# image patch cross-attention from a sequence
-Height = hax.Axis("height", 32)
-Width = hax.Axis("width", 32)
-
-key = hax.random.normal(PRNGKey(1), (Batch, Head, Height, Width, Key))
-value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
-
-# KPos in attention can actually be a tuple of axes.
-assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
-```
-
-This automatic generalization is possible because we've abstracted over the unreferenced dimensions of our tensors.
-In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
-Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
-In the third example, we can use tuples of axes in many places where we would normally use a single axis.
-
-
-## Avoiding Bugs
-
-Earlier, we claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
-and hard to spot in a traditional tensor library. Consider the following simple linear model. Before reading on, try
-to spot the bug:
+Here's an example of a bug that is easy to make and hard to catch in a traditional tensor library.
+Consider the following simple linear model. Before reading on, try to spot the bug:
 
 ```python
 import jax.numpy as jnp
@@ -233,46 +156,121 @@ y_pred = hax.dot(Feature, x, W)
 mse(y_pred, y)
 ```
 
-The code is basically the same, but the presence of named axes mean that we don't accidentally broadcast `y` to the wrong shape.
-Instead, it works exactly as we intend.
+In this example, we've defined an axis for each dimension of our tensors. In Haliax, the named `Axis` is the basic
+building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
+those axes to perform operations like `dot` and `mean`. In this example, we've defined `x` to be a 2D tensor with axes
+`Batch` and `Feature`, and `y` to be a 1D tensor with axis `Batch`. We've also defined `W` to be a 1D tensor with axis
+`Feature`. When we perform the dot product, we specify that we want to contract over the `Feature` axis.
+By using named tensors, we've made it impossible to make this bug.
 
-## Comparison with Positional Axes: `minGPT`'s Attention
+## Another Example: Attention
 
-Now let's compare our implementation of attention to a real-world example. Here's the [attention implementation](https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#LL61C8-L67C101) in `minGPT` (which aims for interpretability and pedagogy):
-(We don't mean to pick on `minGPT` too much here. It's actually a great library, and this implementation is actually more legible
-than many others.)
+### minGPT's Attention Implementation
+
+Let's consider another example, this time focusing more on legibility. Consider the following code, which is the
+[implementation of attention](https://github.com/karpathy/minGPT/blob/90420ee/mingpt/model.py#LL61C8-L67C101) as
+implemented in [minGPT](https://github.com/karpathy/minGPT/), a codebase designed with interpretability and
+pedagogy in mind. (We'll omit the dropout bit for exposition's sake.)
 
 ```python
     # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
     att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
     att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
     att = F.softmax(att, dim=-1)
-    att = self.attn_dropout(att)
     y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-    y = y.contiguous().view(B, T, C) # re-assemble all head outputs side by side
+    y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 ```
 
-Aside from dropout, which we had omitted for brevity, this is the same as the attention implementation we showed above,
-except with positional axes in PyTorch. The code's intent is obscured by the transposes and reshapes: what axis is
-the `(q @ k.transpose(-2, -1))` expression multiplying over? The comments help, but they have to be maintained and can be wrong.
+The code's intent is obscured by all the shape manipulation: the transposes and views and slices.
+What axis is the `(q @ k.transpose(-2, -1))` expression multiplying out? What is that last `transpose` doing? The comments help, but they have to be maintained
+or risk becoming out of date.
 
-Also, if you were just skimming (and even if you weren't), we actually introduced a bug: the last line
-is missing a `transpose` call. It should be (and is in the original):
+Still worse, if the final `transpose(1, 2)` were accidentally omitted, the code would still run without any exception,
+but the output would be wrong. This is another example of the silent, sneaky bugs endemic to positional axis code.
+
+We don't mean to pick on minGPT too much; it's a great codebase, and more legible than most. Indeed, it's a testament to
+the inherent difficulty of writing legible code with positional axes.
+
+### Attention in Haliax
+
+Now let's consider an attention implementation written in Haliax.
 
 ```python
-    y = y.transpose(1, 2).contiguous().view(B, T, C)
+import jax.numpy as jnp
+import haliax as hax
+
+# Named Axes for Tensor Dimensions
+Pos = hax.Axis("position", 1024)  # sequence
+KPos = Pos.alias("key_position")  # key sequence for attention
+Head = hax.Axis("head", 8)  # number of attention heads
+Key = hax.Axis("key", 64)  # key/query/value size
+Embed = hax.Axis("embed", 512)  # embedding size
+
+def attention(Key, KPos, query, key, value, mask):
+    # how similar is each query to each key
+    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
+
+    # mask out invalid positions
+    if mask is not None:
+      scores -= 1E9 * (1.0 - mask)
+
+    # convert to probabilities
+    scores = hax.nn.softmax(scores, axis=KPos)
+
+    # weighted sum of values
+    return hax.dot(KPos, scores, value)
 ```
 
-It would have been easy to miss this bug, and it would have been hard to spot in testing without testing
-against a reference implementation: the `view` suppresses any error we might get.
+With named tensors, we can write the code in a way that conveys the semantics of the operation, rather than the
+mechanics of the shape manipulation. In addition, this named code is much more flexible, as we'll see below.
 
-With named tensors, this kind of reshaping juggling is obviated. We can just write the logic of our code
-and let the library (and XLA compiler) handle the reshaping for us.
+## Generalizing to Attention Variants
+
+The minGPT code above is batched and multi-headed. Indeed, it is obligatorily so: the batch and head axes are
+hard-coded into the shape of the tensors and the indices of the operations.
+
+By contrast, our Haliax implementation makes no reference to either a `Batch` or `Head` axis. And indeed,
+it can operate on tensors that have neither of those axes. However, it is also batch-capable and supports multi-headed
+(or multi-query) attention and even attending to or from non-sequential keys (e.g. attending to image patches).
+Because the code is written in terms of named axes, the code immediately generalizes to these variants:
+
+```python
+Batch = hax.Axis("batch", 8)  # batch size
+
+query = hax.random.normal(PRNGKey(0), (Batch, Head, Pos, Key))
+key = hax.random.normal(PRNGKey(1), (Batch, Head, KPos, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, Head, KPos, Key))
+
+# traditional batched multi-headed attention
+assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
+
+# multi-query attention. Each key/value pair produces only one head
+key = hax.random.normal(PRNGKey(1), (Batch, KPos, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, KPos, Key))
+assert attention(Key, KPos, query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
+
+# image patch cross-attention from a sequence
+Height = hax.Axis("height", 32)
+Width = hax.Axis("width", 32)
+
+key = hax.random.normal(PRNGKey(1), (Batch, Head, Height, Width, Key))
+value = hax.random.normal(PRNGKey(2), (Batch, Head, Height, Width, Key))
+
+# KPos in attention can actually be a tuple of axes.
+assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Batch, Head, Pos, Key)
+```
+
+This automatic generalization is possible because we've abstracted over the unreferenced dimensions of our tensors.
+In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
+Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
+In the third example, we can use tuples of axes in many places where we would normally use a single axis.
+
 
 ## Scale via Named Tensors
 
-We use named axes both to improve legibility and to enable scale: named axes are the basis of our
-[Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
+We have seen how named axes can improve legibility and enable generalization. But they also enable us to separate
+the concerns of our model's logic and how we intend to scale it. Named axes are the basis of Haliax's approach
+to scale, including our [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
 FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPU cores (which is
 as many as we can get our hands on) and at least 65B parameters (which is much bigger than we have compute for).
 
