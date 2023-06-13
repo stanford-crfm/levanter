@@ -19,7 +19,7 @@ from levanter.checkpoint import (
     load_metadata,
     save_checkpoint,
 )
-from levanter.trainer_hooks import StepInfo
+from levanter.trainer import StepInfo
 
 
 def _dummy_step_info(step):
