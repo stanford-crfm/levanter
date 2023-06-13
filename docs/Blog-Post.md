@@ -22,7 +22,7 @@ display: False
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new [JAX](https://github.com/google/jax)-based codebase for training foundation models.
 Levanter is designed to be legible, scalable, and reproducible:
 
-1. Legible: Levanter comes with a new named tensor library named Haliax that makes it easy to write legible, composable deep learning code, while still maintaining efficiency and scalability.
+1. Legible: Levanter comes with a new named tensor library named Haliax that makes it easy to write legible, composable deep learning code, while still being high performance.
 2. Scalable: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. Reproducible: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
@@ -64,7 +64,7 @@ At CRFM, we focused on three fundamental goals:
 2. **Scalability**: We want to fully utilize the compute we had available, including TPUs and NVIDIA GPUs.
 3. **Reproducibility**: We want to be able to reproduce results *exactly*; that is, we want **bitwise determinism**, even in the face of preemption and restarts from checkpoints.
 
-We chose [JAX](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
+We chose [JAX](https://github.com/google/jax/) as our framework because it is powerful, flexible, and performant,
 and offers strong reproducibility guarantees. JAX also works well on TPUs, while we found that PyTorch support was still uneven.
 JAX is also a natural choice because it allows you to focus on the "what" of your code, and not on the "how": details of
 partitioning and communication can be left to the XLA compiler. Finally, JAX makes reproducibility easy, since it uses
@@ -84,14 +84,15 @@ use them to train a language model.
 # Legibility: Named Tensors with Haliax
 
 Haliax is a library for named tensors, a powerful abstraction where the axes of tensors are given names, and operations
-on those tensors reference those names. These names help make your code more legible, more composable, and less
+on those tensors reference those names, rather than using positions (0, 2, -1) to reference axes. These names help make your code more legible, more composable, and less
 bug-prone. In Haliax, they also form the basis of how we implement
 [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) training and tensor parallelism.
 
 Haliax is built on JAX and [Equinox](https://github.com/patrick-kidger/equinox),
 which is a neural network library that provides a familiar, PyTorch-like module structure. Haliax uses
-Equinox's module and convenience functions for its neural network library, rather than Flax or Haiku. (Equinox is a great library, but
-you can get started with Haliax without knowing anything about Equinox beyond what's in this blogpost.)
+Equinox's module structure for its neural network library, rather than Flax or Haiku. (Please see our
+[tutorial](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
+for an introduction to Haliax's neural network modules, which also introduces the relevant parts of Equinox.)
 
 Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor),
 which argues that named tensors are a better abstraction than the position-based tensors that are common in deep learning.
@@ -101,7 +102,7 @@ In particular, he argues that:
 * Named axes allow you to abstract over unreferenced dimensions, making code more flexible.
 * Broadcasting leads to unreadable strings of `reshape`s, `transpose`s, `view`s and (`un`)`squeeze`s that obfuscate the intent of the code.
 
-We would also contend that positional code is more bug-prone: those `transpose`s and `reshape`s are easy to get wrong,
+We also contend that positional code is more bug-prone: those `transpose`s and `reshape`s are easy to get wrong,
 resulting in silent bugs that are hard to catch. Implicit broadcasting, also common in positional code, can lead to
 similar easy-to-miss bugs.
 
@@ -156,9 +157,9 @@ y_pred = hax.dot(Feature, x, W)
 mse(y_pred, y)
 ```
 
-In this example, we've defined an axis for each dimension of our tensors. In Haliax, the named `Axis` is the basic
-building block of named tensors, pairing a name with a size. We can then use these axes to define our tensors, and use
-those axes to perform operations like `dot` and `mean`. (As in NumPy, the `dot` function performs generalized matrix multiplication.)
+In this example, we've defined an axis for each dimension of our tensors. The basic building block in Haliax is the named
+`Axis`, which pairs a name with a size. We can then use these axes to define our tensors, and
+to perform operations like `dot` and `mean`. (As in NumPy, the `dot` function performs generalized matrix multiplication.)
 In this example, we've defined `x` to be a 2D tensor with axes
 `Batch` and `Feature`, `y` a 1D tensor with axis `Batch`, and `W` a 1D tensor with axis
 `Feature`. When we perform the dot product, we specify that we want to contract over the `Feature` axis, the
@@ -167,11 +168,14 @@ of the axes match, the code is correct. By using named tensors, we've made it im
 
 ## Another Example: Attention
 
+Let's consider another example, this time focusing more on legibility. We'll look at two attention implementations:
+the one in [minGPT](https://github.com/karpathy/minGPT/) and a version of attention in Haliax.
+
 ### minGPT's Attention Implementation
 
-Let's consider another example, this time focusing more on legibility. Consider the following code, which is the
-[implementation of attention](https://github.com/karpathy/minGPT/blob/90420ee/mingpt/model.py#LL61C8-L67C101) in [minGPT](https://github.com/karpathy/minGPT/),
-a codebase designed with interpretability and pedagogy in mind. (We'll omit the dropout bit for exposition's sake.)
+minGPT is a PyTorch implementation of GPT-2, designed to be pedagogical and easy to understand. Here's the
+ [implementation of attention](https://github.com/karpathy/minGPT/blob/90420ee/mingpt/model.py#LL61C8-L67C101).
+(We'll omit the dropout bit for exposition's sake.)
 
 ```python
     # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
@@ -262,8 +266,10 @@ assert attention(Key, (Height, Width), query, key, value, mask=None).axes == (Ba
 ```
 
 This automatic generalization is possible because we've abstracted over the unreferenced dimensions of our tensors.
-In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over.
-Similarly, in the second example, we omit the `Head` axis from the `key` and `value` tensors, but attention still works.
+In the first example, both the `Batch` and `Head` axes are unreferenced, so they are automatically "batched" over,
+similar to how [`bmm`](https://pytorch.org/docs/stable/generated/torch.bmm.html) works in PyTorch.
+In the second example, we omit the `Head` axis from the `key` and `value` tensors, yielding a multi-query attention
+where we only have multiple heads for the `query` tensor.
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
 
 
@@ -276,6 +282,7 @@ FSDP can be added to a training loop with about 10 lines of code, enabling scale
 as many as we can get our hands on) and at least 65B parameters (which is much bigger than we have compute for).
 
 FSDP with Haliax basically amounts to telling Haliax which named axes to shard, and specifying a different sharding for computation than for storage.
+Haliax will then translate that code to the relevant Jax primitives, and handle the sharding for you.
 A full tutorial is available [here](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), but here's a quick example:
 
 ```diff
@@ -324,7 +331,8 @@ for data in data_iter:
     ...
 ```
 
-This is all that is required to shard a model across multiple GPUs or TPUs. The rest of the training loop remains unchanged.
+This is all that is required to shard a model and optimizer across multiple GPUs or TPUs.
+The rest of the training loop remains unchanged.
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
 Tensor parallelism can be added by simply changing the two axis mappings:
