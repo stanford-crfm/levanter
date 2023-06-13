@@ -4,7 +4,7 @@ from typing import Sequence, Union
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 from jaxtyping import PyTree
 from test_utils import skip_if_not_enough_devices
 
@@ -12,20 +12,14 @@ import haliax
 import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from levanter.data.sharded import GlobalBatchDataset, check_sharded_consistency
+from levanter.data.loader import ReplicatedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
-
-
-NUM_SHARDS_TINY = 16
 
 
 def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDataset[Sequence[int]]:
     class SequenceDataset(levanter.data.ShardableDataset[np.ndarray]):
         def __init__(self, sequences: Sequence[np.ndarray]):
             self.sequences = sequences
-
-        def __len__(self):
-            return len(self.sequences)
 
         def shard(self, shard_idx: int, num_shards: int) -> levanter.data.ShardableDataset[np.ndarray]:
             return SequenceDataset(self.sequences[shard_idx::num_shards])
@@ -44,7 +38,7 @@ def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDat
 
 
 @skip_if_not_enough_devices(2)
-def test_sharded_data_loading_model_axis_2():
+def test_local_batched_data_loading_model_axis_2():
     devices = jax.devices()
     model_axis_size = 2
 
@@ -53,18 +47,19 @@ def test_sharded_data_loading_model_axis_2():
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(cache, mesh, Batch)
+        loader = ReplicatedBatchLoader(cache, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape.shape
+            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
-def test_sharded_data_loading_model_axis_1():
+def test_local_batched_data_loading_model_axis_1():
     devices = jax.devices()
     model_axis_size = 1
 
@@ -73,42 +68,16 @@ def test_sharded_data_loading_model_axis_1():
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(cache, mesh, Batch)
+        loader = ReplicatedBatchLoader(cache, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == dataset.item_shape.shape
+            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
-
-
-def test_sharded_data_loading_len_impact():
-    devices = jax.devices()
-    model_axis_size = 1
-
-    mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
-    )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
-        cache = _small_dataset(64, num_sequences=NUM_SHARDS_TINY * 8)
-        # 6400 tokens split across NUM_SHARDS_TINY shards
-        Batch = Axis("batch", 8 * len(devices))
-        process_1_len = len(
-            GlobalBatchDataset(cache, mesh, Batch=Batch, override_process_data_pos=0, override_process_data_groups=1)
-        )
-        for process_count in [2, 4, 8]:
-            dataset = GlobalBatchDataset(
-                cache,
-                mesh,
-                Batch=Batch,
-                override_process_data_pos=0,
-                override_process_data_groups=process_count,
-            )
-            # we create this dataset with even numbers of shards, so we are guaranteed that the length won't change
-            assert len(dataset) == process_1_len
 
 
 class StructuredDataset(levanter.data.ShardableDataset):
@@ -117,9 +86,6 @@ class StructuredDataset(levanter.data.ShardableDataset):
         self.begin = begin
         self.end = end
         self.stride = stride
-
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
 
     def __getitem__(self, item):
         return {
@@ -162,9 +128,9 @@ def test_structured_batches_model_axis_1():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -182,9 +148,9 @@ def test_structured_batches_model_axis_2():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -196,9 +162,6 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
         self.begin = begin
         self.end = end
         self.stride = stride
-
-    def __len__(self):
-        return (self.end - self.begin) // self.stride
 
     def _gen_image(self, index):
         image = (
@@ -252,9 +215,9 @@ def test_structured_batches_model_axis_1_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -273,9 +236,9 @@ def test_structured_batches_model_axis_2_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
@@ -295,8 +258,8 @@ def test_structured_batches_model_axis_2_subsharded():
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        dataset = GlobalBatchDataset(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
 
-        batches = list(itertools.islice(dataset, 10))
+        batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)

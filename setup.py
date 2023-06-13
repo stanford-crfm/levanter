@@ -1,12 +1,13 @@
+# get path to current directory
+import os
+
 import setuptools
 
 
-with open("README.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
+curdir = os.path.dirname(os.path.abspath(__file__))
 
-# hacky, but https://stackoverflow.com/questions/14399534/reference-requirements-txt-for-the-install-requires-kwarg-in-setuptools-setup-py
-with open("requirements.txt", "r") as f:
-    install_reqs = [line for line in f.readlines() if not line.startswith("#")]
+with open(f"{curdir}/README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
 
 setuptools.setup(
     name="levanter",
@@ -15,8 +16,7 @@ setuptools.setup(
     url="https://github.com/stanford-crfm/levanter",
     author="David Hall",
     author_email="dlwh@cs.stanford.edu",
-    license="Apache 2.0",
-    install_requires=install_reqs,
+    # install_requires=install_reqs,
     long_description=long_description,
     packages=setuptools.find_packages(where="src", exclude=("tests",)),
     # https://stackoverflow.com/questions/70777486/pip-install-e-doesnt-allow-to-import-via-package-dir

@@ -1,9 +1,7 @@
 data:
-  train_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+  id: EleutherAI/pile
+  cache_dir: "gs://levanter-data/tokenized/pile-old/"
+  tokenizer: "EleutherAI/gpt-neox-20b"
 model:
   hidden_dim: 768
   num_heads: 12
@@ -14,7 +12,7 @@ model:
 trainer:
   wandb:
     project: "levanter"
-    tags: [ "openwebtext", "gpt2", "itest"]
+    tags: [ "pile", "gpt2", "itest"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1

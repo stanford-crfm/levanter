@@ -22,7 +22,7 @@ class Linear(eqx.Module):
     @staticmethod
     def init(In: AxisSpec, Out: AxisSpec, *, key, use_bias=True) -> "Linear":
         joint_spec = hax.concat_axis_specs(In, Out)
-        weight = hax.random.generate_sharded(hax.random.normal)(key, joint_spec) * 0.02
+        weight = hax.random.normal(key, joint_spec) * 0.02
         bias = hax.zeros(Out) if use_bias else None
         return Linear(weight, bias, In, Out)
 

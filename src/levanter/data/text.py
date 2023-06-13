@@ -23,19 +23,25 @@ from haliax import Axis, NamedArray
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 
+
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.data.dataset import ShardableDataset  # noqa
+from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
+from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
     CacheLedger,
     ChunkMetadata,
+    LoggerMetricsMonitor,
+    MetricsMonitor,
+    ShardCache,
     ShardedDataSource,
+    WandbMetricsMonitor,
     _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
-    DEFAULT_ROWS_PER_CHUNK,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.hf_utils import load_tokenizer  # noqa
@@ -56,7 +62,7 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
 
     :param doc_cache: the TokenizedDocumentCache to draw from
-    :param pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
+    :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
     """
 
     def __init__(self, doc_cache, Pos: Axis, stride: Optional[int] = None):
@@ -95,13 +101,6 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
     @property
     def item_shape(self) -> PyTree:
         return NamedShapeSpec((self.Pos,), jnp.int32)
-
-    def __len__(self):
-        total_tokens = self.doc_cache.total_tokens
-        if self.stride is None:
-            return total_tokens // self.seq_len
-        else:
-            return (total_tokens - self.seq_len) // self.stride + 1
 
     @staticmethod
     def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
@@ -145,29 +144,22 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
     """
 
-    def __init__(self, cache_dir, chunks: Sequence[ChunkMetadata], flatten_docs):
-        self.cache_dir = cache_dir
-        # self.cache_files = [chunk.name for chunk in ledger.chunks]
-        self.chunks = chunks
+    def __init__(self, chunk_cache: ShardCache, flatten_docs, shard_chunk_offset=0, shard_chunk_stride=1):
+        self.chunk_cache = chunk_cache
         self.flatten_docs = flatten_docs
-        self.token_counts = [chunk.field_counts["input_ids"] for chunk in chunks]
-        self.total_tokens = sum(self.token_counts)
-
-    def __len__(self):
-        if self.flatten_docs:
-            return sum(
-                [
-                    len(_open_arrow_table(os.path.join(self.cache_dir, f"{c.name}.parquet")).to_batches())
-                    for c in self.chunks
-                ]
-            )
-        else:
-            return sum(chunk.num_rows for chunk in self.chunks)
+        self.shard_chunk_offset = shard_chunk_offset
+        self.shard_chunk_stride = shard_chunk_stride
 
     def __iter__(self):
-        for chunk in self.chunks:
-            for entry in self._read_cache_file(chunk):
-                yield entry
+        """Reads the cache files produced by cache_and_group and yields tokenized sequences.
+        If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
+        then the documents returned are actually concatenated documents, where the number is the number of documents
+        presented as a batch to the caching process."""
+        for batch in self._chunks():
+            yield _batch_encoding_from_record_batch(batch, self.flatten_docs)
+
+    def _chunks(self):
+        return self.chunk_cache.iter_batches_from_chunks(self.shard_chunk_offset, self.shard_chunk_stride)
 
     @staticmethod
     def build_or_load(
@@ -176,31 +168,66 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         tokenizer: PreTrainedTokenizerBase,
         flatten_docs=True,
         enforce_eos=True,
+        batch_size=128,
+        rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
+        monitors=None,
+        await_finished=True,
     ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
-        cache_dataset(cache_dir, source, bt)
-        return TokenizedDocumentCache.load(cache_dir, flatten_docs=flatten_docs)
+        monitors = monitors or []
+        cache = cache_dataset(
+            cache_dir,
+            source,
+            bt,
+            await_finished=await_finished,
+            batch_size=batch_size,
+            rows_per_chunk=rows_per_chunk,
+            monitors=monitors,
+        )
+        if cache.is_finished:
+            logger.info(f"Cache {cache_dir} is complete.")
+        else:
+            logger.info(
+                f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
+            )
+
+        return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
 
     @staticmethod
-    def load(cache_dir, flatten_docs=True):
+    def load(cache_dir, batch_size: int = 128, flatten_docs=True):
         """
-        Load a TokenizedDocumentCache from a directory.
+        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
+        FileNotFoundError.
+
+        NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.
+
         :param cache_dir:
         :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
         concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
         :return:
         """
+
         try:
-            ledger = _load_cache_ledger(cache_dir)
+            cache = ShardCache.load(cache_dir, batch_size=batch_size)
+            return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
         except FileNotFoundError:
+            logger.info("new cache format not found, trying to convert from old format")
             try:
                 ledger = _load_old_ledger(cache_dir)
+                logger.info("old cache format found, converting to new format")
                 ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE), ledger)
+                _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
+                cache = ShardCache.load(cache_dir, batch_size=batch_size)
+                return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
             except FileNotFoundError:
+                logger.warning("old cache format not found, creating new cache")
                 raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-
-        return TokenizedDocumentCache(cache_dir, ledger.chunks, flatten_docs)
+            except Exception:
+                logger.exception("error converting cache")
+                raise
+        except Exception:
+            logger.exception("error loading cache")
+            raise
 
     def shard(self, shard_index, num_shards):
         if num_shards <= shard_index:
@@ -209,68 +236,21 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         if num_shards == 1:
             return self
 
-        shard_chunks = self.chunks[shard_index::num_shards]
+        combined_offset = self.shard_chunk_offset + shard_index * self.shard_chunk_stride
+        combined_stride = self.shard_chunk_stride * num_shards
 
-        return TokenizedDocumentCache(self.cache_dir, shard_chunks, self.flatten_docs)
-
-    @staticmethod
-    def merge(finished_caches, cache_root, flatten_docs=True):
-        """
-        Merge a list of finished caches into a single cache.
-        :param finished_caches: A list of finished caches, which are directories with a ledger file.
-        :param cache_root: The root directory to merge the caches into. It's best if this is a parent directory of the
-        finished caches.
-        :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
-        concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
-        :return:
-        """
-        ledger = []
-        for cache_dir in finished_caches:
-            cache_files = _load_old_ledger(cache_dir)["files"]
-            # have to relativize the paths from cache_dir to cache_root
-            for entry in cache_files:
-                absolute_path = os.path.join(cache_dir, entry["file_name"])
-                relative_path = os.path.relpath(absolute_path, cache_root)
-                ledger.append({**entry, "file_name": relative_path})
-
-        with fsspec.open(os.path.join(cache_root, "ledger.json"), "w") as f:
-            json.dump({"files": ledger}, f)
-
-        return TokenizedDocumentCache.load(cache_root, flatten_docs=flatten_docs)
-
-    @staticmethod
-    def exists(cache_dir):
-        path = os.path.join(cache_dir, "ledger.json")
-        fs = fsspec.core.url_to_fs(path)[0]
-        return fs.exists(path)
+        return TokenizedDocumentCache(
+            self.chunk_cache,
+            self.flatten_docs,
+            shard_chunk_offset=combined_offset,
+            shard_chunk_stride=combined_stride,
+        )
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return {  # type: ignore
             "input_ids": ShapeSpec((None,), dtype=np.int32),
         }
-
-    def _read_cache_file(self, chunk) -> Iterator[BatchEncoding]:
-        """Reads the cache files produced by cache_and_group and yields tokenized sequences.
-        If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
-        then the documents returned are actually concatenated documents, where the number is the number of documents
-        presented as a batch to the caching process."""
-        path = os.path.join(self.cache_dir, f"{chunk.name}.parquet")
-        for b in _open_arrow_table(path).to_batches():
-            if self.flatten_docs:
-                # insert a newaxis to the beginning so that it appears to be bs=1
-                yield BatchEncoding(
-                    {
-                        b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
-                        for i in range(b.num_columns)
-                    },
-                    n_sequences=1,
-                )
-            else:
-                yield BatchEncoding(
-                    {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
-                    n_sequences=b.num_rows,
-                )
 
 
 def _open_arrow_table(path) -> pa.Table:
@@ -293,6 +273,23 @@ def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
     names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
 
     return pa.RecordBatch.from_arrays(list(columns), names)
+
+
+def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
+    if flatten_docs:
+        # insert a newaxis to the beginning so that it appears to be bs=1
+        return BatchEncoding(
+            {
+                b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
+                for i in range(b.num_columns)
+            },
+            n_sequences=1,
+        )
+    else:
+        return BatchEncoding(
+            {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
+            n_sequences=b.num_rows,
+        )
 
 
 def _cpu_count():
@@ -429,12 +426,8 @@ class LMDatasetConfig:
 
     # config related to caching
     cache_dir: str = "cache/"
-    num_train_shards: int = 128
-    num_val_shards: int = 32
 
-    create_sharded_cache: bool = False  # whether to create a separate cache for each shard. More robust
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
-
     splits: List[str] = field(default_factory=lambda: ["train", "validation"])
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
@@ -442,12 +435,33 @@ class LMDatasetConfig:
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return load_tokenizer(self.tokenizer)
 
-    def build_or_load_cache(self, split: str):
-        batch_tokenizer = BatchTokenizer(self.the_tokenizer)
+    def build_or_load_cache(self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True):
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
-        cache_dataset(split_cache_dir, source, batch_tokenizer, self.rows_per_chunk)
-        return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        try:
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        except FileNotFoundError:
+            logger.info(f"Building cache for {split}...")
+
+        if monitors is True:
+            monitors = [
+                WandbMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{split}"),
+            ]
+        elif monitors is False:
+            monitors = []
+
+        return TokenizedDocumentCache.build_or_load(
+            split_cache_dir,
+            source,
+            self.the_tokenizer,
+            enforce_eos=self.enforce_eos,
+            flatten_docs=True,
+            rows_per_chunk=self.rows_per_chunk,
+            monitors=monitors,
+            # TODO: it would be better if we could just prioritize validation higher (we typically want it after the first grad step)
+            await_finished=(split == "validation"),
+        )
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -488,11 +502,6 @@ class LMDatasetConfig:
 
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
-
-    def __post_init__(self):
-        if self.id is not None and self.create_sharded_cache:
-            # TODO: this is doable now in a reasonable-ish way but it's not implemented yet
-            raise ValueError("Cannot currently create sharded cache for HF datasets")
 
     def get_shard_source(self, split) -> ShardedDataSource[str]:
         if self.id is not None:

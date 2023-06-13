@@ -3,7 +3,7 @@ from typing import Protocol, Tuple, TypeVar
 import jax
 from jax import numpy as jnp
 from jax.experimental.pjit import with_sharding_constraint
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 
 import haliax as hax
 from haliax import Axis

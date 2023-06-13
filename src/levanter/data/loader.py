@@ -1,17 +1,16 @@
+import abc
 import itertools
 import logging
 from collections import defaultdict
-from functools import cached_property
-from typing import Dict, Iterator, List, Optional, Tuple, TypeVar, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.array import ArrayImpl
 from jax.experimental import multihost_utils
-from jax.experimental.multihost_utils import process_allgather
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import Mesh, PartitionSpec
+from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
@@ -21,6 +20,7 @@ from haliax.util import is_named_array
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
+from levanter.utils.py_utils import non_caching_cycle
 
 
 Ex = TypeVar("Ex")
@@ -32,20 +32,31 @@ logger = logging.getLogger(__name__)
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class GlobalBatchDataset(Dataset[Ex]):
+class BatchLoader(Iterable[Ex]):
+    @abc.abstractmethod
+    def __iter__(self) -> Iterator[Ex]:
+        ...
+
+    def batch_size(self) -> int:
+        return self.Batch.size
+
+    Batch: hax.Axis
+
+
+class ShardedBatchLoader(BatchLoader[Ex]):
     """
-    GlobalBatchDataset wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
+    ShardedBatchLoader wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
     distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
     but only has the data for some of the chunks of the array (namely, the ones on the local devices).
     Thus, each process loads the data for its devices.
+
+    **NOTE: ShardedBatchLoader loops forever since it's hard to do coordination.**
 
     The details are a bit complex: We have a device mesh of shape (data, model). We want each row of the device mesh to
     get batch_size//num_rows examples. Usually, a process will be responsible for one or more entire rows, meaning
     that it wil load data that is distinct from every other process. However, if num_cols > num_devices_per_process,
     then some processes will need to load the same data. We use the process_mesh_position to determine which data to
     load, by determining which row(s) of the device mesh the process is responsible for.
-
-    For now GlobalBatchDataset is restricted to datasets that return a single sequence of tokens.
 
     :arg local_dataset: a dataset that is shardable and can be iterated over
     :arg mesh: the device mesh
@@ -79,9 +90,9 @@ class GlobalBatchDataset(Dataset[Ex]):
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
 
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
-        one_item_generator = iter(self.item_dataset)
+        one_item_generator = non_caching_cycle(self.item_dataset)
 
-        for i in range(self._global_min_length):
+        for i, item in enumerate(one_item_generator):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -164,9 +175,6 @@ class GlobalBatchDataset(Dataset[Ex]):
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
-    def __len__(self):
-        return self._global_min_length
-
     @property
     def batch_size(self) -> int:
         """Returns the 'global' batch size: the effective number of examples in a batch across all devices/hosts"""
@@ -176,14 +184,6 @@ class GlobalBatchDataset(Dataset[Ex]):
     def local_batch_size(self) -> int:
         """Returns the 'local' batch size: the number of examples in a batch on this host"""
         return self.batch_size // self.num_data_process_groups
-
-    @cached_property
-    def _global_min_length(self):
-        # TODO: to test this effectively we'll need to set up a test harness across a multinode instance
-        # length is the min over the shards, so we have to communicate the min via jax
-        local_len = len(self.item_dataset) // self.local_batch_size
-        all_lengths = process_allgather(jnp.array(local_len))
-        return int(jnp.min(all_lengths))
 
     def _stack_leaves_unchecked(self, *leaves):
         assert len(leaves) <= self.Batch.size
@@ -196,12 +196,11 @@ class GlobalBatchDataset(Dataset[Ex]):
             return np.stack(leaves)
 
 
-class LocalBatchDataset(Dataset[Ex]):
-    """A dataset that creates batches without sharded data loading. All examples are loaded on all machines and then
-    sharded. This is useful if you have a small dataset and want to use a large number of devices.
+class ReplicatedBatchLoader(BatchLoader[Ex]):
+    """A batch loader that creates batches without sharded data loading. All examples are loaded on all machines and then
+    sharded. This is useful if you have a small dataset and want to make a single pass over it.
 
-    Note: this class discards remainder batches
-
+    Note: this class discards the final batch if it is smaller than the batch size.
     """
 
     def __init__(
@@ -255,9 +254,6 @@ class LocalBatchDataset(Dataset[Ex]):
             return PartitionSpec(batch_name, *((None,) * (len(leaf.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(leaf.axes, self.axis_resources)
-
-    def __len__(self):
-        return len(self.local_dataset) // self.Batch.size
 
 
 def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
