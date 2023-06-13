@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Dict, List, Mapping, Optional, Tuple, Type, TypeVar, Union
 
 import fsspec
 import jax
@@ -564,6 +564,62 @@ def register_codecs():
 
 
 register_codecs()
+
+
+def config_registry(cls: Type):
+    """
+    A decorator to register a config class with a registry that we can use to find the config class for a given
+    config. This is used for abstract classes/interfaces where we want to select a concrete implementation based on
+    the config.
+
+    the syntax for a yaml file would be:
+    ```yaml
+    model:
+      gpt:
+         <config for gpt>
+    ```
+
+    Subclasses can be added with the `register_subclass` method
+    :param cls:
+    :return: the decorated classes.
+    """
+
+    # add the registry to the class if it doesn't exist
+    if not hasattr(cls, "_config_registry"):
+        cls._config_registry = {}
+
+    # add register_subclass_config to the class if it doesn't exist
+    if not hasattr(cls, "register_subclass"):
+
+        def register_subclass(name: str, subcls):
+            cls._config_registry[name] = subcls
+            return subcls
+
+        cls.register_subclass = register_subclass
+
+    # now register the cls with pyrallis
+    def encode_config(config):
+        for name, subcls in cls._config_registry.items():
+            if isinstance(config, subcls):
+                return {name: pyrallis.encode(config)}
+
+        raise ValueError(f"Could not find a registered subclass for {config}")
+
+    def decode_config(config):
+        if len(config) != 1:
+            raise ValueError(f"Expected exactly one key in config, got {config}")
+
+        name, config = config.popitem()
+        try:
+            subcls = cls._config_registry[name]
+            return pyrallis.decode(subcls, config)
+        except KeyError:
+            raise ValueError(f"Could not find a registered subclass for {name}")
+
+    pyrallis.encode.register(cls, encode_config)
+    pyrallis.decode.register(cls, decode_config)
+
+    return cls
 
 
 def main(args: list = None):
