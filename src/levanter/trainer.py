@@ -1,5 +1,6 @@
 import atexit
 import copy
+import logging as pylogging
 import sys
 from dataclasses import dataclass
 from functools import cached_property
@@ -18,10 +19,12 @@ from pyrallis import field
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import CheckpointerConfig
-from levanter.config import DistributedConfig, JsonAtom, RayConfig, logger
+from levanter.config import DistributedConfig, JsonAtom, RayConfig
 from levanter.logging import WandbConfig
 from levanter.utils import cloud_utils
 
+
+logger = pylogging.getLogger(__name__)
 
 M = TypeVar("M")
 S = TypeVar("S")
