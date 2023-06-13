@@ -211,6 +211,7 @@ def _produce_cache_for_shard(
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
+    # TODO: thread logging level through calls
     logging.basicConfig(level=logging.INFO)
     # load or create shard metadata (for recovery)
     try:
@@ -220,7 +221,7 @@ def _produce_cache_for_shard(
 
         # yield from existing chunks
         if len(shard_writer.chunks) > 0:
-            logger.info(f"Yielding {len(shard_writer.chunks)} already finished chunks from {shard_name}")
+            logger.debug(f"Yielding {len(shard_writer.chunks)} already finished chunks from {shard_name}")
             sink.new_chunk.remote(shard_name, *shard_writer.chunks)
 
         if not shard_writer.is_finished:
@@ -293,16 +294,13 @@ def _produce_chunks_for_shard(
         shard_writer.commit_chunk(chunk)
 
     def do_tokenize(batch):
-        logger.info(f"Ready to tokenize for {shard_name}/{shard_writer.num_chunks}")
         nonlocal writer
 
         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
         # other shards since we want to stream them round-robin
-        # record_batch = ray.get(process_task.remote(batch))
         priority = priority_fn(shard_idx, shard_writer.num_chunks)
         record_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        logger.info("Started processing batch")
         record_batch = ray.get(record_batch_future)
 
         if writer is None:
@@ -452,15 +450,15 @@ class WandbMetricsMonitor(MetricsMonitor):
             to_log[f"{self.prefix}/finished"] = 1
 
         # estimate the rate of progress
-        if self.last_metrics is not None:
-            assert self.last_time is not None
-            elapsed = time.time() - self.last_time
-            to_log[f"{self.prefix}/shards/s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
-            to_log[f"{self.prefix}/chunks/s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
-            to_log[f"{self.prefix}/rows/s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
-
-            for field, count in metrics.field_counts.items():
-                to_log[f"{self.prefix}/{field}/s"] = (count - self.last_metrics.field_counts[field]) / elapsed
+        # if self.last_metrics is not None:
+        #     assert self.last_time is not None
+        #     elapsed = time.time() - self.last_time
+        #     to_log[f"{self.prefix}/shards_per_s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
+        #     to_log[f"{self.prefix}/chunks_per_s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
+        #     to_log[f"{self.prefix}/rows_per_s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
+        #
+        #     for field, count in metrics.field_counts.items():
+        #         to_log[f"{self.prefix}/{field}_per_s"] = (count - self.last_metrics.field_counts[field]) / elapsed
 
         self.last_metrics = metrics
         self.last_time = time.time()
@@ -471,16 +469,18 @@ class WandbMetricsMonitor(MetricsMonitor):
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None):
+    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.DEBUG):
         if isinstance(logger, str):
             logger = logging.getLogger(logger)
         self.logger = logger or logging.getLogger(__name__)
+        self.level = level
 
     def __call__(self, metrics: InProgressCacheMetrics):
         if jax.process_index() == 0:
-            self.logger.info(
+            self.logger.log(
+                self.level,
                 f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
-                f" {metrics.rows_finished}"
+                f" {metrics.rows_finished}",
             )
 
         if metrics.is_finished:
