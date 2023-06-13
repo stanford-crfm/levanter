@@ -210,7 +210,7 @@ def attention(Key, KPos, query, key, value, mask):
 
     # mask out invalid positions
     if mask is not None:
-      scores -= 1E9 * (1.0 - mask)
+        scores -= 1E9 * (1.0 - mask)
 
     # convert to probabilities
     scores = hax.nn.softmax(scores, axis=KPos)
