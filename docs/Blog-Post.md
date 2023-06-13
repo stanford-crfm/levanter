@@ -22,7 +22,7 @@ display: False
 
 XXX Positioning?
 
-Today, we are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new codebase for training foundation models.
+We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new codebase for training foundation models.
 Levanter is a [JAX](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
 legible, scalable, and reproducible:
 
@@ -61,9 +61,9 @@ older, quasi-deprecated JAX APIs for distributed training.
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
 At CRFM, we focused on three fundamental goals:
 
-* **Legibility**: We prioritize writing code that is easy to read, understand, and compose.
-* **Reproducibility**: We emphasize **bitwise determinism**, the ability to reproduce results *exactly*, even in the face of preemption and restarts from checkpoints.
-* **Scalability**: We want to fully utilize the compute we had available, including TPUs and NVIDIA GPUs.
+1. **Legibility**: We prioritize writing code that is easy to read, understand, and compose.
+2. **Scalability**: We want to fully utilize the compute we had available, including TPUs and NVIDIA GPUs.
+3. **Reproducibility**: We want to be able to reproduce results *exactly*; that is, we want **bitwise determinism**, even in the face of preemption and restarts from checkpoints.
 
 We chose [JAX](https://github.com/google/jax/) as our framework because it is a powerful, flexible, and performant,
 and offers strong reproducibility guarantees. JAX also works well on TPUs, while we found that PyTorch support was still uneven.
@@ -184,7 +184,8 @@ In the third example, we can use tuples of axes in many places where we would no
 ## Avoiding Bugs
 
 Earlier, we claimed that named tensors can help avoid common bugs. Here's an example of a bug that is easy to make
-and hard to spot in a traditional tensor library. Consider the following simple linear model:
+and hard to spot in a traditional tensor library. Consider the following simple linear model. Before reading on, try
+to spot the bug:
 
 ```python
 import jax.numpy as jnp
@@ -197,13 +198,13 @@ y = jrandom.uniform(PRNGKey(1), (128,))
 W = jrandom.uniform(PRNGKey(2), (64, 1))
 
 def mse(pred, target):
-    return jnp.mean((pred - target) * (pred - target) )
+    return jnp.mean((pred - target) * (pred - target))
 
 y_pred = x @ W
 mse(y_pred, y)
 ```
 
-This code appears straightforward, but it has a bug: the dimensions of `y_pred` and `y` are not the same.
+This code appears straightforward, but it's incorrect: the dimensions of `y_pred` and `y` are not the same.
 Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
 (This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
 But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
@@ -307,19 +308,19 @@ optimizer = init_optimizer(model)
 
 +@hax.named_jit
 def train_step(model, opt_state, input_ids):
-  ... # elided for brevity
+    ... # elided for brevity
 
-  # ensure that intermediate states are sharded correctly
--  loss, grads = grad_loss(model, input_ids)
-+  with hax.axis_mapping(data_mapping):
-+    loss, grads = grad_loss(model, input_ids)
+    # ensure that intermediate states are sharded correctly
+-    loss, grads = grad_loss(model, input_ids)
++    with hax.axis_mapping(data_mapping):
++        loss, grads = grad_loss(model, input_ids)
 
-  ...
-  return loss, model, opt_state
+    ...
+    return loss, model, opt_state
 
 for data in data_iter:
-+  data = hax.shard_with_axis_mapping(data, data_axis_mapping)
-  ...
++    data = hax.shard_with_axis_mapping(data, data_axis_mapping)
+    ...
 ```
 
 Tensor parallelism can be added by simply changing the two axis mappings:
@@ -558,4 +559,4 @@ In addition to the generous support of the Google TPU Research Cloud, we would l
 * Yifan Mai, Tony Lee, Jason Bolton, Ivan Zhou, and the rest of the CRFM engineering team for support and discussions.
 * The TRC team for support getting spun up on TPUs and for making the Cloud TPUs available to us.
 * Roy Frostig, Sholto Douglas, Skye Wanderman-Miln, and the rest of the JAX team for help with debugging and support.
-* Sidd Karamcheti for support and conversations
+* Sidd Karamcheti for support and conversations.
