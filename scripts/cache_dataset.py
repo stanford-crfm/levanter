@@ -3,9 +3,9 @@ from dataclasses import dataclass
 
 import levanter
 import wandb
-from levanter.config import RayConfig
 from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, cache_dataset
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
+from levanter.distributed import RayConfig
 from levanter.logging import init_logger
 
 
