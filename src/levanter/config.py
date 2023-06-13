@@ -50,7 +50,20 @@ def config_registry(cls: Type):
     """
     A decorator to register a config class with a registry that we can use to find the config class for a given
     config. This is used for abstract classes/interfaces where we want to select a concrete implementation based on
-    the config.
+    the config. Subclasses can be added with the `register_subclass` method
+
+    Usage:
+    ```python
+    @config_registry
+    @dataclasses.dataclass
+    class ModelConfig:
+        pass
+
+    @dataclasses.dataclass
+    class GPTConfig(ModelConfig):
+        pass
+
+    ModelConfig.register_subclass("gpt", GPTConfig)
 
     the syntax for a yaml file would be:
     ```yaml
@@ -59,7 +72,6 @@ def config_registry(cls: Type):
          <config for gpt>
     ```
 
-    Subclasses can be added with the `register_subclass` method
     :param cls:
     :return: the decorated classes.
     """
