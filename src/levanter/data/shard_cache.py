@@ -289,7 +289,7 @@ def _produce_chunks_for_shard(
     def yield_chunk(chunk: ChunkMetadata):
         nonlocal total_rows_written
         total_rows_written += chunk.num_rows
-        logger.info(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
+        logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
 
@@ -469,7 +469,7 @@ class WandbMetricsMonitor(MetricsMonitor):
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.DEBUG):
+    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.INFO):
         if isinstance(logger, str):
             logger = logging.getLogger(logger)
         self.logger = logger or logging.getLogger(__name__)
