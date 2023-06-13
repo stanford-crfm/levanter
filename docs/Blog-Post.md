@@ -20,8 +20,6 @@ display: False
 
 # Introduction
 
-XXX Positioning?
-
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new codebase for training foundation models.
 Levanter is a [JAX](https://github.com/google/jax)-based codebase for training foundation models that is designed to be
 legible, scalable, and reproducible:
@@ -39,7 +37,7 @@ Numerous foundation model training frameworks exist in the community, each with 
 For large language models (LLMs) (the focus of this release),
 the most well-known in the open source community is probably NVIDIA's PyTorch-based [Megatron-LM](https://github.com/NVIDIA/Megatron-LM),
 and its many derivatives, including EleutherAI's [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) codebase.
-Andrej Karpathy has released [MinGPT](https://github.com/karpathy/minGPT), a PyTorch-based library that aims
+Andrej Karpathy has released [minGPT](https://github.com/karpathy/minGPT), a PyTorch-based library that aims
 to be minimal and legible.
 Meta has [MetaSeq](https://github.com/facebookresearch/metaseq) as well as [FairScale](https://github.com/facebookresearch/fairscale),
 with which they trained [Llama](https://github.com/facebookresearch/llama).
