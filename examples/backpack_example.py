@@ -22,7 +22,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.loss import next_token_loss
-from levanter.trainer_hooks import StepInfo, TrainerHooks
+from levanter.trainer import StepInfo, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 

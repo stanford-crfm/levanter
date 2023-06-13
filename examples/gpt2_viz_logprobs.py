@@ -16,7 +16,7 @@ from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
-from levanter.trainer_hooks import StepInfo
+from levanter.trainer import StepInfo
 
 
 logger = logging.getLogger(__name__)
