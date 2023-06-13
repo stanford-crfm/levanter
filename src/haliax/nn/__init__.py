@@ -11,7 +11,7 @@ import haliax.nn.attention as attention
 from ..core import NamedArray
 from ..types import Axis, AxisSelector, AxisSpec
 from ..wrap import unwrap_namedarrays, wrap_axiswise_call, wrap_elemwise_unary, wrap_reduction_call
-from .dropout import Dropout
+from .dropout import Dropout, dropout
 from .embedding import Embedding
 from .linear import Linear
 from .normalization import LayerNorm
@@ -142,6 +142,7 @@ __all__ = [
     "cross_entropy_loss_and_log_normalizers",
     "quick_gelu",
     "Dropout",
+    "dropout",
     "LayerNorm",
     "Linear",
     "Embedding",
