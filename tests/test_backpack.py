@@ -13,8 +13,8 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
+from levanter.trainer import TrainerConfig
 
 
 VOCAB_SIZE = 50264

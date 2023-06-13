@@ -8,7 +8,8 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 import levanter.config
 from haliax.partitioning import ResourceAxis
-from levanter.config import TrainerConfig, WandbConfig
+from levanter.config import WandbConfig
+from levanter.trainer import TrainerConfig
 
 
 def test_infer_experiment_git_root():
