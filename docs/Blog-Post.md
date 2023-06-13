@@ -418,7 +418,7 @@ we have built two features into Levanter: cached on-demand data preprocessing an
 
 Training a language model involves taking a large corpus of text and converting it into a sequence of integers called tokens.
 When training large autoregressive models, it is typical to concatenate (or "pack") short sequences and break apart longer sequences
-so that the resulting sequences are all of the same length.
+so that the resulting sequences are all the same length.
 
 Data preprocessing is done in one of two ways: either it is performed offline as a separate preprocessing step, or it is
 performed streaming, so that the data is processed on-the-fly as it is being used for training. The former is typically
@@ -428,7 +428,7 @@ resuming from preemption, since the data stream must be restarted from the begin
 
 In Levanter, we take a hybrid approach. We preprocess the data online, but we cache the results of preprocessing so
 that resumes are much faster and so that subsequent runs are even faster. As soon
-as the first part of the cache is complete. Levanter will start training, and will continue to preprocess the rest of
+as the first part of the cache is complete, Levanter will start training, and will continue to preprocess the rest of
 the data in the background. This allows us to start training as soon as possible, while still allowing us to iterate
 on the data format. Moreover, we can resume from preemption without having to reprocess the entire data set.
 Our cache format also allows for iterating on sequence length without retokenizing, which in our experience is a commonly requested feature.
@@ -449,8 +449,8 @@ jsonl files. Caches can be stored in any fsspec-compatible file system, includin
 
 Levanter also provides a feature for visualizing the probability of each token in a sample of the validation set during training.
 When training large models, it can be difficult to get a sense of how the model is learning. This is especially true
-when training on novel data sets. As an example, we have seen issues with early versions of new datasets that are causing
-lower than expected loss .
+when training on novel data sets. As an example, we have seen issues with early versions of new datasets where the
+model had suspiciously low loss.
 
 The live visualization produces a heatmap of the log probability of each token in a sample of the validation set
 that is updated periodically during training. Here is an example of the token probability visualization in action on a
@@ -462,9 +462,10 @@ The darker, more purple the color, the lower the probability of the token. The l
 This visualization is logged to WandB as training progresses and can be viewed interactively. We have found this to be a
 nice alternative to just staring obsessively at the loss curve (not that we ever do that).
 
-We have used our visualization to identify a pattern of highly but not perfectly redundant data (what we call "madlib duplicates"),
-suggesting that the model is "wasting" time and context length on low-value data.
-We've also used it to qualitatively assess how alternative architectures (like [Backpacks](http://backpackmodels.science/)) learn differently from Transformers.
+In the past, we have used our visualization to identify a pattern of highly but not perfectly redundant data in a new dataset
+(what we call "madlib duplicates"), suggesting that the model is "wasting" time and context length on low-value data.
+We've also used it to qualitatively assess how alternative architectures (like [Backpacks](http://backpackmodels.science/))
+learn differently from Transformers.
 
 ### Other Features
 
@@ -540,8 +541,8 @@ levanter train --model gpt2 --config_path /path/to/config.yaml
 ## Released Models
 
 Along with the release of the code, we are releasing a few models trained using Levanter. These models are available on
-the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used with the Hugging Face Transformers library.
-We have more in development and will releae them as they become available.
+the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used with the Hugging Face Transformers library,
+in Pytorch, Tensorflow, and JAX. We have more in development and will release them as they become available.
 
 - We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
  Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
@@ -551,7 +552,7 @@ We have more in development and will releae them as they become available.
   [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
 - Hot off the presses, we have a 1.5B model trained on the [Pile](https://pile.eleuther.ai/) corpus.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model can serve
-  as a baseline for future experiments.
+  as a common baseline for future experiments.
 
 # Future and Conclusion
 
