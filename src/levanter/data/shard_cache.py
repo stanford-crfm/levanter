@@ -8,9 +8,11 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from queue import PriorityQueue
 from typing import (
     IO,
     Any,
+    Callable,
     Dict,
     Generic,
     Iterable,
@@ -150,15 +152,6 @@ class CacheLedger:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
 
 
-def _mk_process_task(processor: BatchProcessor[T]):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        return processor(batch)
-
-    return process_task
-
-
 class _ChunkWriter:
     def __init__(self, cache_dir: str, chunk_name: str, schema: pa.Schema):
         self.cache_dir = cache_dir
@@ -205,31 +198,36 @@ class _ChunkWriter:
         return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts)
 
 
-@ray.remote(num_cpus=0, scheduling_strategy="SPREAD")  # type: ignore
+@ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
-    sink: ActorHandle,
+    sink: ActorHandle,  # _ChunkCacheBuilder
     source: ShardedDataSource[T],
-    shard_name: str,
-    processor: BatchProcessor[T],
+    priority_fn: Callable[[int, int], float],
+    shard_idx: int,
+    processor: BatchProcessor,
+    process_queue: ActorHandle,  # _BatchProcessorQueue
     cache_dir: str,
     rows_per_chunk: int,
 ):
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
+    # TODO: thread logging level through calls
     logging.basicConfig(level=logging.INFO)
     # load or create shard metadata (for recovery)
     try:
+        shard_name = source.shard_names[shard_idx]
         metadata_path = os.path.join(cache_dir, f"{shard_name}.json")
         shard_writer = _ShardWriter(metadata_path)
-        was_finished = shard_writer.is_finished
 
         # yield from existing chunks
         if len(shard_writer.chunks) > 0:
-            logger.info(f"Yielding {len(shard_writer.chunks)} chunks from {shard_name}")
+            logger.debug(f"Yielding {len(shard_writer.chunks)} already finished chunks from {shard_name}")
             sink.new_chunk.remote(shard_name, *shard_writer.chunks)
 
-        if not was_finished:
-            _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name, processor, rows_per_chunk)
+        if not shard_writer.is_finished:
+            _produce_chunks_for_shard(
+                sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
+            )
             shard_writer.finish()
 
         sink.shard_finished.remote(shard_name)
@@ -274,11 +272,16 @@ class _ShardWriter:
         _serialize_json_and_commit(self.metadata_path, self.metadata)
 
 
-def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name, processor, rows_per_chunk):
+def _produce_chunks_for_shard(
+    sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
+):
+    shard_name = source.shard_names[shard_idx]
     total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)
-    logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
+    if total_rows_written > 0:
+        logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
+    else:
+        logger.info(f"Starting shard {shard_name}")
     shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
-    process_task = _mk_process_task(processor)
     target_batch_size = min(processor.batch_size, rows_per_chunk)
     writer: Optional[_ChunkWriter] = None
     batch = []
@@ -286,17 +289,19 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
     def yield_chunk(chunk: ChunkMetadata):
         nonlocal total_rows_written
         total_rows_written += chunk.num_rows
-        logger.info(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
+        logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
 
-    def do_write(batch):
+    def do_tokenize(batch):
         nonlocal writer
 
         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
         # other shards since we want to stream them round-robin
-        record_batch = ray.get(process_task.remote(batch))
+        priority = priority_fn(shard_idx, shard_writer.num_chunks)
+        record_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
+        record_batch = ray.get(record_batch_future)
 
         if writer is None:
             chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
@@ -311,15 +316,16 @@ def _produce_chunks_for_shard(sink, cache_dir, shard_writer, source, shard_name,
             writer = None
             yield_chunk(chunk)
 
+    logger.info(f"Starting to get rows for shard {shard_name}")
     for row in shard_iter:
         batch.append(row)
 
         if len(batch) == target_batch_size:
-            do_write(batch)
+            do_tokenize(batch)
             batch = []
 
     if batch:
-        do_write(batch)
+        do_tokenize(batch)
     if writer is not None:
         writer.__exit__(None, None, None)
         chunk = writer.get_metadata()
@@ -444,15 +450,15 @@ class WandbMetricsMonitor(MetricsMonitor):
             to_log[f"{self.prefix}/finished"] = 1
 
         # estimate the rate of progress
-        if self.last_metrics is not None:
-            assert self.last_time is not None
-            elapsed = time.time() - self.last_time
-            to_log[f"{self.prefix}/shards/s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
-            to_log[f"{self.prefix}/chunks/s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
-            to_log[f"{self.prefix}/rows/s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
-
-            for field, count in metrics.field_counts.items():
-                to_log[f"{self.prefix}/{field}/s"] = (count - self.last_metrics.field_counts[field]) / elapsed
+        # if self.last_metrics is not None:
+        #     assert self.last_time is not None
+        #     elapsed = time.time() - self.last_time
+        #     to_log[f"{self.prefix}/shards_per_s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
+        #     to_log[f"{self.prefix}/chunks_per_s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
+        #     to_log[f"{self.prefix}/rows_per_s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
+        #
+        #     for field, count in metrics.field_counts.items():
+        #         to_log[f"{self.prefix}/{field}_per_s"] = (count - self.last_metrics.field_counts[field]) / elapsed
 
         self.last_metrics = metrics
         self.last_time = time.time()
@@ -463,16 +469,18 @@ class WandbMetricsMonitor(MetricsMonitor):
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None):
+    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.INFO):
         if isinstance(logger, str):
             logger = logging.getLogger(logger)
         self.logger = logger or logging.getLogger(__name__)
+        self.level = level
 
     def __call__(self, metrics: InProgressCacheMetrics):
         if jax.process_index() == 0:
-            self.logger.info(
+            self.logger.log(
+                self.level,
                 f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
-                f" {metrics.rows_finished}"
+                f" {metrics.rows_finished}",
             )
 
         if metrics.is_finished:
@@ -505,6 +513,95 @@ class _ShardStatus:
         return self.producer_task is not None
 
 
+def _mk_process_task(processor: BatchProcessor[T]):
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
+        return processor(batch)
+
+    return process_task
+
+
+def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
+        ray.get(queue.task_running.remote())
+        return processor(batch)
+
+    return process_task
+
+
+@dataclass(order=True, frozen=True)
+class _QueueItem:
+    priority: float
+    batch: ray.ObjectRef = dataclasses.field(compare=False)
+    task_id: int
+
+
+@dataclass
+class _RefBox:
+    """Ray doesn't dereference ObjectRefs if they're nested in another object. So we use this to take advantage of that.
+    https://docs.ray.io/en/latest/ray-core/objects.html#passing-object-arguments"""
+
+    ref: ray.ObjectRef
+
+
+@ray.remote(num_cpus=0)
+class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
+    """
+    A queue of tasks to be processed by a BatchProcessor.
+
+    BatchProcessorQueue spins up tasks to process batches of data.
+    It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
+    It then waits for a task to finish before spinning up another one.
+    # TODO: implement the waiting/spin up logic
+    """
+
+    pqueue: PriorityQueue[_QueueItem]
+    processor: BatchProcessor
+    task_futures: Dict[int, asyncio.Future]
+    _next_task_id: int
+    ready: bool  # whether or not we can spin up a new task
+
+    @property
+    def batch_size(self):
+        return self.processor.batch_size
+
+    def __init__(self, batch_processor: BatchProcessor[T]):
+        self.pqueue = PriorityQueue()
+        self.processor = batch_processor
+        self.task_futures = {}
+        self._next_task_id = 0
+        self.ready = True  # whether we're ready to ask ray to start a new task
+        self_ref = ray.runtime_context.get_runtime_context().current_actor
+        self._task_processor = _mk_queue_aware_process_task(batch_processor, self_ref)
+
+    # we don't need/want to dereference the batch, so we wrap it in a RefBox
+    # one virtue of doing things this way is that we can let Ray try to schedule the compute near the data.
+    async def submit(self, priority: float, batch: _RefBox):
+        """Returns a future that is set to the *ObjectRef* of the processed batch. The future is "complete" when the task
+        starts, not when it finishes. You then call ray.get on the future's result to get the actual batch."""
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        self.pqueue.put(_QueueItem(priority, batch.ref, task_id))
+        self.task_futures[task_id] = asyncio.Future()
+        self._maybe_start_task()
+        return await self.task_futures[task_id]
+
+    def _maybe_start_task(self):
+        if self.ready and not self.pqueue.empty():
+            self.ready = False
+            item = self.pqueue.get()
+            task_id = item.task_id
+            batch = item.batch
+            self.task_futures[task_id].set_result(self._task_processor.remote(batch))
+
+    def task_running(self):
+        self.ready = True
+        self._maybe_start_task()
+
+
 @ray.remote(num_cpus=0)
 class ChunkCacheBuilder:
     """
@@ -530,6 +627,7 @@ class ChunkCacheBuilder:
         self._current_round_robin = []
         self.source = source
         self._metrics = InProgressCacheMetrics()
+        self._processor_actor = _BatchProcessorQueue.remote(processor)  # type: ignore
 
         self_ref = ray.runtime_context.get_runtime_context().current_actor
 
@@ -538,11 +636,24 @@ class ChunkCacheBuilder:
             self._finish()
         else:
             logger.info(f"Starting cache build for {len(source.shard_names)} shards")
-            for shard_name in source.shard_names:
+
+            num_shards = len(source.shard_names)
+
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
+
+            for shard_idx, shard_name in enumerate(source.shard_names):
                 self._current_round_robin.append(shard_name)
 
                 task = _produce_cache_for_shard.remote(
-                    self_ref, source, shard_name, processor, cache_dir, rows_per_chunk
+                    self_ref,
+                    source,
+                    priority_fn,
+                    shard_idx,
+                    processor,
+                    self._processor_actor,
+                    cache_dir,
+                    rows_per_chunk,
                 )
 
                 self.shard_status[shard_name] = _ShardStatus(task)
