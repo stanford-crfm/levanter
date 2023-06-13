@@ -11,11 +11,11 @@ import levanter
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
-from levanter.config import TrainerConfig
 from levanter.data.sharded import LocalBatchDataset
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.loss import next_token_loss
 from levanter.models.mpt import MptConfig, MptLmHeadModel
+from levanter.trainer import TrainerConfig
 
 
 logger = logging.getLogger(__name__)
