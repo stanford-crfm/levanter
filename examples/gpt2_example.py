@@ -65,17 +65,17 @@ def main(config: TrainGpt2Config):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    train_loader = ShardedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
-        config.trainer.device_mesh,
-        Batch,
-        compute_axis_mapping,
-    )
-
     eval_loader = ReplicatedBatchLoader(
         TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
         EvalBatch,
+        compute_axis_mapping,
+    )
+
+    train_loader = ShardedBatchLoader(
+        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
+        config.trainer.device_mesh,
+        Batch,
         compute_axis_mapping,
     )
 
