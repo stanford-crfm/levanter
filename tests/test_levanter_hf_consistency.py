@@ -8,9 +8,9 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
-from levanter.config import TrainerConfig
 from levanter.models.backpack import BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.trainer import TrainerConfig
 
 
 HF_BACKPACK = "stanford-crfm/levanter-backpacks-test"

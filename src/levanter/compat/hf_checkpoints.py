@@ -36,7 +36,7 @@ from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 from levanter.compat.torch_serialization import StateDictSerializationMixin
-from levanter.trainer_hooks import StepInfo
+from levanter.trainer import StepInfo
 from levanter.utils.py_utils import dataclass_with_default_init
 
 

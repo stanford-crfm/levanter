@@ -3,12 +3,13 @@ import logging
 import os
 import re
 import subprocess
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Union
 
 import jax
 import ray
 from jax._src import clusters
-from jax._src.clusters import TpuCluster
+from jax._src.clusters import SlurmCluster, TpuCluster
 
 
 logger = logging.getLogger(__name__)
@@ -195,3 +196,56 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, namespace=namespace, **kwargs)
+
+
+@dataclass(frozen=True)
+class DistributedConfig:
+    coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
+    num_processes: Optional[int] = None
+    process_id: Optional[int] = None
+    local_device_ids: Optional[Union[int, List[int]]] = None
+
+    def _is_distributed(self):
+        if (
+            (self.coordinator_address is not None)
+            or (self.num_processes is not None)
+            or (self.process_id is not None)
+            or (self.local_device_ids is not None)
+        ):
+            return True
+
+        # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
+        # since it depends on the jax internals, but it's the best we can do
+        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+            return True
+
+        return False
+
+    def initialize(self):
+        if self._is_distributed():
+            device_ids = self.local_device_ids
+            coordinator_address = self.coordinator_address
+
+            if LevanterSlurmCluster.is_env_present():
+                if device_ids is None:
+                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
+
+                if coordinator_address is None:
+                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+
+            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
+            logger.info(
+                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
+                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
+            )
+
+
+@dataclass
+class RayConfig:
+    address: Optional[str] = None
+    start_workers: bool = True
+    auto_start_cluster: bool = True
+
+    def initialize(self):
+        if self.auto_start_cluster:
+            auto_ray_cluster(address=self.address, start_workers=self.start_workers)

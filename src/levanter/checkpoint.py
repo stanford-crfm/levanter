@@ -6,13 +6,15 @@ import os
 import pathlib
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Tuple, TypeVar, Union
+from datetime import timedelta
+from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import fsspec
 import jax
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
+from pyrallis import field
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.utils.jax_utils import multihost_broadcast_sync
@@ -388,3 +390,39 @@ def _assert_same(new, old):
         raise ValueError(f"One has a shape and the other doesn't: {new} vs {old}")
     if hasattr(new, "dtype") != hasattr(old, "dtype"):
         raise ValueError(f"One has a dtype and the other doesn't: {new} vs {old}")
+
+
+@dataclass
+class CheckpointerConfig:
+    base_path: str = "checkpoints/"
+    save_interval: timedelta = timedelta(hours=6)
+    # TODO: I'd like to write this, but it's not supported by pyrallis
+    # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
+    keep: List[dict] = field(
+        default_factory=lambda: [dict(every=10000)]
+    )  # list of dicts with two keys: every and until
+
+    def expanded_path(self, run_name):
+        return os.path.expanduser(os.path.join(self.base_path, run_name))
+
+    def create(self, run_name) -> Checkpointer:
+        keeps = [CheckpointInterval(**k) for k in self.keep]
+        return Checkpointer(
+            base_path=self.expanded_path(run_name),
+            save_interval=self.save_interval,
+            step_policies=keeps,
+        )
+
+    def __post_init__(self):
+        self.base_path = os.path.expanduser(self.base_path)
+
+        # validate the checkpoint intervals.
+        # we want to make sure that the intervals are monotonic. only the last one can be None
+        prev_interval = None
+        for interval in self.keep:
+            if prev_interval is not None:
+                assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
+                assert (
+                    interval["until"] is None or interval["until"] > prev_interval["until"]
+                ), "Checkpoint intervals must be monotonic"
+            prev_interval = interval

@@ -16,9 +16,9 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 from haliax import Axis
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
+from levanter.trainer import OptimizerConfig
 
 
 @skip_if_no_torch
