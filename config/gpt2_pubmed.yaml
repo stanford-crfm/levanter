@@ -5,12 +5,13 @@ data:
       - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/"
 model:
-  hidden_dim: 1600
-  num_heads: 25
-  num_layers: 48
-  seq_len: 1024
+  gpt2:
+    hidden_dim: 1600
+    num_heads: 25
+    num_layers: 48
+    seq_len: 1024
 
-  gradient_checkpointing: true
+    gradient_checkpointing: true
 trainer:
   wandb:
     project: "levanter"

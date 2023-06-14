@@ -18,6 +18,16 @@ class LmConfig(abc.ABC, Generic[LmT]):
     def model_type(self) -> Type[LmT]:
         pass
 
+    @property
+    @abc.abstractmethod
+    def KeyPos(self) -> Axis:
+        pass
+
+    @property
+    @abc.abstractmethod
+    def Pos(self) -> Axis:
+        pass
+
     def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 

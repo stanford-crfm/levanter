@@ -21,6 +21,7 @@ from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.models.loss import next_token_loss
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 class TrainGpt2Config:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
-    model: Gpt2Config = Gpt2Config()
+    model: LmConfig = Gpt2Config()
     optimizer: OptimizerConfig = OptimizerConfig()
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
@@ -107,7 +108,7 @@ def main(config: TrainGpt2Config):
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
         @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel.init(Vocab, config.model, key=model_key)
+            model = config.model.build(Vocab, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
@@ -176,9 +177,7 @@ def main(config: TrainGpt2Config):
         engine = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
-        engine.add_hook(
-            callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
-        )
+        engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
             callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
             every=config.trainer.steps_per_eval,
