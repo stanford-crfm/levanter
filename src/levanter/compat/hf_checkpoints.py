@@ -410,7 +410,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if save_tokenizer:
             logger.info("Saving tokenizer")
             self.tokenizer.save_pretrained(path)
-            print(os.listdir(path))
 
         # Config
         config = model.config.to_hf_config(model.Vocab.size)
