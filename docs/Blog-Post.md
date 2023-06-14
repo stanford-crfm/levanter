@@ -1,9 +1,11 @@
 # ---
 layout: blog
-title: Levanter —  Legible, Scalable, Reproducible Foundation Models with JAX
+title: Levanter — Legible, Scalable, Reproducible Foundation Models with JAX
 authors:
     - name: David Hall
-      url: TODO
+      url: https://www.linkedin.com/in/dlwhall
+    - name: Ivan Zhou
+      url: https://www.ivanzhou.me/
     - name: Percy Liang
       url: https://cs.stanford.edu/~pliang/
 display: False
