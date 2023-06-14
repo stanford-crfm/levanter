@@ -341,6 +341,36 @@ def test_stack():
     assert reord_stack.axes == (Axis("B", 2), H, W)
 
 
+def test_concatenate():
+    H1 = Axis("H", 4)
+    H2 = Axis("H", 3)
+    W = Axis("W", 3)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H1, W))
+    named2 = hax.random.uniform(PRNGKey(1), (H2, W))
+
+    assert jnp.all(
+        jnp.equal(hax.concatenate("H", (named1, named2)).array, jnp.concatenate((named1.array, named2.array), axis=0))
+    )
+    assert hax.concatenate("H", (named1, named2)).axes == (Axis("H", 7), W)
+
+    # test that this rearranges fine
+    named3 = hax.random.uniform(PRNGKey(2), (W, H2))
+    reord_concat = hax.concatenate("H", (named1, named3))
+    assert jnp.all(
+        jnp.equal(reord_concat.array, jnp.concatenate((named1.array, named3.array.transpose(1, 0)), axis=0))
+    )
+
+    # test we can concatenate along the 2nd axis
+    named1 = named1.rearrange((W, H1))
+    named2 = named2.rearrange((W, H2))
+
+    assert jnp.all(
+        jnp.equal(hax.concatenate("H", (named1, named2)).array, jnp.concatenate((named1.array, named2.array), axis=1))
+    )
+    assert hax.concatenate("H", (named1, named2)).axes == (W, Axis("H", 7))
+
+
 def test_unflatten_axis():
     H = Axis("Height", 2)
     W = Axis("Width", 3)
@@ -363,3 +393,24 @@ def test_unflatten_axis():
     flattened_HD = named1.flatten_axes((H, D), "Z")
     assert jnp.all(jnp.equal(hax.unflatten_axis(flattened_HD, "Z", (H, D)).array, named1.array.transpose(0, 2, 1)))
     assert hax.unflatten_axis(flattened_HD, "Z", (H, D)).axes == (H, D, W)
+
+
+def test_rename():
+    H = Axis("H", 2)
+    W = Axis("W", 3)
+    D = Axis("D", 4)
+
+    H2 = Axis("H2", 2)
+    W2 = Axis("W2", 3)
+    D2 = Axis("D2", 4)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {"H": "H2", "W": "W2", "D": "D2"}).array, named1.array))
+    assert hax.rename(named1, {"H": "H2", "W": "W2", "D": "D2"}).axes == (H2, W2, D2)
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {"H": H2, "W": "W2"}).array, named1.array))
+    assert hax.rename(named1, {"H": H2, "W": "W2"}).axes == (H2, W2, D)
+
+    assert jnp.all(jnp.equal(hax.rename(named1, {H: H2, "W": "W2"}).array, named1.array))
+    assert hax.rename(named1, {H: H2, "W": "W2"}).axes == (H2, W2, D)

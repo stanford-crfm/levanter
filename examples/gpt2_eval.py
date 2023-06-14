@@ -11,11 +11,12 @@ from transformers import GPT2Tokenizer
 import haliax as hax
 import levanter
 from haliax import Axis
-from haliax.partitioning import named_pjit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
+from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
-from levanter.compat.hf_checkpoints import load_hf_gpt2_checkpoint
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.config import TrainerConfig
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
@@ -27,8 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EvalGpt2Config:
     checkpoint_path: Optional[str] = None
-    hf_checkpoint: Optional[str] = None
-    hf_revision: Optional[str] = None
+    hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
     model: Gpt2Config = Gpt2Config()
@@ -42,17 +42,18 @@ def main(config: EvalGpt2Config):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+    Batch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
+    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
 
     # some axes we use outside the model proper
-    SeqLen = config.model.SeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -70,64 +71,45 @@ def main(config: EvalGpt2Config):
         def compute_loss(model: Gpt2LMHeadModel, input_ids):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(config.model.SeqLen, config.model.KeySeqLen)
+                attn_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
                 pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids).scalar()
+                return hax.mean(next_token_loss(Pos, Vocab, pred_y, input_ids)).scalar()
 
-        def mean_loss(model: Gpt2LMHeadModel, input_ids):
-            # None here means the first argument (the model) is not vectorized but instead broadcasted
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            return hax.mean(hax.vmap(compute_loss, EvalBatch)(model, input_ids))
-
-        compute_loss_pjit = named_pjit(
-            mean_loss,
-            in_axis_resources=parameter_axis_mapping,
+        compute_loss_pjit = named_jit(
+            compute_loss,
             out_axis_resources=compute_axis_mapping,
             axis_resources=compute_axis_mapping,
         )
 
         total = config.trainer.max_eval_batches
 
-        def evaluate(model):
-
-            # standard evaluation loop
-            loss = 0.0
-            n = 0
-
-            with hax.axis_mapping(compute_axis_mapping):
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating"):
-                    loss += compute_loss_pjit(model, batch).item()
-                    n += 1
-                    if total is not None and n >= total:
-                        break
-
-            return loss / n
-
         # initialize the model
         if config.checkpoint_path is not None:
 
-            @named_pjit(axis_resources=parameter_axis_mapping)
+            @named_jit(axis_resources=parameter_axis_mapping)
             def init_model():
-                model = Gpt2LMHeadModel(Vocab, config.model, key=key)
+                model = Gpt2LMHeadModel.init(Vocab, config.model, key=key)
                 model = config.trainer.mp.cast_to_param(model)
                 return model
 
             model = init_model()
 
-            model, _, _ = load_checkpoint(model, None, config.checkpoint_path)
-            loss = evaluate(model)
+            # TODO: switch to throwing instead of returning None
+            model, _, _ = load_checkpoint(model, None, config.checkpoint_path)  # type: ignore
+            loss = callbacks.eval_loss_loop(compute_loss_pjit, model, eval_loader, max_batches=total)
 
             del model
             print("Loss from Levanter model: ", loss)
 
         if config.hf_checkpoint is not None:
             # load the huggingface model
-            with jax.default_device(jax.devices("cpu")[0]):
-                hf_model = load_hf_gpt2_checkpoint(config.hf_checkpoint, revision=config.hf_revision)
-            # hf_model = named_pjit(lambda m: m, donate_argnums=(0,))(hf_model)
-            loss = evaluate(hf_model)
+            converter = HFCheckpointConverter(Gpt2Config, config.hf_checkpoint)
+            model_from_hf_checkpoint = converter.load_pretrained(Gpt2LMHeadModel, config.hf_checkpoint)
+            loss = callbacks.eval_loss_loop(
+                compute_loss_pjit, model_from_hf_checkpoint, eval_loader, max_batches=total
+            )
 
             print("Loss from HF model: ", loss)
 
@@ -135,13 +117,15 @@ def main(config: EvalGpt2Config):
                 import torch
                 from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
 
-                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(config.hf_checkpoint)
+                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(
+                    config.hf_checkpoint.model_name_or_path, revision=config.hf_checkpoint.revision
+                )
                 torch_model.eval()
                 torch_model.to("cpu")
 
                 loss = 0.0
                 n = 0
-                for batch in tqdm.tqdm(eval_dataset, total=total, desc="Evaluating (torch)"):
+                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
                     torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
                     with torch.no_grad():
                         loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()

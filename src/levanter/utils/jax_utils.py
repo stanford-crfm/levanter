@@ -10,7 +10,7 @@ from chex import PRNGKey
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from jaxtyping import PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split

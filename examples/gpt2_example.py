@@ -6,18 +6,18 @@ from typing import Optional
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-from jax.interpreters.pxla import PartitionSpec
-from transformers import GPT2Tokenizer
+from jax.sharding import PartitionSpec
 
 import haliax as hax
 import haliax.random
 import levanter
 import wandb
 from haliax import Axis
-from haliax.partitioning import ResourceAxis, named_pjit, round_axis_for_partitioning
+from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
-from levanter.config import TrainerConfig
-from levanter.data.sharded import GlobalBatchDataset, LocalBatchDataset
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.config import OptimizerConfig, TrainerConfig
+from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
@@ -39,6 +39,7 @@ class TrainGpt2Config:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: Gpt2Config = Gpt2Config()
+    optimizer: OptimizerConfig = OptimizerConfig()
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
@@ -51,30 +52,30 @@ class TrainGpt2Config:
 def main(config: TrainGpt2Config):
     config.trainer.initialize(config)
 
-    tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+    tokenizer = config.data.the_tokenizer
 
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-    SeqLen = config.model.SeqLen
-    KeySeqLen = config.model.KeySeqLen
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    dataset = GlobalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("train"), config.model.seq_len),
+    eval_loader = ReplicatedBatchLoader(
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
         config.trainer.device_mesh,
-        Batch,
+        EvalBatch,
         compute_axis_mapping,
     )
 
-    eval_dataset = LocalBatchDataset(
-        TokenSeqDataset(config.data.build_or_load_document_cache("validation"), config.model.seq_len),
+    train_loader = ShardedBatchLoader(
+        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
-        EvalBatch,
+        Batch,
         compute_axis_mapping,
     )
 
@@ -105,9 +106,9 @@ def main(config: TrainGpt2Config):
         # 1) initializes model weights
         # 2) ensures all model weights are the right dtype
         # 3) ensures the model is partitioned across the mesh according to the parameter_axis_mapping
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def init_model():
-            model = Gpt2LMHeadModel(Vocab, config.model, key=model_key)
+            model = Gpt2LMHeadModel.init(Vocab, config.model, key=model_key)
             return mp.cast_to_param(model)
 
         model = init_model()
@@ -116,16 +117,16 @@ def main(config: TrainGpt2Config):
 
         # initialize the optimizer
         # This is basically the same as the model.
-        optimizer = config.trainer.optimizer()
-        opt_state = named_pjit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
+        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
 
         # masks for attention and loss
         def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
+            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
 
             # forgetful causal masking
             if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeySeqLen, config.fcm_prob, key=fcm_key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
@@ -137,14 +138,13 @@ def main(config: TrainGpt2Config):
                 pred_y = model(input_ids, attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(SeqLen, Vocab, pred_y, input_ids)
+                return next_token_loss(Pos, Vocab, pred_y, input_ids)
 
         def train_batch_loss(model, input_ids, attn_mask, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
-        # training loop
-        @named_pjit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, input_ids, keys):
             attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
             attn_mask = hax.auto_sharded(attn_mask)
@@ -168,36 +168,10 @@ def main(config: TrainGpt2Config):
 
             return loss, model, opt_state
 
-        # evaluation loss and loop
-
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
-            mask = hax.nn.attention.causal_mask(SeqLen, KeySeqLen)
-            return hax.mean(compute_loss(model, input_ids, mask, None, True))
-
-        # Set up evaluation
-        def evaluate_step(info: StepInfo):
-            with hax.axis_mapping(compute_axis_mapping):
-                # standard evaluation loop
-                loss = 0.0
-                n = 0
-
-                for batch in eval_dataset:
-                    this_loss = eval_loss(model, batch)
-                    loss += this_loss.item()
-                    n += 1
-                    if config.trainer.max_eval_batches is not None and n >= config.trainer.max_eval_batches:
-                        break
-
-                if n > 0:
-                    loss /= n
-
-            logger.info(f"validation loss: {loss:.3f}")
-            if wandb.run is not None:
-                wandb.log({"eval/loss": loss}, step=info.step)
-
-            return loss
+            mask = hax.nn.attention.causal_mask(Pos, KeyPos)
+            return hax.mean(compute_loss(model, input_ids, mask, None, True)).scalar()
 
         # boilerplate hooks and such
         engine = TrainerHooks()
@@ -206,21 +180,29 @@ def main(config: TrainGpt2Config):
         engine.add_hook(
             callbacks.log_performance_stats(config.model.seq_len, config.trainer.train_batch_size), every=1
         )
-        engine.add_hook(evaluate_step, every=config.trainer.steps_per_eval)
+        engine.add_hook(
+            callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
+            every=config.trainer.steps_per_eval,
+        )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
-            from levanter.compat.hf_checkpoints import save_hf_gpt2_checkpoint_callback
+            from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
-            engine.add_hook(save_hf_gpt2_checkpoint_callback(full_save_path), every=config.hf_save_steps)
+            converter = HFCheckpointConverter(Gpt2Config, "gpt2")
+
+            engine.add_hook(
+                save_hf_checkpoint_callback(full_save_path, converter),
+                every=config.hf_save_steps,
+            )
 
         # visualize log probs
-        @named_pjit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_log_probs(model, input_ids):
-            input_ids = hax.named(input_ids, (EvalBatch, SeqLen))
+            """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
             attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
             attn_mask = hax.auto_sharded(attn_mask)
 
@@ -229,21 +211,21 @@ def main(config: TrainGpt2Config):
 
                 pred_y = model(input_ids, attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(SeqLen, Vocab, pred_y, input_ids, reduction=None)
+                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, SeqLen)
-                return logprobs.rearrange(("batch", SeqLen)).array
+                logprobs = haliax.roll(logprobs, 1, Pos)
+                return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
-                eval_dataset, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+                eval_loader, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
             ),
             every=config.trainer.steps_per_eval,
         )
 
         # data loader
-        iter_data = non_caching_cycle(dataset)
+        iter_data = non_caching_cycle(train_loader)
 
         # load the last checkpoint and resume if we want
         model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
@@ -270,7 +252,6 @@ def main(config: TrainGpt2Config):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     input_ids = next(iter_data)
-                    input_ids = hax.named(input_ids, (Batch, SeqLen))
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)

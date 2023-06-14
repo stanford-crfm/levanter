@@ -1,18 +1,18 @@
 # Various Pyrallis configs
 import atexit
+import copy
 import dataclasses
 import inspect
 import logging
 import os
 import sys
 import tempfile
-import typing
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import List, Mapping, Optional, Union
+from typing import Dict, List, Mapping, Optional, Tuple, Type, TypeVar, Union
 
 import fsspec
 import jax
@@ -23,21 +23,27 @@ import pyrallis
 from fsspec import AbstractFileSystem
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from jax._src.clusters import SlurmCluster, TpuCluster
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 from pyrallis import field, parse
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import Checkpointer, CheckpointInterval
-from levanter.distributed import LevanterSlurmCluster
+from levanter.distributed import LevanterSlurmCluster, auto_ray_cluster
 from levanter.utils import cloud_utils, jax_utils
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 logger = logging.getLogger(__name__)
 
-M = typing.TypeVar("M")
-S = typing.TypeVar("S")
+M = TypeVar("M")
+S = TypeVar("S")
+
+DEFAULT_JAX_CONFIG = {
+    "jax_threefry_partitionable": True,
+}
+
+JsonAtom = Union[str, int, float, bool, None]
 
 
 @dataclass
@@ -46,14 +52,20 @@ class WandbConfig:
     Configuration for wandb.
     """
 
-    entity: Optional[str] = None
-    project: Optional[str] = None
-    name: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    id: Optional[str] = None
-    group: Optional[str] = None
-    mode: Optional[str] = None
-    resume: Optional[Union[bool, str]] = None
+    entity: Optional[str] = None  # An entity is a username or team name where you send runs
+    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
+    tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
+    id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
+    group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
+    mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be online.
+    resume: Optional[Union[bool, str]] = None  #
+    """
+    Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
+    By default, if the new run has the same ID as a previous run, this run overwrites that data.
+    Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
+    document for more details.
+    """
 
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
@@ -93,6 +105,14 @@ class WandbConfig:
             logger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
+            # for some reason, wandb isn't populating the git commit, so we do it here
+            try:
+                repo = Repo(code_dir)
+                other_settings["git_commit"] = repo.head.commit.hexsha
+                hparams_to_save["git_commit"] = repo.head.commit.hexsha
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.warning(f"Could not find git repo at {code_dir}")
+                pass
 
         r = wandb.init(
             entity=self.entity,
@@ -135,6 +155,14 @@ class WandbConfig:
                     pyrallis.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
+        # generate a pip freeze
+        with tempfile.TemporaryDirectory() as tmpdir:
+            requirements_path = f"{tmpdir}/requirements.txt"
+            requirements = _generate_pip_freeze()
+            with open(requirements_path, "w") as f:
+                f.write(requirements)
+            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
+
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
         wandb.summary["backend"] = jax.default_backend()
@@ -163,6 +191,13 @@ class WandbConfig:
                 logger.debug(f"Skipping {dirname} since it's not a git root")
                 pass
         return top_git_root
+
+
+def _generate_pip_freeze():
+    from importlib.metadata import distributions
+
+    dists = distributions()
+    return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
 
 
 @dataclass
@@ -244,6 +279,76 @@ class DistributedConfig:
 
 
 @dataclass
+class RayConfig:
+    address: Optional[str] = None
+    start_workers: bool = True
+    auto_start_cluster: bool = True
+
+    def initialize(self):
+        if self.auto_start_cluster:
+            auto_ray_cluster(address=self.address, start_workers=self.start_workers)
+
+
+@dataclass
+class OptimizerConfig:
+    # Config related to optimizer (always adam for now)
+    learning_rate: float = 6e-4
+    weight_decay: float = 0.0
+    beta1: float = 0.9
+    beta2: float = 0.999
+    epsilon: float = 1e-8
+    max_grad_norm: Optional[float] = 1.0
+
+    min_lr_ratio: float = 0.0
+    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
+    lr_schedule: str = "cosine"  # constant, cosine, linear
+
+    def build(self, num_train_steps):
+        """Creates the optimizer"""
+        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
+        def _optimizer(learning_rate):
+            components = []
+
+            if self.max_grad_norm:
+                components.append(optax.clip_by_global_norm(self.max_grad_norm))
+
+            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
+
+            if self.weight_decay > 0:
+                # TODO: add weight decay masking??
+                components.append(optax.add_decayed_weights(self.weight_decay))
+
+            # - learning rate for descent
+            components.append(optax.scale(-learning_rate))
+
+            optimizer = optax.chain(*components)
+
+            return optimizer
+
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+    def lr_scheduler(self, num_train_steps):
+        warmup_steps = int(self.warmup_ratio * num_train_steps)
+        lr_decay_steps = num_train_steps - warmup_steps
+        min_lr = self.learning_rate * self.min_lr_ratio
+
+        if self.lr_schedule == "constant":
+            schedule = optax.constant_schedule(self.learning_rate)
+        elif self.lr_schedule == "cosine":
+            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+        elif self.lr_schedule == "linear":
+            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+        else:
+            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+
+        if warmup_steps != 0:
+            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
+            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+
+        return schedule
+
+
+@dataclass
 class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
@@ -254,19 +359,9 @@ class TrainerConfig:
 
     # config related to partitioning
 
-    batch_axis: Optional[
-        str
-    ] = (  # if set, we'll use this as the batch axis. (You can achieve the same thing with axis_resources, but this is simpler)
-        "batch"
-    )
-    fsdp_axis: Optional[
-        Union[str, List[str]]
-    ] = (  # if set, we'll use fsdp for model sharding. (You can achieve the same thing with parameter_axis_resources, but this is simpler)
-        "embed"
-    )
-    tensor_parallel_axes: Optional[
-        List[str]
-    ] = None  # axes to use tensor parallelism on. If None, we won't use tensor parallelism
+    batch_axis: Optional[str] = "batch"  # Batch axis for data parallel.
+    fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
+    tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
     # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
     axis_resources: Mapping[str, str] = field(default_factory=dict)
@@ -294,22 +389,12 @@ class TrainerConfig:
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
 
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    min_lr_ratio: float = 0.0
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
-    use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
+    jax_config: Dict[str, JsonAtom] = field(
+        default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
+    )  # config to pass to jax.config.update
 
     distributed: DistributedConfig = DistributedConfig()
+    ray: RayConfig = RayConfig()
 
     # whether or not to require an accelerator (e.g. TPU or GPU).
     # default depends on the platform: on macos False, else True
@@ -331,6 +416,7 @@ class TrainerConfig:
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
+        self.ray.initialize()
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
@@ -396,42 +482,14 @@ class TrainerConfig:
         return mapping
 
     def _initialize_jax_config(self):
-        """Initialize global jax config with settings we like, based on config"""
-        jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_array", self.use_jax_array)
+        for key, value in self.jax_config.items():
+            jax.config.update(key, value)
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
-    def optimizer(self):
-        """Creates the optimizer"""
-
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        optimizer = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler())
-
-        return optimizer
-
-    def maybe_load_checkpoint(self, model: M, training_state: S) -> typing.Tuple[M, S, Optional[int]]:
+    def maybe_load_checkpoint(self, model: M, training_state: S) -> Tuple[M, S, Optional[int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
@@ -451,26 +509,6 @@ class TrainerConfig:
                 return (model, training_state, step)
         else:
             return (model, training_state, None)
-
-    def lr_scheduler(self):
-        warmup_steps = int(self.warmup_ratio * self.num_train_steps)
-        lr_decay_steps = self.num_train_steps - warmup_steps
-        min_lr = self.learning_rate * self.min_lr_ratio
-
-        if self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-        elif self.lr_schedule == "linear":
-            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
-
-        return schedule
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -526,6 +564,62 @@ def register_codecs():
 
 
 register_codecs()
+
+
+def config_registry(cls: Type):
+    """
+    A decorator to register a config class with a registry that we can use to find the config class for a given
+    config. This is used for abstract classes/interfaces where we want to select a concrete implementation based on
+    the config.
+
+    the syntax for a yaml file would be:
+    ```yaml
+    model:
+      gpt:
+         <config for gpt>
+    ```
+
+    Subclasses can be added with the `register_subclass` method
+    :param cls:
+    :return: the decorated classes.
+    """
+
+    # add the registry to the class if it doesn't exist
+    if not hasattr(cls, "_config_registry"):
+        cls._config_registry = {}
+
+    # add register_subclass_config to the class if it doesn't exist
+    if not hasattr(cls, "register_subclass"):
+
+        def register_subclass(name: str, subcls):
+            cls._config_registry[name] = subcls
+            return subcls
+
+        cls.register_subclass = register_subclass
+
+    # now register the cls with pyrallis
+    def encode_config(config):
+        for name, subcls in cls._config_registry.items():
+            if isinstance(config, subcls):
+                return {name: pyrallis.encode(config)}
+
+        raise ValueError(f"Could not find a registered subclass for {config}")
+
+    def decode_config(config):
+        if len(config) != 1:
+            raise ValueError(f"Expected exactly one key in config, got {config}")
+
+        name, config = config.popitem()
+        try:
+            subcls = cls._config_registry[name]
+            return pyrallis.decode(subcls, config)
+        except KeyError:
+            raise ValueError(f"Could not find a registered subclass for {name}")
+
+    pyrallis.encode.register(cls, encode_config)
+    pyrallis.decode.register(cls, decode_config)
+
+    return cls
 
 
 def main(args: list = None):

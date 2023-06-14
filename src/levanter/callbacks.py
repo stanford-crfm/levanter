@@ -8,7 +8,7 @@ import threading
 import time
 import warnings
 from functools import partial
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
@@ -21,7 +21,6 @@ from tqdm import tqdm
 import levanter.visualization as viz
 import wandb
 from levanter.config import WandbConfig
-from levanter.data import Dataset
 from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer_hooks import StepInfo
 
@@ -29,31 +28,40 @@ from levanter.trainer_hooks import StepInfo
 logger = logging.getLogger(__name__)
 
 
+def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
+    total_loss = 0.0
+    n = 0
+
+    pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    for batch in pbar:
+        loss = loss_fn(model, batch)
+        total_loss += loss.item()
+        n += 1
+        pbar.set_postfix(loss=total_loss / n)
+
+        if max_batches is not None and n >= max_batches:
+            break
+
+    if n > 0:
+        total_loss /= n
+
+    return total_loss
+
+
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
-    dataloader: Callable[[], Iterator[tuple]],
+    dataset: Iterable,
+    max_batches: Optional[int] = None,
 ):
     def compute_loss(info: StepInfo):
-        total_loss = 0.0
-        n = 0
-        test_loader = dataloader()
+        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches)
 
-        pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
-        for batch in pbar:
-            loss = loss_fn(info.model, *batch)
-            # this mean is over the devices, somewhat confusingly
-            loss = jnp.mean(loss)
-            total_loss += loss.item()
-            n += 1
-            pbar.set_postfix(loss=total_loss / n)
-
-        mean_loss = total_loss / n
         if wandb.run is not None:
-            wandb.log({"eval/loss": mean_loss}, step=info.step)
+            wandb.log({"eval/loss": loss}, step=info.step)
 
-        logger.info(f"validation loss: {mean_loss:.3f}")
+        logger.info(f"validation loss: {loss:.3f}")
 
-        return total_loss
+        return loss
 
     return compute_loss
 
@@ -226,7 +234,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
     return log_memory_usage
 
 
-def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
+def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
     """
     Computes log probabilities for a dataset and visualizes them using visdom.
     :param test_data:
@@ -252,7 +260,7 @@ def compute_and_visualize_log_probs(test_data: Dataset, tokenizer, log_prob_fn, 
                 break
 
         log_probs = _concatenate(log_probs)
-        targets = _concatenate(targets)
+        targets = _concatenate([t.array for t in targets])
 
         # gather the log probs and targets
         # TODO: is this still necessary?

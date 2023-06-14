@@ -22,10 +22,6 @@ class Dataset(Iterable[T], ABC):
         """Returns the shape and dtype of a single item in the dataset. May be a PyTree for structured objects"""
         raise NotImplementedError
 
-    @abstractmethod
-    def __len__(self) -> int:
-        raise NotImplementedError
-
 
 class ShardableDataset(Dataset[T], ABC):
     @abstractmethod
@@ -70,6 +66,3 @@ class ShuffleDataset(ShardableDataset[T]):
             i = jrandom.randint(subkey, (), 0, len(buffer))
             yield buffer[i]
             del buffer[i]
-
-    def __len__(self) -> int:
-        return len(self.dataset)
