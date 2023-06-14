@@ -104,11 +104,9 @@ Levanter integrates with WandB for logging and with the Hugging Face ecosystem f
 
 ### Installing Levanter
 
-<!--levanter-installation-start-->
-First, install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+Please refer to the [Installation Guide](docs/Installation.md) for more information on how to install Levanter.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
-<!--levanter-installation-end-->
 
 
 ### Training a GPT2-nano
