@@ -26,7 +26,7 @@ Levanter is designed to be legible, scalable, and reproducible:
 2. Scalable: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. Reproducible: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
-Today, we're releasing the first version of Levanter, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
+Today, we're releasing the Levanter v1.0, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 and checkpoints for a number of models, including new architectures, on our [Hugging Face Hub](https://huggingface.co/stanford-crfm) page.
 
 We hope that Levanter will be useful to the community, and we welcome contributions and feedback. Please join us on [GitHub](https://github.com/stanford-crfm/levanter)
@@ -132,9 +132,10 @@ This code appears straightforward, but it's incorrect: the dimensions of `y_pred
 Because `y_pred` is a 2D array of shape `(128, 1)`, and `y` is a 1D array of shape `(128,)`, the `-` operator will broadcast `y` to shape `(128, 128)`.
 (This makes the subtraction an "outer product"-like operation rather than the intended elementwise subtraction.)
 But, you won't get an error at runtime; this is a silent bug. The `mean` call hides the bug by averaging over all values.
+You get the wrong answer, but you likely won't notice.
 
 This is a common bug in deep learning code, and it's easy to miss. We, and anecdotally many others we have spoken to, have
-individually lost multiple days to this exact bug, and it shows up in every deep learning framework.
+individually lost multiple days to this exact bug, and it shows up in every library with NumPy's broadcasting semantics.
 
 But if we use named tensors, we avoid this bug without having to think about it. Here's what this code looks like in Haliax:
 
@@ -147,11 +148,11 @@ Feature = hax.Axis("feature", 64)
 
 x = hax.random.uniform(PRNGKey(0), (Batch, Feature))
 y = hax.random.uniform(PRNGKey(1), Batch)
+W = hax.random.uniform(PRNGKey(2), (Feature,))
 
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
 
-W = hax.random.uniform(PRNGKey(2), (Feature,))
 
 y_pred = hax.dot(Feature, x, W)
 mse(y_pred, y)
