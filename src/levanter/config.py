@@ -89,6 +89,8 @@ def config_registry(cls: Type):
         def register_subclass(name: str, subcls=None):
             if subcls is None:
                 return functools.partial(register_subclass, name)
+            if name in cls._config_registry:
+                raise ValueError(f"Config class {name} already registered with {cls._config_registry[name]}")
             cls._config_registry[name] = subcls
             return subcls
 
