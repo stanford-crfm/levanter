@@ -5,12 +5,13 @@ data:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 model:
-  hidden_dim: 1600
-  num_heads: 25
-  num_layers: 48
-  seq_len: 1024
-  gradient_checkpointing: true
-  scale_attn_by_inverse_layer_idx: true
+  gpt2:
+    hidden_dim: 1600
+    num_heads: 25
+    num_layers: 48
+    seq_len: 1024
+    gradient_checkpointing: true
+    scale_attn_by_inverse_layer_idx: true
 trainer:
   wandb:
     project: "levanter"

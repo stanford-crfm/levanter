@@ -62,8 +62,9 @@ def test_mpt_nano_compare(use_bias):
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
+    causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
     with jax.disable_jit():
-        lev_out = lev_model(hax_input).array
+        lev_out = lev_model(hax_input, causal_mask, inference=True, key=None).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 

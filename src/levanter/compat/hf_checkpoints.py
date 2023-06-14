@@ -36,6 +36,7 @@ from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 from levanter.compat.torch_serialization import StateDictSerializationMixin
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.py_utils import dataclass_with_default_init
 
@@ -80,7 +81,7 @@ pyrallis.decode.register(RepoRef, RepoRef.from_string)
 pyrallis.encode.register(RepoRef, str)
 
 
-class HFCompatConfig(abc.ABC):
+class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     @abc.abstractmethod
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[dict] = None) -> HfConfig:
         pass
@@ -94,9 +95,7 @@ class HFCompatConfig(abc.ABC):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class LmWithHfSerializationMixin(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
-    config: MConfig
-
+class LmWithHfSerializationMixin(LmHeadModel, Generic[MConfig], StateDictSerializationMixin):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 

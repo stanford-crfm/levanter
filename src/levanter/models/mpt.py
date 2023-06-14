@@ -27,6 +27,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layer,
     unstack_state_dict,
 )
+from levanter.models.lm_model import LmConfig
 
 
 init_config_defaults: Dict = {
@@ -82,6 +83,9 @@ class MptAttentionConfig:
 
 
 # Haliax-style data class version
+
+
+@LmConfig.register_subclass("mpt")
 @dataclass
 class MptConfig(HFCompatConfig):
     d_model: int = 768
@@ -130,6 +134,10 @@ class MptConfig(HFCompatConfig):
 
         # if self.init_config and self.init_config != init_config_defaults:
         #     raise ValueError("init_config_defaults not supported yet.")
+
+    @property
+    def model_type(self) -> Type["MptLmHeadModel"]:
+        return MptLmHeadModel
 
     @classmethod
     def from_hf_config(cls, config):
@@ -391,14 +399,18 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
 class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
     wte: hnn.Embedding
     transformer: MptTransformer
-    config: MptConfig = eqx.static_field()
+    _config: MptConfig = eqx.static_field()
 
     @property
     def Vocab(self) -> Axis:
         return self.wte.Vocab
 
-    @staticmethod
-    def init(Vocab: Axis, config: MptConfig, *, key):
+    @property
+    def config(self) -> MptConfig:
+        return self._config
+
+    @classmethod
+    def init(cls, Vocab: Axis, config: MptConfig, *, key):
         k_transformer, k_wte = jrandom.split(key, 2)
         wte = hnn.Embedding.init(Vocab, config.Embed, key=k_wte)
         transformer = MptTransformer.init(config, key=k_transformer)
@@ -410,11 +422,12 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attention_mask: Optional[NamedArray] = None) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
+        # TODO: add back in dropout
+        del key
+        del inference
         hidden_states = self.wte.embed(input_ids)
-        causal = hnn.attention.causal_mask(self.config.Pos, self.config.KeyPos)
-        attention_mask = hnn.attention.combine_masks_and(causal, attention_mask)
-        hidden_states = self.transformer(hidden_states, attention_mask=attention_mask)
+        hidden_states = self.transformer(hidden_states, attention_mask=attn_mask)
         output_logits = self.wte.unembed(hidden_states)
 
         return output_logits

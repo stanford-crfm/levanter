@@ -56,7 +56,11 @@ def test_save_model_with_code():
         assert loaded_model.Vocab == lev_model.Vocab
 
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
-        np.testing.assert_equal(np.array(lev_model(input).array), np.array(loaded_model(input).array))
+        causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
+        np.testing.assert_equal(
+            np.array(lev_model(input, causal_mask, inference=True).array),
+            np.array(loaded_model(input, causal_mask, inference=True).array),
+        )
 
         # now double check that the pytorch model is the same
         loaded_model = cls.from_pretrained(tmpdir)
