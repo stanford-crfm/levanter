@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Union
+from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
 import jax
@@ -25,13 +25,19 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layer,
 )
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
+from levanter.models.lm_model import LmConfig
 
 
+@LmConfig.register_subclass("backpack")
 @dataclass(frozen=True)
 class BackpackConfig(Gpt2Config):
     # Backpack-specific terms
     num_senses: int = 16
     sense_intermediate_scale: int = 4
+
+    @property
+    def model_type(self) -> Type["BackpackLMHeadModel"]:
+        return BackpackLMHeadModel
 
     # Axes
     SenseHeadDim = property(lambda self: Axis(name="head_dim", size=self.hidden_dim // self.num_senses))
@@ -366,7 +372,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
             kq_selfattention=kq_selfattention,
         )
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 

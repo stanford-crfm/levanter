@@ -1,12 +1,15 @@
 import atexit
+import dataclasses
+import functools
 import inspect
 import os
 import sys
 import tempfile
 import urllib.parse
+from dataclasses import is_dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import Type, Union
+from typing import Any, Dict, Type, Union
 
 import fsspec
 import jmp
@@ -83,7 +86,11 @@ def config_registry(cls: Type):
     # add register_subclass_config to the class if it doesn't exist
     if not hasattr(cls, "register_subclass"):
 
-        def register_subclass(name: str, subcls):
+        def register_subclass(name: str, subcls=None):
+            if subcls is None:
+                return functools.partial(register_subclass, name)
+            if name in cls._config_registry:
+                raise ValueError(f"Config class {name} already registered with {cls._config_registry[name]}")
             cls._config_registry[name] = subcls
             return subcls
 
@@ -91,9 +98,10 @@ def config_registry(cls: Type):
 
     # now register the cls with pyrallis
     def encode_config(config):
+        # singledispatch means that pyrallis.encode(config) will call this function even if config is a subclass of cls
         for name, subcls in cls._config_registry.items():
             if isinstance(config, subcls):
-                return {name: pyrallis.encode(config)}
+                return {name: _default_encode(config)}
 
         raise ValueError(f"Could not find a registered subclass for {config}")
 
@@ -112,6 +120,20 @@ def config_registry(cls: Type):
     pyrallis.decode.register(cls, decode_config)
 
     return cls
+
+
+def _default_encode(obj):
+    if is_dataclass(obj):
+        d: Dict[str, Any] = dict()
+        for field in dataclasses.fields(obj):
+            value = getattr(obj, field.name)
+            try:
+                d[field.name] = pyrallis.encode(value)
+            except TypeError as e:
+                raise ValueError(f"Could not encode field {field.name} of type {field.type} of {obj}") from e
+        return d
+    else:
+        raise ValueError(f"Could not encode {obj}")
 
 
 def main(args: list = None):
