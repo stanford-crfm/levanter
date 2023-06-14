@@ -280,7 +280,8 @@ JAX already has some built-in support for named tensors in the form of [`xmap`](
 We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it (in favor of `pjit`)
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
 of the main model code itself. Ultimately, we found it harder reason about this mixed positional/named code (where the axis names are implicit)
-than just using names the whole way through.
+than just using names the whole way through. That said, `xmap`'s mapping between "semantic" and "physical" axes as the
+basis for parallelism is the inspiration for how we do parallelism in Haliax.
 
 Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
 their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
@@ -372,7 +373,8 @@ The key components are:
 
 ## Tensor Parallelism in the Same 10 Lines of Code
 
-Tensor parallelism can be added by simply changing the two axis mappings:
+To further demonstrate the power of named tensors, let's further add tensor parallelism to our model. All we have
+to do is change the axis mappings:
 
 ```diff
 # Specify which axes we shard for tensor parallelism:
@@ -386,10 +388,42 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 +data_mapping = {"batch": "data", **tensor_parallel_mapping}
 ```
 
+That's it! We can now use a combination of tensor parallelism and FSDP to scale our model to as many GPUs or TPUs as we want.
+
+
 ## Training Performance on TPU
 
-XXX numbers go here
+To demonstrate the scalability of our FSDP implementation, we ran benchmarks to estimate our Model Flop Utilization (MFU)
+and Hardware Flop Utilization (HFU; as measured by the profiler) on a TPU v3-256. We used a GPT-2 architecture for all
+experiments. (The exact hyperparameters of these transformers are available in our repository; they are the usual configurations used for models of the relevant scale.)
 
+| Model Size | MFU   | HFU   |
+|------------|-------|-------|
+| 345M       | xxx   | xxx   |
+| 750M       | xxx   | xxx   |
+| 1.4B       | xxx   | xxx   |
+| 6.7B       | xxx   | xxx   |
+| 13B        | xxx   | xxx   |
+| 20B        | 50.9% | 53.8% |
+| 65B        | 44.6% | 55.5% |
+
+The smaller models underutilize the hardware, but the larger models are better able to saturate the TPU v3-256. The
+cluster is smaller than is typically used for benchmarks like this (especially on TPU), so comparisons are
+necessarily a bit unfair/apples-to-oranges. Nevertheless, here is a table from the [PALM paper](https://arxiv.org/pdf/2204.02311.pdf), to give
+a rough sense of how our results compare to other work:
+
+![table showing MFU and HFU for various models; Table 3 in https://arxiv.org/pdf/2204.02311.pdf](figures/palm_mfu_table.png)
+
+FSDP is likely to perform less well on clusters of the sizes in this table (i.e., a few thousand TPUs or GPUs), since it requires more communication than other approaches.
+However, at our scale, we find that FSDP is better than either a combination of FSDP and tensor parallelism or tensor parallelism alone.
+We leave pipeline parallelism and more thorough comparisons as future work.
+
+XXX draw a comparison to https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb to the extent it's fair
+
+We of course cannot claim full credit for these results: they build on the excellent work of the JAX team, the XLA team,
+the TPU team, and all the algorithmic and hardware improvements that they themselves build on. Nevertheless, our results
+here demonstrate that you can get good scalability in a highly legible codebase, with the logic of the model decoupled
+from the logic of the parallelism.
 
 
 # Reproducibility: Bitwise Determinism with Levanter and JAX
