@@ -10,7 +10,6 @@ meaning that the same code with the same data will produce the exact same result
 Levanter and Haliax were created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html))
 
 ## Haliax
-
 <!--haliax-intro-start-->
 
 > Though you don’t seem to be much for listening, it’s best to be careful. If you managed to catch hold of even just a piece of my name, you’d have all manner of power over me.<br/>
@@ -44,6 +43,7 @@ def attention_scores(Key, KPos, query, key, mask):
   # convert to probabilities
   scores = hax.nn.softmax(scores, KPos)
   return scores
+
 
 def attention(Key, KPos, query, key, value, mask):
   scores = attention_scores(Key, KPos, query, key, mask)
@@ -86,13 +86,10 @@ class Attention(eqx.Module):
 Currently we have two tutorials for Haliax:
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 * [Distributed Training in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) (including FSDP)
-
 <!--haliax-intro-end-->
 
 ## Levanter
-
 <!--levanter-intro-start-->
-
 > You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew. <br/>
 > — Cora L. V. Hatch
 
@@ -100,7 +97,6 @@ Levanter is a library for training foundation models built on top of Haliax. Lev
 meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
 It supports distributed training on TPUs (and, soon, GPUs), including FSDP, tensor parallelism, distributed checkpointing, distributed data loading, and more.
 Levanter integrates with WandB for logging and with the Hugging Face ecosystem for tokenizers, datasets, and model import and export.
-
 <!--levanter-intro-end-->
 
 ### Installing Levanter
