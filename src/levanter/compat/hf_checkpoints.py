@@ -10,6 +10,7 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
+from urllib.parse import urlparse
 
 import fsspec
 import huggingface_hub
@@ -241,23 +242,20 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if tokenizer is None:
             if ref is None:
                 raise ValueError("Must provide either tokenizer or reference_checkpoint")
+            tokenizer = ref
+
+        if isinstance(tokenizer, str):
+            ref = _coerce_to_rr(tokenizer)
             path, rev = ref.model_name_or_path, ref.revision
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = load_tokenizer(
                 path,
-                revision=rev,
-                trust_remote_code=trust_remote_code,
-            )
-        elif isinstance(tokenizer, str):
-            if ref is None:
-                raise ValueError("Must provide either tokenizer or reference_checkpoint")
-            path, rev = ref.model_name_or_path, ref.revision
-            tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer,
                 revision=rev,
                 trust_remote_code=trust_remote_code,
             )
         else:
             pass
+
+        assert isinstance(tokenizer, PreTrainedTokenizer)
 
         return tokenizer
 
@@ -633,3 +631,25 @@ def save_hf_checkpoint_callback(
         )
 
     return cb
+
+
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True):
+    """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
+    is_url_like = urlparse(model_name_or_path).scheme != ""
+    if is_url_like:
+        if revision is not None:
+            raise ValueError("revision is not supported for URLs")
+        # tokenizers are directories, so we have to copy them locally
+        if local_cache_dir is None:
+            local_cache_dir = tempfile.mkdtemp()
+
+        fs, path = fsspec.core.url_to_fs(model_name_or_path)
+        fs.get(path, local_cache_dir, recursive=True)
+        base_path = os.path.basename(path)
+        return AutoTokenizer.from_pretrained(
+            os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code
+        )
+    else:
+        return AutoTokenizer.from_pretrained(
+            model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
+        )
