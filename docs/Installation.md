@@ -5,11 +5,11 @@ If you're using CUDA, more complete documentation for setting that up is availab
 
 ## Setting up a development environment
 
-For development, please follow these steps.
+<!--levanter-installation-start-->
+For development, please follow these steps:
 
-First,
-
-Next, install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
+First, install the appropriate version of Jax for your system. 
+See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
 as it varies from platform to platform.
 
 Now clone this repository and install it with pip:
@@ -22,8 +22,6 @@ wandb login  # optional, we use wandb for logging
 ```
 
 <!--levanter-installation-end-->
-
-TODO: put things on pypi, etc
 
 ## Create a virtual environment
 
@@ -38,7 +36,7 @@ Using [Anaconda](https://conda.io/projects/conda/en/latest/user-guide/tasks/mana
 conda create -n levanter python=3.10 pip
 
 # Activate the virtual environment.
-conda activate crfm-helm
+conda activate levanter
 ```
 
 Using [Virtualenv](https://docs.python.org/3/library/venv.html#creating-virtual-environments):
@@ -51,14 +49,4 @@ python3 -m virtualenv -p python3.8 levanter-venv
 
 # Activate the virtual environment.
 source levanter-venv/bin/activate
-```
-
-
-
-## Install HELM
-
-Within this virtual environment, run:
-
-```
-pip install crfm-helm
 ```
