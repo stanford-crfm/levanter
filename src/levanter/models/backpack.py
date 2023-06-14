@@ -366,7 +366,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
             kq_selfattention=kq_selfattention,
         )
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 

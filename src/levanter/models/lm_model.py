@@ -1,21 +1,34 @@
 import abc
-from typing import Generic, Optional, TypeVar
+from typing import Generic, Optional, Type, TypeVar
 
-import equinox as eqx
 from jax.random import PRNGKey
 
 from haliax import Axis, NamedArray
 
 
-MConfig = TypeVar("MConfig")
+LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
+LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
-class LmHeadModel(eqx.Module, Generic[MConfig], abc.ABC):
+class LmConfig(abc.ABC, Generic[LmT]):
+    @property
+    @abc.abstractmethod
+    def model_type(self) -> Type[LmT]:
+        pass
+
+    def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
+        return self.model_type.init(Vocab, self, key=key)  # type: ignore
+
+
+class LmHeadModel(Generic[LmConfigT], abc.ABC):
     """
     Superclass for models with a language modeling head.
     """
 
-    config: MConfig = eqx.static_field()
+    @property
+    @abc.abstractmethod
+    def config(self) -> LmConfigT:
+        pass
 
     @property
     @abc.abstractmethod
@@ -24,9 +37,11 @@ class LmHeadModel(eqx.Module, Generic[MConfig], abc.ABC):
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmHeadModel[MConfig]":
+    def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKey) -> "LmHeadModel[LmConfigT]":
         pass
 
     @abc.abstractmethod
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key=None
+    ) -> NamedArray:
         pass

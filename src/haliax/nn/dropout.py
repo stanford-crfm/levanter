@@ -9,7 +9,7 @@ from haliax.types import AxisSpec
 from haliax.util import ensure_tuple
 
 
-def dropout(x, pdrop, broadcast_axes=None, *, inference=False, key=None):
+def dropout(x, pdrop, broadcast_axes=None, *, inference, key=None):
     """Applies dropout.
 
     **Arguments:**

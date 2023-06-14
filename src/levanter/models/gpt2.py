@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Dict, Optional, cast
+from typing import Callable, Dict, Optional, Type, cast
 
 import equinox as eqx
 import jax
@@ -61,6 +61,10 @@ class Gpt2Config(HFCompatConfig):
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * self.mlp_scale))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+
+    @property
+    def model_type(self) -> Type["Gpt2LMHeadModel"]:
+        return Gpt2LMHeadModel
 
     def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
         if config_overrides is None:
@@ -263,7 +267,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return Gpt2Transformer(config, blocks, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), inference, key=keys)
         x = self.ln_f(x)
@@ -357,7 +361,7 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None):
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 

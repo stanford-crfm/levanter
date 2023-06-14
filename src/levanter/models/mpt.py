@@ -131,6 +131,10 @@ class MptConfig(HFCompatConfig):
         # if self.init_config and self.init_config != init_config_defaults:
         #     raise ValueError("init_config_defaults not supported yet.")
 
+    @property
+    def model_type(self) -> Type["MptLmHeadModel"]:
+        return MptLmHeadModel
+
     @classmethod
     def from_hf_config(cls, config):
         return MptConfig(
@@ -391,11 +395,15 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
 class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
     wte: hnn.Embedding
     transformer: MptTransformer
-    config: MptConfig = eqx.static_field()
+    _config: MptConfig = eqx.static_field()
 
     @property
     def Vocab(self) -> Axis:
         return self.wte.Vocab
+
+    @property
+    def config(self) -> MptConfig:
+        return self._config
 
     @classmethod
     def init(cls, Vocab: Axis, config: MptConfig, *, key):
@@ -410,7 +418,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
         # TODO: add back in dropout
         del key
         del inference
