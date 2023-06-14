@@ -450,7 +450,7 @@ Our cache format also allows for iterating on sequence length without retokenizi
 
 Levanter's preprocessing works by spinning up a [Ray cluster](https://www.ray.io/) using the hosts being used for training,
 exploiting the typically impressive CPUs of those machines to preprocess data.
-This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) dataset.
+This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) data set.
 
 Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
 produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
@@ -464,10 +464,10 @@ jsonl files. Caches can be stored in any fsspec-compatible file system, includin
 
 Levanter also provides a feature for visualizing the probability of each token in a sample of the validation set during training.
 When training large models, it can be difficult to get a sense of how the model is learning. This is especially true
-when training on novel data sets. As an example, we have seen issues with early versions of new datasets where the
+when training on novel data sets. As an example, we have seen issues with early versions of new data sets where the
 model had suspiciously low loss.
 
-The live visualization produces a heatmap of the log probability of each token in a sample of the validation set
+The visualization produces a heatmap of the log probability of each token in a sample of the validation set
 that is updated periodically during training. Here is an example of the token probability visualization in action on a
 small, quick training run:
 
@@ -477,7 +477,7 @@ The darker, more purple the color, the lower the probability of the token. The l
 This visualization is logged to WandB as training progresses and can be viewed interactively. We have found this to be a
 nice alternative to just staring obsessively at the loss curve (not that we ever do that).
 
-In the past, we have used our visualization to identify a pattern of highly but not perfectly redundant data in a new dataset
+In the past, we have used our visualization to identify a pattern of highly but not perfectly redundant data in a new data set
 (what we call "madlib duplicates"), suggesting that the model is "wasting" time and context length on low-value data.
 We've also used it to qualitatively assess how alternative architectures (like [Backpacks](http://backpackmodels.science/))
 learn differently from Transformers.
@@ -515,14 +515,14 @@ levanter train \
     --dataset dlwh/wikitext_103_detokenized \
 ```
 
-This will train a GPT-2 model on the WikiText-103 dataset, using the GPT-2 "nano" model.
+This will train a GPT-2 model on the WikiText-103 data set, using the GPT-2 "nano" model.
 
 For more fine-grained control, you can also use a yaml configuration file:
 
 ```yaml
 data:
   cache_dir: /path/to/tokenized_cache # or gs://bucket/path/to/cache
-  id: dlwh/wikitext_103_detokenized  # hf dataset
+  id: dlwh/wikitext_103_detokenized  # hf datasets id
   # or you can specify urls directly:
   train_urls:
       - "gs://my_bucket/my_fancy_data.{1..128}-of-128.jsonl.gz"
@@ -568,11 +568,11 @@ in Pytorch, Tensorflow, and JAX. We have more in development and will release th
 
 - We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
  Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
-- We also have a new 1.4 billion parameter of the [Backpack Model](http://backpackmodels.science/) architecture developed by [John Hewitt](https://nlp.stanford.edu/~johnhew/) and coauthors.
+- We also have a new 1.4B parameter checkpoint of the [Backpack Model](http://backpackmodels.science/) architecture developed by [John Hewitt](https://nlp.stanford.edu/~johnhew/) and coauthors.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-backpack-1b).
 - [Levanter GPT](https://huggingface.co/stanford-crfm/levanter-gpt) is a 1.5B parameter GPT-2 model trained on the
   [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
-- Hot off the presses, we have a 1.5B model trained on the [Pile](https://pile.eleuther.ai/) corpus.
+- We have a 1.5B GPT-2 model trained on the [The Pile](https://pile.eleuther.ai/) corpus.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model can serve
   as a common baseline for future experiments.
 
