@@ -87,6 +87,7 @@ class Attention(eqx.Module):
 ### Documentation for Haliax
 
 Currently we have two tutorials for Haliax:
+
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 * [Distributed Training in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) (including FSDP)
 <!--haliax-intro-end-->
