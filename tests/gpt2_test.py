@@ -3,6 +3,7 @@ import glob
 import os
 
 import jax.numpy as jnp
+import pytest
 from jax.random import PRNGKey
 
 import haliax as hax
@@ -39,12 +40,19 @@ def test_gradient_checkpointing():
         assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
 
 
-def test_gpt2_configs():
-    # load the TrainGpt2Config from ../examples/gpt2_example.py
+def parameterize_with_configs(pattern, config_path=None):
     test_path = os.path.dirname(os.path.abspath(__file__))
-    gpt2_configs = os.path.join(test_path, "..", "config")
+    if config_path is None:
+        config_path = os.path.join(test_path, "..", "config")
 
-    # load module. might not be in pythonpath so we have to do this
+    configs = glob.glob(os.path.join(config_path, pattern))
+    return pytest.mark.parametrize("config_file", configs, ids=lambda x: f"{os.path.basename(x)}")
+
+
+@parameterize_with_configs("gpt2*.yaml")
+def test_gpt2_configs(config_file):
+    test_path = os.path.dirname(os.path.abspath(__file__))
+
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -54,10 +62,9 @@ def test_gpt2_configs():
     spec.loader.exec_module(module)
     TrainerConfig = module.TrainLmConfig
 
-    for config_file in glob.glob(os.path.join(gpt2_configs, "gpt2_*.yaml")):
-        try:
-            import pyrallis
+    try:
+        import pyrallis
 
-            pyrallis.parse(TrainerConfig, config_file, args=[])
-        except Exception as e:
-            raise Exception(f"failed to parse {config_file}") from e
+        pyrallis.parse(TrainerConfig, config_file, args=[])
+    except Exception as e:
+        raise Exception(f"failed to parse {config_file}") from e
