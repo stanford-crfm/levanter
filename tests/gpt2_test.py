@@ -52,12 +52,12 @@ def test_gpt2_configs():
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    TrainGpt2Config = module.TrainGpt2Config
+    TrainerConfig = module.TrainLmConfig
 
     for config_file in glob.glob(os.path.join(gpt2_configs, "gpt2_*.yaml")):
         try:
             import pyrallis
 
-            pyrallis.parse(TrainGpt2Config, config_file, args=[])
+            pyrallis.parse(TrainerConfig, config_file, args=[])
         except Exception as e:
             raise Exception(f"failed to parse {config_file}") from e

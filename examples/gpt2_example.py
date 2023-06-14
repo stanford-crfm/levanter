@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TrainGpt2Config:
+class TrainLmConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: LmConfig = Gpt2Config()
@@ -46,7 +46,7 @@ class TrainGpt2Config:
 
 
 @levanter.config.main()
-def main(config: TrainGpt2Config):
+def main(config: TrainLmConfig):
     config.trainer.initialize(config)
 
     tokenizer = config.data.the_tokenizer
