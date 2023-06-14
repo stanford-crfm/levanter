@@ -376,6 +376,7 @@ This is just a taste of what Haliax can do. For more details, please see our int
 
 # Levanter: Bitwise Reproducible Foundation Models with JAX
 
+Add transition: Beyond legibility, the second property is reproducibility.
 Levanter is a library for training foundation models built on top of Haliax. It provides a complete pipeline
 for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and
 export, while maintaining bitwise reproducibility throughout.
