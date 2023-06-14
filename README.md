@@ -118,7 +118,7 @@ TODO: put things on pypi, etc
 As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on a small dataset.
 
 ```bash
-python examples/gpt2_example.py --config_path config/gpt2_nano.yaml
+python src/levanter/main/train_lm.py --config_path config/gpt2_nano.yaml
 ```
 
 This will train a GPT2-nano model on the [WikiText-2](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.

@@ -3,6 +3,7 @@ import glob
 import os
 
 import jax.numpy as jnp
+import pyrallis
 import pytest
 from jax.random import PRNGKey
 
@@ -51,20 +52,10 @@ def parameterize_with_configs(pattern, config_path=None):
 
 @parameterize_with_configs("gpt2*.yaml")
 def test_gpt2_configs(config_file):
-    test_path = os.path.dirname(os.path.abspath(__file__))
-
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "gpt2_example", os.path.join(test_path, "..", "examples", "gpt2_example.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    TrainerConfig = module.TrainLmConfig
+    from levanter.main.train_lm import TrainLmConfig
 
     try:
-        import pyrallis
 
-        pyrallis.parse(TrainerConfig, config_file, args=[])
+        pyrallis.parse(TrainLmConfig, config_file, args=[])
     except Exception as e:
         raise Exception(f"failed to parse {config_file}") from e
