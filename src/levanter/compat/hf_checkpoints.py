@@ -28,7 +28,7 @@ from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import PretrainedConfig as HfConfig
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
@@ -244,7 +244,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 raise ValueError("Must provide either tokenizer or reference_checkpoint")
             tokenizer = ref
 
-        if isinstance(tokenizer, str):
+        if isinstance(tokenizer, (str, RepoRef)):
             ref = _coerce_to_rr(tokenizer)
             path, rev = ref.model_name_or_path, ref.revision
             tokenizer = load_tokenizer(
@@ -255,7 +255,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             pass
 
-        assert isinstance(tokenizer, PreTrainedTokenizer)
+        assert isinstance(tokenizer, PreTrainedTokenizerBase)
 
         return tokenizer
 
