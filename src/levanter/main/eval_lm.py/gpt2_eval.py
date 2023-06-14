@@ -18,6 +18,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.models.loss import next_token_loss
 from levanter.trainer import TrainerConfig
 
@@ -26,19 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class EvalGpt2Config:
+class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
-    model: Gpt2Config = Gpt2Config()
+    model: LmConfig = Gpt2Config()
 
     compare_torch: bool = False
     eval_on_train: bool = False
 
 
 @levanter.config.main()
-def main(config: EvalGpt2Config):
+def main(config: EvalLmConfig):
     config.trainer.initialize(config)
     tokenizer: GPT2Tokenizer = config.data.the_tokenizer
 
