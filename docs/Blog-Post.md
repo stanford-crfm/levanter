@@ -450,7 +450,7 @@ Our cache format also allows for iterating on sequence length without retokenizi
 
 Levanter's preprocessing works by spinning up a [Ray cluster](https://www.ray.io/) using the hosts being used for training,
 exploiting the typically impressive CPUs of those machines to preprocess data.
-This is especially useful for large data sets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) data set.
+This is especially useful for large datasets like [The Pile](https://pile.eleuther.ai/) or the [Red Pajama](https://github.com/togethercomputer/RedPajama-Data) data set.
 
 Preprocessing can also be performed offline using a Ray cluster, or on a single machine. In all cases, the caches
 produced by preprocessing are fully reproducible, so that we can assure bitwise reproducibility even when preprocessing
@@ -464,7 +464,7 @@ jsonl files. Caches can be stored in any fsspec-compatible file system, includin
 
 Levanter also provides a feature for visualizing the probability of each token in a sample of the validation set during training.
 When training large models, it can be difficult to get a sense of how the model is learning. This is especially true
-when training on novel data sets. As an example, we have seen issues with early versions of new data sets where the
+when training on novel datasets. As an example, we have seen issues with early versions of new datasets where the
 model had suspiciously low loss.
 
 The visualization produces a heatmap of the log probability of each token in a sample of the validation set
