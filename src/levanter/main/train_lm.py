@@ -187,6 +187,11 @@ def main(config: TrainLmConfig):
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
+            if not isinstance(config.model, Gpt2Config):
+                raise ValueError(
+                    "Only GPT2 models are supported for HF checkpointing right now. Should be fixed soon!"
+                )
+
             converter = HFCheckpointConverter(Gpt2Config, "gpt2")
 
             engine.add_hook(
