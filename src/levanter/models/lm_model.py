@@ -11,6 +11,10 @@ MConfig = TypeVar("MConfig")
 
 
 class LmHeadModel(eqx.Module, Generic[MConfig], abc.ABC):
+    """
+    Superclass for models with a language modeling head.
+    """
+
     config: MConfig = eqx.static_field()
 
     @property
