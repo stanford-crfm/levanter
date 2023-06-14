@@ -27,6 +27,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layer,
     unstack_state_dict,
 )
+from levanter.models.lm_model import LmConfig
 
 
 init_config_defaults: Dict = {
@@ -82,6 +83,9 @@ class MptAttentionConfig:
 
 
 # Haliax-style data class version
+
+
+@LmConfig.register_subclass("mpt")
 @dataclass
 class MptConfig(HFCompatConfig):
     d_model: int = 768

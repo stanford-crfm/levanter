@@ -24,8 +24,10 @@ from levanter.compat.torch_serialization import (
     stack_state_dict,
     unstack_state_dict,
 )
+from levanter.models.lm_model import LmConfig
 
 
+@LmConfig.register_subclass("gpt2")
 @dataclass(frozen=True)
 class Gpt2Config(HFCompatConfig):
     seq_len: int = 512

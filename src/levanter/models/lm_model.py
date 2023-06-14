@@ -3,6 +3,7 @@ from typing import Generic, Optional, Type, TypeVar
 
 from jax.random import PRNGKey
 
+import levanter.config
 from haliax import Axis, NamedArray
 
 
@@ -10,6 +11,7 @@ LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
+@levanter.config.config_registry
 class LmConfig(abc.ABC, Generic[LmT]):
     @property
     @abc.abstractmethod
