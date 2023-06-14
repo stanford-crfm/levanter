@@ -55,7 +55,7 @@ and modified libraries from [Hugging Face Transformers](https://github.com/huggi
 [mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax/), though it is mostly unmaintained now and uses
 older, quasi-deprecated JAX APIs for distributed training.
 
-## A New Codebase for Foundation Model Training
+## A New Codebase for Training Foundation Models
 
 Despite the wide array of existing frameworks, when we started, we found that none of them fully addressed our needs.
 At CRFM, we focused on three fundamental goals:
@@ -84,9 +84,10 @@ use them to train a language model.
 # Legibility: Named Tensors with Haliax
 
 Haliax is a library for named tensors, a powerful abstraction where the axes of tensors are given names, and operations
-on those tensors reference those names, rather than using positions (0, 2, -1) to reference axes. These names help make your code more legible, more composable, and less
+on those tensors use those names, rather than using positions (0, 2, -1). These names help make your code more legible, more composable, and less
 bug-prone. In Haliax, they also form the basis of how we implement
-[Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) training and tensor parallelism.
+[Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) training and tensor parallelism,
+as we'll see below in the section on scalability.
 
 Haliax is built on JAX and [Equinox](https://github.com/patrick-kidger/equinox),
 which is a neural network library that provides a familiar, PyTorch-like module structure. Haliax uses
@@ -95,7 +96,7 @@ Equinox's module structure for its neural network library, rather than Flax or H
 for an introduction to Haliax's neural network modules, which also introduces the relevant parts of Equinox.)
 
 Haliax is modeled on Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor),
-which argues that named tensors are a better abstraction than the position-based tensors that are common in deep learning.
+which argues that named tensors are a better abstraction than the position-based tensors that are the default in deep learning.
 In particular, he argues that:
 
 * Named axes are more semantically meaningful and rely less on bitrot-prone comments.
@@ -103,8 +104,8 @@ In particular, he argues that:
 * Broadcasting leads to unreadable strings of `reshape`s, `transpose`s, `view`s and (`un`)`squeeze`s that obfuscate the intent of the code.
 
 We also contend that positional code is more bug-prone: those `transpose`s and `reshape`s are easy to get wrong,
-resulting in silent bugs that are hard to catch. Implicit broadcasting, also common in positional code, can lead to
-similar easy-to-miss bugs.
+resulting in silent bugs that are hard to catch. NumPy-style implicit broadcasting, also common in positional code, can lead to
+similarly easy-to-miss bugs.
 
 ## A Simple, but Incorrect, Example with Positional Axes
 
@@ -153,7 +154,6 @@ W = hax.random.uniform(PRNGKey(2), (Feature,))
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
 
-
 y_pred = hax.dot(Feature, x, W)
 mse(y_pred, y)
 ```
@@ -165,7 +165,7 @@ In this example, we've defined `x` to be a 2D tensor with axes
 `Batch` and `Feature`, `y` a 1D tensor with axis `Batch`, and `W` a 1D tensor with axis
 `Feature`. When we perform the dot product, we specify that we want to contract over the `Feature` axis, the
 `mean` operation is performed over the `Batch` axis, and the subtraction is performed elementwise. Because the names
-of the axes match, the code is correct. By using named tensors, we've made it impossible to make this bug.
+of the axes match, the code is correct. By using named tensors, we've made it impossible to have this bug.
 
 ## Another Example: Attention
 
@@ -176,7 +176,7 @@ the one in [minGPT](https://github.com/karpathy/minGPT/) and a version of attent
 
 minGPT is a PyTorch implementation of GPT-2, designed to be pedagogical and easy to understand. Here's the
  [implementation of attention](https://github.com/karpathy/minGPT/blob/90420ee/mingpt/model.py#LL61C8-L67C101).
-(We'll omit the dropout bit for exposition's sake.)
+(We'll omit the dropout bit for the sake of exposition.)
 
 ```python
     # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
@@ -192,7 +192,7 @@ What axis is the `(q @ k.transpose(-2, -1))` expression multiplying out? What is
 or risk becoming out of date.
 
 Still worse, if the final `transpose(1, 2)` were accidentally omitted, the code would still run without any exception,
-but the output would be wrong. This is another example of the silent, sneaky bugs endemic to positional axis code.
+but the output would be incorrect. This is another example of the silent, sneaky bugs endemic to positional axis code.
 
 We don't mean to pick on minGPT too much; it's a great codebase, and more legible than most. Indeed, it's a testament to
 the inherent difficulty of writing legible code with positional axes.
@@ -273,14 +273,40 @@ In the second example, we omit the `Head` axis from the `key` and `value` tensor
 where we only have multiple heads for the `query` tensor.
 In the third example, we can use tuples of axes in many places where we would normally use a single axis.
 
+## Named Tensors Elsewhere
+JAX already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
+We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it (in favor of `pjit`)
+and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
+of the main model code itself. Ultimately, we found it harder reason about this mixed positional/named code (where the axis names are implicit)
+than just using names the whole way through.
 
-## Scale via Named Tensors
+Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
+their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
+tensor parallism and FSDP. To us, this seems like a bit of a missed opportunity (relative to what we have in Haliax), but it's
+still useful.
 
-We have seen how named axes can improve legibility and enable generalization. But they also enable us to separate
-the concerns of our model's logic and how we intend to scale it. Named axes are the basis of Haliax's approach
-to scale, including our [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/) implementation as well as for tensor parallelism.
-FSDP can be added to a training loop with about 10 lines of code, enabling scale to at least 256 TPUs (which is
-as many as we can get our hands on) and at least 65B parameters (which is much bigger than we have compute for).
+Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh),
+which has a separate `Dimension` class analogous to our `Axis` class, and uses them to implement mesh parallelism
+similar to what's in Jax (and what we use in Haliax).
+
+PyTorch has [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted on" to
+the existing positional tensors.
+They also don't help with data or model partitioning, which is one of the main use cases for named axes in
+Haliax, as we'll see below.
+Tongfei Chen's Scala-and-PyTorch [Nexus](https://tongfei.me/nexus/) library also has named tensors,
+going so far as to offer static typing for tensor axes.
+
+# Scalability with Named Tensors
+
+We have seen how named tensors can improve *legibility*, but they can also help make *scalability* easy, by enabling us
+to separate the concerns of our model's logic and how we intend to scale it. Named tensors are the basis of our approach to scalability, including
+our [Fully-Sharded Data Parallel](https://engineering.fb.com/2021/07/15/open-source/fsdp/)
+implementation as well as for tensor parallelism. FSDP can be added to a training loop with about 10 lines of code, and
+those same 10 lines can also enable tensor parallelism.
+We have used Levanter to train models as large as 6.7B parameters on a TPU v3-256, and we have run
+experiments showing that our approach is capable of training 65B parameters on a TPU v3-256, though it would take quite a while to train.
+
+## Fully-Sharded Data Parallel in 10 Lines of Code
 
 FSDP with Haliax basically amounts to telling Haliax which named axes to shard, and specifying a different sharding for computation than for storage.
 Haliax will then translate that code to the relevant Jax primitives, and handle the sharding for you.
@@ -336,6 +362,14 @@ This is all that is required to shard a model and optimizer across multiple GPUs
 The rest of the training loop remains unchanged.
 You can do fancier things like sharded data loading (which we do in Levanter), but the basic idea is the same.
 
+The key components are:
+* `haliax.shard_with_axis_mapping`, a function that takes an array or model and a mapping from axis names to "physical" axes and shards the array/model accordingly.
+* `haliax.axis_mapping`, a context manager that specifies how we shard intermediate states during computation.
+* `param_mapping`, a `dict` that specifies how we shard our parameters and optimizer states. We shard along the `embed` axis, which is the hidden state of our transformer.
+* `data_mapping`, a `dict` that specifies how we shard both our inputs and intermediate states during computation.
+
+## Tensor Parallelism in the Same 10 Lines of Code
+
 Tensor parallelism can be added by simply changing the two axis mappings:
 
 ```diff
@@ -350,52 +384,30 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 +data_mapping = {"batch": "data", **tensor_parallel_mapping}
 ```
 
-## Named Tensors Elsewhere
-JAX already has some built-in support for named tensors in the form of [`xmap`](https://jax.readthedocs.io/en/latest/notebooks/xmap_tutorial.html), which uses something like `vmap`/auto-batching to implement tensors that have both positional and named axes.
-We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it (in favor of `pjit`)
-and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
-of the main model code itself. Ultimately, it's harder reason about this mixed positional/named code (where the axis names are implicit)
-than just using names the whole way through.
+## Training Performance on TPU
 
-Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
-their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
-tensor parallism and FSDP. To us, this seems like a bit of a missed opportunity (relative to what we have in Haliax), but it's
-still useful.
+XXX numbers go here
 
-Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh). PyTorch has
-[Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted on" to the existing
-positional tensors. They also don't help with model partitioning, which is one of the main use cases for named axes in
-Haliax.
 
-## Haliax Tutorials
 
-This is just a taste of what Haliax can do. For more details, please see our interactive tutorials on Colab:
+# Reproducibility: Bitwise Determinism with Levanter and JAX
 
-* [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
-* [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in JAX.
-
-# Levanter: Bitwise Reproducible Foundation Models with JAX
-
-Add transition: Beyond legibility, the second property is reproducibility.
-Levanter is a library for training foundation models built on top of Haliax. It provides a complete pipeline
-for training a GPT-2-like Transformer, complete with data preparation, logging, training, checkpointing, evaluation, and
-export, while maintaining bitwise reproducibility throughout.
-
-We have used Levanter to train models as large as 6.7b parameters on a v3-256, and have run experiments showing that it
-can scale up to least 65b parameters.
-
-## Bitwise Reproducibility
-
-One of the benefits of JAX is that it offers strong guarantees for reproducibility. In particular, JAX's fine-grained
-control over PRNG states makes it easy to ensure bitwise reproducibility, especially when using TPUs.
+After legibility and scalability, we have reproducibility, which JAX helps with enormously. In particular, JAX's fine-grained
+control over PRNG states makes it easy to ensure bitwise determinism.
 Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
-the same run with the same code on the same set of hardware (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
+the same run with the same code on the same hardware configuration (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
 preempted and resumed multiple times. As an example, here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
 
 ![plot showing bitwise reproducibility with four training runs superimposed with the exact same loss curve](figures/bitwise_repro_curve.png)
 
 The fact that you can't make out the different lines is the point: the training runs are bitwise identical,
-a huge advantage for debugging and reproducibility.
+a huge advantage for debugging and reproducibility. For instance, loss spikes are not uncommon when training large models,
+and it can be difficult to tell whether a spike is due to a bug, data, optimizer state, or just bad luck with the random
+number generator. Without bitwise reproducibility, investigating these issues is challenging because you can't rewind and replay
+your training run's state to the time of the spike. If you make an adjustment without bitwise reproducibility, you can't tell whether it
+fixed the problem, or whether the problem went away randomly.
+
+### Experimental Setup Logging and Checkpointing
 
 Levanter also logs everything necessary to exactly reproduce a run: the git SHA, code, configuration,
 and a pip-freeze of the environment. Checkpoints serialize the entire model state, including the optimizer state,
@@ -403,9 +415,10 @@ as well as the "main" PRNG state, which is used to generate the other PRNG state
 exactly reproduce a run by simply checking out the git SHA, installing the dependencies, and running the code (on the same
 hardware configuration).
 
-## Efficiency and Scale
+# Other Features in Levanter
 
-XXX something something v3-256 scaling numbers?
+Beyond our three pillars of legibility, scalability, and reproducibility, Levanter also has a number of other
+features that make it easier to train large models. We describe some of them here.
 
 ## Data Preparation and Visualization
 
@@ -469,7 +482,7 @@ In the past, we have used our visualization to identify a pattern of highly but 
 We've also used it to qualitatively assess how alternative architectures (like [Backpacks](http://backpackmodels.science/))
 learn differently from Transformers.
 
-### Other Features
+## A few other features
 
 * **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization
   (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
@@ -478,7 +491,7 @@ learn differently from Transformers.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
 * **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
-## Getting Started with Levanter
+# Getting Started with Levanter
 
 <!-- Current -->
 
@@ -538,9 +551,16 @@ levanter train --model gpt2 --config_path /path/to/config.yaml
 
 -->
 
+## Haliax Tutorials
+
+Please check out the following tutorials for getting started with Haliax:
+
+* [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
+* [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in JAX.
 
 
-## Released Models
+
+# Released Models
 
 Along with the release of the code, we are releasing a few models trained using Levanter. These models are available on
 the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used with the Hugging Face Transformers library,
