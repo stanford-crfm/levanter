@@ -46,17 +46,9 @@ watch:
 nav:
   - 'Home': 'index.md'
   - 'User Guide':
+    - 'Overview.md'
     - 'Getting-Started-TPU-VM.md'
     - 'Getting-Started-CUDA.md'
-    - 'Overview.md'
+    - 'Getting-Started-Training.md'
   - 'Haliax':
       - 'Haliax.md'
-  - 'Reference':
-    - 'models.md'
-    - 'metrics.md'
-    - 'perturbations.md'
-    - 'scenarios.md'
-    - 'schemas.md'
-  - 'Developer Guide':
-    - 'developer_setup.md'
-    - 'code.md'
