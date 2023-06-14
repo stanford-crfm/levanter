@@ -4,7 +4,6 @@ from functools import cached_property
 from typing import Optional
 
 import jax
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.tree_util as htu
@@ -42,7 +41,7 @@ class ConvertGpt2Config:
 @levanter.config.main()
 def main(config: ConvertGpt2Config):
     logger.setLevel(logging.INFO)
-    tokenizer: GPT2Tokenizer = config.the_tokenizer
+    tokenizer = config.the_tokenizer
 
     vocab_size = config.override_vocab_size or len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
@@ -50,15 +49,15 @@ def main(config: ConvertGpt2Config):
     key = jax.random.PRNGKey(0)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        # we want to call this in case we're on a TPU node
-        jax.distributed.initialize()
-
         model = filter_eval_shape(Gpt2LMHeadModel.init, Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):
             model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
+
+        if not isinstance(model, Gpt2LMHeadModel):
+            raise TypeError("Can't export a non-GPT2 model to HF checkpoint format with this script just yet!")
 
         converter = HFCheckpointConverter(Gpt2Config, "gpt2")
 
