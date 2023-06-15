@@ -64,9 +64,7 @@ def main(config: TrainLmConfig):
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(
-                reference_checkpoint=config.model.hf_default_checkpoint, tokenizer=tokenizer
-            )
+            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
         else:
             converter = converter.replaced(tokenizer=tokenizer)
 
