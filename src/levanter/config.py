@@ -47,6 +47,21 @@ def register_codecs():
     pyrallis.decode.register(timedelta, parse_timedelta)
     pyrallis.encode.register(timedelta, encode_timedelta)
 
+    # pyrallis' decode function for bool accepts anything truthy (it uses bool(x)), so we need to override it
+    # we need to raise if it's not a bool, because anything can be converted to a bool
+    truthy = {"true", "t", "yes", "y", "True", "T", "Yes", "Y", "TRUE", True}
+    falsy = {"false", "f", "no", "n", "False", "F", "No", "N", "FALSE", False}
+
+    def bool_decode(x):
+        if x in truthy:
+            return True
+        elif x in falsy:
+            return False
+        else:
+            raise ValueError(f"Could not convert {x} to bool")
+
+    pyrallis.decode.register(bool, bool_decode)
+
 
 register_codecs()
 
