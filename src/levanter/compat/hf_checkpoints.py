@@ -380,7 +380,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.Vocab.resize(config.vocab_size)
+        Vocab = self.Vocab.resize(hf_config.vocab_size)
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
             for k in state_dict.keys():
