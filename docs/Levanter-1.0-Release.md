@@ -409,9 +409,18 @@ experiments. (The exact hyperparameters of these transformers are available in o
 | 20B        | 50.9% | 53.8% |
 | 65B        | 44.6% | 55.5% |
 
-The smaller models underutilize the hardware, but the larger models are better able to saturate the TPU v3-256. The
-cluster is smaller than is typically used for benchmarks like this (especially on TPU), so comparisons are
-necessarily a bit unfair/apples-to-oranges. Nevertheless, here is a table from the [PALM paper](https://arxiv.org/pdf/2204.02311.pdf), to give
+The smaller models underutilize the hardware, but the larger models are better able to saturate the TPU v3-256.
+To contextualize these numbers, on the next-generation **TPU v4-128**s and with a slightly different 22B parameter model,
+the performance-focused [MaxText](https://github.com/google/maxtext) library
+[gets MFU](https://github.com/google/maxtext#runtime-performance-results) between 53.2% and 56.7%. Our nearest neighbor at 20B is somewhat lower;
+we hope to improve this in the future, partially by using their tricks...
+
+Though the hardware is different, we can also compare to the [very large table of results](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb)
+from [MosaicML](https://www.mosaicml.com/), whose numbers are generally in the 45-55% range for MFU and 55-65% range for HFU. Our results are in the same ballpark, though
+our highest numbers are not as high as theirs. Partially, this is attributable to them using [Flash Attention](https://arxiv.org/abs/2205.14135) and not using
+gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these settings improve MFU.
+
+For other comparisons (to much larger models trained on much larger clusters), we can compare to the table from the [PALM paper](https://arxiv.org/pdf/2204.02311.pdf), to give
 a rough sense of how our results compare to other work:
 
 ![table showing MFU and HFU for various models; Table 3 in https://arxiv.org/pdf/2204.02311.pdf](figures/palm_mfu_table.png)
@@ -419,11 +428,6 @@ a rough sense of how our results compare to other work:
 FSDP is likely to perform less well on clusters of the sizes in this table (i.e., a few thousand TPUs or GPUs), since it requires more communication than other approaches.
 However, at our scale, we find that FSDP is better than either tensor parallelism or a combination of FSDP and tensor parallelism.
 We leave pipeline parallelism and more thorough comparisons as future work.
-
-Though the hardware is different, we can also compare to the [very large table of results from MosaicML](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb),
-whose numbers are generally in the 45-55% range for MFU and 55-65% range for HFU (though they have some outliers!). Our results are in the same ballpark, though
-typically just a bit lower. Partially, this is attributable to them using [Flash Attention](https://arxiv.org/abs/2205.14135) and not using
-gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these settings improve MFU.
 
 Our results here demonstrate that you can get good scalability in a highly legible codebase, with the logic of the model decoupled
 from the logic of parallelism.
@@ -436,7 +440,7 @@ for others to experiment with models at larger scales than they otherwise would 
 
 After legibility and scalability, we have reproducibility, which JAX helps with enormously. In particular, JAX's fine-grained
 control over PRNG states makes it easy to ensure bitwise determinism.
-Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
+Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. That is,
 the same run with the same code on the same hardware configuration (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
 preempted and resumed multiple times. As an example, here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
 
