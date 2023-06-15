@@ -48,7 +48,6 @@ dependencies = [
 ]
 
 [tool.hatch.build]
-#sources = ["src", "config", "pyproject.toml", "README.md", "LICENSE"]
 include = [
   "config/*.yaml", "config/*/*.yaml"
 ]
@@ -61,18 +60,6 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/levanter", "src/haliax", "config"]
-
-
-#[tool.setuptools.packages.find]
-#where = ["src", "config"]
-#
-#[tool.setuptools.package-dir]
-#levanter = "src/levanter"
-#haliax = "src/haliax"
-#"levanter.config" = "config"
-#
-#[options.package-data]
-#"*" = ["*.yaml"]
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
