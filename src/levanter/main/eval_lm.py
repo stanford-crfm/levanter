@@ -6,7 +6,6 @@ import jax
 import jmp
 import numpy
 import tqdm
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import levanter
@@ -42,7 +41,7 @@ class EvalLmConfig:
 @levanter.config.main()
 def main(config: EvalLmConfig):
     config.trainer.initialize(config)
-    tokenizer: GPT2Tokenizer = config.data.the_tokenizer
+    tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
 
