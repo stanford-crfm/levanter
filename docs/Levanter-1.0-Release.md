@@ -30,8 +30,8 @@ Levanter is designed to be legible, scalable, and reproducible:
 
 Today, we're releasing the Levanter v1.0, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 and checkpoints for a number of models, including new architectures, on our [Hugging Face Hub](https://huggingface.co/stanford-crfm) page.
-(Please see John Thickstun and coauthors' [blog post](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html)
-super-cool work on the Anticipatory Music Transformer, which is one of the models we've trained with Levanter.)
+(Please see John Thickstun and coauthors' [blog post](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html) on
+the super-cool Anticipatory Music Transformer, which is one of the models we've trained with Levanter.)
 
 We hope that Levanter will be useful to the community, and we welcome contributions and feedback. Please join us on [GitHub](https://github.com/stanford-crfm/levanter)
 or on the (unofficial) [JAX LLM Discord](https://discord.gg/CKazXcbbBm)!
@@ -599,14 +599,15 @@ the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used wit
 in Pytorch (and, for the GPT-2-based models, Tensorflow, and JAX). We have more in development and will release them as
 they become available.
 
-- We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
- Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
+- We are release a suite of music models using the [Anticipatory Music Transformer](https://johnthickstun.com/assets/pdf/anticipatory-music-transformer.pdf), a new architecture for controllable music synthesis,
+trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter, one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
+ Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html) for more, and [a cool demo page](https://colab.research.google.com/drive/1HCQDtGFwROpHRqcmZbV0byqbxDb74YGu?usp=sharing)!
 - We also have a new 1.4B parameter checkpoint of the [Backpack Model](http://backpackmodels.science/) architecture developed by [John Hewitt](https://nlp.stanford.edu/~johnhew/) and coauthors.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-backpack-1b).
 - [Levanter GPT](https://huggingface.co/stanford-crfm/levanter-gpt) is a 1.5B parameter GPT-2 model trained on the
   [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
 - We have a 1.4B GPT-2 model trained on [The Pile](https://pile.eleuther.ai/) corpus.
-  This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model can serve
+  This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model will serve
   as a common baseline for future experiments.
 
 # Future and Conclusion
