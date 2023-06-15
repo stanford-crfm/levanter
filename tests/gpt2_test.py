@@ -1,11 +1,8 @@
 import dataclasses
-import glob
-import os
 
 import jax.numpy as jnp
-import pyrallis
-import pytest
 from jax.random import PRNGKey
+from test_utils import check_load_config, parameterize_with_configs
 
 import haliax as hax
 from haliax import Axis
@@ -41,21 +38,10 @@ def test_gradient_checkpointing():
         assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
 
 
-def parameterize_with_configs(pattern, config_path=None):
-    test_path = os.path.dirname(os.path.abspath(__file__))
-    if config_path is None:
-        config_path = os.path.join(test_path, "..", "config")
-
-    configs = glob.glob(os.path.join(config_path, pattern))
-    return pytest.mark.parametrize("config_file", configs, ids=lambda x: f"{os.path.basename(x)}")
-
-
 @parameterize_with_configs("gpt2*.yaml")
 def test_gpt2_configs(config_file):
     from levanter.main.train_lm import TrainLmConfig
 
-    try:
+    config_class = TrainLmConfig
 
-        pyrallis.parse(TrainLmConfig, config_file, args=[])
-    except Exception as e:
-        raise Exception(f"failed to parse {config_file}") from e
+    check_load_config(config_class, config_file)
