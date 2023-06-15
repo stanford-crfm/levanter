@@ -10,7 +10,6 @@ import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
 
@@ -52,7 +51,7 @@ def test_backpack_nano_compare():
     vocab_size = 5257
     torch.manual_seed(0)
 
-    converter = HFCheckpointConverter(BackpackConfig, "stanford-crfm/levanter-backpack-1b", trust_remote_code=True)
+    converter = BackpackConfig.default_hf_checkpoint_converter
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = converter.HFAutoModelClass()

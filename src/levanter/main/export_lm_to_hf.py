@@ -10,8 +10,8 @@ import haliax.tree_util as htu
 import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
+from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 
@@ -58,10 +58,7 @@ def main(config: ConvertLmConfig):
 
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
 
-        if not isinstance(model, Gpt2LMHeadModel):
-            raise TypeError("Can't export a non-GPT2 model to HF checkpoint format with this script just yet!")
-
-        converter = HFCheckpointConverter(Gpt2Config, "gpt2")
+        converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
 
         converter.save_pretrained(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
 

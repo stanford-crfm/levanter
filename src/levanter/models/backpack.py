@@ -15,7 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
 from haliax.util import ensure_tuple
-from levanter.compat.hf_checkpoints import LmWithHfSerializationMixin
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
 )
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
+from levanter.utils.py_utils import cached_classproperty
 
 
 @LmConfig.register_subclass("backpack")
@@ -38,6 +39,13 @@ class BackpackConfig(Gpt2Config):
     @property
     def model_type(self) -> Type["BackpackLMHeadModel"]:
         return BackpackLMHeadModel
+
+    @cached_classproperty
+    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter:
+        # We trust this code because it's in our hub repo
+        return HFCheckpointConverter(
+            cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
+        )
 
     # Axes
     SenseHeadDim = property(lambda self: Axis(name="head_dim", size=self.hidden_dim // self.num_senses))
