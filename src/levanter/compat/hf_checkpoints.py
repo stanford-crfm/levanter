@@ -92,6 +92,14 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     def from_hf_config(cls, hf_config: HfConfig):
         pass
 
+    @classmethod
+    @property
+    @abc.abstractmethod
+    def default_hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
+        """The default HFCheckpointConverter to use for this config class. We recommend that you
+        define this as a @cached_property on your config class."""
+        pass
+
 
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
@@ -133,7 +141,8 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
 class HFCheckpointConverter(Generic[LevConfig]):
     """
     A class to convert between Levanter and HF models. This class establishes a bidirectional mapping
-    between Levanter and HF models, and provides methods to convert between them.
+    between Levanter and HF models, and provides methods to convert between configs and loading/saving HF checkpoints.
+    It also handles the bundled tokenizer and code, as applicable.
 
     This mapping supports:
     * translating between Levanter and HF configs
@@ -405,7 +414,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if save_reference_code:
             logger.info(f"Copying reference code from {self.reference_checkpoint}")
             self._save_code_local(path)
-            print(os.listdir(path))
 
         if save_tokenizer:
             logger.info("Saving tokenizer")
@@ -426,8 +434,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         with open(f"{path}/config.json", "w") as f:
             json.dump(dict_config, f)
-
-        print(os.listdir(path))
 
         # Model
 

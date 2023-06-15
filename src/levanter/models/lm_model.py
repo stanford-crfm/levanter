@@ -15,7 +15,7 @@ LmT = TypeVar("LmT", bound="LmHeadModel")
 class LmConfig(abc.ABC, Generic[LmT]):
     @property
     @abc.abstractmethod
-    def model_type(self) -> Type[LmT]:
+    def model_type(cls) -> Type[LmT]:
         pass
 
     @property
