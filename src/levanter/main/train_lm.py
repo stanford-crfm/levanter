@@ -214,9 +214,12 @@ def main(config: TrainLmConfig):
             # no checkpoint was found, so we need to initialize the model and opt state
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
-                logger.info(f"No training checkpoint found. Initializing model from {converter.reference_checkpoint}")
-                model = converter.load_pretrained(type(model), axis_mapping=parameter_axis_mapping)
-                named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
+                logger.info(
+                    "No training checkpoint found. Initializing model from HF checkpoint"
+                    f" '{converter.reference_checkpoint}'"
+                )
+                model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
                 model, opt_state = named_jit(init_model_and_opt_state, axis_resources=parameter_axis_mapping)(
