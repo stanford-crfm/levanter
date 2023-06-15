@@ -1,15 +1,17 @@
 import atexit
 import dataclasses
 import functools
+import importlib
 import inspect
 import os
+import pkgutil
 import sys
 import tempfile
 import urllib.parse
 from dataclasses import is_dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import Any, Dict, Type, Union
+from typing import Any, Dict, Optional, Type, Union
 
 import fsspec
 import jmp
@@ -49,11 +51,19 @@ def register_codecs():
 register_codecs()
 
 
-def config_registry(cls: Type):
+def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[str] = None):
     """
     A decorator to register a config class with a registry that we can use to find the config class for a given
     config. This is used for abstract classes/interfaces where we want to select a concrete implementation based on
-    the config. Subclasses can be added with the `register_subclass` method
+    the config. Subclasses can be added with the `register_subclass` method.
+
+    We have a rudimentary package discovery system.
+    If discover_packages is not None, then we will attempt to identify subclasses by importing
+    packages from discover_packages. They should still be registered with register_subclass.
+    If you use discover_packages, you should register a class with the same name as the package.
+    For example, if you make a new LmConfig, which has discover_packages="levanter.models" and your
+    model is defined in my_transformer.py, then you should register your config with
+    `LmConfig.register_subclass("my_transformer", MyTransformerConfig)`
 
     Usage:
     ```python
@@ -79,6 +89,9 @@ def config_registry(cls: Type):
     :return: the decorated classes.
     """
 
+    if cls is None:
+        return functools.partial(config_registry, discover_packages=discover_packages)
+
     # add the registry to the class if it doesn't exist
     if not hasattr(cls, "_config_registry"):
         cls._config_registry = {}
@@ -87,6 +100,7 @@ def config_registry(cls: Type):
     if not hasattr(cls, "register_subclass"):
 
         def register_subclass(name: str, subcls=None):
+            assert cls is not None
             if subcls is None:
                 return functools.partial(register_subclass, name)
             if name in cls._config_registry:
@@ -114,6 +128,26 @@ def config_registry(cls: Type):
             subcls = cls._config_registry[name]
             return pyrallis.decode(subcls, config)
         except KeyError:
+            if discover_packages:
+                # from https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
+                # resolve the package path
+                package_module = importlib.import_module(discover_packages)
+
+                def iter_namespace(ns_pkg):
+                    # Specifying the second argument (prefix) to iter_modules makes the
+                    # returned name an absolute name instead of a relative one. This allows
+                    # import_module to work without having to do additional modification to
+                    # the name.
+                    return pkgutil.iter_modules(ns_pkg.__path__, ns_pkg.__name__ + ".")
+
+                for finder, pkg_name, ispkg in iter_namespace(package_module):
+                    if pkg_name == f"{discover_packages}.{name}":
+                        _ = importlib.import_module(pkg_name)
+                        # registration should happen in the __init__.py of the package
+                        # cls.register_subclass(name, subcls)
+                        subcls = cls._config_registry[name]
+                        return pyrallis.decode(subcls, config)
+
             raise ValueError(f"Could not find a registered subclass for {name}")
 
     pyrallis.encode.register(cls, encode_config)
