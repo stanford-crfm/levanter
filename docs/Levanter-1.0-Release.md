@@ -495,7 +495,7 @@ learn differently from Transformers.
 
 # Getting Started with Levanter
 
-First, install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+To get started, first install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
@@ -541,9 +541,8 @@ python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.tra
 ## Next Steps
 
 Please see the [README for Levanter](https://github.com/stanford-crfm/levanter#installing-levanter) for
-details, including training with the other supported architectures (currently, [Backpacks](http://backpackmodels.science/) and MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)).
-Also see the specific guides for [TPU](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-TPU-VM.md)
-or [CUDA](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-CUDA.md) for more information.
+details, including training with the other supported architectures (currently, [Backpacks](http://backpackmodels.science/) and MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)),
+as well as for training on TPUs and GPUs.
 
 ## Haliax Tutorials
 
