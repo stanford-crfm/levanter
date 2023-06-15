@@ -403,7 +403,7 @@ experiments. (The exact hyperparameters of these transformers are available in o
 | 750M       | xxx   | xxx   |
 | 1.4B       | xxx   | xxx   |
 | 6.7B       | xxx   | xxx   |
-| 13B        | xxx   | xxx   |
+| 13B        | 54.4% | 77.1% |
 | 20B        | 50.9% | 53.8% |
 | 65B        | 44.6% | 55.5% |
 
