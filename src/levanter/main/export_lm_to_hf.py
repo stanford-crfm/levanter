@@ -4,29 +4,28 @@ from functools import cached_property
 from typing import Optional
 
 import jax
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.tree_util as htu
 import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
-from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ConvertGpt2Config:
+class ConvertLmConfig:
     checkpoint_path: str
     output_dir: str
-    upload_to_hf: Optional[RepoRef] = None
+    upload_to_hf: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
 
-    model: Gpt2Config = Gpt2Config()
+    model: LmConfig = Gpt2Config()
 
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
 
@@ -34,15 +33,17 @@ class ConvertGpt2Config:
 
     override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config
 
+    config_overrides: Optional[dict] = None  # if specified, override the config with these values
+
     @cached_property
     def the_tokenizer(self):
         return load_tokenizer(self.tokenizer)
 
 
 @levanter.config.main()
-def main(config: ConvertGpt2Config):
+def main(config: ConvertLmConfig):
     logger.setLevel(logging.INFO)
-    tokenizer: GPT2Tokenizer = config.the_tokenizer
+    tokenizer = config.the_tokenizer
 
     vocab_size = config.override_vocab_size or len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
@@ -50,15 +51,15 @@ def main(config: ConvertGpt2Config):
     key = jax.random.PRNGKey(0)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        # we want to call this in case we're on a TPU node
-        jax.distributed.initialize()
-
-        model = filter_eval_shape(Gpt2LMHeadModel.init, Vocab, config.model, key=key)
+        model = filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):
             model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
+
+        if not isinstance(model, Gpt2LMHeadModel):
+            raise TypeError("Can't export a non-GPT2 model to HF checkpoint format with this script just yet!")
 
         converter = HFCheckpointConverter(Gpt2Config, "gpt2")
 

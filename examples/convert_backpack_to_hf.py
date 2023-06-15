@@ -11,10 +11,9 @@ import haliax as hax
 import haliax.tree_util as htu
 import levanter
 from haliax import Axis
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
-from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)

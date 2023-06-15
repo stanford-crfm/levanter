@@ -11,7 +11,7 @@ import levanter
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 from levanter.checkpoint import load_checkpoint
-from levanter.data.sharded import LocalBatchDataset
+from levanter.data.loader import ReplicatedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.models.loss import next_token_loss
 from levanter.models.mpt import MptConfig, MptLmHeadModel
@@ -46,7 +46,7 @@ def main(config: EvalMptConfig):
     else:
         raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
 
-    eval_dataset = LocalBatchDataset(raw_dataset, config.trainer.device_mesh, EvalBatch)
+    eval_dataset = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, EvalBatch)
 
     # some axes we use outside the model proper
     SeqLen = config.model.Pos

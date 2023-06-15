@@ -1,11 +1,9 @@
-import glob
-import os
 import tempfile
 
 import jax
 import numpy as np
 from jax.random import PRNGKey
-from test_utils import skip_if_no_torch
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
 import haliax
@@ -115,25 +113,10 @@ def test_backpack_nano_compare():
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
 
-def test_backpack_configs():
-    # load the TrainbackpackConfig from ../examples/backpack_example.py
-    test_path = os.path.dirname(os.path.abspath(__file__))
-    backpack_configs = os.path.join(test_path, "..", "config")
+@parameterize_with_configs("backpack*.yaml")
+def test_backpack_configs(config_file):
+    from levanter.main.train_lm import TrainLmConfig
 
-    # load module. might not be in pythonpath so we have to do this
-    import importlib.util
+    config_class = TrainLmConfig
 
-    spec = importlib.util.spec_from_file_location(
-        "backpack_example", os.path.join(test_path, "..", "examples", "backpack_example.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    TrainBackpackConfig = module.TrainBackpackConfig
-
-    for config_file in glob.glob(os.path.join(backpack_configs, "backpack*.yaml")):
-        try:
-            import pyrallis
-
-            pyrallis.parse(TrainBackpackConfig, config_file, args=[])
-        except Exception as e:
-            raise Exception(f"failed to parse {config_file}") from e
+    check_load_config(config_class, config_file)

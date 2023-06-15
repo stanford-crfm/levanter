@@ -11,10 +11,9 @@ import haliax.tree_util as htu
 import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
-from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)

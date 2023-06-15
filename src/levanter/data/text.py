@@ -27,6 +27,7 @@ from levanter.logging import silence_transformer_nag  # noqa
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
+from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
@@ -44,7 +45,6 @@ from levanter.data.shard_cache import (  # noqa
     cache_dataset,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
-from levanter.utils.hf_utils import load_tokenizer  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
