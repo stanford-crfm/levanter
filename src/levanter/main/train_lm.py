@@ -44,6 +44,9 @@ class TrainLmConfig:
     """if provided, this will override the model config in the config. if true, use the default hf checkpoint for this model class"""
     use_hf_model_config: bool = False  # if true, replace the model config with the hf config from the checkpoint
 
+    # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
+    # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
+
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
