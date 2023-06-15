@@ -399,10 +399,10 @@ experiments. (The exact hyperparameters of these transformers are available in o
 
 | Model Size | MFU   | HFU   |
 |------------|-------|-------|
-| 345M       | xxx   | xxx   |
-| 750M       | xxx   | xxx   |
-| 1.4B       | xxx   | xxx   |
-| 6.7B       | xxx   | xxx   |
+| 345M       | 35.1% | 51.4% |
+| 750M       | 38.9% | 54.7% |
+| 1.4B       | 41.7% | 55.6% |
+| 6.7B       | 47.3% | 71.5% |
 | 13B        | 54.4% | 77.1% |
 | 20B        | 50.9% | 53.8% |
 | 65B        | 44.6% | 55.5% |
