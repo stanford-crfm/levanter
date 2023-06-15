@@ -52,8 +52,8 @@ dependencies = [
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.packages.find]
-where = ["src", "config"]
+#[tool.setuptools.packages.find]
+#where = ["src", "config"]
 #
 #[tool.setuptools.package-dir]
 #levanter = "src/levanter"

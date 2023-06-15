@@ -32,7 +32,7 @@ setuptools.setup(
     packages=setuptools.find_packages(where="src", exclude=("tests",)),
     # https://stackoverflow.com/questions/70777486/pip-install-e-doesnt-allow-to-import-via-package-dir
     # package_dir={"": "src/", "levanter.configz": "config/"},
-    package_dir={"": "src/"},
+    package_dir={"": "src/"},  # , "levanter.config": "config/"},
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
@@ -43,6 +43,6 @@ setuptools.setup(
     ],
     include_package_data=True,
     # data_files=[("config", ["config/gpt2_small.yaml"])],
-    package_data={"levanter.config": ["*.yaml"]},
-    data_files=get_data_files(),
+    # package_data={"levanter.config": ["*.yaml"]},
+    # data_files=get_data_files(),
 )
