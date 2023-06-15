@@ -222,7 +222,6 @@ class TrainerConfig:
             if ckpt is None:
                 if self.load_checkpoint is True:
                     raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
-                logger.info("No checkpoint found. Starting from scratch")
                 return (model, training_state, None)
             else:
                 model, training_state, step = ckpt

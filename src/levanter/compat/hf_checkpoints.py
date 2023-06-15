@@ -159,7 +159,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
 
-    tokenizer: PreTrainedTokenizer
+    tokenizer: PreTrainedTokenizerBase
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
@@ -201,7 +201,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def replaced(
         self,
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
-        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizerBase]] = None,
         trust_remote_code: Optional[bool] = None,
     ) -> "HFCheckpointConverter":
         replacements: dict = {}
