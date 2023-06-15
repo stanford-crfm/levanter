@@ -24,12 +24,14 @@ display: False
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new [JAX](https://github.com/google/jax)-based codebase for training foundation models.
 Levanter is designed to be legible, scalable, and reproducible:
 
-1. Legible: Levanter comes with a new named tensor library named Haliax that makes it easy to write legible, composable deep learning code, while still being high performance.
-2. Scalable: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
-3. Reproducible: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+1. **Legible**: Levanter comes with a new named tensor library named Haliax that makes it easy to write easy-to-follow, composable deep learning code, while still being high performance.
+2. **Scalable**: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
+3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
 Today, we're releasing the Levanter v1.0, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 and checkpoints for a number of models, including new architectures, on our [Hugging Face Hub](https://huggingface.co/stanford-crfm) page.
+(Please see John Thickstun and coauthors' [blog post](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html)
+super-cool work on the Anticipatory Music Transformer, which is one of the models we've trained with Levanter.)
 
 We hope that Levanter will be useful to the community, and we welcome contributions and feedback. Please join us on [GitHub](https://github.com/stanford-crfm/levanter)
 or on the (unofficial) [JAX LLM Discord](https://discord.gg/CKazXcbbBm)!
@@ -53,7 +55,7 @@ In the JAX community, there are a number of libraries popping up. Google has rel
 and [MaxText](https://github.com/google/maxtext). Salesforce has released the Haiku-based [JAXformer](https://github.com/salesforce/jaxformer).
 There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
 and [JAXSeq](https://github.com/Sea-Snell/JAXSeq), both of which are based on [Flax](https://github.com/google/flax/)
-and modified libraries from [Hugging Face Transformers](https://github.com/huggingface/transformers/).  Previously, Eleuther AI released
+and modified implementations from [Hugging Face Transformers](https://github.com/huggingface/transformers/).  Previously, Eleuther AI released
 [mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax/), though it is mostly unmaintained now and uses
 older, quasi-deprecated JAX APIs for distributed training.
 
@@ -415,15 +417,19 @@ a rough sense of how our results compare to other work:
 ![table showing MFU and HFU for various models; Table 3 in https://arxiv.org/pdf/2204.02311.pdf](figures/palm_mfu_table.png)
 
 FSDP is likely to perform less well on clusters of the sizes in this table (i.e., a few thousand TPUs or GPUs), since it requires more communication than other approaches.
-However, at our scale, we find that FSDP is better than either a combination of FSDP and tensor parallelism or tensor parallelism alone.
+However, at our scale, we find that FSDP is better than either tensor parallelism or a combination of FSDP and tensor parallelism.
 We leave pipeline parallelism and more thorough comparisons as future work.
 
-XXX draw a comparison to https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb to the extent it's fair
+Though the hardware is different, we can also compare to the [very large table of results from MosaicML](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb),
+whose numbers are generally in the 45-55% range for MFU and 55-65% range for HFU (though they have some outliers!). Our results are in the same ballpark, though
+typically just a bit lower. Partially, this is attributable to them using [Flash Attention](https://arxiv.org/abs/2205.14135) and not using
+gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these settings improve MFU.
 
-We of course cannot claim full credit for these results: they build on the excellent work of the JAX team, the XLA team,
-the TPU team, and all the algorithmic and hardware improvements that they themselves build on. Nevertheless, our results
-here demonstrate that you can get good scalability in a highly legible codebase, with the logic of the model decoupled
-from the logic of the parallelism.
+Our results here demonstrate that you can get good scalability in a highly legible codebase, with the logic of the model decoupled
+from the logic of parallelism.
+We of course cannot claim full credit for these results: they build on the excellent work of the JAX, XLA, and TPU teams,
+as well as all the algorithmic and hardware improvements that they themselves build on. Nevertheless, we hope that our work makes it easier
+for others to experiment with models at larger scales than they otherwise would have.
 
 
 # Reproducibility: Bitwise Determinism with Levanter and JAX
@@ -520,8 +526,8 @@ learn differently from Transformers.
 
 ## A few other features
 
-* **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization
-  (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
+* **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
+  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
