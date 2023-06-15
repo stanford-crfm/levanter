@@ -159,7 +159,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
 
-    tokenizer: PreTrainedTokenizer
+    tokenizer: PreTrainedTokenizerBase
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
@@ -201,7 +201,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def replaced(
         self,
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
-        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizerBase]] = None,
         trust_remote_code: Optional[bool] = None,
     ) -> "HFCheckpointConverter":
         replacements: dict = {}
@@ -271,6 +271,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
     @cached_property
     def default_hf_config(self) -> HfConfig:
         return self.hf_config_from_hf_checkpoint(None)
+
+    @cached_property
+    def default_config(self) -> LevConfig:
+        return self.config_from_hf_config(self.default_hf_config)
 
     def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
         # figure out the
@@ -353,7 +357,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def load_pretrained(
         self,
-        lm_model_cls: Type[LmWithHfSerializationMixin],
+        lm_model_cls: Union[Type[LmWithHfSerializationMixin], LevConfig],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
     ) -> LmWithHfSerializationMixin:
@@ -361,18 +365,22 @@ class HFCheckpointConverter(Generic[LevConfig]):
         Loads a levanter model from a huggingface checkpoint.
 
         Args:
-            lm_model_cls: The model class to load
+            lm_model_cls: The model class to load or the config to use to load the model class
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
+        # TODO: we should support resizing axes to match the config, especially for vocab size
         state_dict = self.load_state_dict(ref)
+
         hf_config = self.hf_config_from_hf_checkpoint(ref)
-        config = self.config_from_hf_config(hf_config)
 
-        vocab_size = hf_config.vocab_size
+        if isinstance(lm_model_cls, type(self.default_config)):
+            config = lm_model_cls
+            lm_model_cls = config.model_type
+        else:
+            config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.Vocab.resize(vocab_size)
-
+        Vocab = self.Vocab.resize(hf_config.vocab_size)
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
             for k in state_dict.keys():
