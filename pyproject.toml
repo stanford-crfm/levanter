@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,7 @@ authors = [
   { name="David Hall", email="dlwh@cs.stanford.edu" },
   {name="Ivan Zhou", email="ivanz@stanford.edu"}
 ]
-description = "Scalable Training for Foundation Models with Named Tensors and Jax"
+description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
@@ -20,6 +20,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
 ]
+
 
 dependencies = [
     # we'll require that you install jax yourself, since the extras vary by system.
@@ -47,6 +48,20 @@ dependencies = [
     "ray[default]",
     "rich>=13",
 ]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src", "config"]
+#
+#[tool.setuptools.package-dir]
+#levanter = "src/levanter"
+#haliax = "src/haliax"
+#"levanter.config" = "config"
+#
+#[options.package-data]
+#"*" = ["*.yaml"]
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
