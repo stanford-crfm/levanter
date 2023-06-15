@@ -495,72 +495,62 @@ learn differently from Transformers.
 
 # Getting Started with Levanter
 
-<!-- Current -->
+First, install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
-Please check out the [README for Levanter](https://github.com/stanford-crfm/levanter#installing-levanter)
-or the specific guides for [TPU](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-TPU-VM.md)
-or [CUDA](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
-<!-- Aspirational
-### Installation
-
-Levanter is available on PyPI and can be installed with `pip install levanter`.
-It is also available on [GitHub](https://github.com/stanford-mercury/levanter).
-
-### Quickstart GPT-2
-
-To get started with the simplest possible GPT-2 nano "hello world" on a single machine:
+Now clone this repository and install it with pip:
 
 ```bash
-levanter train \
-    --model gpt2-nano \
-    --dataset dlwh/wikitext_103_detokenized \
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+wandb login  # optional, we use wandb for logging
 ```
 
-This will train a GPT-2 model on the WikiText-103 data set, using the GPT-2 "nano" model.
-
-For more fine-grained control, you can also use a yaml configuration file:
-
-```yaml
-data:
-  cache_dir: /path/to/tokenized_cache # or gs://bucket/path/to/cache
-  id: dlwh/wikitext_103_detokenized  # hf datasets id
-  # or you can specify urls directly:
-  train_urls:
-      - "gs://my_bucket/my_fancy_data.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-      - "https://my_domain/my_fancy_val.{1..8}-of-8.jsonl.gz"
-model:
-  hidden_dim: 32
-  num_heads: 4
-  num_layers: 2
-trainer:
-  mp: compute=bfloat16,param=f32  # mixed precision using deepmind's jmp
-  num_train_steps: 10000
-
-  checkpointer:
-    keep:
-      - every: 1000
-    save_interval: 5m
-    base_path: gs://my_bucket/my_model
-
-  train_batch_size: 32
-```
+## Training a GPT2-nano
+As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on the small [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset:
 
 ```bash
-levanter train --model gpt2 --config_path /path/to/config.yaml
+python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
+
+# alternatively, if you didn't use -e and are in a different directory
+python -m levanter.main.train_lm --config_path gpt2_nano
 ```
 
--->
+You can also change the dataset by changing the `dataset` field in the config file.
+If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
+
+## Training a GPT2-small on your own data
+
+```bash
+python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext
+
+# optionally, you may specify a tokenizer and/or a cache directory, which may be local or on gcs
+python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext --data.tokenizer "EleutherAI/gpt-neox-20b" --data.cache_dir "gs://path/to/cache/dir"
+```
+
+If instead your data is a list of URLs, you can use the `data.train_urls` and `data.validation_urls` fields to specify them.
+Data URLS can be local files, gcs files, or http(s) URLs, or anything that [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) supports.
+Levanter (really, fsspec) will automatically uncompress `.gz` and `.zstd` files, and probably other formats too.
+
+```bash
+python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
+```
+
+## Next Steps
+
+Please see the [README for Levanter](https://github.com/stanford-crfm/levanter#installing-levanter) for
+details, including training with the other supported architectures (currently, [Backpacks](http://backpackmodels.science/) and MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)).
+Also see the specific guides for [TPU](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-TPU-VM.md)
+or [CUDA](https://github.com/stanford-crfm/levanter/blob/main/docs/Getting-Started-CUDA.md) for more information.
 
 ## Haliax Tutorials
 
-Please check out the following tutorials for getting started with Haliax:
+We have two Colab tutorials for Haliax. These are a great way to get started with Haliax:
 
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC?usp=sharing)
 * [Scaling Transformers in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), including FSDP in JAX.
-
-
 
 # Released Models
 
@@ -574,7 +564,7 @@ in Pytorch, Tensorflow, and JAX. We have more in development and will release th
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-backpack-1b).
 - [Levanter GPT](https://huggingface.co/stanford-crfm/levanter-gpt) is a 1.5B parameter GPT-2 model trained on the
   [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
-- We have a 1.5B GPT-2 model trained on the [The Pile](https://pile.eleuther.ai/) corpus.
+- We have a 1.4B GPT-2 model trained on [The Pile](https://pile.eleuther.ai/) corpus.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model can serve
   as a common baseline for future experiments.
 

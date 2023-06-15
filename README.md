@@ -129,7 +129,7 @@ python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
 python -m levanter.main.train_lm --config_path gpt2_nano
 ```
 
-This will train a GPT2-nano model on the [WikiText-2](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
+This will train a GPT2-nano model on the [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
 
 ### Training a GPT2-small on your own data
 
