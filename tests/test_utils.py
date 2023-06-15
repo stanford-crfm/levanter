@@ -1,9 +1,12 @@
+import glob
+import os
 from functools import reduce
 from typing import Callable, List, Optional, Sequence, TypeVar
 
 import equinox as eqx
 import jax
 import pyarrow as pa
+import pyrallis
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
@@ -181,3 +184,19 @@ class SingleShardDocumentSource(ShardedDataSource[T]):
 
     def open_shard_at_row(self, shard_name: str, row: int):
         return self.docs[row:]
+
+
+def parameterize_with_configs(pattern, config_path=None):
+    test_path = os.path.dirname(os.path.abspath(__file__))
+    if config_path is None:
+        config_path = os.path.join(test_path, "..", "config")
+
+    configs = glob.glob(os.path.join(config_path, pattern))
+    return pytest.mark.parametrize("config_file", configs, ids=lambda x: f"{os.path.basename(x)}")
+
+
+def check_load_config(config_class, config_file):
+    try:
+        pyrallis.parse(config_class, config_file, args=[])
+    except Exception as e:
+        raise Exception(f"failed to parse {config_file}") from e

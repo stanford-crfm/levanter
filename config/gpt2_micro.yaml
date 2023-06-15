@@ -1,9 +1,10 @@
 data:
   id: dlwh/wikitext_103_detokenized
 model:
-  hidden_dim: 128
-  num_heads: 8
-  num_layers: 4
+  gpt2:
+    hidden_dim: 128
+    num_heads: 8
+    num_layers: 4
 trainer:
   wandb:
     project: "levanter"

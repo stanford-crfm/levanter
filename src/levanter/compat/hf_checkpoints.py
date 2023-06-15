@@ -10,6 +10,7 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
+from urllib.parse import urlparse
 
 import fsspec
 import huggingface_hub
@@ -27,7 +28,7 @@ from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import PretrainedConfig as HfConfig
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
@@ -36,6 +37,7 @@ from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 from levanter.compat.torch_serialization import StateDictSerializationMixin
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.py_utils import dataclass_with_default_init
 
@@ -80,7 +82,7 @@ pyrallis.decode.register(RepoRef, RepoRef.from_string)
 pyrallis.encode.register(RepoRef, str)
 
 
-class HFCompatConfig(abc.ABC):
+class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     @abc.abstractmethod
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[dict] = None) -> HfConfig:
         pass
@@ -90,13 +92,19 @@ class HFCompatConfig(abc.ABC):
     def from_hf_config(cls, hf_config: HfConfig):
         pass
 
+    @classmethod
+    @property
+    @abc.abstractmethod
+    def default_hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
+        """The default HFCheckpointConverter to use for this config class. We recommend that you
+        define this as a @cached_property on your config class."""
+        pass
+
 
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class LmWithHfSerializationMixin(abc.ABC, Generic[MConfig], StateDictSerializationMixin):
-    config: MConfig
-
+class LmWithHfSerializationMixin(LmHeadModel, Generic[MConfig], StateDictSerializationMixin):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 
@@ -133,7 +141,8 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
 class HFCheckpointConverter(Generic[LevConfig]):
     """
     A class to convert between Levanter and HF models. This class establishes a bidirectional mapping
-    between Levanter and HF models, and provides methods to convert between them.
+    between Levanter and HF models, and provides methods to convert between configs and loading/saving HF checkpoints.
+    It also handles the bundled tokenizer and code, as applicable.
 
     This mapping supports:
     * translating between Levanter and HF configs
@@ -150,7 +159,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
 
-    tokenizer: PreTrainedTokenizer
+    tokenizer: PreTrainedTokenizerBase
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
@@ -192,7 +201,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def replaced(
         self,
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
-        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizerBase]] = None,
         trust_remote_code: Optional[bool] = None,
     ) -> "HFCheckpointConverter":
         replacements: dict = {}
@@ -242,29 +251,30 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if tokenizer is None:
             if ref is None:
                 raise ValueError("Must provide either tokenizer or reference_checkpoint")
+            tokenizer = ref
+
+        if isinstance(tokenizer, (str, RepoRef)):
+            ref = _coerce_to_rr(tokenizer)
             path, rev = ref.model_name_or_path, ref.revision
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = load_tokenizer(
                 path,
-                revision=rev,
-                trust_remote_code=trust_remote_code,
-            )
-        elif isinstance(tokenizer, str):
-            if ref is None:
-                raise ValueError("Must provide either tokenizer or reference_checkpoint")
-            path, rev = ref.model_name_or_path, ref.revision
-            tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer,
                 revision=rev,
                 trust_remote_code=trust_remote_code,
             )
         else:
             pass
 
+        assert isinstance(tokenizer, PreTrainedTokenizerBase)
+
         return tokenizer
 
     @cached_property
     def default_hf_config(self) -> HfConfig:
         return self.hf_config_from_hf_checkpoint(None)
+
+    @cached_property
+    def default_config(self) -> LevConfig:
+        return self.config_from_hf_config(self.default_hf_config)
 
     def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
         # figure out the
@@ -347,7 +357,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def load_pretrained(
         self,
-        lm_model_cls: Type[LmWithHfSerializationMixin],
+        lm_model_cls: Union[Type[LmWithHfSerializationMixin], LevConfig],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
     ) -> LmWithHfSerializationMixin:
@@ -355,18 +365,22 @@ class HFCheckpointConverter(Generic[LevConfig]):
         Loads a levanter model from a huggingface checkpoint.
 
         Args:
-            lm_model_cls: The model class to load
+            lm_model_cls: The model class to load or the config to use to load the model class
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
+        # TODO: we should support resizing axes to match the config, especially for vocab size
         state_dict = self.load_state_dict(ref)
+
         hf_config = self.hf_config_from_hf_checkpoint(ref)
-        config = self.config_from_hf_config(hf_config)
 
-        vocab_size = hf_config.vocab_size
+        if isinstance(lm_model_cls, type(self.default_config)):
+            config = lm_model_cls
+            lm_model_cls = config.model_type
+        else:
+            config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.Vocab.resize(vocab_size)
-
+        Vocab = self.Vocab.resize(hf_config.vocab_size)
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
             for k in state_dict.keys():
@@ -408,12 +422,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if save_reference_code:
             logger.info(f"Copying reference code from {self.reference_checkpoint}")
             self._save_code_local(path)
-            print(os.listdir(path))
 
         if save_tokenizer:
             logger.info("Saving tokenizer")
             self.tokenizer.save_pretrained(path)
-            print(os.listdir(path))
 
         # Config
         config = model.config.to_hf_config(model.Vocab.size)
@@ -430,8 +442,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         with open(f"{path}/config.json", "w") as f:
             json.dump(dict_config, f)
-
-        print(os.listdir(path))
 
         # Model
 
@@ -634,3 +644,25 @@ def save_hf_checkpoint_callback(
         )
 
     return cb
+
+
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True):
+    """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
+    is_url_like = urlparse(model_name_or_path).scheme != ""
+    if is_url_like:
+        if revision is not None:
+            raise ValueError("revision is not supported for URLs")
+        # tokenizers are directories, so we have to copy them locally
+        if local_cache_dir is None:
+            local_cache_dir = tempfile.mkdtemp()
+
+        fs, path = fsspec.core.url_to_fs(model_name_or_path)
+        fs.get(path, local_cache_dir, recursive=True)
+        base_path = os.path.basename(path)
+        return AutoTokenizer.from_pretrained(
+            os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code
+        )
+    else:
+        return AutoTokenizer.from_pretrained(
+            model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
+        )

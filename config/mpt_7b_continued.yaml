@@ -5,14 +5,15 @@ data:
     - gs://levanter-data/pile/val.jsonl.zst
   cache_dir: "gs://levanter-data/tokenized/pile-old/"
   tokenizer: "EleutherAI/gpt-neox-20b"
+model: mpt
+initialize_from_hf: true
+use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
     tags: ["pile", "mpt"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1.2e-4
-  weight_decay: 0.1
 
   model_axis_size: 1
   per_device_parallelism: 4
@@ -21,3 +22,6 @@ trainer:
   train_batch_size: 1024
   num_train_steps: 10000
   steps_per_eval: 500
+optimizer:
+  learning_rate: 1.2e-4
+  weight_decay: 0.1

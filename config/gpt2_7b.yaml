@@ -4,14 +4,15 @@ data:
   cache_dir: "gs://levanter-data/tokenized/pile-old/"
   tokenizer: "EleutherAI/gpt-neox-20b"
 model:
-  hidden_dim: 4096
-  num_heads: 32
-  num_layers: 32
-  seq_len: 2048
-  gradient_checkpointing: true
-  scale_attn_by_inverse_layer_idx: true
-  attn_pdrop: 0.0
-  resid_pdrop: 0.0
+  gpt2:
+    hidden_dim: 4096
+    num_heads: 32
+    num_layers: 32
+    seq_len: 2048
+    gradient_checkpointing: true
+    scale_attn_by_inverse_layer_idx: true
+    attn_pdrop: 0.0
+    resid_pdrop: 0.0
 fcm_prob: 0.15
 trainer:
   wandb:

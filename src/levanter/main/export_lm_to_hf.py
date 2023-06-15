@@ -4,29 +4,28 @@ from functools import cached_property
 from typing import Optional
 
 import jax
-from jax.random import PRNGKey
-from transformers import GPT2Tokenizer
 
 import haliax as hax
 import haliax.tree_util as htu
 import levanter
 from haliax import Axis
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
+from haliax.jax_utils import filter_eval_shape
+from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
+from levanter.models.gpt2 import Gpt2Config
+from levanter.models.lm_model import LmConfig
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
-from levanter.utils.hf_utils import load_tokenizer
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ConvertConfig:
+class ConvertLmConfig:
     checkpoint_path: str
     output_dir: str
-    hf_checkpoint: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
+    upload_to_hf: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
 
-    model: BackpackConfig = BackpackConfig()
+    model: LmConfig = Gpt2Config()
 
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
 
@@ -42,39 +41,26 @@ class ConvertConfig:
 
 
 @levanter.config.main()
-def main(config: ConvertConfig):
+def main(config: ConvertLmConfig):
     logger.setLevel(logging.INFO)
-    tokenizer: GPT2Tokenizer = config.the_tokenizer
-
-    key = jax.random.PRNGKey(0)
+    tokenizer = config.the_tokenizer
 
     vocab_size = config.override_vocab_size or len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
-    converter = HFCheckpointConverter(
-        BackpackConfig,
-        "stanford-crfm/levanter-backpacks-test",
-        trust_remote_code=True,
-    )
-
-    if config.config_overrides:
-        converter = converter.with_config_overrides(config.config_overrides)
+    key = jax.random.PRNGKey(0)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        model = BackpackLMHeadModel(Vocab, config.model, key=key)
+        model = filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):
             model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
 
-        model = htu.resize_axis(model, Vocab.resize(vocab_size), key=PRNGKey(0))
+        model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
 
-        converter.save_pretrained(
-            model,
-            config.output_dir,
-            save_tokenizer=True,
-            upload_to_hf=config.hf_checkpoint or False,
-            commit_message="convert to hf checkpoint",
-        )
+        converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
+
+        converter.save_pretrained(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
 
 
 if __name__ == "__main__":
