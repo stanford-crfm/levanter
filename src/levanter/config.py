@@ -11,7 +11,7 @@ import urllib.parse
 from dataclasses import is_dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union
 
 import fsspec
 import jmp
@@ -185,10 +185,16 @@ def _default_encode(obj):
         raise ValueError(f"Could not encode {obj}")
 
 
-def main(args: list = None):
+DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
+
+
+def main(*, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
     """
-    Like levanter.config.main_decorator but can handle config paths that are urls loadable by fsspec.
+    Like pyrallis.wrap but can handle config paths that are urls loadable by fsspec.
     This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
+
+    :param args: the args to parse. If None, will use sys.argv[1:]
+    :param config_dir: the directory to look for configs in (if the path does not exist already). If None, will only use the current working directory
     """
     _cmdline_args = args
     if args is None:
@@ -198,6 +204,15 @@ def main(args: list = None):
         @wraps(fn)
         def wrapper_inner(*args, **kwargs):
             config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
+            paths_to_check = [config_path, f"{config_path}.yaml", f"{config_path}.yml"]
+            if config_path is not None and config_dir is not None:
+                paths_to_check.extend([os.path.join(config_dir, p) for p in paths_to_check])
+
+            for path in paths_to_check:
+                if path is not None and os.path.exists(path):
+                    config_path = path
+                    break
+
             argspec = inspect.getfullargspec(fn)
             argtype = argspec.annotations[argspec.args[0]]
             cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
@@ -209,17 +224,21 @@ def main(args: list = None):
     return wrapper_outer
 
 
-def _maybe_get_config_path_and_cmdline_args(args):
+def _maybe_get_config_path_and_cmdline_args(args: List[str]):
     """
     We want to accept ... --config_path <config> ... where config could be a path or url.
     If URL, we need to download it and save it to a temp file. We then want to remove --config_path
     from the cmdline args so that pyrallis doesn't try to load it as a config path and return it separately here
     along with the modified cmdline args.
     """
-    if "--config_path" not in args:
+    if "--config_path" not in args and "--config" not in args:
         return None, args
     else:
-        config_path_index = args.index("--config_path")
+        try:
+            config_path_index = args.index("--config_path")
+        except ValueError:
+            config_path_index = args.index("--config")
+
         config_path = args[config_path_index + 1]
 
         if urllib.parse.urlparse(config_path).scheme:
