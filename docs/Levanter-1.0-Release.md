@@ -499,7 +499,7 @@ To get started, first install the appropriate version of Jax for your system. Se
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
-Now clone this repository and install it with pip:
+Next, clone the repository and install it with pip:
 
 ```bash
 git clone https://github.com/stanford-crfm/levanter.git
@@ -509,7 +509,7 @@ wandb login  # optional, we use wandb for logging
 ```
 
 ## Training a GPT2-nano
-As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on the small [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset:
+As a kind of hello world, here's how you can train a GPT-2 "nano-sized" model on the small [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset:
 
 ```bash
 python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
@@ -518,10 +518,9 @@ python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
 python -m levanter.main.train_lm --config_path gpt2_nano
 ```
 
-You can also change the dataset by changing the `dataset` field in the config file.
-If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
-
 ## Training a GPT2-small on your own data
+
+If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
 
 ```bash
 python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext
@@ -537,6 +536,8 @@ Levanter (really, fsspec) will automatically uncompress `.gz` and `.zstd` files,
 ```bash
 python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
 ```
+
+You can also change the dataset by changing the `dataset` field in the config file.
 
 ## Next Steps
 
@@ -555,7 +556,8 @@ We have two Colab tutorials for Haliax. These are a great way to get started wit
 
 Along with the release of the code, we are releasing a few models trained using Levanter. These models are available on
 the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used with the Hugging Face Transformers library,
-in Pytorch, Tensorflow, and JAX. We have more in development and will release them as they become available.
+in Pytorch (and, for the GPT-2-based models, Tensorflow, and JAX). We have more in development and will release them as
+they become available.
 
 - We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
  Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
@@ -586,6 +588,6 @@ In addition to the generous support of the Google TPU Research Cloud, we would l
 
 * John Thickstun, Sidi Lu, John Hewitt, and others for being early adopters and providing feedback. We really appreciate your patience, support, and feedback.
 * Yifan Mai, Tony Lee, Jason Bolton, Ivan Zhou, and the rest of the CRFM engineering team for support and discussions.
-* The TRC team for support getting spun up on TPUs and for making the Cloud TPUs available to us.
 * Roy Frostig, Sholto Douglas, Skye Wanderman-Miln, and the rest of the JAX team for help with debugging and support.
+* The TRC team for support getting spun up on TPUs and for making the Cloud TPUs available to us.
 * Sidd Karamcheti for support and conversations.
