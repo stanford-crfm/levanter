@@ -11,7 +11,7 @@ import haliax as hax
 import haliax.tree_util as htu
 import levanter
 from haliax import Axis
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
+from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 
@@ -50,11 +50,7 @@ def main(config: ConvertConfig):
     vocab_size = config.override_vocab_size or len(tokenizer)
     Vocab = Axis("vocab", vocab_size)
 
-    converter = HFCheckpointConverter(
-        BackpackConfig,
-        "stanford-crfm/levanter-backpacks-test",
-        trust_remote_code=True,
-    )
+    converter = BackpackConfig.default_hf_checkpoint_converter
 
     if config.config_overrides:
         converter = converter.with_config_overrides(config.config_overrides)

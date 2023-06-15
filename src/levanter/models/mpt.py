@@ -17,7 +17,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHfSerializationMixin
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -28,6 +28,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.models.lm_model import LmConfig
+from levanter.utils.py_utils import cached_classproperty
 
 
 init_config_defaults: Dict = {
@@ -138,6 +139,13 @@ class MptConfig(HFCompatConfig):
     @property
     def model_type(self) -> Type["MptLmHeadModel"]:
         return MptLmHeadModel
+
+    @cached_classproperty
+    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
+        # We trust this code because it's in our hub repo
+        return HFCheckpointConverter(
+            cls, "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2", trust_remote_code=True
+        )
 
     @classmethod
     def from_hf_config(cls, config):

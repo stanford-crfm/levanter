@@ -11,7 +11,7 @@ import haliax.tree_util as htu
 import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
+from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
 
@@ -52,7 +52,7 @@ def main(config: ConvertMptConfig):
     with jax.default_device(jax.devices("cpu")[0]):
         # we want to call this in case we're on a TPU node
         jax.distributed.initialize()
-        converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True, tokenizer=tokenizer)
+        converter = MptConfig.default_hf_checkpoint_converter
         if config.model is None:
             model_config = converter.config_from_hf_config(converter.default_hf_config)
         else:

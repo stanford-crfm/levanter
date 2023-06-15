@@ -8,7 +8,6 @@ from test_utils import skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
 import haliax
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
@@ -22,7 +21,7 @@ def test_mpt_nano_compare(use_bias):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+    converter = MptConfig.default_hf_checkpoint_converter
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(
         d_model=32,

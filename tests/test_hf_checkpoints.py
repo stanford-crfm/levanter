@@ -15,7 +15,7 @@ from levanter.models.mpt import MptConfig, MptLmHeadModel
 def test_save_model_with_code():
     import torch
 
-    converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+    converter = MptConfig.default_hf_checkpoint_converter
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(
@@ -74,7 +74,7 @@ def test_save_model_with_code():
 def test_save_backpack_model_with_code():
     import torch
 
-    converter = HFCheckpointConverter(BackpackConfig, "stanford-crfm/levanter-backpack-1b", trust_remote_code=True)
+    converter = BackpackConfig.default_hf_checkpoint_converter
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(

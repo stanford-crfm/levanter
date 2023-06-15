@@ -15,13 +15,12 @@ import wandb
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from levanter import callbacks
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.models.lm_model import LmConfig
+from levanter.models.gpt2 import Gpt2Config
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
@@ -108,7 +107,7 @@ def main(config: TrainLmConfig):
             model = config.model.build(Vocab, key=model_key)
             return mp.cast_to_param(model)
 
-        model = init_model()
+        model: LmHeadModel = init_model()
 
         wandb.summary["parameter_count"] = parameter_count(model)
 
@@ -128,7 +127,7 @@ def main(config: TrainLmConfig):
             return causal_mask
 
         # loss function: this computes the loss with respect to a single example
-        def compute_loss(model: Gpt2LMHeadModel, input_ids, attn_mask, key, inference):
+        def compute_loss(model: LmHeadModel, input_ids, attn_mask, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
@@ -187,12 +186,7 @@ def main(config: TrainLmConfig):
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
-            if not isinstance(config.model, Gpt2Config):
-                raise ValueError(
-                    "Only GPT2 models are supported for HF checkpointing right now. Should be fixed soon!"
-                )
-
-            converter = HFCheckpointConverter(Gpt2Config, "gpt2")
+            converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
 
             engine.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter),

@@ -15,7 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from levanter.compat.hf_checkpoints import HFCompatConfig, LmWithHfSerializationMixin
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -25,6 +25,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.models.lm_model import LmConfig
+from levanter.utils.py_utils import cached_classproperty
 
 
 @LmConfig.register_subclass("gpt2")
@@ -67,6 +68,11 @@ class Gpt2Config(HFCompatConfig):
     @property
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
         return Gpt2LMHeadModel
+
+    @cached_classproperty
+    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
+        # We trust this code because it's in our hub repo
+        return HFCheckpointConverter(cls, "gpt2", ignore_prefix="transformer")
 
     def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
         if config_overrides is None:
