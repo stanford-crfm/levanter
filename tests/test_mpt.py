@@ -4,7 +4,7 @@ import jax
 import numpy as np
 import pytest
 from jax.random import PRNGKey
-from test_utils import skip_if_no_torch
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
 import haliax
@@ -98,3 +98,12 @@ def test_mpt_nano_compare(use_bias):
 #     lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
 #
 #     lev_model = lev_model.from_state_dict(state_dict)
+
+
+@parameterize_with_configs("mpt*.yaml")
+def test_mpt_configs(config_file):
+    from levanter.main.train_lm import TrainLmConfig
+
+    config_class = TrainLmConfig
+
+    check_load_config(config_class, config_file)

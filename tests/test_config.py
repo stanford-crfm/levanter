@@ -25,7 +25,7 @@ def test_main_wrapper_loads_from_fsspec():
         project: str
         x: int = 1
 
-    @levanter.config.main(args)
+    @levanter.config.main(args=args)
     def main(config: Config):
         assert config.project == "test"
         assert config.x == 2
