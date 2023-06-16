@@ -8,7 +8,7 @@ Levanter is a library for training foundation models built on top of Haliax.
 In addition to the goals of legibility, efficiency, and scalability, Levanter further strives for bitwise reproducibility,
 meaning that the same code with the same data will produce the exact same result, even in the presence of preemption and restarting from checkpoints.
 
-Levanter and Haliax were created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html))
+Levanter and Haliax were created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html)) You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/FkRGNX3ND)
 
 <!--intro-end-->
 
