@@ -16,9 +16,9 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 from haliax import Axis
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.config import OptimizerConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
+from levanter.trainer import OptimizerConfig
 
 
 @skip_if_no_torch
@@ -38,7 +38,7 @@ def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     import torch
 
-    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
+    converter = Gpt2Config.default_hf_checkpoint_converter
 
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
@@ -85,7 +85,7 @@ def test_hf_gradient():
 def _compare_gpt2_checkpoint_gradients(model_id, revision):
     import torch
 
-    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
+    converter = Gpt2Config.default_hf_checkpoint_converter
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 

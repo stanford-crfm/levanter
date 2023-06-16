@@ -20,9 +20,8 @@ from tqdm import tqdm
 
 import levanter.visualization as viz
 import wandb
-from levanter.config import WandbConfig
-from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
-from levanter.trainer_hooks import StepInfo
+from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
+from levanter.trainer import StepInfo
 
 
 logger = logging.getLogger(__name__)

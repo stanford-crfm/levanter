@@ -4,11 +4,10 @@ import jax
 import numpy as np
 import pytest
 from jax.random import PRNGKey
-from test_utils import skip_if_no_torch
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
 import haliax
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
@@ -22,7 +21,7 @@ def test_mpt_nano_compare(use_bias):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    converter = HFCheckpointConverter(MptConfig, "mosaicml/mpt-7b", trust_remote_code=True)
+    converter = MptConfig.default_hf_checkpoint_converter
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(
         d_model=32,
@@ -62,8 +61,9 @@ def test_mpt_nano_compare(use_bias):
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
+    causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
     with jax.disable_jit():
-        lev_out = lev_model(hax_input).array
+        lev_out = lev_model(hax_input, causal_mask, inference=True, key=None).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
@@ -98,3 +98,12 @@ def test_mpt_nano_compare(use_bias):
 #     lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
 #
 #     lev_model = lev_model.from_state_dict(state_dict)
+
+
+@parameterize_with_configs("mpt*.yaml")
+def test_mpt_configs(config_file):
+    from levanter.main.train_lm import TrainLmConfig
+
+    config_class = TrainLmConfig
+
+    check_load_config(config_class, config_file)
