@@ -31,7 +31,7 @@ Levanter is designed to be legible, scalable, and reproducible:
 Today, we're releasing the Levanter v1.0, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 and checkpoints for a number of models, including new architectures, on our [Hugging Face Hub](https://huggingface.co/stanford-crfm) page.
 (Please see John Thickstun and coauthors' [blog post](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html) on
-the super-cool Anticipatory Music Transformer, which is one of the models we've trained with Levanter.)
+the super-cool [Anticipatory Music Transformer](https://johnthickstun.com/assets/pdf/anticipatory-music-transformer.pdf), which is one of the models we've trained with Levanter.)
 
 We hope that Levanter will be useful to the community, and we welcome contributions and feedback. Please join us on [GitHub](https://github.com/stanford-crfm/levanter)
 or on the (unofficial) [JAX LLM Discord](https://discord.gg/CKazXcbbBm)!
@@ -292,7 +292,7 @@ still useful.
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh),
 which has a separate `Dimension` class analogous to our `Axis` class, and uses them to implement mesh parallelism
-similar to what's in Jax (and what we use in Haliax).
+similar to what's in JAX (and what we use in Haliax).
 
 PyTorch has [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted on" to
 the existing positional tensors.
@@ -314,7 +314,7 @@ experiments showing that our approach is capable of training 65B parameters on a
 ## Fully-Sharded Data Parallel in 10 Lines of Code
 
 FSDP with Haliax basically amounts to telling Haliax which named axes to shard, and specifying a different sharding for computation than for storage.
-Haliax will then translate that code to the relevant Jax primitives, and handle the sharding for you.
+Haliax will then translate that code to the relevant JAX primitives, and handle the sharding for you.
 A full tutorial is available [here](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), but here's a quick example:
 
 ```diff
@@ -546,7 +546,7 @@ learn differently from Transformers.
 
 # Getting Started with Levanter
 
-To get started, first install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+To get started, first install the appropriate version of JAX for your system. See [JAX's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
