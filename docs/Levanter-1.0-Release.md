@@ -12,7 +12,7 @@ display: False
 ---
 > <div class="blog-tagline">
     <strong> We introduce <a href="https://github.com/stanford-crfm/levanter" target="_blank">Levanter</a>, our codebase
-         for training reproducible, legible foundation models models using JAX. We also
+         for training reproducible, legible foundation models using JAX. We also
         release a number of checkpoints for models trained with Levanter, including new architectures, on our
         <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
     </strong>
