@@ -12,7 +12,7 @@ display: False
 ---
 > <div class="blog-tagline">
     <strong> We introduce <a href="https://github.com/stanford-crfm/levanter" target="_blank">Levanter</a>, our codebase
-         for training reproducible, legible foundation models models using JAX. We also
+         for training reproducible, legible foundation models using JAX. We also
         release a number of checkpoints for models trained with Levanter, including new architectures, on our
         <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
     </strong>
@@ -24,12 +24,14 @@ display: False
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new [JAX](https://github.com/google/jax)-based codebase for training foundation models.
 Levanter is designed to be legible, scalable, and reproducible:
 
-1. Legible: Levanter comes with a new named tensor library named Haliax that makes it easy to write legible, composable deep learning code, while still being high performance.
-2. Scalable: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
-3. Reproducible: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+1. **Legible**: Levanter comes with a new named tensor library named Haliax that makes it easy to write easy-to-follow, composable deep learning code, while still being high performance.
+2. **Scalable**: Levanter is designed to scale to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
+3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
 Today, we're releasing the Levanter v1.0, along with [tutorials](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 and checkpoints for a number of models, including new architectures, on our [Hugging Face Hub](https://huggingface.co/stanford-crfm) page.
+(Please see John Thickstun and coauthors' [blog post](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html) on
+the super-cool [Anticipatory Music Transformer](https://johnthickstun.com/assets/pdf/anticipatory-music-transformer.pdf), which is one of the models we've trained with Levanter.)
 
 We hope that Levanter will be useful to the community, and we welcome contributions and feedback. Please join us on [GitHub](https://github.com/stanford-crfm/levanter)
 or on the (unofficial) [JAX LLM Discord](https://discord.gg/CKazXcbbBm)!
@@ -53,7 +55,7 @@ In the JAX community, there are a number of libraries popping up. Google has rel
 and [MaxText](https://github.com/google/maxtext). Salesforce has released the Haiku-based [JAXformer](https://github.com/salesforce/jaxformer).
 There are also a number of independent libraries, including [EasyLM](https://github.com/young-geng/EasyLM)
 and [JAXSeq](https://github.com/Sea-Snell/JAXSeq), both of which are based on [Flax](https://github.com/google/flax/)
-and modified libraries from [Hugging Face Transformers](https://github.com/huggingface/transformers/).  Previously, Eleuther AI released
+and modified implementations from [Hugging Face Transformers](https://github.com/huggingface/transformers/).  Previously, Eleuther AI released
 [mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax/), though it is mostly unmaintained now and uses
 older, quasi-deprecated JAX APIs for distributed training.
 
@@ -280,7 +282,8 @@ JAX already has some built-in support for named tensors in the form of [`xmap`](
 We were initially excited about `xmap` when we first encountered it, but 1) they seem to be deprioritizing it (in favor of `pjit`)
 and 2) ultimately `xmap` can be confusing because you write non-named code for positional axes, then add names "outside"
 of the main model code itself. Ultimately, we found it harder reason about this mixed positional/named code (where the axis names are implicit)
-than just using names the whole way through.
+than just using names the whole way through. That said, `xmap`'s mapping between "semantic" and "physical" axes as the
+basis for parallelism is the inspiration for how we do parallelism in Haliax.
 
 Flax supports a logical-to-physical axis mapping thing similar to what's in Haliax. However, the arrays don't carry around
 their axis names, so you have to remember them and pass them in manually when doing partitioning for data parallelism,
@@ -289,7 +292,7 @@ still useful.
 
 Haliax's NamedArrays are probably most similar to [Mesh-Tensorflow](https://github.com/tensorflow/mesh),
 which has a separate `Dimension` class analogous to our `Axis` class, and uses them to implement mesh parallelism
-similar to what's in Jax (and what we use in Haliax).
+similar to what's in JAX (and what we use in Haliax).
 
 PyTorch has [Named Tensors](https://pytorch.org/docs/stable/named_tensor.html). They're fairly new and "bolted on" to
 the existing positional tensors.
@@ -311,7 +314,7 @@ experiments showing that our approach is capable of training 65B parameters on a
 ## Fully-Sharded Data Parallel in 10 Lines of Code
 
 FSDP with Haliax basically amounts to telling Haliax which named axes to shard, and specifying a different sharding for computation than for storage.
-Haliax will then translate that code to the relevant Jax primitives, and handle the sharding for you.
+Haliax will then translate that code to the relevant JAX primitives, and handle the sharding for you.
 A full tutorial is available [here](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz?usp=sharing), but here's a quick example:
 
 ```diff
@@ -372,7 +375,7 @@ The key components are:
 
 ## Tensor Parallelism in the Same 10 Lines of Code
 
-Tensor parallelism can be added by simply changing the two axis mappings:
+Let's further add tensor parallelism to our model. All we have to do is change the axis mappings:
 
 ```diff
 # Specify which axes we shard for tensor parallelism:
@@ -386,17 +389,66 @@ Tensor parallelism can be added by simply changing the two axis mappings:
 +data_mapping = {"batch": "data", **tensor_parallel_mapping}
 ```
 
+That's it! We can now use a combination of tensor parallelism and FSDP to scale our model to as many GPUs or TPUs as we want.
+By comparison, in PyTorch, there are usually significant changes to the model required to add tensor parallelism,
+including replacing the right set of `Linear` layers with modified versions that do communication.
+
+
 ## Training Performance on TPU
 
-XXX numbers go here
+To demonstrate the scalability of our FSDP implementation, we ran benchmarks to estimate our Model Flop Utilization (MFU)
+and Hardware Flop Utilization (HFU; as measured by the profiler) on a TPU v3-256.  We used a GPT-2 architecture for all
+experiments. (The exact hyperparameters of these transformers are available in our repository; they are the usual configurations used for models of the relevant scale.)
 
+<!--(HFU is basically the percentage
+of the TPU's peak flops that we are able to utilize, while MFU is roughly the percentage of the hardware's FLOPs
+that are used for computing the model's forward and backward passes, not including gradient checkpointing or other
+such things. You can think of HFU as our ability to keep the TPUs warm, and MFU as our ability to
+extract useful work.) -->
+
+| Model Size | MFU   | HFU   |
+|------------|-------|-------|
+| 345M       | 35.1% | 51.4% |
+| 750M       | 38.9% | 54.7% |
+| 1.4B       | 41.7% | 55.6% |
+| 6.7B       | 47.3% | 71.5% |
+| 13B        | 54.4% | 77.1% |
+| 20B        | 50.9% | 53.8% |
+| 65B        | 44.6% | 55.5% |
+
+The smaller models underutilize the hardware, but the larger models are better able to saturate the TPU v3-256.
+To help contextualize these numbers, on the next-generation **TPU v4-128**s and with a slightly different 22B parameter model,
+the performance-focused [MaxText](https://github.com/google/maxtext) library
+[gets MFU](https://github.com/google/maxtext#runtime-performance-results) between 53.2% and 56.7%. Our nearest neighbor at 20B is somewhat lower
+but roughly in the same ballpark;
+we hope to improve this in the future, partially by using their tricks...
+
+Though the hardware is different, we can also compare to the [very large table of results](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb)
+from [MosaicML](https://www.mosaicml.com/), whose numbers are generally in the 45-55% range for MFU and 55-65% range for HFU. Our results are in the same ballpark, though
+our highest numbers are not as high as theirs. In part, this is because they use [Flash Attention](https://arxiv.org/abs/2205.14135) and they
+can avoid gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these changes improve MFU.
+
+For other comparisons (to much larger models trained on much larger clusters), we can compare to the table from the [PALM paper](https://arxiv.org/pdf/2204.02311.pdf), to give
+a rough sense of how our results compare to other work:
+
+![table showing MFU and HFU for various models; Table 3 in https://arxiv.org/pdf/2204.02311.pdf](figures/palm_mfu_table.png)
+
+FSDP is likely to perform less well on clusters of the sizes in this table (i.e., a few thousand TPUs or GPUs), since it requires more communication than other approaches.
+However, at our scale, we find that FSDP is better than either tensor parallelism or a combination of FSDP and tensor parallelism.
+We leave pipeline parallelism and more thorough comparisons as future work.
+
+Our results here demonstrate that you can get good scalability in a highly legible codebase, with the logic of the model decoupled
+from the logic of parallelism.
+We of course cannot claim full credit for these results: they build on the excellent work of the JAX, XLA, and TPU teams,
+as well as all the algorithmic and hardware improvements that they themselves build on. Nevertheless, we hope that our work makes it easier
+for others to experiment with models at larger scales than they otherwise would have.
 
 
 # Reproducibility: Bitwise Determinism with Levanter and JAX
 
 After legibility and scalability, we have reproducibility, which JAX helps with enormously. In particular, JAX's fine-grained
 control over PRNG states makes it easy to ensure bitwise determinism.
-Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. In particular,
+Levanter takes advantage of this to offer bitwise reproducibility for training runs, even after preemption. That is,
 the same run with the same code on the same hardware configuration (e.g. a v3-32 or a v3-256) will produce the exact same loss curve, even if it is
 preempted and resumed multiple times. As an example, here is a screenshot of a training run being resumed multiple times, even on different TPU pod slices:
 
@@ -486,8 +538,8 @@ learn differently from Transformers.
 
 ## A few other features
 
-* **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization
-  (though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!)
+* **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
+  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
@@ -495,7 +547,7 @@ learn differently from Transformers.
 
 # Getting Started with Levanter
 
-To get started, first install the appropriate version of Jax for your system. See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
+To get started, first install the appropriate version of JAX for your system. See [JAX's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
@@ -559,14 +611,15 @@ the [Hugging Face Hub](https://huggingface.co/stanford-crfm) and can be used wit
 in Pytorch (and, for the GPT-2-based models, Tensorflow, and JAX). We have more in development and will release them as
 they become available.
 
-- We are release a suite of music models trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
- Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](XXX) for more, and a cool demo page!
+- We are release a suite of music models using the [Anticipatory Music Transformer](https://johnthickstun.com/assets/pdf/anticipatory-music-transformer.pdf), a new architecture for controllable music synthesis,
+trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The largest, 750M parameter, one is available [here](https://huggingface.co/stanford-crfm/music-large-100k).
+ Please see [John Thickstun](https://johnthickstun.com/)'s [blogpost](https://crfm.stanford.edu/2023/06/16/anticipatory-music-transformer.html) for more, and [a cool demo page](https://colab.research.google.com/drive/1HCQDtGFwROpHRqcmZbV0byqbxDb74YGu?usp=sharing)!
 - We also have a new 1.4B parameter checkpoint of the [Backpack Model](http://backpackmodels.science/) architecture developed by [John Hewitt](https://nlp.stanford.edu/~johnhew/) and coauthors.
   This model is available [here](https://huggingface.co/stanford-crfm/levanter-backpack-1b).
 - [Levanter GPT](https://huggingface.co/stanford-crfm/levanter-gpt) is a 1.5B parameter GPT-2 model trained on the
   [OpenWebText](https://skylion007.github.io/OpenWebTextCorpus/) corpus.
 - We have a 1.4B GPT-2 model trained on [The Pile](https://pile.eleuther.ai/) corpus.
-  This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model can serve
+  This model is available [here](https://huggingface.co/stanford-crfm/levanter-gpt-pile). This model will serve
   as a common baseline for future experiments.
 
 # Future and Conclusion
