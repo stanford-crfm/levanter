@@ -396,8 +396,14 @@ That's it! We can now use a combination of tensor parallelism and FSDP to scale 
 ## Training Performance on TPU
 
 To demonstrate the scalability of our FSDP implementation, we ran benchmarks to estimate our Model Flop Utilization (MFU)
-and Hardware Flop Utilization (HFU; as measured by the profiler) on a TPU v3-256. We used a GPT-2 architecture for all
+and Hardware Flop Utilization (HFU; as measured by the profiler) on a TPU v3-256.  We used a GPT-2 architecture for all
 experiments. (The exact hyperparameters of these transformers are available in our repository; they are the usual configurations used for models of the relevant scale.)
+
+<!--(HFU is basically the percentage
+of the TPU's peak flops that we are able to utilize, while MFU is roughly the percentage of the hardware's FLOPs
+that are used for computing the model's forward and backward passes, not including gradient checkpointing or other
+such things. You can think of HFU as our ability to keep the TPUs warm, and MFU as our ability to
+extract useful work.) -->
 
 | Model Size | MFU   | HFU   |
 |------------|-------|-------|
@@ -410,9 +416,10 @@ experiments. (The exact hyperparameters of these transformers are available in o
 | 65B        | 44.6% | 55.5% |
 
 The smaller models underutilize the hardware, but the larger models are better able to saturate the TPU v3-256.
-To contextualize these numbers, on the next-generation **TPU v4-128**s and with a slightly different 22B parameter model,
+To help contextualize these numbers, on the next-generation **TPU v4-128**s and with a slightly different 22B parameter model,
 the performance-focused [MaxText](https://github.com/google/maxtext) library
-[gets MFU](https://github.com/google/maxtext#runtime-performance-results) between 53.2% and 56.7%. Our nearest neighbor at 20B is somewhat lower;
+[gets MFU](https://github.com/google/maxtext#runtime-performance-results) between 53.2% and 56.7%. Our nearest neighbor at 20B is somewhat lower
+but roughly in the same ballpark;
 we hope to improve this in the future, partially by using their tricks...
 
 Though the hardware is different, we can also compare to the [very large table of results](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb)
