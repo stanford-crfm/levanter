@@ -1,6 +1,7 @@
-# Design as of 2023-04-18
+# Data Loader Design
+## Design as of 2023-04-18
 
-## Goals
+### Goals
 
 We want to support the following:
 1) Deterministic batches, even for a changing number of readers (or writers). That is, for any cluster size

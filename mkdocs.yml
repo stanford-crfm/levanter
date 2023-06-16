@@ -1,0 +1,54 @@
+site_name: CRFM Levanter
+repo_url: https://github.com/stanford-crfm/levanter/
+edit_uri: blob/main/docs/
+theme:
+  name: readthedocs
+  highlightjs: false
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_root_heading: true
+            show_signature_annotations: true
+            show_bases: false
+            show_source: false
+            show_root_full_path: false
+            show_if_no_docstring: true
+            members_order: source
+            merge_init_into_class: true
+            docstring_options:
+              ignore_init_summary: true
+
+  - include-markdown
+extra_css:
+  - docstrings.css
+markdown_extensions:
+  - pymdownx.magiclink
+  - pymdownx.arithmatex: # Render LaTeX via MathJax
+      generic: true
+  - pymdownx.superfences  # Seems to enable syntax highlighting when used with the Material theme.
+  - pymdownx.details  # Allowing hidden expandable regions denoted by ???
+  - pymdownx.snippets: # Include one Markdown file into another
+      base_path: docs
+  - admonition
+  - toc:
+      permalink: "¤"  # Adds a clickable permalink to each section heading
+      toc_depth: 4
+watch:
+  - src
+  - scripts
+  - infra
+  - config
+nav:
+  - 'Home': 'index.md'
+  - 'User Guide': 'Getting-Started-Training.md'
+  - Haliax: 'Haliax.md'
+  - 'Installation and Setup':
+      - 'Installation.md'
+      - 'Getting-Started-TPU-VM.md'
+      - 'Getting-Started-CUDA.md'
+  - Technical Documentation:
+      - 'Overview.md'
+      - 'design/Data-Loader-Design.md'

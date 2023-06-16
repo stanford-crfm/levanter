@@ -1,4 +1,4 @@
-# Getting Started with Levanter on TPU VMs
+# Getting Started on TPU VMs
 
 This guide will walk you through the steps to get started with Levanter on TPU VMs.
 
