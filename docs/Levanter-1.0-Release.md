@@ -375,8 +375,7 @@ The key components are:
 
 ## Tensor Parallelism in the Same 10 Lines of Code
 
-To further demonstrate the power of named tensors, let's further add tensor parallelism to our model. All we have
-to do is change the axis mappings:
+Let's further add tensor parallelism to our model. All we have to do is change the axis mappings:
 
 ```diff
 # Specify which axes we shard for tensor parallelism:
@@ -391,6 +390,8 @@ to do is change the axis mappings:
 ```
 
 That's it! We can now use a combination of tensor parallelism and FSDP to scale our model to as many GPUs or TPUs as we want.
+By comparison, in PyTorch, there are usually significant changes to the model required to add tensor parallelism,
+including replacing the right set of `Linear` layers with modified versions that do communication.
 
 
 ## Training Performance on TPU
