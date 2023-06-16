@@ -1,6 +1,14 @@
-# Training
+# Getting Started with Training
 
 This document provides a guide on how to launch model training and configure it according to your specific needs.
+
+## Quick Start Examples
+
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-user-guide-start-->"
+   end="<!--levanter-user-guide-end-->"
+%}
 
 ## Launch Model Training
 
@@ -22,7 +30,7 @@ and explain the corresponding parameters that you can change.
 To change the dimensions of your GPT2 model and increase the number of training steps to 10,000, I can use the following command:
 
 ```
-python levanter/main/train_lm.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --model.num_heads 20 \
     --model.num_layers 36 \
