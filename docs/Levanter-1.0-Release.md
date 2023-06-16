@@ -425,8 +425,8 @@ we hope to improve this in the future, partially by using their tricks...
 
 Though the hardware is different, we can also compare to the [very large table of results](https://github.com/mosaicml/examples/tree/release/v0.0.4/examples/llm/throughput#a100-80gb)
 from [MosaicML](https://www.mosaicml.com/), whose numbers are generally in the 45-55% range for MFU and 55-65% range for HFU. Our results are in the same ballpark, though
-our highest numbers are not as high as theirs. Partially, this is attributable to them using [Flash Attention](https://arxiv.org/abs/2205.14135) and not using
-gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these settings improve MFU.
+our highest numbers are not as high as theirs. In part, this is because they use [Flash Attention](https://arxiv.org/abs/2205.14135) and they
+can avoid gradient checkpointing at lower scales (which is easier to do on the higher-memory A100s); these changes improve MFU.
 
 For other comparisons (to much larger models trained on much larger clusters), we can compare to the table from the [PALM paper](https://arxiv.org/pdf/2204.02311.pdf), to give
 a rough sense of how our results compare to other work:
