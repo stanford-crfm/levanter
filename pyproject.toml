@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "levanter"
-version = "0.0.1"
+version = "1.0"
 authors = [
   { name="David Hall", email="dlwh@cs.stanford.edu" },
   {name="Ivan Zhou", email="ivanz@stanford.edu"}
