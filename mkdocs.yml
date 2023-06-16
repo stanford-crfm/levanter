@@ -6,8 +6,6 @@ theme:
   highlightjs: false
 plugins:
   - search
-#  - macros:
-#      module_name: docs/mkdocs_macros
   - mkdocstrings:
       handlers:
         python:
@@ -40,9 +38,9 @@ markdown_extensions:
       toc_depth: 4
 watch:
   - src
-  - examples
   - scripts
   - infra
+  - config
 nav:
   - 'Home': 'index.md'
   - 'User Guide':

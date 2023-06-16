@@ -22,7 +22,7 @@ and explain the corresponding parameters that you can change.
 To change the dimensions of your GPT2 model and increase the number of training steps to 10,000, I can use the following command:
 
 ```
-python levanter/main/train_lm.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --model.num_heads 20 \
     --model.num_layers 36 \
