@@ -15,7 +15,7 @@ Levanter and Haliax were created by [Stanford's Center for Research on Foundatio
 # Haliax
 <!--haliax-intro-start-->
 
-> Though you don’t seem to be much for listening, it’s best to be careful. If you managed to catch hold of even just a piece of my name, you’d have all manner of power over me.<br/>
+> *Though you don’t seem to be much for listening, it’s best to be careful. If you managed to catch hold of even just a piece of my name, you’d have all manner of power over me.*<br/>
 > — Patrick Rothfuss, *The Name of the Wind*
 
 Haliax is a Jax library for building neural networks with named tensors, in the tradition of Alexander Rush's [Tensor Considered Harmful](https://nlp.seas.harvard.edu/NamedTensor).
@@ -87,13 +87,15 @@ class Attention(eqx.Module):
 ## Documentation for Haliax
 
 Currently, we have two tutorials for Haliax:
+
 * [Introduction to Haliax with Transformers](https://colab.research.google.com/drive/1TiTcQQ4V5mopbgCu1SVl-oqJtXn7rFnC)
 * [Distributed Training in Haliax](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) (including FSDP)
+
 <!--haliax-intro-end-->
 
 # Levanter
 <!--levanter-intro-start-->
-> You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew. <br/>
+> *You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew.* <br/>
 > — Cora L. V. Hatch
 
 Levanter is a library for training foundation models built on top of Haliax. Levanter strives for bitwise reproducibility,
@@ -113,6 +115,7 @@ Please refer to the [Installation Guide](docs/Installation.md) for more informat
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
 
+<!--levanter-user-guide-start-->
 
 ### Training a GPT2-nano
 
@@ -200,6 +203,7 @@ python -m levanter.main.train_lm --config_path config/backpack_nano.yaml
 python -m levanter.main.train_lm --config_path config/mpt_7b_continued.yaml
 ```
 
+
 ## Distributed and Cloud Training
 
 ### Training on a TPU Cloud VM
@@ -209,6 +213,8 @@ Please see the [TPU Getting Started](docs/Getting-Started-TPU-VM.md) guide for m
 ### Training with CUDA
 
 Please see the [CUDA Getting Started](docs/Getting-Started-CUDA.md) guide for more information on how to set up a CUDA environment and run Levanter there.
+
+<!--levanter-user-guide-end-->
 
 ## Contributing
 

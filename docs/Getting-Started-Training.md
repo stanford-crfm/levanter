@@ -1,6 +1,14 @@
-# Training
+# Getting Started with Training
 
 This document provides a guide on how to launch model training and configure it according to your specific needs.
+
+## Quick Start Examples
+
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-user-guide-start-->"
+   end="<!--levanter-user-guide-end-->"
+%}
 
 ## Launch Model Training
 

@@ -1,4 +1,4 @@
-# Levanter
+# Detailed Technical Overview
 
 This is the remains of a detailed introduction to the Levanter project.
 

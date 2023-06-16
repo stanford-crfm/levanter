@@ -43,10 +43,12 @@ watch:
   - config
 nav:
   - 'Home': 'index.md'
-  - 'User Guide':
-    - 'Overview.md'
-    - 'Getting-Started-TPU-VM.md'
-    - 'Getting-Started-CUDA.md'
-    - 'Getting-Started-Training.md'
-  - 'Haliax':
-      - 'Haliax.md'
+  - 'User Guide': 'Getting-Started-Training.md'
+  - Haliax: 'Haliax.md'
+  - 'Installation and Setup':
+      - 'Installation.md'
+      - 'Getting-Started-TPU-VM.md'
+      - 'Getting-Started-CUDA.md'
+  - Technical Documentation:
+      - 'Overview.md'
+      - 'design/Data-Loader-Design.md'
