@@ -417,7 +417,6 @@ def test_rename():
 
 
 def test_slice_nd():
-    # just some basic tests of the new slicing mechanism
     H = Axis("H", 20)
     W = Axis("W", 30)
     D = Axis("D", 40)
@@ -442,3 +441,55 @@ def test_slice_nd():
 
     # try indexing with 3 integers
     assert jnp.all(jnp.equal(named1[{"H": 0, "W": 0, "D": 0}].array, named1.array[0, 0, 0]))
+
+
+def test_slice_nd_array_slices():
+    # fancier tests with array slices with named array args
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+    C = Axis("C", 40)
+    Q = Axis("Q", 50)
+    I0 = Axis("I0", 10)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D, C, Q))
+    index_1 = hax.random.randint(PRNGKey(0), (I0,), 0, H.size)
+
+    assert jnp.all(jnp.equal(named1[{"H": index_1}].array, named1.array[index_1.array, :, :]))
+    assert named1[{"H": index_1}].axes == (I0, W, D, C, Q)
+
+    # try indexing with 1 array and 1 integer
+    assert jnp.all(jnp.equal(named1[{"H": index_1, "W": 0}].array, named1.array[index_1.array, 0, :]))
+    assert named1[{"H": index_1, "W": 0}].axes == (I0, D, C, Q)
+
+    # more complex case: advanced indices aren't contiguous
+    assert jnp.all(jnp.equal(named1[{"H": index_1, "D": 0}].array, named1.array[index_1.array, :, 0]))
+    assert named1[{"H": index_1, "D": 0}].axes == (I0, W, C, Q)
+
+    # https://numpy.org/doc/stable/user/basics.indexing.html#combining-advanced-and-basic-indexing
+    # Example
+    # Let x.shape be (10, 20, 30, 40, 50) and suppose ind_1 and ind_2 can be broadcast to the shape (2, 3, 4).
+    I1 = Axis("I1", 2)
+    I2 = Axis("I2", 3)
+    I3 = Axis("I3", 4)
+
+    ind_1 = hax.random.randint(PRNGKey(0), (I2, I3), 0, W.size)
+    ind_2 = hax.random.randint(PRNGKey(0), (I1, I3), 0, D.size)
+
+    # Then x[:, ind_1, ind_2] has shape (10, 2, 3, 4, 40, 50) because the (20, 30)-shaped subspace from X has been replaced with the (2, 3, 4) subspace from the indices.
+    assert jnp.all(
+        jnp.equal(
+            named1[{"W": ind_1, "D": ind_2}].array,
+            named1.array[:, ind_1.array.reshape(1, 3, 4), ind_2.array.reshape(2, 1, 4), :],
+        )
+    )
+    assert named1[{"W": ind_1, "D": ind_2}].axes == (H, I1, I2, I3, C, Q)
+
+    # However, x[:, ind_1, :, ind_2] has shape (2, 3, 4, 10, 30, 50) because there is no unambiguous place to drop in the indexing subspace, thus it is tacked-on to the beginning. It is always possible to use .transpose() to move the subspace anywhere desired. Note that this example cannot be replicated using take.
+    assert jnp.all(
+        jnp.equal(
+            named1[{"W": ind_1, "C": ind_2}].array,
+            named1.array[:, ind_1.array.reshape(1, 3, 4), :, ind_2.array.reshape(2, 1, 4), :],
+        )
+    )
+    assert named1[{"W": ind_1, "C": ind_2}].axes == (I1, I2, I3, H, D, Q)

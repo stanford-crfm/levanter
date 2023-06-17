@@ -13,7 +13,7 @@ import numpy as np
 
 import haliax
 from haliax.jax_utils import is_jax_array_like
-from haliax.util import ensure_tuple, index_where, slice_t
+from haliax.util import ensure_tuple, index_where, py_slice, slice_t
 
 from .types import Axis, AxisSelection, AxisSelector, AxisSpec, PrecisionLike, Scalar
 
@@ -563,7 +563,7 @@ def slice(array: NamedArray, axis: AxisSelector, new_axis: Axis, start: int = 0)
     return NamedArray(sliced, new_axes)
 
 
-def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t]]) -> NamedArray:
+def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t, NamedArray]]) -> NamedArray:
     """
     Selects elements from an array along an axis, by an index or by another named array.
     Typically, you would call this via `array[...]` syntax. For example, you might call
@@ -572,17 +572,68 @@ def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t
     :param slices:
     :return:
     """
-    ordered_slices = [slice_t(None, None, None)] * len(array.axes)  # type: ignore
+    # indices where we have array args
+    array_slice_indices = []
+    ordered_slices: list = [py_slice(None, None, None)] * len(array.axes)  # type: ignore
     kept_axes = [True] * len(array.axes)
     for axis, slice_ in slices.items():
         axis_index = array._lookup_indices(axis)
         if axis_index is None:
             raise ValueError(f"axis {axis} not found in {array}")
         ordered_slices[axis_index] = slice_
-        kept_axes[axis_index] = not isinstance(slice_, int)
+        kept_axes[axis_index] = isinstance(slice_, py_slice)
+        if isinstance(slice_, NamedArray):
+            array_slice_indices.append(axis_index)
+
+    # advanced indexing
+    if len(array_slice_indices) > 0:
+        # this requires broadcasting
+        broadcasted_arrays, broadcasted_axes = broadcast_arrays_and_return_axes(
+            *[ordered_slices[i] for i in array_slice_indices], require_subset=False, ensure_order=True
+        )
+        # this is tricky. NumPy distinguishes two cases when mixing advanced and basic indexing:
+        # https://numpy.org/doc/stable/user/basics.indexing.html#combining-advanced-and-basic-indexing
+        # The first is when the advanced indices are all contiguous, and the second is when they are not.
+        # (NB that integers count as advanced indices, so this is a bit more complicated than it seems.)
+        # When contiguous, the new axes go in the same place as the advanced indices, and the old axes surround them.
+        # When not contiguous, the new axes go to the *front* of the array, and the (other) old axes go after them.
+        # To tell what case we're in, we check if the advanced indices are contiguous. We can figure out by looking
+        # at the "kept_axes": the Falses are the advanced indices.
+
+        # check to make sure we're not accidentally duplicating axes
+        for axis_index in range(len(array.axes)):
+            if kept_axes[axis_index]:
+                if selects_axis(broadcasted_axes, array.axes[axis_index].name):
+                    raise ValueError(f"Array Axis {array.axes[axis_index]} is present in slice {slices}")
+
+        for axis_index, selector_array in zip(array_slice_indices, broadcasted_arrays):
+            ordered_slices[axis_index] = selector_array.array
+
+        is_advanced_contiguous = True
+        first_advanced_index = index_where(lambda x: not x, kept_axes)
+        last_advanced_index = first_advanced_index
+        true_found = False
+        for i in range(first_advanced_index, len(kept_axes)):
+            # now find the first True. If any False comes after it, we're not contiguous
+            if true_found:
+                if not kept_axes[i]:
+                    is_advanced_contiguous = False
+                    break
+            elif kept_axes[i]:
+                true_found = True
+                last_advanced_index = i - 1
+
+        if is_advanced_contiguous:
+            # the advanced indices are contiguous, so we can just insert the new axes in the same place
+            # as the advanced indices
+            new_axes = array.axes[:first_advanced_index] + broadcasted_axes + array.axes[last_advanced_index + 1 :]
+        else:
+            # the advanced indices are not contiguous, so we need to insert the new axes at the front
+            new_axes = broadcasted_axes + tuple(ax for i, ax in enumerate(array.axes) if kept_axes[i])
+    else:
+        new_axes = tuple(axis.name for axis, keep in zip(array.axes, kept_axes) if keep)
 
     sliced = array.array[tuple(ordered_slices)]
-    new_axes = tuple(axis.name for axis, keep in zip(array.axes, kept_axes) if keep)
 
     return haliax.named(sliced, new_axes)
 
