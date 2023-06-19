@@ -493,3 +493,30 @@ def test_slice_nd_array_slices():
         )
     )
     assert named1[{"W": ind_1, "C": ind_2}].axes == (I1, I2, I3, H, D, Q)
+
+
+def test_slice_nd_array_present_dims():
+    # tests slicing with arrays that are already present in the named array, which is sometimes ok
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    index1 = hax.random.randint(PRNGKey(0), (H,), 0, H.size)
+
+    # this is ok, since the H would be eliminated anyway
+    assert jnp.all(jnp.equal(named1[{"H": index1}].array, named1.array[index1.array, :, :]))
+
+    # this is not ok, since the H would not be eliminated
+    with pytest.raises(ValueError):
+        named1[{W: index1}]
+
+    # this is not ok, but is trickier because the H has a different size
+    H2 = H.resize(5)
+    index2 = hax.random.randint(PRNGKey(0), (H2,), 0, H.size)
+    with pytest.raises(ValueError):
+        named1[{W: index2}]
+
+    # this is ok, since the H would be eliminated anyway
+    assert jnp.all(jnp.equal(named1[{"H": index2}].array, named1.array[index2.array, :, :]))

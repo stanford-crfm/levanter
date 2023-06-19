@@ -233,8 +233,25 @@ class NamedArray:
     def take(self, axis: AxisSelector, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
 
-    def __getitem__(self, idx: Mapping[AxisSelector, Union[int, slice_t]]):
-        # for now, we only support indexing on slices. We can add named arrays later.
+    def __getitem__(self, idx: Mapping[AxisSelector, Union[int, slice_t, "NamedArray"]]):
+        """Syntactic sugar for slice_nd, which is the actual implementation.
+
+        Supports indexing like:
+
+        >>> X = Axis("x", 10)
+        >>> Y = Axis("y", 20)
+        >>> arr = haliax.random.randint(jax.random.PRNGKey(0), (X, Y), 0, X.size)
+        # slice with ints or slices
+        >>> arr[{"x": 1, "y": slice(0, 10, 2)}]
+        >>> Z = Axis("z", 3)
+        # so-called "advanced indexing" with NamedArrays.
+        >>> index_arr = NamedArray(np.array([1, 2, 3]), Z)
+        >>> arr[{"x": 1, "y": index_arr}]
+
+        Advanced indexing is implemented by broadcasting all index arrays to the same shape (using Haliax's
+        usual broadcasting rules) and then using the
+        resulting array as a mask to select elements from the
+        """
         return slice_nd(self, idx)
 
     # np.ndarray methods:
