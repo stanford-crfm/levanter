@@ -439,8 +439,8 @@ def test_slice_nd():
     assert jnp.all(jnp.equal(named1[{"H": slice(0, 10, 2), "W": 0}].array, named1.array[0:10:2, 0, :]))
     assert named1[{"H": slice(0, 10, 2), "W": 0}].axes == (Axis("H", 5), D)
 
-    # try indexing with 3 integers
-    assert jnp.all(jnp.equal(named1[{"H": 0, "W": 0, "D": 0}].array, named1.array[0, 0, 0]))
+    # try indexing with 3 integers: returns scalar ndarray
+    assert jnp.all(jnp.equal(named1[{"H": 0, "W": 0, "D": 0}], named1.array[0, 0, 0]))
 
 
 def test_slice_nd_array_slices():
