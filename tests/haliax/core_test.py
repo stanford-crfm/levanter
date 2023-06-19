@@ -520,3 +520,32 @@ def test_slice_nd_array_present_dims():
 
     # this is ok, since the H would be eliminated anyway
     assert jnp.all(jnp.equal(named1[{"H": index2}].array, named1.array[index2.array, :, :]))
+
+
+def test_full_indexing_returns_scalar():
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+    sliced = named1[{"H": 0, "W": 0, "D": 0}]
+
+    assert isinstance(sliced, jnp.ndarray)
+    assert sliced.shape == ()
+
+
+def test_indexing_bug_from_docs():
+    X = hax.Axis("X", 10)
+    Y = hax.Axis("Y", 20)
+    Z = hax.Axis("Z", 30)
+
+    a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
+
+    I1 = hax.Axis("I1", 5)
+    I2 = hax.Axis("I2", 5)
+    I3 = hax.Axis("I3", 5)
+    ind1 = hax.random.randint(jax.random.PRNGKey(0), (I1,), 0, 10)
+    ind2 = hax.random.randint(jax.random.PRNGKey(0), (I2, I3), 0, 20)
+
+    # assert a[{"X": ind1, "Y": ind2}].axes == (I1, I2, I3, Z)
+    assert a[{"X": ind1, "Y": ind2, "Z": 3}].axes == (I1, I2, I3)

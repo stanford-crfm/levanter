@@ -233,7 +233,9 @@ class NamedArray:
     def take(self, axis: AxisSelector, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
 
-    def __getitem__(self, idx: Mapping[AxisSelector, Union[int, slice_t, "NamedArray"]]):
+    def __getitem__(
+        self, idx: Mapping[AxisSelector, Union[int, slice_t, "NamedArray"]]
+    ) -> Union["NamedArray", jnp.ndarray]:
         """Syntactic sugar for slice_nd, which is the actual implementation.
 
         Supports indexing like:
@@ -249,8 +251,9 @@ class NamedArray:
         >>> arr[{"x": 1, "y": index_arr}]
 
         Advanced indexing is implemented by broadcasting all index arrays to the same shape (using Haliax's
-        usual broadcasting rules) and then using the
-        resulting array as a mask to select elements from the
+        usual broadcasting rules).
+
+        This returns a NamedArray if any axes remain, or a scalar (0-dimensional) jnp.ndarray if all axes are indexed out.
         """
         return slice_nd(self, idx)
 
@@ -580,14 +583,16 @@ def slice(array: NamedArray, axis: AxisSelector, new_axis: Axis, start: int = 0)
     return NamedArray(sliced, new_axes)
 
 
-def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t, NamedArray]]) -> NamedArray:
+def slice_nd(
+    array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t, NamedArray]]
+) -> Union[NamedArray, jnp.ndarray]:
     """
     Selects elements from an array along an axis, by an index or by another named array.
     Typically, you would call this via `array[...]` syntax. For example, you might call
     `array[{"batch": slice(0, 10)}]` to select the first 10 elements of the batch axis.
     :param array:
     :param slices:
-    :return:
+    :return: a scalar jnp.ndarray is all axes are sliced with ints, otherwise a NamedArray
     """
     # indices where we have array args
     array_slice_indices = []
@@ -640,6 +645,9 @@ def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t
                 true_found = True
                 last_advanced_index = i - 1
 
+        if not true_found:
+            last_advanced_index = len(kept_axes) - 1
+
         if is_advanced_contiguous:
             # the advanced indices are contiguous, so we can just insert the new axes in the same place
             # as the advanced indices
@@ -651,6 +659,10 @@ def slice_nd(array: NamedArray, slices: Mapping[AxisSelector, Union[int, slice_t
         new_axes = tuple(axis.name for axis, keep in zip(array.axes, kept_axes) if keep)
 
     sliced = array.array[tuple(ordered_slices)]
+
+    if len(new_axes) == 0:
+        # this is a scalar
+        return sliced
 
     return haliax.named(sliced, new_axes)
 
@@ -1107,7 +1119,7 @@ def broadcast_arrays_and_return_axes(
         The arrays to broadcast
     require_subset: bool
         If True, then one of the arrays must be a subset of the other. This is a bit stricter than numpy's broadcasting
-        rules, but I've been bitten by numpy's rules too many times. If False is looser than numpy's rules, and allows
+        rules, but I've been bitten by numpy's rules too many times. False is looser than numpy's rules, and allows
         broadcasting any pair of arrays (so long as the axes don't overtly conflict with different sizes for the same
         name.)
     ensure_order: bool
