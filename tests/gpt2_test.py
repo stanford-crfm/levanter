@@ -2,6 +2,7 @@ import dataclasses
 
 import jax.numpy as jnp
 from jax.random import PRNGKey
+from test_utils import check_load_config, parameterize_with_configs
 
 import haliax as hax
 from haliax import Axis
@@ -27,11 +28,20 @@ def test_gradient_checkpointing():
         model = Gpt2LMHeadModel.init(Vocab, config, key=key)
         model_checkpoint = Gpt2LMHeadModel.init(Vocab, config_checkpoint, key=key)
 
-        input_ids = hax.arange(config.SeqLen, dtype=jnp.int32)
+        input_ids = hax.arange(config.Pos, dtype=jnp.int32)
 
-        causal_mask = hax.nn.attention.causal_mask(config.SeqLen, config.KeySeqLen)
+        causal_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
 
         a1 = model(input_ids, inference=False, key=key, attn_mask=causal_mask)
         a2 = model_checkpoint(input_ids, inference=False, key=key, attn_mask=causal_mask)
 
         assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
+
+
+@parameterize_with_configs("gpt2*.yaml")
+def test_gpt2_configs(config_file):
+    from levanter.main.train_lm import TrainLmConfig
+
+    config_class = TrainLmConfig
+
+    check_load_config(config_class, config_file)

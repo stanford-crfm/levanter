@@ -14,18 +14,23 @@ class LayerNorm(eqx.Module):
     input along that axis.
     """
     axis: AxisSpec = eqx.static_field()
-    eps: float = eqx.static_field()
-
     weight: Optional[NamedArray]
     bias: Optional[NamedArray]
 
-    def __init__(self, axis: AxisSpec, eps: float = 1e-5, elementwise_affine: bool = True):
-        self.axis = axis
-        self.eps = eps
+    eps: float = eqx.static_field(default=1e-5)
 
-        if elementwise_affine:
-            self.weight = hax.ones(axis)
-            self.bias = hax.zeros(axis)
+    @staticmethod
+    def init(axis: AxisSpec, eps: float = 1e-5, use_weight: bool = True, use_bias: bool = True):
+        if use_weight:
+            weight = hax.ones(axis)
+        else:
+            weight = None
+        if use_bias:
+            bias = hax.zeros(axis)
+        else:
+            bias = None
+
+        return LayerNorm(axis, weight, bias, eps)
 
     def __call__(self, x: NamedArray) -> NamedArray:
         mean = x.mean(self.axis)
@@ -34,5 +39,7 @@ class LayerNorm(eqx.Module):
         out = (x - mean) * inv
 
         if self.weight is not None:
-            out = self.weight * out + self.bias
+            out = self.weight * out
+        if self.bias is not None:
+            out = out + self.bias
         return out

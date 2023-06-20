@@ -9,7 +9,7 @@ from haliax.types import PrecisionLike
 
 
 def causal_sliding_window_attention(
-    SeqLen: Axis,
+    Pos: Axis,
     Window: Axis,
     Head: Axis,
     query: NamedArray,
@@ -26,22 +26,22 @@ def causal_sliding_window_attention(
     # We use the window size as the block size
     # The basic idea is that we want to compute attention one block (of query) at a time, where a block is a window
     # of the sequence. Each q can attend to the prior window_size-1 positions plus itself
-    assert Window.size <= SeqLen.size, "Window size must be at least 2x sequence length"
-    assert SeqLen.size % Window.size == 0, "Sequence length must be divisible by window size"
+    assert Window.size <= Pos.size, "Window size must be at least 2x sequence length"
+    assert Pos.size % Window.size == 0, "Sequence length must be divisible by window size"
 
-    if Window.size == SeqLen.size:
+    if Window.size == Pos.size:
         # we can just use regular attention
         # we have to special case this because jax won't like the attend_block_N function
         # which doesn't actually get executed but does get traced
-        K = SeqLen.alias("K")
+        K = Pos.alias("K")
         return hax.nn.attention.dot_product_attention(
-            SeqLen,
+            Pos,
             K,
             Head,
             query,
-            key.rename({SeqLen: K}),
-            value.rename({SeqLen: K}),
-            mask=hax.nn.attention.causal_mask(SeqLen, K),
+            key.rename({Pos: K}),
+            value.rename({Pos: K}),
+            mask=hax.nn.attention.causal_mask(Pos, K),
             bias=bias,
             attention_dtype=attention_dtype,
             precision=precision,
@@ -54,7 +54,7 @@ def causal_sliding_window_attention(
     # The key block is [query_block_start - window_size + 1, query_block_start + window_size)
 
     # TODO: relax?
-    Block = Axis("Block", SeqLen.size // Window.size)
+    Block = Axis("Block", Pos.size // Window.size)
     KWindow = Axis("KWindow", Window.size * 2 - 1)  # this is what we need to grab from the key/value
 
     # this makes code a bit easier to read below
@@ -71,14 +71,14 @@ def causal_sliding_window_attention(
 
     def attend_block_N(block_idx):
         block_idx = block_idx.scalar()
-        query_block = query.slice(SeqLen, Q, start=block_idx * Q.size)
+        query_block = query.slice(Pos, Q, start=block_idx * Q.size)
         # extract the relevant window from the key and value
         # this spans [query_block_start - window_size + 1, query_block_start + window_size)
-        key_block = key.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
-        value_block = value.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
+        key_block = key.slice(Pos, K, start=(block_idx - 1) * Q.size + 1)
+        value_block = value.slice(Pos, K, start=(block_idx - 1) * Q.size + 1)
 
         if bias is not None:
-            bias_block = bias.slice(SeqLen, K, start=(block_idx - 1) * Q.size + 1)
+            bias_block = bias.slice(Pos, K, start=(block_idx - 1) * Q.size + 1)
         else:
             bias_block = None
 
@@ -92,11 +92,11 @@ def causal_sliding_window_attention(
     attn_mask_0 = hax.nn.attention.causal_mask(Q, K0)
 
     def attend_block_0(block_idx):
-        query_block = query.slice(SeqLen, Q, start=0)
-        key_block = key.slice(SeqLen, K0, start=0)
-        value_block = value.slice(SeqLen, K0, start=0)
+        query_block = query.slice(Pos, Q, start=0)
+        key_block = key.slice(Pos, K0, start=0)
+        value_block = value.slice(Pos, K0, start=0)
         if bias is not None:
-            bias_block = bias.slice(SeqLen, K0, start=0)
+            bias_block = bias.slice(Pos, K0, start=0)
         else:
             bias_block = None
         return hax.nn.attention.dot_product_attention(
@@ -111,4 +111,4 @@ def causal_sliding_window_attention(
     _, blocked_attn = hax.scan(attend_block, Block)(None, hax.arange(Block))  # type: ignore
 
     # now we need to unblock the attention
-    return blocked_attn.flatten_axes((Block, Q), SeqLen)
+    return blocked_attn.flatten_axes((Block, Q), Pos)

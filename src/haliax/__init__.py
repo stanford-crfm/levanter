@@ -1,14 +1,16 @@
-from typing import Sequence
+from typing import Optional, Protocol, Sequence
 
 import jax
 import jax.numpy as jnp
 
 import haliax.random as random
 from haliax import nn as nn
+from haliax import tree_util as tree_util
 
 from .core import (
     NamedArray,
     are_shape_checks_enabled,
+    broadcast_arrays,
     broadcast_axis,
     broadcast_to,
     concat_axis_specs,
@@ -27,8 +29,8 @@ from .core import (
 )
 from .hof import fold, scan, vmap
 from .ops import clip, isclose, pad_left, trace, tril, triu, where
-from .partitioning import auto_sharded, axis_mapping, shard_with_axis_mapping
-from .types import Axis, AxisSpec
+from .partitioning import auto_sharded, axis_mapping, named_jit, shard_with_axis_mapping
+from .types import Axis, AxisSelection, AxisSelector, AxisSpec
 from .wrap import wrap_axiswise_call, wrap_elemwise_binary, wrap_elemwise_unary, wrap_reduction_call
 
 
@@ -77,12 +79,37 @@ def arange(axis: Axis, *, start=0, step=1, dtype=None) -> NamedArray:
     return NamedArray(jnp.arange(start, stop, step, dtype=dtype), (axis,))
 
 
-def stack(axis: Axis, arrays: Sequence[NamedArray]) -> NamedArray:
+def stack(axis: AxisSelector, arrays: Sequence[NamedArray]) -> NamedArray:
     """Version of jnp.stack that returns a NamedArray"""
+    if isinstance(axis, str):
+        axis = Axis(axis, len(arrays))
     if len(arrays) == 0:
         return zeros(axis)
     arrays = [a.rearrange(arrays[0].axes) for a in arrays]
     return NamedArray(jnp.stack([a.array for a in arrays], axis=0), (axis,) + arrays[0].axes)
+
+
+def concatenate(axis: AxisSelector, arrays: Sequence[NamedArray]) -> NamedArray:
+    """Version of jnp.concatenate that returns a NamedArray"""
+    total_size = _sum(a.resolve_axis(axis).size for a in arrays)
+    if isinstance(axis, str):
+        axis = Axis(axis, total_size)
+    elif total_size != axis.size:
+        raise ValueError(
+            f"Cannot concatenate arrays along axis {axis.name} of size {axis.size} with total size {total_size}"
+        )
+
+    if len(arrays) == 0:
+        return zeros(axis)
+
+    arrays = [a.rearrange(arrays[0].axes) for a in arrays]
+    axis_index = arrays[0]._lookup_indices(axis.name)
+
+    if axis_index is None:
+        raise ValueError(f"Axis {axis.name} not found in 0th array {arrays[0]}")
+
+    new_axes = arrays[0].axes[:axis_index] + (axis,) + arrays[0].axes[axis_index + 1 :]
+    return NamedArray(jnp.concatenate([a.array for a in arrays], axis=axis_index), new_axes)
 
 
 # elementwise unary operations
@@ -150,21 +177,37 @@ tanh = wrap_elemwise_unary(jnp.tanh)
 trunc = wrap_elemwise_unary(jnp.trunc)
 
 # Reduction functions
-all = wrap_reduction_call(jnp.all)
-amax = wrap_reduction_call(jnp.amax)
-any = wrap_reduction_call(jnp.any)
-argmax = wrap_reduction_call(jnp.argmax, single_axis_only=True, supports_where=False)
-argmin = wrap_reduction_call(jnp.argmin, single_axis_only=True, supports_where=False)
-max = wrap_reduction_call(jnp.max)
-mean = wrap_reduction_call(jnp.mean)
-min = wrap_reduction_call(jnp.min)
-prod = wrap_reduction_call(jnp.prod)
-ptp = wrap_reduction_call(jnp.ptp)
-product = wrap_reduction_call(jnp.product)
-sometrue = wrap_reduction_call(jnp.sometrue)
-std = wrap_reduction_call(jnp.std)
-sum = wrap_reduction_call(jnp.sum)
-var = wrap_reduction_call(jnp.var)
+
+
+class ReductionFunction(Protocol):
+    def __call__(
+        self, array: NamedArray, axis: Optional[AxisSelection] = None, where: Optional[NamedArray] = None, **kwargs
+    ) -> NamedArray:
+        ...
+
+
+class SimpleReductionFunction(Protocol):
+    def __call__(self, array: NamedArray, axis: Optional[AxisSelector] = None, **kwargs) -> NamedArray:
+        ...
+
+
+all: ReductionFunction = wrap_reduction_call(jnp.all)
+amax: ReductionFunction = wrap_reduction_call(jnp.amax)
+any: ReductionFunction = wrap_reduction_call(jnp.any)
+argmax: SimpleReductionFunction = wrap_reduction_call(jnp.argmax, single_axis_only=True, supports_where=False)
+argmin: SimpleReductionFunction = wrap_reduction_call(jnp.argmin, single_axis_only=True, supports_where=False)
+max: ReductionFunction = wrap_reduction_call(jnp.max)
+mean: ReductionFunction = wrap_reduction_call(jnp.mean)
+min: ReductionFunction = wrap_reduction_call(jnp.min)
+prod: ReductionFunction = wrap_reduction_call(jnp.prod)
+ptp: ReductionFunction = wrap_reduction_call(jnp.ptp)
+product: ReductionFunction = wrap_reduction_call(jnp.product)
+sometrue: ReductionFunction = wrap_reduction_call(jnp.sometrue)
+std: ReductionFunction = wrap_reduction_call(jnp.std)
+_sum = sum
+sum: ReductionFunction = wrap_reduction_call(jnp.sum)
+var: ReductionFunction = wrap_reduction_call(jnp.var)
+
 
 # "Normalization" functions that use an axis but don't change the shape
 cumsum = wrap_axiswise_call(jnp.cumsum, True)
@@ -215,6 +258,8 @@ __all__ = [
     "Axis",
     "NamedArray",
     "AxisSpec",
+    "AxisSelection",
+    "AxisSelector",
     "broadcast_to",
     "broadcast_axis",
     "named",
@@ -361,9 +406,13 @@ __all__ = [
     "true_divide",
     "auto_sharded",
     "axis_mapping",
+    "named_jit",
     "shard_with_axis_mapping",
+    "named_jit",
     "enable_shape_checks",
     "are_shape_checks_enabled",
     "isclose",
     "pad_left",
+    "stack",
+    "concatenate",
 ]

@@ -23,7 +23,6 @@ class Dataset(Iterable[T], ABC):
         raise NotImplementedError
 
 
-
 class ShardableDataset(Dataset[T], ABC):
     @abstractmethod
     def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[T]":
@@ -67,6 +66,3 @@ class ShuffleDataset(ShardableDataset[T]):
             i = jrandom.randint(subkey, (), 0, len(buffer))
             yield buffer[i]
             del buffer[i]
-
-    def __len__(self) -> int:
-        return len(self.dataset)  # type: ignore

@@ -2,10 +2,10 @@ import time
 
 import jax
 import numpy as np
-from jax.experimental.maps import Mesh
+from jax.sharding import Mesh
 
 import haliax as hax
-from haliax.partitioning import named_pjit
+from haliax.partitioning import named_jit
 from levanter.models.longformer import causal_sliding_window_attention
 
 
@@ -26,12 +26,12 @@ mesh = Mesh(devices, ("data",))
 axis_resources = {"B": "data"}
 
 
-@named_pjit(axis_resources=axis_resources)
+@named_jit(axis_resources=axis_resources)
 def do_attn(inputs):
     return causal_sliding_window_attention(Len, W, D, inputs, inputs, inputs)
 
 
-@named_pjit(axis_resources=axis_resources)
+@named_jit(axis_resources=axis_resources)
 def init():
     return hax.random.uniform(jax.random.PRNGKey(0), (B, Len, D))
 

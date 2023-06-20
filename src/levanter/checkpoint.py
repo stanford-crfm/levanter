@@ -4,22 +4,28 @@ import json
 import logging
 import os
 import pathlib
+import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Union
+from datetime import timedelta
+from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import fsspec
 import jax
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
+from pyrallis import field
 
-from levanter.jax_utils import multihost_broadcast_sync
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+from levanter.utils.jax_utils import multihost_broadcast_sync
 
 
 logger = logging.getLogger(__name__)
 
 PathLike = Union[str, pathlib.Path]
+
+M = TypeVar("M")
+S = TypeVar("S")
 
 
 @dataclass(frozen=True)
@@ -73,15 +79,23 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
-    def load_checkpoint(self, model, training_state, path: Optional[PathLike] = None, *, discover_latest: bool = True):
+    def load_checkpoint(
+        self, model: M, training_state: S, path: Optional[PathLike] = None, *, discover_latest: bool = True
+    ) -> Optional[Tuple[M, S, int]]:
         if path is None:
             path = self.base_path
         return load_checkpoint(model, training_state, path, discover_latest=discover_latest)
 
-    def load_model(self, model, path: Optional[str] = None, *, discover_latest: bool = True):
+    def load_model(
+        self, model: M, path: Optional[str] = None, *, discover_latest: bool = True
+    ) -> Optional[Tuple[M, int]]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(model, None, path, discover_latest=discover_latest)
+        ckpt = load_checkpoint(model, None, path, discover_latest=discover_latest)
+        if ckpt is None:
+            return None
+        model, _, step = ckpt
+        return model, step
 
     def on_step(self, info, force: bool = False):
         step = info.step
@@ -90,6 +104,10 @@ class Checkpointer:
             self._last_save_time = self._dt_now_injection()
             if not force:
                 return  # don't save checkpoint at step 0 unless forced
+
+        if step == self._last_save_step:
+            # we've already saved a checkpoint at this step
+            return
 
         # two reasons we can save: time or step
         # they have different behaviors for retention.
@@ -100,7 +118,7 @@ class Checkpointer:
         # saves a checkpoint for the next step, etc. This leads to partial checkpoints, no good.
         # we fix by having process 0 make the decision
         my_should_save = force
-        my_save_permanent_ckpt = False
+        my_save_permanent_ckpt = force
 
         current_every = self._get_current_step_save_interval(step)
         last_save_time = self._dt_now_injection() - self._last_save_time
@@ -111,7 +129,9 @@ class Checkpointer:
             my_should_save = True
             my_save_permanent_ckpt = False
 
-        should_save, save_permanent_ckpt = multihost_broadcast_sync((my_should_save, my_save_permanent_ckpt))
+        should_save, save_permanent_ckpt = multihost_broadcast_sync(
+            (my_should_save, my_save_permanent_ckpt), timeout=500
+        )
 
         # log the decision
         if should_save:
@@ -187,7 +207,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
     If training_state is None, no training state will be saved.
 
-    This method is jax.Array and GlobalDeviceArray-aware, and will save shards in a way that can be restored
+    This method is jax.Array-aware and will save shards in a way that can be restored
     """
     checkpoint_path = str(checkpoint_path)
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
@@ -221,7 +241,9 @@ def save_metadata(checkpoint_path, fs, step):
             json.dump(metadata, json_out)
 
 
-def load_checkpoint(model, training_state, checkpoint_path: PathLike, *, discover_latest=True):
+def load_checkpoint(
+    model: M, training_state: S, checkpoint_path: PathLike, *, discover_latest=True
+) -> Optional[Tuple[M, S, int]]:
     """
     Load a checkpoint from a given path.
 
@@ -279,10 +301,8 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
         return fs.exists(os.path.join(path, "metadata.json"))
 
     def maybe_unstrip_protocol(path: str):
-        base_has_protocol = fs._strip_protocol(checkpoint_path) != checkpoint_path
-        path_has_protocol = fs._strip_protocol(path) != path
-        if base_has_protocol and not path_has_protocol:
-            base_path_protocol = checkpoint_path.split("://")[0]  # type: ignore
+        base_path_protocol = urllib.parse.urlparse(str(checkpoint_path)).scheme
+        if base_path_protocol != "" and not urllib.parse.urlparse(path).scheme != "":
             return f"{base_path_protocol}://{path}"
         return path
 
@@ -370,3 +390,39 @@ def _assert_same(new, old):
         raise ValueError(f"One has a shape and the other doesn't: {new} vs {old}")
     if hasattr(new, "dtype") != hasattr(old, "dtype"):
         raise ValueError(f"One has a dtype and the other doesn't: {new} vs {old}")
+
+
+@dataclass
+class CheckpointerConfig:
+    base_path: str = "checkpoints/"
+    save_interval: timedelta = timedelta(hours=6)
+    # TODO: I'd like to write this, but it's not supported by pyrallis
+    # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
+    keep: List[dict] = field(
+        default_factory=lambda: [dict(every=10000)]
+    )  # list of dicts with two keys: every and until
+
+    def expanded_path(self, run_name):
+        return os.path.expanduser(os.path.join(self.base_path, run_name))
+
+    def create(self, run_name) -> Checkpointer:
+        keeps = [CheckpointInterval(**k) for k in self.keep]
+        return Checkpointer(
+            base_path=self.expanded_path(run_name),
+            save_interval=self.save_interval,
+            step_policies=keeps,
+        )
+
+    def __post_init__(self):
+        self.base_path = os.path.expanduser(self.base_path)
+
+        # validate the checkpoint intervals.
+        # we want to make sure that the intervals are monotonic. only the last one can be None
+        prev_interval = None
+        for interval in self.keep:
+            if prev_interval is not None:
+                assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
+                assert (
+                    interval["until"] is None or interval["until"] > prev_interval["until"]
+                ), "Checkpoint intervals must be monotonic"
+            prev_interval = interval

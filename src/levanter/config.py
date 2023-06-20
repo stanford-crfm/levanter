@@ -1,406 +1,28 @@
-# Various Pyrallis configs
+import atexit
 import dataclasses
-import logging
+import functools
+import importlib
+import inspect
 import os
+import pkgutil
+import sys
 import tempfile
-from dataclasses import dataclass
+import urllib.parse
+from dataclasses import is_dataclass
 from datetime import timedelta
-from functools import cached_property
-from pathlib import Path
-from typing import List, Mapping, Optional, Union
+from functools import wraps
+from typing import Any, Dict, List, Optional, Type, Union
 
-import jax
+import fsspec
 import jmp
-import numpy as np
-import optax
 import pyrallis
-from git import InvalidGitRepositoryError, NoSuchPathError, Repo
-from jax._src.clusters import SlurmCluster, TpuCluster
-from jax.experimental.maps import Mesh
-from pyrallis import field
+from fsspec import AbstractFileSystem
+from pyrallis import parse
 
-import levanter.logging
-from haliax.partitioning import ResourceAxis, ResourceMapping
-from levanter import jax_utils
-from levanter.checkpoint import Checkpointer, CheckpointInterval
-from levanter.datetime_utils import encode_timedelta, parse_timedelta
-from levanter.distributed import LevanterSlurmCluster
+from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WandbConfig:
-    """
-    Configuration for wandb.
-    """
-
-    entity: Optional[str] = None
-    project: Optional[str] = None
-    name: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    id: Optional[str] = None
-    group: Optional[str] = None
-    mode: Optional[str] = None
-    resume: Optional[Union[bool, str]] = None
-
-    save_code: Union[bool, str] = True
-    """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
-    typically don't run from the root of the repo)."""
-
-    save_xla_dumps: bool = False
-    """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
-
-    def init(self, hparams=None, **extra_hparams):
-        import wandb
-
-        if hparams is None:
-            hparams_to_save = {}
-        elif dataclasses.is_dataclass(hparams):
-            hparams_to_save = dataclasses.asdict(hparams)
-        else:
-            hparams_to_save = dict(hparams)
-
-        if extra_hparams:
-            hparams_to_save.update(extra_hparams)
-
-        # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
-        # however, we do share information about the run id, so that we can link to it from the other workers
-        mode = self.mode
-        if jax.process_index() != 0:
-            mode = "disabled"
-
-        if isinstance(self.save_code, str):
-            code_dir = self.save_code
-        elif self.save_code:
-            code_dir = WandbConfig._infer_experiment_git_root() or "."
-        else:
-            code_dir = None
-
-        other_settings = dict()
-        if code_dir is not None:
-            logger.info(f"Setting wandb code_dir to {code_dir}")
-            other_settings["code_dir"] = code_dir
-            other_settings["git_root"] = code_dir
-
-        r = wandb.init(
-            entity=self.entity,
-            project=self.project,
-            name=self.name,
-            tags=self.tags,
-            id=self.id,
-            group=self.group,
-            resume=self.resume,
-            mode=mode,
-            config=hparams_to_save,
-            settings=other_settings,
-        )
-
-        if jax.process_count() > 1:
-            # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
-            metadata_to_share = dict(
-                entity=r.entity,
-                project=r.project,
-                name=r.name,
-                tags=r.tags,
-                id=r.id,
-                group=r.group,
-            )
-            metadata_to_share = jax_utils.multihost_broadcast_sync(
-                metadata_to_share, is_source=jax.process_index() == 0
-            )
-
-            if jax.process_index() != 0:
-                assert r.mode == "disabled"
-                for k, v in metadata_to_share.items():
-                    setattr(r, k, v)
-
-            logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
-
-        if dataclasses.is_dataclass(hparams):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                config_path = f"{tmpdir}/config.yaml"
-                with open(config_path, "w") as f:
-                    pyrallis.dump(hparams, f, encoding="utf-8")
-                wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
-
-        wandb.summary["num_devices"] = jax.device_count()
-        wandb.summary["num_hosts"] = jax.process_count()
-        wandb.summary["backend"] = jax.default_backend()
-
-    @staticmethod
-    def _infer_experiment_git_root() -> Optional[str]:
-        # sniff out the main directory (since we typically don't run from the root of the repo)
-        # we'll walk the stack and directories for the files in the stack the until we're at a git root
-        import os
-        import traceback
-
-        stack = traceback.extract_stack()
-        # start from the top of the stack and work our way down since we want to hit the main file first
-        top_git_root = None
-        for frame in stack:
-            dirname = os.path.dirname(frame.filename)
-            # bit hacky but we want to skip anything that's in the python env
-            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda"]):
-                continue
-            # see if it's under a git root
-            try:
-                repo = Repo(dirname, search_parent_directories=True)
-                top_git_root = repo.working_dir
-                break
-            except (NoSuchPathError, InvalidGitRepositoryError):
-                logger.debug(f"Skipping {dirname} since it's not a git root")
-                pass
-        return top_git_root
-
-
-@dataclass
-class CheckpointerConfig:
-    base_path: str = "checkpoints/"
-    save_interval: timedelta = timedelta(hours=6)
-    # TODO: I'd like to write this, but it's not supported by pyrallis
-    # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
-    keep: List[dict] = field(
-        default_factory=lambda: [dict(every=10000)]
-    )  # list of dicts with two keys: every and until
-
-    def create(self, run_name) -> Checkpointer:
-        keeps = [CheckpointInterval(**k) for k in self.keep]
-        return Checkpointer(
-            base_path=os.path.join(self.base_path, run_name),
-            save_interval=self.save_interval,
-            step_policies=keeps,
-        )
-
-    def __post_init__(self):
-        self.base_path = os.path.expanduser(self.base_path)
-
-        # validate the checkpoint intervals.
-        # we want to make sure that the intervals are monotonic. only the last one can be None
-        prev_interval = None
-        for interval in self.keep:
-            if prev_interval is not None:
-                assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
-                assert (
-                    interval["until"] is None or interval["until"] > prev_interval["until"]
-                ), "Checkpoint intervals must be monotonic"
-            prev_interval = interval
-
-
-@dataclass(frozen=True)
-class DistributedConfig:
-    coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
-    num_processes: Optional[int] = None
-    process_id: Optional[int] = None
-    local_device_ids: Optional[Union[int, List[int]]] = None
-
-    def _is_distributed(self):
-        if (
-            (self.coordinator_address is not None)
-            or (self.num_processes is not None)
-            or (self.process_id is not None)
-            or (self.local_device_ids is not None)
-        ):
-            return True
-
-        # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
-        # since it depends on the jax internals, but it's the best we can do
-        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
-            return True
-
-    def initialize(self):
-        if self._is_distributed():
-            device_ids = self.local_device_ids
-            coordinator_address = self.coordinator_address
-
-            if LevanterSlurmCluster.is_env_present():
-                if device_ids is None:
-                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
-
-                if coordinator_address is None:
-                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
-
-            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
-            logger.info(
-                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
-                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
-            )
-
-
-@dataclass
-class TrainerConfig:
-    seed: int = 0
-    mp: jmp.Policy = jmp.get_policy("f32")
-
-    wandb: WandbConfig = WandbConfig()
-    log_dir: Path = Path("logs/")
-    run_base_dir: Path = Path("runs/")
-
-    # config related to partitioning
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
-    axis_resources: Mapping[str, str] = field(default_factory=dict)  # mapping from logical axis to physical axis
-    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
-    # and optimizer sharding
-
-    # Config related to batch sizes
-    train_batch_size: int = 512
-    per_device_parallelism: int = -1
-
-    per_device_eval_parallelism: int = -1
-
-    # Config related to duration
-    num_train_steps: int = 400_000
-    steps_per_eval: int = 1_000
-
-    checkpointer: CheckpointerConfig = CheckpointerConfig()
-    load_last_checkpoint: bool = True
-    load_checkpoint_path: Optional[str] = None
-
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    use_hardware_rng: bool = False  # whether to use less-reproducible but faster rng
-    use_jax_array: bool = True  # whether or not to use the new jax.Array for pjitted models.
-
-    distributed: DistributedConfig = DistributedConfig()
-
-    @property
-    def run_name(self) -> str:
-        import wandb
-
-        return wandb.run.name or wandb.run.id
-
-    @property
-    def run_dir(self) -> Path:
-        return self.run_base_dir / self.run_name
-
-    def initialize(self, all_config):
-        """Initializes jax, wandb, logging, setting the run name in the process"""
-        self.distributed.initialize()
-        self._initialize_jax_config()
-        self.wandb.init(all_config)
-        self._initialize_logging()
-        self._validate()
-
-    @cached_property
-    def device_mesh(self) -> Mesh:
-        devices = jax.devices()
-        devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
-        return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
-
-    @property
-    def eval_batch_size(self):
-        return self.per_device_eval_parallelism * self.data_axis_size
-
-    @property
-    def data_axis_size(self):
-        """size of the data parallel/batch parallel axis."""
-        assert jax.device_count() % self.model_axis_size == 0
-        return jax.device_count() // self.model_axis_size
-
-    @property
-    def compute_axis_mapping(self) -> ResourceMapping:
-        return self.axis_resources
-
-    @property
-    def parameter_axis_mapping(self) -> ResourceMapping:
-        mapping = dict(self.axis_resources)
-        if self.parameter_axis_resources:
-            mapping.update(self.parameter_axis_resources)
-
-        return mapping
-
-    def _initialize_jax_config(self):
-        """Initialize global jax config with settings we like, based on config"""
-        jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_array", self.use_jax_array)
-
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
-
-    def optimizer(self):
-        """Creates the optimizer"""
-
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        optimizer = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler())
-
-        return optimizer
-
-    def lr_scheduler(self):
-        warmup_steps = int(self.warmup_ratio * self.num_train_steps)
-        lr_decay_steps = self.num_train_steps - warmup_steps
-        if warmup_steps == 0 and self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        else:
-            if self.lr_schedule == "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            elif self.lr_schedule == "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps - warmup_steps)
-            elif self.lr_schedule == "linear":
-                schedule = optax.linear_schedule(self.learning_rate, 0.0, lr_decay_steps - warmup_steps)
-            else:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-            if warmup_steps != 0:
-                warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-                schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
-        return schedule
-
-    # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
-    def _validate(self):
-        if jax.device_count() % self.model_axis_size != 0:
-            raise ValueError(
-                f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"
-            )
-
-        if (
-            jax.local_device_count() % self.model_axis_size != 0
-            and self.model_axis_size % jax.local_device_count() != 0
-        ):
-            raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
-
-        if self.per_device_parallelism == -1:
-            self.per_device_parallelism = self.train_batch_size // jax.device_count()
-
-        # validate size of per_device_parallelism
-        if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
-            raise ValueError(
-                f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_parallelism *"
-                f" data_axis_size ({self.per_device_parallelism}, {self.data_axis_size})"
-            )
-
-        if self.per_device_eval_parallelism == -1:
-            self.per_device_eval_parallelism = self.per_device_parallelism
+JsonAtom = Union[str, int, float, bool, None]
 
 
 def register_codecs():
@@ -425,5 +47,219 @@ def register_codecs():
     pyrallis.decode.register(timedelta, parse_timedelta)
     pyrallis.encode.register(timedelta, encode_timedelta)
 
+    # pyrallis' decode function for bool accepts anything truthy (it uses bool(x)), so we need to override it
+    # we need to raise if it's not a bool, because anything can be converted to a bool
+    truthy = {"true", "t", "yes", "y", "True", "T", "Yes", "Y", "TRUE", True}
+    falsy = {"false", "f", "no", "n", "False", "F", "No", "N", "FALSE", False}
+
+    def bool_decode(x):
+        if x in truthy:
+            return True
+        elif x in falsy:
+            return False
+        else:
+            raise ValueError(f"Could not convert {x} to bool")
+
+    pyrallis.decode.register(bool, bool_decode)
+
 
 register_codecs()
+
+
+def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[str] = None):
+    """
+    A decorator to register a config class with a registry that we can use to find the config class for a given
+    config. This is used for abstract classes/interfaces where we want to select a concrete implementation based on
+    the config. Subclasses can be added with the `register_subclass` method.
+
+    We have a rudimentary package discovery system.
+    If discover_packages is not None, then we will attempt to identify subclasses by importing
+    packages from discover_packages. They should still be registered with register_subclass.
+    If you use discover_packages, you should register a class with the same name as the package.
+    For example, if you make a new LmConfig, which has discover_packages="levanter.models" and your
+    model is defined in my_transformer.py, then you should register your config with
+    `LmConfig.register_subclass("my_transformer", MyTransformerConfig)`
+
+    Usage:
+    ```python
+    @config_registry
+    @dataclasses.dataclass
+    class ModelConfig:
+        pass
+
+    @dataclasses.dataclass
+    class GPTConfig(ModelConfig):
+        pass
+
+    ModelConfig.register_subclass("gpt", GPTConfig)
+
+    the syntax for a yaml file would be:
+    ```yaml
+    model:
+      gpt:
+         <config for gpt>
+    ```
+
+    As a special case we also allow just using a string if you want defaults:
+    ```yaml
+    model: gpt
+    ```
+
+    :param cls:
+    :return: the decorated classes.
+    """
+
+    if cls is None:
+        return functools.partial(config_registry, discover_packages=discover_packages)
+
+    if not hasattr(cls, "_config_registry"):
+        cls._config_registry = {}
+
+    if not hasattr(cls, "register_subclass"):
+
+        def register_subclass(name: str, subcls=None):
+            assert cls is not None
+            if subcls is None:
+                return functools.partial(register_subclass, name)
+            if name in cls._config_registry:
+                raise ValueError(f"Config class {name} already registered with {cls._config_registry[name]}")
+            cls._config_registry[name] = subcls
+            return subcls
+
+        cls.register_subclass = register_subclass
+
+    # now register the cls with pyrallis
+    def encode_config(config):
+        for name, subcls in cls._config_registry.items():
+            if isinstance(config, subcls):
+                # singledispatch means that pyrallis.encode(config) will call this function even if config is a subclass of cls
+                return {name: _default_encode(config)}
+
+        raise ValueError(f"Could not find a registered subclass for {config}")
+
+    def decode_config(config):
+        if type(config) is str:
+            config = {config: {}}
+
+        if len(config) != 1:
+            raise ValueError(f"Expected exactly one key in config, got {config}")
+
+        name, config = config.popitem()
+        try:
+            subcls = cls._config_registry[name]
+            return pyrallis.decode(subcls, config)
+        except KeyError:
+            if discover_packages:
+                subcls = _try_discover_packages(cls, name)
+                if subcls is not None:
+                    return pyrallis.decode(subcls, config)
+
+            raise ValueError(f"Could not find a registered subclass for {name}")
+
+    def _try_discover_packages(cls, subcls_name):
+        # from https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
+        # resolve the package path
+        package_module = importlib.import_module(discover_packages)
+
+        def iter_namespace(ns_pkg):
+            # Specifying the second argument (prefix) to iter_modules makes the
+            # returned name an absolute name instead of a relative one. This allows
+            # import_module to work without having to do additional modification to
+            # the name.
+            return pkgutil.iter_modules(ns_pkg.__path__, ns_pkg.__name__ + ".")
+
+        for finder, pkg_name, ispkg in iter_namespace(package_module):
+            if pkg_name == f"{discover_packages}.{subcls_name}":
+                _ = importlib.import_module(pkg_name)
+                # registration should happen in the __init__.py of the package
+                # cls.register_subclass(name, subcls)
+                return cls._config_registry[subcls_name]
+
+    pyrallis.encode.register(cls, encode_config)
+    pyrallis.decode.register(cls, decode_config)
+
+    return cls
+
+
+def _default_encode(obj):
+    if is_dataclass(obj):
+        d: Dict[str, Any] = dict()
+        for field in dataclasses.fields(obj):
+            value = getattr(obj, field.name)
+            try:
+                d[field.name] = pyrallis.encode(value)
+            except TypeError as e:
+                raise ValueError(f"Could not encode field {field.name} of type {field.type} of {obj}") from e
+        return d
+    else:
+        raise ValueError(f"Could not encode {obj}")
+
+
+DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
+
+
+def main(*, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
+    """
+    Like pyrallis.wrap but can handle config paths that are urls loadable by fsspec.
+    This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
+
+    :param args: the args to parse. If None, will use sys.argv[1:]
+    :param config_dir: the directory to look for configs in (if the path does not exist already). If None, will only use the current working directory
+    """
+    _cmdline_args = args
+    if args is None:
+        _cmdline_args = sys.argv[1:]
+
+    def wrapper_outer(fn):
+        @wraps(fn)
+        def wrapper_inner(*args, **kwargs):
+            config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
+            paths_to_check = [config_path, f"{config_path}.yaml", f"{config_path}.yml"]
+            if config_path is not None and config_dir is not None:
+                paths_to_check.extend([os.path.join(config_dir, p) for p in paths_to_check])
+
+            for path in paths_to_check:
+                if path is not None and os.path.exists(path):
+                    config_path = path
+                    break
+
+            argspec = inspect.getfullargspec(fn)
+            argtype = argspec.annotations[argspec.args[0]]
+            cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
+            response = fn(cfg, *args, **kwargs)
+            return response
+
+        return wrapper_inner
+
+    return wrapper_outer
+
+
+def _maybe_get_config_path_and_cmdline_args(args: List[str]):
+    """
+    We want to accept ... --config_path <config> ... where config could be a path or url.
+    If URL, we need to download it and save it to a temp file. We then want to remove --config_path
+    from the cmdline args so that pyrallis doesn't try to load it as a config path and return it separately here
+    along with the modified cmdline args.
+    """
+    if "--config_path" not in args and "--config" not in args:
+        return None, args
+    else:
+        try:
+            config_path_index = args.index("--config_path")
+        except ValueError:
+            config_path_index = args.index("--config")
+
+        config_path = args[config_path_index + 1]
+
+        if urllib.parse.urlparse(config_path).scheme:
+            fs: AbstractFileSystem
+            fs, fs_path = fsspec.core.url_to_fs(config_path)
+            temp_file = tempfile.NamedTemporaryFile(prefix="config", suffix=".yaml", delete=False)
+            atexit.register(lambda: os.unlink(temp_file.name))
+            fs.get(fs_path, temp_file.name)
+            config_path = temp_file.name
+
+        args = args.copy()
+        del args[config_path_index]
+        del args[config_path_index]
+        return config_path, args

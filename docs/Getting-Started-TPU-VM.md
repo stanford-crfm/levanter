@@ -1,4 +1,4 @@
-# Getting Started with Levanter on TPU VMs
+# Getting Started on TPU VMs
 
 This guide will walk you through the steps to get started with Levanter on TPU VMs.
 
@@ -31,9 +31,11 @@ and you can't just set up one machine, but a whole cluster. We have some scripts
 
 ### Automatic Setup
 
-(CRFM folks: see below)
+You can use `infra/spin-up-vm.sh` to create a TPU VM instance. In addition to creating the instance, it will set up
+the venv on each worker, and it will clone the repo to `~/levanter/`.
 
-You can use `infra/spin-up-tpu-vm.sh` to create a TPU VM instance:
+**For Public Users**:
+
 ```bash
 bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
 ```
@@ -43,20 +45,23 @@ Defaults are:
 - `type`: `v3-32`
 - `preemptible`: `false`
 
-The command will spam you with a lot of output, sorry.
+**For Stanford CRFM Users**:
 
-In addition to creating the instance, it will set up the venv on each worker, and it will clone the repo to `~/levanter/`
-
-
-### CRFM Setup
-
-Stanford CRFM folks can pass a different setup script to `infra/spin-up-tpu-vm.sh` to get our NFS automounted:
+Stanford CRFM folks can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
 ```bash
-bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
 ```
 
 In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
 venv and a copy of the repo.
+
+**Notes**:
+- This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
+path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
+- The command will spam you with a lot of output, sorry.
+- If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
+the VM. That's explained down below in the "Running Levanter GPT-2" section.
+
 
 ## Useful commands
 
@@ -76,26 +81,68 @@ venv and a copy of the repo.
 ### SCPing a file from one worker
 `gcloud compute tpus tpu-vm scp $name:path/to/file my_file --zone us-east1-d --worker=0`
 
-## Next Steps
-
+## Running Levanter GPT-2
 Now that you have a TPU VM instance, you can follow the [Running Levanter] steps, but here are a few shortcuts:
 
-### Running Levanter GPT-2
-
-
-#### Launch a GPT-2 Small in unattended mode (using nohup)
+### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
 on each worker.
 
-#### Launch a GPT-2 Small in interactive mode
+### Launch a GPT-2 Small in interactive mode
 This version writes to the terminal, you should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
+
+### Using the "babysitting" script with a preemptible (or TRC) TPU VM
+
+If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The baby-sitting
+script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
+It keeps running the command (and relaunching) until the command exits successfully.
+
+Running in this mode is a bit more complex because you need to set a unique run id and (ideally unique) run name
+for your run, which would otherwise be generated for you by WandB.
+
+You can run it like this:
+
+```bash
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
+```
+
+That `--` is important! It separates the spin up args from the running args. Also, you should never use `launch.sh`
+with `babysit`, because nohup exits immediately with exit code 0.
+
+### Running your own config
+
+If you want to run your own config, we suggest you start from one of the existing configs. Then, if you're not using
+an NFS server or similar, you should upload your config to GCS:
+
+```bash
+gsutil cp my_config.yaml gs://my_bucket//my_config.yaml
+```
+
+Afterwards, you can use the config directly from the TPU VM instance, e.g.:
+
+```bash
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
+    --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
+```
+
+The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
+to use WandB, and `--trainer.wandb.name` is a human-readable name for the run, though it is where checkpoints
+will be written (specifically to `gs://path/to/checkpoints/${RUN_NAME}`), so you should probably use a unique name.
+With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
+try to load the latest checkpoint if it exists.
+
+Tokenizers are also loaded via fsspec, so you can use the same trick to load them from GCS if you have a custom
+tokenizer, or you can use an HF tokenizer.
 
 ## Common Issues
 ### (CRFM) Permission denied on `/files`

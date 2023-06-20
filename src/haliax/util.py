@@ -1,4 +1,4 @@
-from typing import Sequence, Tuple, TypeVar, Union
+from typing import Callable, Sequence, Tuple, TypeVar, Union
 
 from haliax.jax_utils import is_jax_array_like
 
@@ -14,7 +14,9 @@ def is_named_array(leaf):
 
 
 def ensure_tuple(x: Union[Sequence[T], T]) -> Tuple[T, ...]:
-    if isinstance(x, Sequence):
+    if isinstance(x, str):
+        return (x,)  # type: ignore
+    elif isinstance(x, Sequence):
         return tuple(x)
     return (x,)
 
@@ -38,3 +40,10 @@ class StringHolderEnum(type):
 
 def is_jax_or_hax_array_like(x):
     return is_jax_array_like(x) or is_named_array(x)
+
+
+def index_where(pred: Callable[[T], bool], xs: Sequence[T]) -> int:
+    for i, x in enumerate(xs):
+        if pred(x):
+            return i
+    raise ValueError("No element satisfies predicate")
