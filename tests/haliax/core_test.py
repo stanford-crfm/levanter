@@ -549,3 +549,23 @@ def test_indexing_bug_from_docs():
 
     # assert a[{"X": ind1, "Y": ind2}].axes == (I1, I2, I3, Z)
     assert a[{"X": ind1, "Y": ind2, "Z": 3}].axes == (I1, I2, I3)
+
+
+def test_duplicate_axis_names_in_slicing():
+    X = hax.Axis("X", 10)
+    Y = hax.Axis("Y", 20)
+    Z = hax.Axis("Z", 30)
+
+    X2 = hax.Axis("X", 5)
+    Y2 = hax.Axis("Y", 5)
+
+    a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
+    ind1 = hax.random.randint(jax.random.PRNGKey(0), (X2,), 0, 10)
+    ind2 = hax.random.randint(jax.random.PRNGKey(0), (Y2,), 0, 10)
+
+    a[{"X": ind1, "Y": ind2}]  # returns a NamedArray with axes = Axis("X", 5), Axis("Y", 5), Axis("Z", 30)
+
+    with pytest.raises(ValueError):
+        a[{"Y": ind1}]  # error, "X" is not eliminated by the indexing operation
+
+    a[{"X": ind2, "Y": ind1}]  # ok, because X and Y are eliminated by the indexing operation

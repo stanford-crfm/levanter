@@ -32,7 +32,8 @@ JAX ndarray is returned.
 
 NumPy's [Advanced Indexing](https://numpy.org/doc/stable/user/basics.indexing.html#advanced-indexing) is supported,
 though we use named arrays for the indices instead of normal arrays. In NumPy, the indexed arrays much be
-broadcastable to the same shape. Haliax is similar, except that they follow Halide's broadcasting rules instead of NumPy's.
+broadcastable to the same shape. Advanced indexing in Haliax is similar, except that they follow Haliax's broadcasting rules,
+meaning that the axis names determine broadcasting. Axes with the same name must have the same size.
 
 ```python
 import haliax as hax
@@ -50,6 +51,8 @@ I3 = hax.Axis("I3", 5)
 ind1 = hax.random.randint(jax.random.PRNGKey(0), (I1,), 0, 10)
 ind2 = hax.random.randint(jax.random.PRNGKey(0), (I2, I3), 0, 20)
 
+a[{"X": ind1}]  # returns a NamedArray with axes = Axis("I1", 5), Axis("Y", 20), Axis("Z", 30)
+
 a[{"X": ind1, "Y": ind2}]  # returns a NamedArray with axes = Axis("I1", 5), Axis("I2", 5), Axis("I3", 5), Axis("Z", 30)
 a[{"X": ind1, "Y": ind2, "Z": 3}]  # returns a NamedArray with axes = Axis("I1", 5), Axis("I2", 5), Axis("I3", 5)
 ```
@@ -57,3 +60,28 @@ a[{"X": ind1, "Y": ind2, "Z": 3}]  # returns a NamedArray with axes = Axis("I1",
 The order of the indices in the dictionary doesn't matter, and you can mix and match basic and advanced indexing.
 The actual sequence of axes is a bit complex, both in Haliax and in NumPy. If you need a specific order, it's probably
 best to use rearrange.
+
+In keeping with the one-axis-per-name rule, you are allowed to index using axes with a name present in the array,
+if it would be eliminated by the indexing operation. For example:
+
+```python
+import haliax as hax
+import jax
+
+X = hax.Axis("X", 10)
+Y = hax.Axis("Y", 20)
+Z = hax.Axis("Z", 30)
+
+X2 = hax.Axis("X", 5)
+Y2 = hax.Axis("Y", 5)
+
+a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
+ind1 = hax.random.randint(jax.random.PRNGKey(0), (X2,), 0, 10)
+ind2 = hax.random.randint(jax.random.PRNGKey(0), (Y2,), 0, 10)
+
+a[{"X": ind1, "Y": ind2}]  # returns a NamedArray with axes = Axis("X", 5), Axis("Y", 5), Axis("Z", 30)
+
+a[{"Y": ind1}]  # error, "X" is not eliminated by the indexing operation
+
+a[{"X": ind2, "Y": ind1}]  # ok, because X and Y are eliminated by the indexing operation
+```
