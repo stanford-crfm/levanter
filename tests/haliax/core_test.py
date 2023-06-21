@@ -414,3 +414,170 @@ def test_rename():
 
     assert jnp.all(jnp.equal(hax.rename(named1, {H: H2, "W": "W2"}).array, named1.array))
     assert hax.rename(named1, {H: H2, "W": "W2"}).axes == (H2, W2, D)
+
+
+def test_slice_nd():
+    H = Axis("H", 20)
+    W = Axis("W", 30)
+    D = Axis("D", 40)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(hax.slice_nd(named1, {"H": slice(0, 10, 2)}).array, named1.array[0:10:2, :, :]))
+    assert hax.slice_nd(named1, {"H": slice(0, 10, 2)}).axes == (Axis("H", 5), W, D)
+
+    # try indexing syntax
+    assert jnp.all(jnp.equal(named1[{"H": slice(0, 10, 2)}].array, named1.array[0:10:2, :, :]))
+    assert named1[{"H": slice(0, 10, 2)}].axes == (Axis("H", 5), W, D)
+
+    # try indexing syntax with multiple slices
+    assert jnp.all(
+        jnp.equal(named1[{"H": slice(3, 13, 2), "W": slice(0, 10, 2)}].array, named1.array[3:13:2, 0:10:2, :])
+    )
+
+    # try indexing with 1 slice and 1 integer
+    assert jnp.all(jnp.equal(named1[{"H": slice(0, 10, 2), "W": 0}].array, named1.array[0:10:2, 0, :]))
+    assert named1[{"H": slice(0, 10, 2), "W": 0}].axes == (Axis("H", 5), D)
+
+    # try indexing with 3 integers: returns scalar ndarray
+    assert jnp.all(jnp.equal(named1[{"H": 0, "W": 0, "D": 0}], named1.array[0, 0, 0]))
+
+
+def test_slice_nd_array_slices():
+    # fancier tests with array slices with named array args
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+    C = Axis("C", 40)
+    Q = Axis("Q", 50)
+    I0 = Axis("I0", 10)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D, C, Q))
+    index_1 = hax.random.randint(PRNGKey(0), (I0,), 0, H.size)
+
+    assert jnp.all(jnp.equal(named1[{"H": index_1}].array, named1.array[index_1.array, :, :]))
+    assert named1[{"H": index_1}].axes == (I0, W, D, C, Q)
+
+    # try indexing with 1 array and 1 integer
+    assert jnp.all(jnp.equal(named1[{"H": index_1, "W": 0}].array, named1.array[index_1.array, 0, :]))
+    assert named1[{"H": index_1, "W": 0}].axes == (I0, D, C, Q)
+
+    # more complex case: advanced indices aren't contiguous
+    assert jnp.all(jnp.equal(named1[{"H": index_1, "D": 0}].array, named1.array[index_1.array, :, 0]))
+    assert named1[{"H": index_1, "D": 0}].axes == (I0, W, C, Q)
+
+    # https://numpy.org/doc/stable/user/basics.indexing.html#combining-advanced-and-basic-indexing
+    # Example
+    # Let x.shape be (10, 20, 30, 40, 50) and suppose ind_1 and ind_2 can be broadcast to the shape (2, 3, 4).
+    I1 = Axis("I1", 2)
+    I2 = Axis("I2", 3)
+    I3 = Axis("I3", 4)
+
+    ind_1 = hax.random.randint(PRNGKey(0), (I2, I3), 0, W.size)
+    ind_2 = hax.random.randint(PRNGKey(0), (I1, I3), 0, D.size)
+
+    # Then x[:, ind_1, ind_2] has shape (10, 2, 3, 4, 40, 50) because the (20, 30)-shaped subspace from X has been replaced with the (2, 3, 4) subspace from the indices.
+    assert jnp.all(
+        jnp.equal(
+            named1[{"W": ind_1, "D": ind_2}].array,
+            named1.array[:, ind_1.array.reshape(1, 3, 4), ind_2.array.reshape(2, 1, 4), :],
+        )
+    )
+    assert named1[{"W": ind_1, "D": ind_2}].axes == (H, I1, I2, I3, C, Q)
+
+    # However, x[:, ind_1, :, ind_2] has shape (2, 3, 4, 10, 30, 50) because there is no unambiguous place to drop in the indexing subspace, thus it is tacked-on to the beginning. It is always possible to use .transpose() to move the subspace anywhere desired. Note that this example cannot be replicated using take.
+    assert jnp.all(
+        jnp.equal(
+            named1[{"W": ind_1, "C": ind_2}].array,
+            named1.array[:, ind_1.array.reshape(1, 3, 4), :, ind_2.array.reshape(2, 1, 4), :],
+        )
+    )
+    assert named1[{"W": ind_1, "C": ind_2}].axes == (I1, I2, I3, H, D, Q)
+
+
+def test_slice_nd_shorthand_syntax():
+    # syntax like arr["X", 0:10, "Y", 0:10] is supported
+
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(named1["H", 0:10, "D", 0:10].array, named1.array[0:10, :, 0:10]))
+
+
+def test_slice_nd_array_present_dims():
+    # tests slicing with arrays that are already present in the named array, which is sometimes ok
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    index1 = hax.random.randint(PRNGKey(0), (H,), 0, H.size)
+
+    # this is ok, since the H would be eliminated anyway
+    assert jnp.all(jnp.equal(named1[{"H": index1}].array, named1.array[index1.array, :, :]))
+
+    # this is not ok, since the H would not be eliminated
+    with pytest.raises(ValueError):
+        named1[{W: index1}]
+
+    # this is not ok, but is trickier because the H has a different size
+    H2 = H.resize(5)
+    index2 = hax.random.randint(PRNGKey(0), (H2,), 0, H.size)
+    with pytest.raises(ValueError):
+        named1[{W: index2}]
+
+    # this is ok, since the H would be eliminated anyway
+    assert jnp.all(jnp.equal(named1[{"H": index2}].array, named1.array[index2.array, :, :]))
+
+
+def test_full_indexing_returns_scalar():
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+    sliced = named1[{"H": 0, "W": 0, "D": 0}]
+
+    assert isinstance(sliced, jnp.ndarray)
+    assert sliced.shape == ()
+
+
+def test_indexing_bug_from_docs():
+    X = hax.Axis("X", 10)
+    Y = hax.Axis("Y", 20)
+    Z = hax.Axis("Z", 30)
+
+    a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
+
+    I1 = hax.Axis("I1", 5)
+    I2 = hax.Axis("I2", 5)
+    I3 = hax.Axis("I3", 5)
+    ind1 = hax.random.randint(jax.random.PRNGKey(0), (I1,), 0, 10)
+    ind2 = hax.random.randint(jax.random.PRNGKey(0), (I2, I3), 0, 20)
+
+    # assert a[{"X": ind1, "Y": ind2}].axes == (I1, I2, I3, Z)
+    assert a[{"X": ind1, "Y": ind2, "Z": 3}].axes == (I1, I2, I3)
+
+
+def test_duplicate_axis_names_in_slicing():
+    X = hax.Axis("X", 10)
+    Y = hax.Axis("Y", 20)
+    Z = hax.Axis("Z", 30)
+
+    X2 = hax.Axis("X", 5)
+    Y2 = hax.Axis("Y", 5)
+
+    a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
+    ind1 = hax.random.randint(jax.random.PRNGKey(0), (X2,), 0, 10)
+    ind2 = hax.random.randint(jax.random.PRNGKey(0), (Y2,), 0, 10)
+
+    a[{"X": ind1, "Y": ind2}]  # returns a NamedArray with axes = Axis("X", 5), Axis("Y", 5), Axis("Z", 30)
+
+    with pytest.raises(ValueError):
+        a[{"Y": ind1}]  # error, "X" is not eliminated by the indexing operation
+
+    a[{"X": ind2, "Y": ind1}]  # ok, because X and Y are eliminated by the indexing operation
