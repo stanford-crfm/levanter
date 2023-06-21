@@ -1,13 +1,20 @@
 import contextlib
+import dataclasses
 import logging as pylogging
+import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
 import jax
+import pyrallis
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
+from pyrallis import field
 
 import wandb
+from levanter.utils import jax_utils
 from levanter.utils.jax_utils import jnp_to_python
 
 
@@ -25,7 +32,6 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
 
     if hasattr(opt_state, "hyperparams"):
         params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
-        # print(params)
         wandb.log(params, step=step)
 
 
@@ -115,3 +121,157 @@ def silence_transformer_nag():
 
     # log propagation bites us here when using ray
     logger.propagate = False
+
+
+@dataclass
+class WandbConfig:
+    """
+    Configuration for wandb.
+    """
+
+    entity: Optional[str] = None  # An entity is a username or team name where you send runs
+    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
+    tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
+    id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
+    group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
+    mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be online.
+    resume: Optional[Union[bool, str]] = None  #
+    """
+    Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
+    By default, if the new run has the same ID as a previous run, this run overwrites that data.
+    Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
+    document for more details.
+    """
+
+    save_code: Union[bool, str] = True
+    """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
+    typically don't run from the root of the repo)."""
+
+    save_xla_dumps: bool = False
+    """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
+
+    def init(self, hparams=None, **extra_hparams):
+        import wandb
+
+        if hparams is None:
+            hparams_to_save = {}
+        elif dataclasses.is_dataclass(hparams):
+            hparams_to_save = dataclasses.asdict(hparams)
+        else:
+            hparams_to_save = dict(hparams)
+
+        if extra_hparams:
+            hparams_to_save.update(extra_hparams)
+
+        # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
+        # however, we do share information about the run id, so that we can link to it from the other workers
+        mode = self.mode
+        if jax.process_index() != 0:
+            mode = "disabled"
+
+        if isinstance(self.save_code, str):
+            code_dir = self.save_code
+        elif self.save_code:
+            code_dir = WandbConfig._infer_experiment_git_root() or "."
+        else:
+            code_dir = None
+
+        other_settings = dict()
+        if code_dir is not None:
+            logger.info(f"Setting wandb code_dir to {code_dir}")
+            other_settings["code_dir"] = code_dir
+            other_settings["git_root"] = code_dir
+            # for some reason, wandb isn't populating the git commit, so we do it here
+            try:
+                repo = Repo(code_dir)
+                other_settings["git_commit"] = repo.head.commit.hexsha
+                hparams_to_save["git_commit"] = repo.head.commit.hexsha
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.warning(f"Could not find git repo at {code_dir}")
+                pass
+
+        r = wandb.init(
+            entity=self.entity,
+            project=self.project,
+            name=self.name,
+            tags=self.tags,
+            id=self.id,
+            group=self.group,
+            resume=self.resume,
+            mode=mode,
+            config=hparams_to_save,
+            settings=other_settings,
+        )
+
+        if jax.process_count() > 1:
+            # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
+            metadata_to_share = dict(
+                entity=r.entity,
+                project=r.project,
+                name=r.name,
+                tags=r.tags,
+                id=r.id,
+                group=r.group,
+            )
+            metadata_to_share = jax_utils.multihost_broadcast_sync(
+                metadata_to_share, is_source=jax.process_index() == 0
+            )
+
+            if jax.process_index() != 0:
+                assert r.mode == "disabled"
+                for k, v in metadata_to_share.items():
+                    setattr(r, k, v)
+
+            logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
+
+        if dataclasses.is_dataclass(hparams):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_path = f"{tmpdir}/config.yaml"
+                with open(config_path, "w") as f:
+                    pyrallis.dump(hparams, f, encoding="utf-8")
+                wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
+
+        # generate a pip freeze
+        with tempfile.TemporaryDirectory() as tmpdir:
+            requirements_path = f"{tmpdir}/requirements.txt"
+            requirements = _generate_pip_freeze()
+            with open(requirements_path, "w") as f:
+                f.write(requirements)
+            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
+
+        wandb.summary["num_devices"] = jax.device_count()
+        wandb.summary["num_hosts"] = jax.process_count()
+        wandb.summary["backend"] = jax.default_backend()
+
+    @staticmethod
+    def _infer_experiment_git_root() -> Optional[str]:
+        # sniff out the main directory (since we typically don't run from the root of the repo)
+        # we'll walk the stack and directories for the files in the stack the until we're at a git root
+        import os
+        import traceback
+
+        stack = traceback.extract_stack()
+        # start from the top of the stack and work our way down since we want to hit the main file first
+        top_git_root = None
+        for frame in stack:
+            dirname = os.path.dirname(frame.filename)
+            # bit hacky but we want to skip anything that's in the python env
+            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda"]):
+                continue
+            # see if it's under a git root
+            try:
+                repo = Repo(dirname, search_parent_directories=True)
+                top_git_root = repo.working_dir
+                break
+            except (NoSuchPathError, InvalidGitRepositoryError):
+                logger.debug(f"Skipping {dirname} since it's not a git root")
+                pass
+        return top_git_root
+
+
+def _generate_pip_freeze():
+    from importlib.metadata import distributions
+
+    dists = distributions()
+    return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)

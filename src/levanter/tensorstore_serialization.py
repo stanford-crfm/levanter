@@ -87,7 +87,7 @@ async def _deserialize_one_leaf(like, spec):
         return arr.item()
     elif like is None:
         return None
-    elif isinstance(like, jnp.ndarray) or isinstance(like, np.ndarray):
+    elif isinstance(like, jnp.ndarray) or isinstance(like, np.ndarray) or isinstance(like, jax.ShapeDtypeStruct):
         return await load_array_from_tensorstore(spec)
     else:
         raise TypeError(f"Can't deserialize {type(like)}")

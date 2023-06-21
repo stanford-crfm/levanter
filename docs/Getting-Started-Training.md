@@ -1,15 +1,23 @@
-# Training
+# Getting Started with Training
 
 This document provides a guide on how to launch model training and configure it according to your specific needs.
+
+## Quick Start Examples
+
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-user-guide-start-->"
+   end="<!--levanter-user-guide-end-->"
+%}
 
 ## Launch Model Training
 
 To launch the training of a GPT2 model, run the following command:
 ```bash
-python levanter/examples/gpt2_example.py --config_path config/gpt2_small.yaml
+python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
 ```
 
-This will execute the training pipeline pre-defined in the [gp2_example.py](../examples/gpt2_example.py) and set model and training configuration
+This will execute the training pipeline pre-defined in the [train_lm.py](../src/levanter/main/train_lm.py) and set model and training configuration
 set in [gpt2_small.yaml](../config/gpt2_small.yaml). You can find more template configurations in the [config](../config/) directory.
 
 Configuration files are processed using [Pyrallis](https://github.com/eladrich/pyrallis). Pyrallis is yet-another yaml-to-dataclass library.
@@ -22,7 +30,7 @@ and explain the corresponding parameters that you can change.
 To change the dimensions of your GPT2 model and increase the number of training steps to 10,000, I can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --model.num_heads 20 \
     --model.num_layers 36 \
@@ -37,21 +45,21 @@ This will overwrite the default model and training configurations and set the fo
 that the hidden dimension must be divisible by the number of heads.
 - `trainer.num_train_steps`: The number of training steps to run.
 
-You can find a complete list of parameters to change from the `TrainerConfig` in [config.py](src/levanter/config.py) and `Gpt2Config` in
+You can find a complete list of parameters to change from the `TrainerConfig` in [trainer.py](src/levanter/trainer.py) and `Gpt2Config` in
 [gpt2.py](src/levanter/models/gpt2.py).
 
 ### Change Checkpoint Settings
 To change the frequency of saving checkpoints, you can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.load_checkpoint_path checkpoints/gpt2/wandb_run_name  \
     --trainer.checkpointer.base_path checkpoints/gpt2/ \
     --trainer.checkpointer.save_interval 20m
 ```
 
-This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [config.py](src/levanter/config.py) to
+This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [checkpoint.py](src/levanter/checkpoint.py) to
 save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/` with the WandB name `wandb_run_name`.
 
 Note that:
@@ -67,7 +75,7 @@ long as the path is accessible from the machine that you are running the trainin
 To change how often the model is evaluated during training, you can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.steps_per_eval 500
 ```
@@ -79,7 +87,7 @@ By default, Levanter will split the number of examples in `train_batch_size` equ
 To set explicit number of examples to process on each device during training and evaluation, you can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.batch_size 256 \
     --trainer.per_device_parallelism 64 \
@@ -99,7 +107,7 @@ your WandB API key, all of your training runs will be automatically logged to Wa
 Suppose you want to set more control on your WandB logging, you can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.wandb.project my_project \
     --trainer.wandb.name my_run \
@@ -116,7 +124,7 @@ When you resume a training run, you may like to restart from a previously saved 
 To do so, you can use the following command:
 
 ```
-python levanter/examples/gpt2_example.py \
+python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.load_checkpoint_path checkpoints/gpt2/wandb_run_name  \
     --trainer.wandb.resume True \

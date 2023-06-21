@@ -1,16 +1,34 @@
 import re
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
 
 import equinox as eqx
 import jax.numpy as jnp
 import numpy
 from jaxtyping import PyTree
 
+import haliax as hax
+import haliax.nn as hnn
 from haliax import NamedArray
+from haliax.util import ensure_tuple
 
 
 StateDict = Dict[str, Any]
 Tensor = Any
+
+
+@overload
+def apply_prefix(prefix: Optional[str], leaf: str) -> str:
+    ...
+
+
+@overload
+def apply_prefix(prefix: Optional[str], leaf: None) -> Optional[str]:
+    ...
+
+
+@overload
+def apply_prefix(prefix: None, leaf: Optional[str]) -> Optional[str]:
+    ...
 
 
 def apply_prefix(prefix: Optional[str], leaf: Optional[str]) -> Optional[str]:
@@ -144,6 +162,68 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
+def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
+    # the model might have been stacked/blocked so we need to allow for an extra dimension
+    # TODO: might be nicer to use vmap here
+    weight = layer.weight
+    bias = layer.bias
+
+    ret_dict: StateDict = {}
+
+    weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+    if bias is not None:
+        bias = bias.flatten_axes(layer.Out, "__OUT__")
+
+    if out_dims_first_in_dict:
+        weight = weight.rearrange((..., "__OUT__", "__IN__"))
+    else:
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+
+    if bias is not None:
+        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+    return ret_dict
+
+
+def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
+    # the model might have been stacked/blocked so we need to allow for an extra dimension
+    # TODO: might be nicer to use vmap here
+    # ensure it's numpy
+    weight = statedict[apply_prefix(prefix, "weight")]
+    bias = statedict.get(apply_prefix(prefix, "bias"), None)
+
+    Out = ensure_tuple(layer.Out)
+    In = ensure_tuple(layer.In)
+    InOut = In + Out
+    # extra_dims = tuple(ax for ax in layer.bias.axes if ax not in Out)
+    extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+
+    if out_dims_first_in_dict:
+        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+    else:
+        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+    # now unflatten
+    weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
+
+    if bias is not None:
+        bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
+        bias = bias.unflatten_axis("__OUT__", layer.Out)
+
+    # tree_structure = jax.tree_structure(layer)
+    # return jax.tree_unflatten(tree_structure, (weight, bias))
+
+    ret_dict: StateDict = {}
+    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+    if bias is not None:
+        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+    return ret_dict
+
+
 def reshape_linear_layer(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:
@@ -228,7 +308,7 @@ def reshape_mlp_linear_layer(
 ) -> StateDict:
     """
     Reshape the weights and bias for a linear layer in a torch dict to a new shape.
-    This is different from reshape_linear_layer as we removed (-1,) from the shape 
+    This is different from reshape_linear_layer as we removed (-1,) from the shape
     of the weights and bias.
     """
     new_dict: StateDict = {}
