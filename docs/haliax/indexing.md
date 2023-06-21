@@ -7,6 +7,9 @@ so I don't think it's worth the effort to implement it in Haliax.)
 ## Basic Indexing
 
 Basic indexing works basically like you would expect: you can use integers or slices to index into an array.
+Haliax supports two syntaxes for indexing: one accepts a dict of axis names and indices, and the other accepts
+an alternating sequence of axis names and indices. The latter is useful for indexing with a small number of indices.
+
 
 ```python
 import haliax as hax
@@ -21,9 +24,15 @@ a = hax.random.uniform(jax.random.PRNGKey(0), (X, Y, Z))
 a[{"X": 1, "Y": 2, "Z": 3}]  # returns a scalar jnp.ndarray
 a[{"X": 1, "Y": 2, "Z": slice(3, 5)}]  # return a NamedArray with axes = Axis("Z", 2)
 a[{"X": 1, "Y": slice(2, 4), "Z": slice(3, 5)}]  # return a NamedArray with axes = Axis("Y", 2), Axis("Z", 2)
+
+a["X", 1, "Y", 2, "Z", 3]  # returns a scalar jnp.ndarray
+a["X", 1, "Y", 2, "Z", 3:5]  # return a NamedArray with axes = Axis("Z", 2)
+a["X", 1, "Y", 2:4, "Z", 3:5]  # return a NamedArray with axes = Axis("Y", 2), Axis("Z", 2)
 ```
 
 Unfortunately, Python won't let us use `:` slice syntax inside of a dictionary, so we have to use `slice` instead.
+This is why we have the second syntax, which is a bit less idiomatic in some ways, but it's more convenient.
+
 Otherwise, the idea is pretty straightforward: any unspecified axes are treated as though indexed with `:` in NumPy,
 slices are kept in reduced dimensions, and integers eliminate dimensions. If all dimensions are eliminated, a scalar
 JAX ndarray is returned.

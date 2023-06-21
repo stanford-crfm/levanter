@@ -233,9 +233,21 @@ class NamedArray:
     def take(self, axis: AxisSelector, index: Union[int, "NamedArray"]) -> "NamedArray":
         return haliax.take(self, axis=axis, index=index)
 
+    @overload
+    def __getitem__(self, item: Tuple[str, Union[int, slice_t, "NamedArray"]]) -> Union["NamedArray", jnp.ndarray]:
+        ...  # pragma: no cover
+
+    @overload
     def __getitem__(
-        self, idx: Mapping[AxisSelector, Union[int, slice_t, "NamedArray"]]
+        self, item: Tuple[str, Union[int, slice_t, "NamedArray"], str, Union[int, slice_t, "NamedArray"]]
     ) -> Union["NamedArray", jnp.ndarray]:
+        ...
+
+    @overload
+    def __getitem__(self, item: Mapping[str, Union[int, slice_t, "NamedArray"]]) -> Union["NamedArray", jnp.ndarray]:
+        ...
+
+    def __getitem__(self, idx) -> Union["NamedArray", jnp.ndarray]:
         """Syntactic sugar for slice_nd, which is the actual implementation.
 
         Supports indexing like:
@@ -250,11 +262,25 @@ class NamedArray:
         >>> index_arr = NamedArray(np.array([1, 2, 3]), Z)
         >>> arr[{"x": 1, "y": index_arr}]
 
+        A shorthand is provided that works with Python's slicing syntax:
+        >>> arr["x", :] == arr[{"x": slice(None, None, None)}]
+        >>> arr["y", slice(0, 10, 2)] == arr[{"y": slice(0, 10, 2)}]
+
         Advanced indexing is implemented by broadcasting all index arrays to the same shape (using Haliax's
         usual broadcasting rules).
 
         This returns a NamedArray if any axes remain, or a scalar (0-dimensional) jnp.ndarray if all axes are indexed out.
         """
+        if isinstance(idx, tuple):
+            if len(idx) == 1:
+                idx = idx[0]
+            else:
+                if len(idx) % 2 != 0:
+                    raise ValueError(
+                        "Must provide an even number of arguments to __getitem__ when using the shorthand syntax."
+                    )
+                idx = {idx[i]: idx[i + 1] for i in range(0, len(idx), 2)}
+
         return slice_nd(self, idx)
 
     # np.ndarray methods:

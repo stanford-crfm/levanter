@@ -495,6 +495,18 @@ def test_slice_nd_array_slices():
     assert named1[{"W": ind_1, "C": ind_2}].axes == (I1, I2, I3, H, D, Q)
 
 
+def test_slice_nd_shorthand_syntax():
+    # syntax like arr["X", 0:10, "Y", 0:10] is supported
+
+    H = Axis("H", 10)
+    W = Axis("W", 20)
+    D = Axis("D", 30)
+
+    named1 = hax.random.uniform(PRNGKey(0), (H, W, D))
+
+    assert jnp.all(jnp.equal(named1["H", 0:10, "D", 0:10].array, named1.array[0:10, :, 0:10]))
+
+
 def test_slice_nd_array_present_dims():
     # tests slicing with arrays that are already present in the named array, which is sometimes ok
     H = Axis("H", 10)
