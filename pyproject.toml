@@ -51,11 +51,13 @@ dependencies = [
 include = [
   "config/*.yaml", "config/*/*.yaml"
 ]
+dev-mode-dirs = [".", "src"]
 
 [tool.hatch.build.sources]
 "src/levanter" = "levanter"
 "src/haliax" = "haliax"
 "config" = "levanter/config"
+
 
 
 [tool.hatch.build.targets.wheel]
