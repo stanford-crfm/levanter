@@ -49,9 +49,7 @@ dependencies = [
 ]
 
 [tool.hatch.build]
-include = [
-  "config/*.yaml", "config/*/*.yaml"
-]
+include = ["config/*.yaml", "config/*/*.yaml", "*.py"]
 dev-mode-dirs = [".", "src"]
 
 [tool.hatch.build.sources]
@@ -59,9 +57,9 @@ dev-mode-dirs = [".", "src"]
 "config" = "levanter/config"
 
 
-
 [tool.hatch.build.targets.wheel]
-packages = ["src/levanter", "config"]
+packages = ["levanter"]
+
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
