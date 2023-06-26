@@ -12,9 +12,9 @@ import jmp
 import numpy as np
 import optax
 from chex import PRNGKey
+from draccus import field
 from jax._src.interpreters.pxla import Mesh
 from jaxtyping import PyTree
-from pyrallis import field
 
 import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping

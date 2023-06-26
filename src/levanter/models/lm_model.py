@@ -1,9 +1,9 @@
 import abc
 from typing import Generic, Optional, Type, TypeVar
 
+import draccus
 from jax.random import PRNGKey
 
-import levanter.config
 from haliax import Axis, NamedArray
 
 
@@ -11,8 +11,8 @@ LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
-@levanter.config.config_registry(discover_packages="levanter.models")
-class LmConfig(abc.ABC, Generic[LmT]):
+# TODO: for some reason, mypy doesn't like the discover_packages_path argument?
+class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
     @property
     @abc.abstractmethod
     def model_type(cls) -> Type[LmT]:

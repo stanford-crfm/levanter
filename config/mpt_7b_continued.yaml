@@ -5,7 +5,8 @@ data:
     - gs://levanter-data/pile/val.jsonl.zst
   cache_dir: "gs://levanter-data/tokenized/pile-old/"
   tokenizer: "EleutherAI/gpt-neox-20b"
-model: mpt
+model:
+  type: mpt
 initialize_from_hf: true
 use_hf_model_config: true
 trainer:

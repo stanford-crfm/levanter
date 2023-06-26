@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
+import draccus
 import jax
-import pyrallis
+from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
-from pyrallis import field
 
 import wandb
 from levanter.utils import jax_utils
@@ -229,7 +229,7 @@ class WandbConfig:
             with tempfile.TemporaryDirectory() as tmpdir:
                 config_path = f"{tmpdir}/config.yaml"
                 with open(config_path, "w") as f:
-                    pyrallis.dump(hparams, f, encoding="utf-8")
+                    draccus.dump(hparams, f, encoding="utf-8")
                 wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
         # generate a pip freeze

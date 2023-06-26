@@ -13,11 +13,11 @@ from datetime import timedelta
 from functools import wraps
 from typing import Any, Dict, List, Optional, Type, Union
 
+import draccus
 import fsspec
 import jmp
-import pyrallis
+from draccus import parse
 from fsspec import AbstractFileSystem
-from pyrallis import parse
 
 from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
@@ -26,9 +26,9 @@ JsonAtom = Union[str, int, float, bool, None]
 
 
 def register_codecs():
-    # pyrallis.encode.register(jnp.dtype, lambda dtype: dtype.name)
-    # pyrallis.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
-    # pyrallis.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
+    # draccus.encode.register(jnp.dtype, lambda dtype: dtype.name)
+    # draccus.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
+    # draccus.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):
@@ -41,13 +41,13 @@ def register_codecs():
         assert jmp.get_policy(out) == policy
         return out
 
-    pyrallis.decode.register(jmp.Policy, lambda policy_str: jmp.get_policy(policy_str))
-    pyrallis.encode.register(jmp.Policy, policy_encode)
+    draccus.decode.register(jmp.Policy, lambda policy_str: jmp.get_policy(policy_str))
+    draccus.encode.register(jmp.Policy, policy_encode)
 
-    pyrallis.decode.register(timedelta, parse_timedelta)
-    pyrallis.encode.register(timedelta, encode_timedelta)
+    draccus.decode.register(timedelta, parse_timedelta)
+    draccus.encode.register(timedelta, encode_timedelta)
 
-    # pyrallis' decode function for bool accepts anything truthy (it uses bool(x)), so we need to override it
+    # draccus' decode function for bool accepts anything truthy (it uses bool(x)), so we need to override it
     # we need to raise if it's not a bool, because anything can be converted to a bool
     truthy = {"true", "t", "yes", "y", "True", "T", "Yes", "Y", "TRUE", True}
     falsy = {"false", "f", "no", "n", "False", "F", "No", "N", "FALSE", False}
@@ -60,7 +60,7 @@ def register_codecs():
         else:
             raise ValueError(f"Could not convert {x} to bool")
 
-    pyrallis.decode.register(bool, bool_decode)
+    draccus.decode.register(bool, bool_decode)
 
 
 register_codecs()
@@ -128,11 +128,11 @@ def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[s
 
         cls.register_subclass = register_subclass
 
-    # now register the cls with pyrallis
+    # now register the cls with draccus
     def encode_config(config):
         for name, subcls in cls._config_registry.items():
             if isinstance(config, subcls):
-                # singledispatch means that pyrallis.encode(config) will call this function even if config is a subclass of cls
+                # singledispatch means that draccus.encode(config) will call this function even if config is a subclass of cls
                 return {name: _default_encode(config)}
 
         raise ValueError(f"Could not find a registered subclass for {config}")
@@ -149,11 +149,11 @@ def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[s
 
         try:
             subcls = cls._config_registry[name]
-            return pyrallis.decode(subcls, config)
+            return draccus.decode(subcls, config)
         except KeyError:
             if discover_packages:
                 if subcls is not None:
-                    return pyrallis.decode(subcls, config)
+                    return draccus.decode(subcls, config)
 
             raise ValueError(f"Could not find a registered subclass for {name}")
 
@@ -179,8 +179,8 @@ def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[s
 
         return cls._config_registry[subcls_name]
 
-    pyrallis.encode.register(cls, encode_config)
-    pyrallis.decode.register(cls, decode_config)
+    draccus.encode.register(cls, encode_config)
+    draccus.decode.register(cls, decode_config)
 
     return cls
 
@@ -191,7 +191,7 @@ def _default_encode(obj):
         for field in dataclasses.fields(obj):
             value = getattr(obj, field.name)
             try:
-                d[field.name] = pyrallis.encode(value)
+                d[field.name] = draccus.encode(value)
             except TypeError as e:
                 raise ValueError(f"Could not encode field {field.name} of type {field.type} of {obj}") from e
         return d
@@ -204,7 +204,7 @@ DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
 
 def main(*, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
     """
-    Like pyrallis.wrap but can handle config paths that are urls loadable by fsspec.
+    Like draccus.wrap but can handle config paths that are urls loadable by fsspec.
     This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
 
     :param args: the args to parse. If None, will use sys.argv[1:]
@@ -242,7 +242,7 @@ def _maybe_get_config_path_and_cmdline_args(args: List[str]):
     """
     We want to accept ... --config_path <config> ... where config could be a path or url.
     If URL, we need to download it and save it to a temp file. We then want to remove --config_path
-    from the cmdline args so that pyrallis doesn't try to load it as a config path and return it separately here
+    from the cmdline args so that draccus doesn't try to load it as a config path and return it separately here
     along with the modified cmdline args.
     """
     if "--config_path" not in args and "--config" not in args:
