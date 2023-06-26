@@ -40,6 +40,25 @@ You can also use `--help` or poke around other configs to see all the options av
 
 ### Installing Levanter
 
+<!--levanter-installation-start-->
+
+After [installing JAX]((https://github.com/google/jax/blob/main/README.md#installation)) with the appropriate configuration
+for your platform, you can install Levanter with:
+
+```bash
+pip install levanter
+```
+
+or using the latest version from GitHub:
+
+```bash
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+wandb login  # optional, we use wandb for logging
+```
+<!--levanter-installation-end-->
+
 Please refer to the [Installation Guide](docs/Installation.md) for more information on how to install Levanter.
 
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
