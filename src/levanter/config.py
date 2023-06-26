@@ -145,18 +145,21 @@ def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[s
             raise ValueError(f"Expected exactly one key in config, got {config}")
 
         name, config = config.popitem()
+        subcls = _try_discover_packages(cls, name)
+
         try:
             subcls = cls._config_registry[name]
             return pyrallis.decode(subcls, config)
         except KeyError:
             if discover_packages:
-                subcls = _try_discover_packages(cls, name)
                 if subcls is not None:
                     return pyrallis.decode(subcls, config)
 
             raise ValueError(f"Could not find a registered subclass for {name}")
 
     def _try_discover_packages(cls, subcls_name):
+        if discover_packages is None:
+            return None
         # from https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
         # resolve the package path
         package_module = importlib.import_module(discover_packages)
@@ -169,11 +172,12 @@ def config_registry(cls: Optional[Type] = None, *, discover_packages: Optional[s
             return pkgutil.iter_modules(ns_pkg.__path__, ns_pkg.__name__ + ".")
 
         for finder, pkg_name, ispkg in iter_namespace(package_module):
-            if pkg_name == f"{discover_packages}.{subcls_name}":
-                _ = importlib.import_module(pkg_name)
-                # registration should happen in the __init__.py of the package
-                # cls.register_subclass(name, subcls)
-                return cls._config_registry[subcls_name]
+            # if pkg_name == f"{discover_packages}.{subcls_name}":
+            _ = importlib.import_module(pkg_name)
+            # registration should happen in the __init__.py of the package
+            # cls.register_subclass(name, subcls)
+
+        return cls._config_registry[subcls_name]
 
     pyrallis.encode.register(cls, encode_config)
     pyrallis.decode.register(cls, decode_config)
