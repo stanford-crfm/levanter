@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from draccus import field
 from jaxtyping import PyTree
-from pyrallis import field
 
 import haliax as hax
 from haliax import Axis, NamedArray
