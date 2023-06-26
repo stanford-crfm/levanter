@@ -1,14 +1,21 @@
 # Installation
 
+## Quickstart
+
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-installation-start-->"
+   end="<!--levanter-installation-end-->"
+%}
+
 If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md).
 If you're using CUDA, more complete documentation for setting that up is available [here](docs/Getting-Started-CUDA.md).
 
 ## Setting up a development environment
 
-<!--levanter-installation-start-->
 For development, please follow these steps:
 
-First, install the appropriate version of Jax for your system. 
+First, install the appropriate version of Jax for your system.
 See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
 as it varies from platform to platform.
 
@@ -21,7 +28,6 @@ pip install -e .
 wandb login  # optional, we use wandb for logging
 ```
 
-<!--levanter-installation-end-->
 
 ## Create a virtual environment
 
