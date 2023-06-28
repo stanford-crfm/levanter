@@ -3,18 +3,16 @@ from functools import partial
 from typing import Callable, Dict, Optional, Type, cast
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
-from transformers import GPT2Config as HfGpt2Config
-from transformers import PretrainedConfig as HfConfig
-
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
+import jax.random as jrandom
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from transformers import GPT2Config as HfGpt2Config
+from transformers import PretrainedConfig as HfConfig
+
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -35,6 +33,7 @@ class Gpt2Config(HFCompatConfig):
     hidden_dim: int = 768
     num_layers: int = 12
     num_heads: int = 12
+    window_size: int = 256
 
     # how much to scale the embedding dim for the mlp layer
     mlp_scale: int = 4
@@ -64,6 +63,7 @@ class Gpt2Config(HFCompatConfig):
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * self.mlp_scale))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+    Window = property(lambda self: Axis(name="window", size=self.window_size))
 
     @property
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
@@ -161,32 +161,42 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
-        # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
+        # # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
+        # k = k.rename({"position": "key_position"})
+        # v = v.rename({"position": "key_position"})
+        #
+        # # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+        # scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
+        # if self.config.scale_attn_by_inverse_layer_idx:
+        #     scale /= layer_idx + 1.0
+        #
+        # # do this first to help keep FP values small
+        # q = q * scale
+        #
+        # # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+        # if self.config.upcast_attn:
+        #     q = q.astype(jnp.float32)
+        #     k = k.astype(jnp.float32)
+        #
+        # attn_scores = hax.dot("head_size", q, k)
+        #
+        # if mask is not None:
+        #     attn_scores = attn_scores + (1.0 - mask) * -1e9
+        #
+        # attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
+        # attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        #
+        # attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
+        from levanter.models.longformer import causal_sliding_window_attention
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
-        if self.config.scale_attn_by_inverse_layer_idx:
-            scale /= layer_idx + 1.0
-
-        # do this first to help keep FP values small
-        q = q * scale
-
-        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
-
-        attn_scores = hax.dot("head_size", q, k)
-
-        if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
-
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
-
-        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = causal_sliding_window_attention(
+            self.config.Pos,
+            self.config.Window,
+            self.config.HeadSize,
+            q,
+            k,
+            v,
+        )
 
         attn_output = self.c_proj(attn_output)
         return attn_output
