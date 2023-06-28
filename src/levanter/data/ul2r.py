@@ -1,46 +1,43 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
 # See https://arxiv.org/pdf/2210.11399v2.pdf
 import collections
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Sequence, Union
 
+import equinox as eqx
+import haliax as hax
 import jax
 import numpy as np
 from jax.random import PRNGKey
 from jaxtyping import PyTree
 from transformers import PreTrainedTokenizerBase
 
-import haliax as hax
-from levanter.data.dataset import Dataset, T
+from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
-@dataclass
-class Ul2Example:
+class Ul2Example(eqx.Module):
     """A single example for the UL2 Objective for an encoder-decoder objective.
     In general, these should start out unpadded/untruncated"""
 
-    task_token: int
     inputs: np.ndarray
     outputs: np.ndarray
+    task_token: Optional[int]
 
     def render(self, tokenizer: PreTrainedTokenizerBase):
         """renders a pretty version of the example as a string"""
-        return (
-            tokenizer.decode(self.task_token)
-            + " "
-            + tokenizer.decode(self.inputs)
-            + "\n<!TARGETS!>\n"
-            + tokenizer.decode(self.outputs)
-        )
+        task_str = ""
+        if self.task_token is not None:
+            task_str = tokenizer.decode(self.task_token) + " "
+        return task_str + tokenizer.decode(self.inputs) + "\n<!TARGETS!>\n" + tokenizer.decode(self.outputs)
 
     def to_decoder_only(self, pad_token_id, QLen, KLen):
         return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
 
 
-@dataclass
-class DecoderOnlyExample:
+class LmExample(eqx.Module):
     tokens: hax.NamedArray
     targets: hax.NamedArray
     attn_mask: hax.NamedArray
@@ -77,7 +74,7 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
     # 4) padding
     loss_mask = loss_mask & (all_tokens != pad_token_id)
 
-    return DecoderOnlyExample(all_tokens, targets, attention_mask, loss_mask)
+    return LmExample(all_tokens, targets, attention_mask, loss_mask)
 
 
 S_TASK_TOKEN = "[S2S]"
@@ -87,11 +84,13 @@ X_TASK_TOKEN = "[NLG]"
 
 @dataclass
 class DenoisingTaskConfig:
-    task_token: str
+    task_token: Optional[str]
     mask_prob: float = 0.15  # r in the paper
     mean_span_length: float = 3.0  # mu in the paper
-
     # we don't use their "n" parameter because they only use it for prefix-lm
+
+    def with_task_token(self, task_token: Optional[str]):
+        return dataclasses.replace(self, task_token=task_token)
 
     @staticmethod
     def ul2_configs(r_task_token: str = R_TASK_TOKEN, x_task_token: str = X_TASK_TOKEN) -> List["DenoisingTaskConfig"]:
@@ -105,7 +104,9 @@ class DenoisingTaskConfig:
         ]
 
     @staticmethod
-    def ul2r_configs(r_task_token: str = "[NLU]", x_task_token: str = "[NLG]") -> List["DenoisingTaskConfig"]:
+    def ul2r_configs(
+        r_task_token: Optional[str] = "[NLU]", x_task_token: Optional[str] = "[NLG]"
+    ) -> List["DenoisingTaskConfig"]:
         return [
             DenoisingTaskConfig(r_task_token, 0.15, 3.0),
             DenoisingTaskConfig(x_task_token, 0.15, 32.0),
@@ -117,16 +118,16 @@ class DenoisingTaskConfig:
 DEFAULT_S_DENOISER_CONFIG = DenoisingTaskConfig(S_TASK_TOKEN, 1.0, 512.0)
 
 
-class Ul2rDataset(Dataset[DecoderOnlyExample]):
+class Ul2rDataset(ShardableDataset[LmExample]):
     def __init__(
         self,
-        base_dataset: Dataset[List[int]],
+        base_dataset: Dataset[Sequence[int]],
         SeqLen: hax.Axis,
         KSeqLen: hax.Axis,
         key: PRNGKey,
         tokenizer: PreTrainedTokenizerBase,
         task_configs: List[DenoisingTaskConfig],
-        s_denoiser_config: DenoisingTaskConfig = DEFAULT_S_DENOISER_CONFIG,
+        s_denoiser_config: Optional[DenoisingTaskConfig] = DEFAULT_S_DENOISER_CONFIG,
         s_denoiser_prob: float = 0.5,
     ):
         super().__init__()
@@ -144,7 +145,7 @@ class Ul2rDataset(Dataset[DecoderOnlyExample]):
         )
         self.tokenizer = tokenizer
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[LmExample]:
         key = self.initial_key
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
@@ -154,15 +155,24 @@ class Ul2rDataset(Dataset[DecoderOnlyExample]):
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return DecoderOnlyExample(
-            tokens=(self.SeqLen,),  # type: ignore
-            targets=(self.SeqLen,),  # type: ignore
-            attn_mask=(self.SeqLen, self.KSeqLen),  # type: ignore
-            loss_mask=(self.SeqLen,),  # type: ignore
+        return LmExample(
+            tokens=NamedShapeSpec((self.SeqLen,)),  # type: ignore
+            targets=NamedShapeSpec((self.SeqLen,)),  # type: ignore
+            attn_mask=NamedShapeSpec((self.SeqLen, self.KSeqLen)),  # type: ignore
+            loss_mask=NamedShapeSpec((self.SeqLen,)),  # type: ignore
         )
 
-    def __len__(self) -> int:
-        return len(self.base_dataset)
+    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[LmExample]":
+        return Ul2rDataset(
+            self.base_dataset.shard(shard_id, num_shards),  # type: ignore
+            self.SeqLen,
+            self.KSeqLen,
+            self.initial_key,
+            self.tokenizer,
+            self.generator.task_configs,
+            self.generator.s_denoiser_config,
+            self.generator.s_denoiser_prob,
+        )
 
 
 class Ul2InstanceGenerator:
@@ -220,7 +230,7 @@ class Ul2InstanceGenerator:
         # choose a random length
         np_rng = np.random.default_rng(np.array(key).tolist())
         pivot = int(np_rng.integers(0, len(tokens) + 1))
-        return Ul2Example(self.s_denoiser_token_id, np.array(tokens[:-pivot]), np.array(tokens[-pivot:]))  # type: ignore
+        return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), self.s_denoiser_token_id)  # type: ignore
 
     def sample_denoiser(self, tokens: Sequence[int], task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
         """Build a denoiser example from a list of tokens"""
@@ -231,23 +241,7 @@ class Ul2InstanceGenerator:
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
 
-        return Ul2Example(self.tokenizer.convert_tokens_to_ids(task_config.task_token), inputs, targets)
-
-        # max_predictions_per_seq = task_config.mask_prob * len(tokens)
-        # np_rng = np.random.default_rng(np.array(key))
-        # output_tokens, masked_spans = create_masked_lm_predictions(
-        #     tokens=tokens,
-        #     masked_lm_prob=task_config.mask_prob,
-        #     mask_id=self.tokenizer.mask_token_id,
-        #     span_length_distribution=task_config.length_distribution,
-        #     max_predictions_per_seq=max_predictions_per_seq,
-        #     np_rng=np_rng,
-        #     max_ngram_size=1024
-        # )
-        #
-        # t5_input, t5_output = self._create_t5_input_output_from_spans(output_tokens, masked_spans)
-
-        # return Ul2Example(self.tokenizer.convert_tokens_to_ids(task_config.task_token), t5_input, t5_output)
+        return Ul2Example(inputs, targets, self.tokenizer.convert_tokens_to_ids(task_config.task_token))
 
     def _create_t5_input_output_from_spans(self, output_tokens, masked_spans):
         sentinel_tokens = collections.deque(self.sentinel_token_ids)
@@ -399,9 +393,7 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     first_noise_tokens = np.logical_and(noise_mask, np.logical_not(prev_token_is_noise))
     subsequent_noise_tokens = np.logical_and(noise_mask, prev_token_is_noise)
 
-    # sentinel = sentinel_id(tokenizer) + 1 - tf.cumsum(tf.cast(first_noise_tokens, tokens.dtype))
     segments = np.cumsum(first_noise_tokens.astype(tokens.dtype))
-    # assert int(np.max(segments)) <= len(sentinel_tokens)
     if int(np.max(segments)) > len(sentinel_tokens):
         logging.warning("Too many noise spans, reusing sentinels")
     sentinel = sentinel_tokens[segments % len(sentinel_tokens)]
@@ -410,6 +402,5 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return tokens[np.logical_not(subsequent_noise_tokens)]
 
 
-# note(dlwh): this is some ninja sh*t right here.
 def nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
