@@ -11,7 +11,7 @@ import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
-from transformers import BatchEncoding
+from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
@@ -200,3 +200,6 @@ def check_load_config(config_class, config_file):
         draccus.parse(config_class, config_file, args=[])
     except Exception as e:
         raise Exception(f"failed to parse {config_file}") from e
+
+
+gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2")

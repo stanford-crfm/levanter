@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Sequence, Union
 
+import draccus
 import equinox as eqx
 import haliax as hax
 import jax
@@ -114,20 +115,47 @@ class DenoisingTaskConfig:
         ]
 
 
-# the UL2 paper suggests using L/4 for the mean length,
-DEFAULT_S_DENOISER_CONFIG = DenoisingTaskConfig(S_TASK_TOKEN, 1.0, 512.0)
+@dataclass(frozen=True)
+class Ul2rDatasetConfig:
+    # todo: weight the different tasks differently?
+    task_configs: List[DenoisingTaskConfig] = draccus.field(default_factory=DenoisingTaskConfig.ul2r_configs)
+    # The S-Denoiser is pretty distinct from the other denoisers, so we configure it separately
+    s_denoiser_prob: float = 0.5
+    s_denoise_token: Optional[str] = S_TASK_TOKEN
+
+    def build(
+        self,
+        base_dataset: Dataset[hax.NamedArray],
+        SeqLen: hax.Axis,
+        KSeqLen: hax.Axis,
+        key: PRNGKey,
+        tokenizer: PreTrainedTokenizerBase,
+    ):
+        return Ul2rDataset(
+            base_dataset,
+            SeqLen,
+            KSeqLen,
+            key,
+            tokenizer,
+            self.task_configs,
+            self.s_denoise_token,
+            self.s_denoiser_prob,
+        )
+
+
+# TODO: add "f-denoiser" for forgetful causal masking, which is similar to R-denoiser, but no sentinel tokens
 
 
 class Ul2rDataset(ShardableDataset[LmExample]):
     def __init__(
         self,
-        base_dataset: Dataset[Sequence[int]],
+        base_dataset: Dataset[hax.NamedArray],
         SeqLen: hax.Axis,
         KSeqLen: hax.Axis,
         key: PRNGKey,
         tokenizer: PreTrainedTokenizerBase,
         task_configs: List[DenoisingTaskConfig],
-        s_denoiser_config: Optional[DenoisingTaskConfig] = DEFAULT_S_DENOISER_CONFIG,
+        s_denoiser_token: Optional[str] = S_TASK_TOKEN,
         s_denoiser_prob: float = 0.5,
     ):
         super().__init__()
@@ -141,7 +169,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         ]  # if we need more than 1000, we have bigger problems
 
         self.generator = Ul2InstanceGenerator(
-            tokenizer, sentinel_tokens, task_configs, s_denoiser_config, s_denoiser_prob
+            tokenizer, sentinel_tokens, task_configs, s_denoiser_token, s_denoiser_prob
         )
         self.tokenizer = tokenizer
 
@@ -162,7 +190,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             loss_mask=NamedShapeSpec((self.SeqLen,)),  # type: ignore
         )
 
-    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[LmExample]":
+    def shard(self, shard_id: int, num_shards: int) -> "Ul2rDataset":
         return Ul2rDataset(
             self.base_dataset.shard(shard_id, num_shards),  # type: ignore
             self.SeqLen,
@@ -170,7 +198,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             self.initial_key,
             self.tokenizer,
             self.generator.task_configs,
-            self.generator.s_denoiser_config,
+            self.generator.s_denoiser_token,
             self.generator.s_denoiser_prob,
         )
 
@@ -183,25 +211,25 @@ class Ul2InstanceGenerator:
         tokenizer: PreTrainedTokenizerBase,
         sentinel_tokens: List[str],
         task_configs: List[DenoisingTaskConfig],
-        s_denoiser_config: Optional[DenoisingTaskConfig] = DEFAULT_S_DENOISER_CONFIG,
+        s_denoiser_token: Optional[str] = S_TASK_TOKEN,
         s_denoiser_prob: float = 0.5,
     ):
         """Side effect warning: This constructor adds sentinel tokens and task tokens to the tokenizer"""
         self.tokenizer = tokenizer
         self.task_configs = task_configs
-        self.s_denoiser_config = s_denoiser_config
+        self.s_denoiser_token = s_denoiser_token
         self.s_denoiser_prob = s_denoiser_prob
 
         self.tokenizer.add_tokens(sentinel_tokens, special_tokens=True)
         task_tokens = list(set([config.task_token for config in task_configs]))
-        if s_denoiser_config is not None:
-            task_tokens.append(s_denoiser_config.task_token)
+        if s_denoiser_token is not None:
+            task_tokens.append(s_denoiser_token)
         self.tokenizer.add_tokens(task_tokens, special_tokens=True)
 
         self.sentinel_token_ids = np.array([self.tokenizer.convert_tokens_to_ids(token) for token in sentinel_tokens])
 
-        if s_denoiser_config is not None:
-            self.s_denoiser_token_id = self.tokenizer.convert_tokens_to_ids(s_denoiser_config.task_token)
+        if s_denoiser_token is not None:
+            self.s_denoiser_token_id = self.tokenizer.convert_tokens_to_ids(s_denoiser_token)
         else:
             self.s_denoiser_token_id = None
 
@@ -209,35 +237,32 @@ class Ul2InstanceGenerator:
             self.tokenizer.convert_tokens_to_ids(config.task_token) for config in task_configs
         ]
 
-    def sample(self, tokens: Sequence[int], key: PRNGKey) -> Ul2Example:
+    def sample(self, tokens: hax.NamedArray, key: PRNGKey) -> Ul2Example:
         """Generate a single Ul2Example from a string"""
         # first decide if we're doing S-denoiser or not
         # gonna be lazy with keys here
         choice_key, key = jax.random.split(key)
         np_rng = np.random.default_rng(np.array(choice_key))
 
-        if self.s_denoiser_config is not None and np_rng.uniform() < self.s_denoiser_prob:
-            return self.sample_s_denoiser(tokens, key)
+        if self.s_denoiser_token is not None and np_rng.uniform() < self.s_denoiser_prob:
+            return self.sample_s_denoiser(tokens.array, key)
+        else:
+            # otherwise, pick a denoiser task
+            task_config = np_rng.choice(self.task_configs)
 
-        # otherwise, pick a denoiser task
-        # TODO: do we want to support weights here?
-        task_config = np_rng.choice(self.task_configs)
-
-        return self.sample_denoiser(tokens, task_config, key)
+            return self.sample_denoiser(tokens.array, task_config, key)
 
     def sample_s_denoiser(self, tokens: Sequence[int], key: PRNGKey) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
         # choose a random length
-        np_rng = np.random.default_rng(np.array(key).tolist())
-        pivot = int(np_rng.integers(0, len(tokens) + 1))
+        pivot = int(jax.random.randint(key, (), 1, len(tokens) + 1))
         return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), self.s_denoiser_token_id)  # type: ignore
 
-    def sample_denoiser(self, tokens: Sequence[int], task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
+    def sample_denoiser(self, tokens, task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
         """Build a denoiser example from a list of tokens"""
         # choose a random length
         # Masking.
         noise_mask = random_spans_noise_mask(len(tokens), task_config.mask_prob, key, task_config.mean_span_length)
-        tokens = np.array(tokens)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
 

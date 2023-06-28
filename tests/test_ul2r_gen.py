@@ -2,16 +2,17 @@ import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
-from transformers import AutoTokenizer
+import test_utils
 
 from levanter.data.ul2r import DenoisingTaskConfig, Ul2Example, Ul2InstanceGenerator
 
 
 def test_ul2_generator_seed_works():
     # Generate synthetic data
-    synthetic_data = jax.random.randint(jax.random.PRNGKey(0), shape=(50, 512), minval=0, maxval=1000)
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    B = hax.Axis("B", 20)
+    L = hax.Axis("L", 512)
+    synthetic_data = hax.random.randint(jax.random.PRNGKey(0), shape=(B, L), minval=0, maxval=1000)
+    tokenizer = test_utils.gpt2_tokenizer
 
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
@@ -19,7 +20,8 @@ def test_ul2_generator_seed_works():
         DenoisingTaskConfig.ul2r_configs(),
     )
 
-    for i, tokens in enumerate(synthetic_data):
+    for i in range(B.size):
+        tokens = synthetic_data["B", i]
         a = ul2_generator.sample(tokens, jax.random.PRNGKey(i)).render(tokenizer)
         b = ul2_generator.sample(tokens, jax.random.PRNGKey(i)).render(tokenizer)
         assert a == b
@@ -28,9 +30,10 @@ def test_ul2_generator_seed_works():
 
 
 def test_ul2_generator_can_handle_too_few_sentinels():
-    synthetic_data = jax.random.randint(jax.random.PRNGKey(0), shape=(10, 1000), minval=0, maxval=1000)
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = test_utils.gpt2_tokenizer
+    B = hax.Axis("B", 20)
+    L = hax.Axis("L", 512)
+    synthetic_data = hax.random.randint(jax.random.PRNGKey(0), shape=(B, L), minval=0, maxval=1000)
 
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
@@ -38,7 +41,8 @@ def test_ul2_generator_can_handle_too_few_sentinels():
         DenoisingTaskConfig.ul2r_configs(),
     )
 
-    for i, tokens in enumerate(synthetic_data):
+    for i in range(B.size):
+        tokens = synthetic_data["B", i]
         # just make sure it doesn't crash
         ul2_generator.sample(tokens, jax.random.PRNGKey(i))
 
