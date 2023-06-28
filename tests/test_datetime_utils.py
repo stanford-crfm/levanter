@@ -1,4 +1,4 @@
-from levanter.datetime_utils import encode_timedelta, parse_timedelta
+from levanter.utils.datetime_utils import encode_timedelta, parse_timedelta
 
 
 def test_encode_timedelta():

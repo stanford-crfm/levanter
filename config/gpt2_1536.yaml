@@ -2,9 +2,10 @@ data:
   train_urls:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
   validation_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext.{1..8}-of-8.jsonl.gz"
+      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 model:
+  type: gpt2
   hidden_dim: 1536
   num_heads: 24
   num_layers: 48
@@ -17,17 +18,10 @@ trainer:
     tags: [ "openwebtext", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1E-4
-  weight_decay: 0.1
   model_axis_size: 1
   per_device_parallelism: 2
   per_device_eval_parallelism: 8
-
-  axis_resources:
-    batch: "data"
-    vocab: "model" # [vocab, embed] -> sharded by vocab across the model axis
-    mlp: "model"
-    heads: "model"
-  # ZERO-3
-  parameter_axis_resources:
-    embed: "data"
+optimizer:
+  learning_rate: 1E-4
+  weight_decay: 0.1
+  min_lr_ratio: 0.1

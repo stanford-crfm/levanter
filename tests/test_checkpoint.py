@@ -9,7 +9,7 @@ import numpy as np
 import optax
 from chex import assert_trees_all_close
 from jax import numpy as jnp
-from utils import MLP, arrays_only, assert_trees_not_close
+from test_utils import MLP, arrays_only, assert_trees_not_close
 
 from levanter.checkpoint import (
     Checkpointer,
@@ -19,7 +19,7 @@ from levanter.checkpoint import (
     load_metadata,
     save_checkpoint,
 )
-from levanter.trainer_hooks import StepInfo
+from levanter.trainer import StepInfo
 
 
 def _dummy_step_info(step):

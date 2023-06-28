@@ -7,47 +7,60 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterator, Optional
+from functools import partial
+from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jax.experimental import multihost_utils
+from jax.experimental.pjit import pjit
 from tqdm import tqdm
 
+import levanter.visualization as viz
 import wandb
-from levanter.config import WandbConfig
-from levanter.logging import log_optimizer_hyperparams, save_xla_dumps_to_wandb
-from levanter.trainer_hooks import StepInfo
+from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
+from levanter.trainer import StepInfo
 
 
 logger = logging.getLogger(__name__)
 
 
+def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
+    total_loss = 0.0
+    n = 0
+
+    pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    for batch in pbar:
+        loss = loss_fn(model, batch)
+        total_loss += loss.item()
+        n += 1
+        pbar.set_postfix(loss=total_loss / n)
+
+        if max_batches is not None and n >= max_batches:
+            break
+
+    if n > 0:
+        total_loss /= n
+
+    return total_loss
+
+
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
-    dataloader: Callable[[], Iterator[tuple]],
+    dataset: Iterable,
+    max_batches: Optional[int] = None,
 ):
     def compute_loss(info: StepInfo):
-        total_loss = 0.0
-        n = 0
-        test_loader = dataloader()
+        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches)
 
-        pbar = tqdm(test_loader, desc="eval", position=1, leave=False)
-        for batch in pbar:
-            loss = loss_fn(info.model, *batch)
-            # this mean is over the devices, somewhat confusingly
-            loss = jnp.mean(loss)
-            total_loss += loss.item()
-            n += 1
-            pbar.set_postfix(loss=total_loss / n)
-
-        mean_loss = total_loss / n
         if wandb.run is not None:
-            wandb.log({"eval/loss": mean_loss}, step=info.step)
+            wandb.log({"eval/loss": loss}, step=info.step)
 
-        logger.info(f"validation loss: {mean_loss:.3f}")
+        logger.info(f"validation loss: {loss:.3f}")
 
-        return total_loss
+        return loss
 
     return compute_loss
 
@@ -218,3 +231,62 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
+
+
+def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
+    """
+    Computes log probabilities for a dataset and visualizes them using visdom.
+    :param test_data:
+    :param tokenizer:
+    :param log_prob_fn: a function that takes a model and a batch and returns the log probabilities for each token
+    :param html_dir:
+    :param max_docs:
+    :return:
+    """
+
+    def compute_and_viz_log_probs(step: StepInfo):
+        model = step.model
+
+        log_probs = []
+        targets = []
+        for batch in test_data:
+            b_logprobs = log_prob_fn(model, batch)
+            log_probs.append(b_logprobs)
+            targets.append(batch)
+
+            # TODO: haliax-ify?
+            if len(targets) * b_logprobs.shape[0] >= max_docs:
+                break
+
+        log_probs = _concatenate(log_probs)
+        targets = _concatenate([t.array for t in targets])
+
+        # gather the log probs and targets
+        # TODO: is this still necessary?
+        (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs), tiled=True)
+
+        log_probs = log_probs[:max_docs]
+        targets = targets[:max_docs]
+
+        targets = np.array(targets)
+        tokens = [_decode_tokens_pretty(tokenizer, t) for t in targets]
+
+        os.makedirs(html_dir, exist_ok=True)
+        out_file = os.path.join(html_dir, f"step_{step.step}.html")
+
+        log_probs = np.array(log_probs)
+        viz.visualize_log_probs(tokens, log_probs, out_file)
+        wandb.log({"log_probs": wandb.Html(out_file)}, step=step.step)
+
+    return compute_and_viz_log_probs
+
+
+@partial(pjit, out_axis_resources=None)
+def _concatenate(x):
+    return jnp.concatenate(x, axis=0)
+
+
+def _decode_tokens_pretty(tok, ids):
+    return [
+        tok.convert_tokens_to_string([x]) if x is not None else tok.unk_token for x in tok.convert_ids_to_tokens(ids)
+    ]

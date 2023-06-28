@@ -37,6 +37,18 @@ def to_raw_shape(shape: Union[ShapeSpec, NamedShapeSpec]) -> Optional[Tuple[int,
         return tuple(ax.size for ax in raw)
 
 
+def shape_spec_of(tree: PyTree) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+    """Get the shape specification of a tree."""
+
+    def _leaf_spec(leaf):
+        if is_named_array(leaf):
+            return NamedShapeSpec(leaf.axes, leaf.dtype)
+        else:
+            return ShapeDtypeStruct(leaf.shape, leaf.dtype)
+
+    return jax.tree_util.tree_map(_leaf_spec, tree, is_leaf=is_named_array)
+
+
 def conforms(shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], tree: PyTree) -> bool:
     """Check if a tree conforms to a shape specification."""
 

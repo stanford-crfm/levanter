@@ -1,6 +1,7 @@
 data:
   id: dlwh/wikitext_103_detokenized
 model:
+  type: gpt2
   hidden_dim: 32
   num_heads: 4
   num_layers: 2
@@ -16,11 +17,7 @@ trainer:
   per_device_eval_parallelism: 1
   per_device_parallelism: 1
   train_batch_size: 32
-  axis_resources:
-    batch: "data"
-    vocab: "model"
-    mlp: "model"
-    heads: "model"
-  # ZERO-3
-  parameter_axis_resources:
-    embed: "data"
+
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"

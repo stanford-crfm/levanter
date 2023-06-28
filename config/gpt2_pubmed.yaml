@@ -5,6 +5,7 @@ data:
       - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded/"
 model:
+  type: gpt2
   hidden_dim: 1600
   num_heads: 25
   num_layers: 48
@@ -17,14 +18,7 @@ trainer:
     tags: [ "pubmed", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  learning_rate: 1E-4
   model_axis_size: 2
   per_device_parallelism: 1
-
-  axis_resources:
-    batch: "data"
-    # ZERO-3
-    # "embed": ResourceAxis.DATA,
-    vocab: "model"
-    mlp: "model"
-    heads: "model"
+optimizer:
+  learning_rate: 1E-4
