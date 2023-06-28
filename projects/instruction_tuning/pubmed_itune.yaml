@@ -1,0 +1,29 @@
+hf_model: stanford-crfm/BioMedLM
+
+trainer:
+  num_train_steps: 20000 # 512 * 1024 * 20000 ≈ 10.5B tokens
+
+  mp: p=f32,c=bfloat16
+  weight_decay: 0.0
+  learning_rate: 1E-5
+  warmup_ratio: 0.02
+
+  per_device_parallelism: 2
+  train_batch_size: 512
+
+  axis_resources:
+    batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"
+  parameter_axis_resources:
+    embed: "data"
+
+data:
+  cache_dir: "gs://levanter-eu/tokenized/pubmed-sharded/"
+  tokenizer: stanford-crfm/BioMedLM
+
+ul2r_phase_fraction: 0.30
+
+instruction_weight: 0.5
+instruction_dataset_path: gs://levanter-eu/data/itune-train.jsonl.zstd

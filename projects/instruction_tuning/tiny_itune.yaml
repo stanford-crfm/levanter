@@ -1,0 +1,24 @@
+hf_model: distilgpt2
+
+trainer:
+  num_train_steps: 10
+
+  weight_decay: 0.0
+  learning_rate: 1E-6
+  warmup_ratio: 0.05
+
+  per_device_parallelism: 2
+  train_batch_size: 4
+
+  axis_resources:
+    batch: "data"
+  parameter_axis_resources:
+    embed: "data"
+
+data:
+  id: dlwh/wikitext_103_detokenized
+
+ul2r_phase_fraction: 0.30
+
+instruction_weight: 0.01
+instruction_dataset_path: "itune-train-tiny.jsonl"

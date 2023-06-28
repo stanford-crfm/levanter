@@ -1,10 +1,12 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
 # See https://arxiv.org/pdf/2210.11399v2.pdf
 import collections
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Sequence, Union
 
+import equinox as eqx
 import jax
 import numpy as np
 from jax.random import PRNGKey
@@ -12,72 +14,95 @@ from jaxtyping import PyTree
 from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
-from levanter.data.dataset import Dataset, T
+from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
-@dataclass
-class Ul2Example:
+class Ul2Example(eqx.Module):
     """A single example for the UL2 Objective for an encoder-decoder objective.
     In general, these should start out unpadded/untruncated"""
 
-    task_token: int
     inputs: np.ndarray
     outputs: np.ndarray
+    task_token: Optional[int]
 
     def render(self, tokenizer: PreTrainedTokenizerBase):
         """renders a pretty version of the example as a string"""
-        return (
-            tokenizer.decode(self.task_token)
-            + " "
-            + tokenizer.decode(self.inputs)
-            + "\n<!TARGETS!>\n"
-            + tokenizer.decode(self.outputs)
+        task_str = ""
+        if self.task_token is not None:
+            task_str = tokenizer.decode(self.task_token) + " "
+        return task_str + tokenizer.decode(self.inputs) + "\n<!TARGETS!>\n" + tokenizer.decode(self.outputs)
+
+
+class DecoderOnlyExample(eqx.Module):
+    tokens: np.ndarray
+    targets: np.ndarray
+    attn_mask: np.ndarray
+    loss_mask: np.ndarray
+
+    def to_named(self, QLen: hax.Axis, KLen: hax.Axis) -> "NamedLmExample":
+        return NamedLmExample(
+            hax.named(self.tokens, QLen),
+            hax.named(self.targets, QLen),
+            hax.named(self.attn_mask, (QLen, KLen)),
+            hax.named(self.loss_mask, QLen),
         )
 
-    def to_decoder_only(self, pad_token_id, QLen, KLen):
-        return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
 
-
-@dataclass
-class DecoderOnlyExample:
+class NamedLmExample(eqx.Module):
     tokens: hax.NamedArray
     targets: hax.NamedArray
     attn_mask: hax.NamedArray
     loss_mask: hax.NamedArray
 
 
-def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis):
-    all_tokens = np.concatenate([[example.task_token], example.inputs, example.outputs])
-    initial_length = len(all_tokens)
+def convert_to_decoder_only(example: Ul2Example, pad_token_id, max_seq_len: int) -> DecoderOnlyExample:
+    all_tokens = []
+    if example.task_token is not None:
+        all_tokens.append(example.task_token)
+    all_tokens.extend(example.inputs)
+    input_length = len(all_tokens)
 
-    max_seq_len = QLen.size
+    all_tokens.extend(example.outputs)
+    all_tokens = np.asarray(all_tokens, dtype=np.int32)
+
+    unpadded_length = len(all_tokens)
+
+    QLen = hax.Axis("QLen", max_seq_len)
+    KLen = hax.Axis("KLen", max_seq_len)
 
     # pad or truncate
     if len(all_tokens) > max_seq_len:
+        # take from the beginning
         all_tokens = all_tokens[:max_seq_len]
+        input_length = min(input_length, max_seq_len)
+        unpadded_length = max_seq_len
+        assert input_length <= unpadded_length
     elif len(all_tokens) < max_seq_len:
         num_padding = max_seq_len - len(all_tokens)
         all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
 
-    all_tokens = hax.named(all_tokens, QLen)
+    # do on the cpu to avoid dumb roundtrips to gpu/tpu
+    with jax.default_device(jax.devices("cpu")[0]):
+        # shift back by one since we're predicting the next token
+        targets = np.roll(all_tokens, -1)
 
-    # shift back by one since we're predicting the next token
-    targets = hax.roll(all_tokens, -1, QLen)
+        attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, input_length).rearrange((QLen, KLen)).array
+        loss_mask = _create_decoder_loss_mask(max_seq_len, input_length, unpadded_length)
+        assert np.sum(loss_mask) == unpadded_length - input_length
 
-    # Create attention masks
-    attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, len(example.inputs) + 1)
+    return DecoderOnlyExample(all_tokens, targets, attention_mask, loss_mask)
 
+
+def _create_decoder_loss_mask(max_seq_len, input_length, unpadded_length):
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QLen) >= len(example.inputs)
-    # 3) last token of targets and padding
-    loss_mask = loss_mask & (hax.arange(QLen) < initial_length - 1)
-    # 4) padding
-    loss_mask = loss_mask & (all_tokens != pad_token_id)
+    loss_mask = np.arange(max_seq_len) >= input_length - 1
+    # 3) last token of targets
+    loss_mask = loss_mask & (np.arange(max_seq_len) < unpadded_length - 1)
 
-    return DecoderOnlyExample(all_tokens, targets, attention_mask, loss_mask)
+    return loss_mask
 
 
 S_TASK_TOKEN = "[S2S]"
@@ -87,11 +112,13 @@ X_TASK_TOKEN = "[NLG]"
 
 @dataclass
 class DenoisingTaskConfig:
-    task_token: str
+    task_token: Optional[str]
     mask_prob: float = 0.15  # r in the paper
     mean_span_length: float = 3.0  # mu in the paper
-
     # we don't use their "n" parameter because they only use it for prefix-lm
+
+    def with_task_token(self, task_token: Optional[str]):
+        return dataclasses.replace(self, task_token=task_token)
 
     @staticmethod
     def ul2_configs(r_task_token: str = R_TASK_TOKEN, x_task_token: str = X_TASK_TOKEN) -> List["DenoisingTaskConfig"]:
@@ -105,7 +132,9 @@ class DenoisingTaskConfig:
         ]
 
     @staticmethod
-    def ul2r_configs(r_task_token: str = "[NLU]", x_task_token: str = "[NLG]") -> List["DenoisingTaskConfig"]:
+    def ul2r_configs(
+        r_task_token: Optional[str] = "[NLU]", x_task_token: Optional[str] = "[NLG]"
+    ) -> List["DenoisingTaskConfig"]:
         return [
             DenoisingTaskConfig(r_task_token, 0.15, 3.0),
             DenoisingTaskConfig(x_task_token, 0.15, 32.0),
@@ -117,16 +146,16 @@ class DenoisingTaskConfig:
 DEFAULT_S_DENOISER_CONFIG = DenoisingTaskConfig(S_TASK_TOKEN, 1.0, 512.0)
 
 
-class Ul2rDataset(Dataset[DecoderOnlyExample]):
+class Ul2rDataset(ShardableDataset[NamedLmExample]):
     def __init__(
         self,
-        base_dataset: Dataset[List[int]],
+        base_dataset: Dataset[Sequence[int]],
         SeqLen: hax.Axis,
         KSeqLen: hax.Axis,
         key: PRNGKey,
         tokenizer: PreTrainedTokenizerBase,
         task_configs: List[DenoisingTaskConfig],
-        s_denoiser_config: DenoisingTaskConfig = DEFAULT_S_DENOISER_CONFIG,
+        s_denoiser_config: Optional[DenoisingTaskConfig] = DEFAULT_S_DENOISER_CONFIG,
         s_denoiser_prob: float = 0.5,
     ):
         super().__init__()
@@ -144,25 +173,46 @@ class Ul2rDataset(Dataset[DecoderOnlyExample]):
         )
         self.tokenizer = tokenizer
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[NamedLmExample]:
         key = self.initial_key
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
-            ul2example = self.generator.sample(subkey, example)
-            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen)
+            ul2example = self.generator.sample(example, key=subkey)
+            try:
+                decoder_only = convert_to_decoder_only(
+                    ul2example,
+                    self.tokenizer.pad_token_id,
+                    self.SeqLen.size,
+                ).to_named(self.SeqLen, self.KSeqLen)
+            except AssertionError:
+                print(ul2example.render(self.tokenizer))
+                raise
+
             yield decoder_only
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return DecoderOnlyExample(
-            tokens=(self.SeqLen,),  # type: ignore
-            targets=(self.SeqLen,),  # type: ignore
-            attn_mask=(self.SeqLen, self.KSeqLen),  # type: ignore
-            loss_mask=(self.SeqLen,),  # type: ignore
+            tokens=NamedShapeSpec((self.SeqLen,)),  # type: ignore
+            targets=NamedShapeSpec((self.SeqLen,)),  # type: ignore
+            attn_mask=NamedShapeSpec((self.SeqLen, self.KSeqLen)),  # type: ignore
+            loss_mask=NamedShapeSpec((self.SeqLen,)),  # type: ignore
         )
 
     def __len__(self) -> int:
         return len(self.base_dataset)
+
+    def shard(self, shard_id: int, num_shards: int) -> "ShardableDataset[NamedLmExample]":
+        return Ul2rDataset(
+            self.base_dataset.shard(shard_id, num_shards),  # type: ignore
+            self.SeqLen,
+            self.KSeqLen,
+            self.initial_key,
+            self.tokenizer,
+            self.generator.task_configs,
+            self.generator.s_denoiser_config,
+            self.generator.s_denoiser_prob,
+        )
 
 
 class Ul2InstanceGenerator:
@@ -220,7 +270,7 @@ class Ul2InstanceGenerator:
         # choose a random length
         np_rng = np.random.default_rng(np.array(key).tolist())
         pivot = int(np_rng.integers(0, len(tokens) + 1))
-        return Ul2Example(self.s_denoiser_token_id, np.array(tokens[:-pivot]), np.array(tokens[-pivot:]))  # type: ignore
+        return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), self.s_denoiser_token_id)  # type: ignore
 
     def sample_denoiser(self, tokens: Sequence[int], task_config: DenoisingTaskConfig, key: PRNGKey) -> Ul2Example:
         """Build a denoiser example from a list of tokens"""
@@ -231,23 +281,7 @@ class Ul2InstanceGenerator:
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, self.sentinel_token_ids)
 
-        return Ul2Example(self.tokenizer.convert_tokens_to_ids(task_config.task_token), inputs, targets)
-
-        # max_predictions_per_seq = task_config.mask_prob * len(tokens)
-        # np_rng = np.random.default_rng(np.array(key))
-        # output_tokens, masked_spans = create_masked_lm_predictions(
-        #     tokens=tokens,
-        #     masked_lm_prob=task_config.mask_prob,
-        #     mask_id=self.tokenizer.mask_token_id,
-        #     span_length_distribution=task_config.length_distribution,
-        #     max_predictions_per_seq=max_predictions_per_seq,
-        #     np_rng=np_rng,
-        #     max_ngram_size=1024
-        # )
-        #
-        # t5_input, t5_output = self._create_t5_input_output_from_spans(output_tokens, masked_spans)
-
-        # return Ul2Example(self.tokenizer.convert_tokens_to_ids(task_config.task_token), t5_input, t5_output)
+        return Ul2Example(inputs, targets, self.tokenizer.convert_tokens_to_ids(task_config.task_token))
 
     def _create_t5_input_output_from_spans(self, output_tokens, masked_spans):
         sentinel_tokens = collections.deque(self.sentinel_token_ids)
@@ -399,9 +433,7 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     first_noise_tokens = np.logical_and(noise_mask, np.logical_not(prev_token_is_noise))
     subsequent_noise_tokens = np.logical_and(noise_mask, prev_token_is_noise)
 
-    # sentinel = sentinel_id(tokenizer) + 1 - tf.cumsum(tf.cast(first_noise_tokens, tokens.dtype))
     segments = np.cumsum(first_noise_tokens.astype(tokens.dtype))
-    # assert int(np.max(segments)) <= len(sentinel_tokens)
     if int(np.max(segments)) > len(sentinel_tokens):
         logging.warning("Too many noise spans, reusing sentinels")
     sentinel = sentinel_tokens[segments % len(sentinel_tokens)]
@@ -410,6 +442,5 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return tokens[np.logical_not(subsequent_noise_tokens)]
 
 
-# note(dlwh): this is some ninja sh*t right here.
 def nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
     return noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
