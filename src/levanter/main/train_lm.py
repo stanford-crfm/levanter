@@ -4,21 +4,22 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import equinox as eqx
-import jax.random as jrandom
-import jmp
-from jax.sharding import PartitionSpec
-
 import haliax as hax
 import haliax.random
-import levanter
-import wandb
+import jax.random as jrandom
+import jmp
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
+from jax.sharding import PartitionSpec
+
+import levanter
+import wandb
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import LMDatasetConfig, TokenSeqDataset
+from levanter.data.ul2r import Ul2rConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
@@ -33,11 +34,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TaskConfig:
+    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15, https://arxiv.org/abs/2210.13432
+    ul2r: Optional[Ul2rConfig] = None
+
+
+@dataclass
 class TrainLmConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: LmConfig = Gpt2Config()
     optimizer: OptimizerConfig = OptimizerConfig()
+    task: TaskConfig = TaskConfig()
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
@@ -46,8 +54,6 @@ class TrainLmConfig:
 
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
-
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
@@ -137,13 +143,13 @@ def main(config: TrainLmConfig):
         # masks for attention and loss
         # We support forgetful causal masking (FCM) which is a technique that improves training speed by
         # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-        # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+        # mask instead of the activations.
         def attention_mask(inference, fcm_key):
             causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
 
             # forgetful causal masking
-            if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
+            if not inference and config.task.fcm_prob > 0:
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.task.fcm_prob, key=fcm_key)
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 

@@ -9,6 +9,7 @@ from typing import Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
+import equinox as eqx
 import fsspec
 import haliax as hax
 import jax.numpy as jnp
@@ -54,6 +55,30 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
+
+
+class LmExample(eqx.Module):
+    tokens: hax.NamedArray
+    targets: hax.NamedArray
+    attn_mask: hax.NamedArray
+    loss_mask: hax.NamedArray
+
+
+class CausalLmDataset(ShardableDataset[LmExample]):
+    def __init(self, dataset: "TokenSeqDataset[NamedArray]", QPos: Axis, KPos: Axis):
+        self.dataset = dataset
+        self.QPos = QPos
+        self.KPos = KPos
+
+    def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
+        return CausalLmDataset(self.dataset.shard(shard_id, num_shards))
+
+    def __iter__(self) -> Iterator[LmExample]:
+        for tokens in self.dataset:
+            targets = hax.roll(tokens, -1, self.QPos)
+            attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
+            loss_mask = hax.ones_like(targets)
+            yield LmExample(tokens, targets, attn_mask, loss_mask)
 
 
 class TokenSeqDataset(ShardableDataset[NamedArray]):

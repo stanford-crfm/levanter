@@ -15,6 +15,7 @@ from jaxtyping import PyTree
 from transformers import PreTrainedTokenizerBase
 
 from levanter.data.dataset import Dataset, ShardableDataset
+from levanter.data.text import LmExample
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
@@ -33,22 +34,15 @@ class Ul2Example(eqx.Module):
             task_str = tokenizer.decode(self.task_token) + " "
         return task_str + tokenizer.decode(self.inputs) + "\n<!TARGETS!>\n" + tokenizer.decode(self.outputs)
 
-    def to_decoder_only(self, pad_token_id, QLen, KLen):
-        return convert_to_decoder_only(self, pad_token_id, QLen, KLen)
+    def to_decoder_only(self, pad_token_id, QPos, KPos):
+        return convert_to_decoder_only(self, pad_token_id, QPos, KPos)
 
 
-class LmExample(eqx.Module):
-    tokens: hax.NamedArray
-    targets: hax.NamedArray
-    attn_mask: hax.NamedArray
-    loss_mask: hax.NamedArray
-
-
-def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, KLen: hax.Axis):
+def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, KPos: hax.Axis):
     all_tokens = np.concatenate([[example.task_token], example.inputs, example.outputs])
     initial_length = len(all_tokens)
 
-    max_seq_len = QLen.size
+    max_seq_len = QPos.size
 
     # pad or truncate
     if len(all_tokens) > max_seq_len:
@@ -57,20 +51,20 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QLen: hax.Axis, K
         num_padding = max_seq_len - len(all_tokens)
         all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
 
-    all_tokens = hax.named(all_tokens, QLen)
+    all_tokens = hax.named(all_tokens, QPos)
 
     # shift back by one since we're predicting the next token
-    targets = hax.roll(all_tokens, -1, QLen)
+    targets = hax.roll(all_tokens, -1, QPos)
 
     # Create attention masks
-    attention_mask = hax.nn.attention.prefix_lm_mask(QLen, KLen, len(example.inputs) + 1)
+    attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, len(example.inputs) + 1)
 
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QLen) >= len(example.inputs)
+    loss_mask = hax.arange(QPos) >= len(example.inputs)
     # 3) last token of targets and padding
-    loss_mask = loss_mask & (hax.arange(QLen) < initial_length - 1)
+    loss_mask = loss_mask & (hax.arange(QPos) < initial_length - 1)
     # 4) padding
     loss_mask = loss_mask & (all_tokens != pad_token_id)
 
@@ -188,7 +182,7 @@ class CDenoisingConfig(DenoisingConfig):
 
 
 @dataclass(frozen=True)
-class Ul2rDatasetConfig:
+class Ul2rConfig:
     task_configs: List[DenoisingConfig]
     denoiser_probs: Optional[List[float]] = None
 
