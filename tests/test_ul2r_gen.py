@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import test_utils
 
-from levanter.data.ul2r import DenoisingTaskConfig, Ul2Example, Ul2InstanceGenerator
+from levanter.data.ul2r import DenoisingConfig, Ul2Example, Ul2InstanceGenerator
 
 
 def test_ul2_generator_seed_works():
@@ -17,7 +17,8 @@ def test_ul2_generator_seed_works():
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
         [f"<mask_{i}>" for i in range(500)],
-        DenoisingTaskConfig.ul2r_configs(),
+        DenoisingConfig.ul2r_configs(),
+        task_weights=None,
     )
 
     for i in range(B.size):
@@ -38,7 +39,8 @@ def test_ul2_generator_can_handle_too_few_sentinels():
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
         [f"<mask_{i}>" for i in range(2)],
-        DenoisingTaskConfig.ul2r_configs(),
+        DenoisingConfig.ul2r_configs(),
+        task_weights=None,
     )
 
     for i in range(B.size):
