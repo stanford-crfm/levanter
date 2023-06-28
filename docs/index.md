@@ -1,7 +1,7 @@
 {%
    include-markdown "../README.md"
-   start="<!--intro-start-->"
-   end="<!--intro-end-->"
+   start="<!--levanter-intro-start-->"
+   end="<!--levanter-intro-end-->"
 %}
 
 The code is released on GitHub: [Levanter Repository](https://github.com/stanford-crfm/levanter/).

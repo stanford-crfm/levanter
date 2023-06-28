@@ -44,7 +44,7 @@ watch:
 nav:
   - 'Home': 'index.md'
   - 'User Guide': 'Getting-Started-Training.md'
-  - Haliax: 'Haliax.md'
+#  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'

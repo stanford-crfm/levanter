@@ -3,10 +3,10 @@ import os
 from functools import reduce
 from typing import Callable, List, Optional, Sequence, TypeVar
 
+import draccus
 import equinox as eqx
 import jax
 import pyarrow as pa
-import pyrallis
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
@@ -197,6 +197,6 @@ def parameterize_with_configs(pattern, config_path=None):
 
 def check_load_config(config_class, config_file):
     try:
-        pyrallis.parse(config_class, config_file, args=[])
+        draccus.parse(config_class, config_file, args=[])
     except Exception as e:
         raise Exception(f"failed to parse {config_file}") from e

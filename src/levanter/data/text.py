@@ -10,15 +10,14 @@ from typing import Iterator, List, Optional, Sequence, Union
 import braceexpand
 import datasets
 import fsspec
+import haliax as hax
 import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from jaxtyping import PyTree
-from pyrallis import field
-
-import haliax as hax
+from draccus import field
 from haliax import Axis, NamedArray
+from jaxtyping import PyTree
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa

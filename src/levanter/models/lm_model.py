@@ -1,18 +1,17 @@
 import abc
 from typing import Generic, Optional, Type, TypeVar
 
-from jax.random import PRNGKey
-
-import levanter.config
+import draccus
 from haliax import Axis, NamedArray
+from jax.random import PRNGKey
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
-@levanter.config.config_registry(discover_packages="levanter.models")
-class LmConfig(abc.ABC, Generic[LmT]):
+# TODO: for some reason, mypy doesn't like the discover_packages_path argument?
+class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
     @property
     @abc.abstractmethod
     def model_type(cls) -> Type[LmT]:
@@ -54,6 +53,6 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
     ) -> NamedArray:
         pass

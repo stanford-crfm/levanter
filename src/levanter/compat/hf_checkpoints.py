@@ -12,12 +12,12 @@ from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 from urllib.parse import urlparse
 
+import draccus
 import fsspec
 import huggingface_hub
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pyrallis
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
@@ -77,9 +77,9 @@ class RepoRef:
         return f"RemoteRev({self.model_name_or_path!r}, {self.revision!r})"
 
 
-# register pyrallis parsing
-pyrallis.decode.register(RepoRef, RepoRef.from_string)
-pyrallis.encode.register(RepoRef, str)
+# register draccus parsing
+draccus.decode.register(RepoRef, RepoRef.from_string)
+draccus.encode.register(RepoRef, str)
 
 
 class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):

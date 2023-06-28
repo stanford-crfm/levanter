@@ -1,8 +1,6 @@
 import dataclasses
 
 import fsspec
-import pyrallis
-import pytest
 
 import levanter.config
 from haliax.partitioning import ResourceAxis
@@ -50,30 +48,3 @@ def test_new_style_axis_mapping():
         "a2": ResourceAxis.MODEL,
         "batch": ResourceAxis.DATA,
     }
-
-
-def test_class_registry():
-    @levanter.config.config_registry
-    @dataclasses.dataclass
-    class Person:
-        name: str
-
-    @dataclasses.dataclass
-    class Adult(Person):
-        age: int
-
-    @dataclasses.dataclass
-    class Child(Person):
-        favorite_toy: str
-
-    Person.register_subclass("adult", Adult)
-    Person.register_subclass("child", Child)
-
-    assert pyrallis.decode(Person, {"adult": {"name": "bob", "age": 10}}) == Adult("bob", 10)
-    assert pyrallis.decode(Person, {"child": {"name": "bob", "favorite_toy": "truck"}}) == Child("bob", "truck")
-
-    with pytest.raises(Exception):  # pyrallis raises an Exception, not a ValueError
-        pyrallis.decode(Person, {"adult": {"name": "bob", "age": 10, "favorite_toy": "truck"}})
-
-    with pytest.raises(ValueError):
-        pyrallis.decode(Person, {"baby": {"name": "bob"}})

@@ -3,18 +3,18 @@ from functools import partial
 from typing import Callable, Dict, Optional, Type, cast
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
-from transformers import GPT2Config as HfGpt2Config
-from transformers import PretrainedConfig as HfConfig
-
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
+import jax
+import jax.numpy as jnp
+import jax.random as jrandom
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from transformers import GPT2Config as HfGpt2Config
+from transformers import PretrainedConfig as HfConfig
+
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -369,7 +369,9 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None):
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+    ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 

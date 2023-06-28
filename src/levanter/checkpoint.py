@@ -11,10 +11,10 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Unio
 
 import fsspec
 import jax
+from draccus import field
 from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
-from pyrallis import field
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.utils.jax_utils import multihost_broadcast_sync
@@ -396,7 +396,7 @@ def _assert_same(new, old):
 class CheckpointerConfig:
     base_path: str = "checkpoints/"
     save_interval: timedelta = timedelta(hours=6)
-    # TODO: I'd like to write this, but it's not supported by pyrallis
+    # TODO: I'd like to write this, but it's not supported by draccus
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
     keep: List[dict] = field(
         default_factory=lambda: [dict(every=10000)]

@@ -142,7 +142,6 @@ class MptConfig(HFCompatConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
-        # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
             cls, "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2", trust_remote_code=True
         )
