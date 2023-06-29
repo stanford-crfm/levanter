@@ -13,5 +13,6 @@ fi
 
 source $VENV/bin/activate
 
+pip install -U pyrallis
 
 PYTHONPATH=${LEV_ROOT}:${LEV_ROOT}/src:${LEV_ROOT}/examples:$PYTHONPATH "$@"
