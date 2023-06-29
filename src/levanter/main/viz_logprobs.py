@@ -1,14 +1,14 @@
 import logging
 from dataclasses import dataclass
 
+import haliax as hax
 import jax
 import jmp
-
-import haliax as hax
-import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import named_jit, round_axis_for_partitioning
+
+import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader
@@ -45,7 +45,7 @@ def main(config: VizGpt2Config):
     KeyPos = config.model.KeyPos
 
     eval_loader = ReplicatedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
+        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size),
         config.trainer.device_mesh,
         EvalBatch,
     )

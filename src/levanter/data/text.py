@@ -19,7 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
-from haliax import Axis, NamedArray
+from haliax import Axis
 from jaxtyping import PyTree
 
 # intercept the logging nonsense here
@@ -47,6 +47,7 @@ from levanter.data.shard_cache import (  # noqa
     cache_dataset,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
+from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
@@ -68,7 +69,12 @@ class LmExample(eqx.Module):
 
 class CausalLmDataset(ShardableDataset[LmExample]):
     def __init__(
-        self, dataset: "TokenSeqDataset", QPos: Axis, KPos: Axis, fcm_prob: float = 0.0, key: Optional[PRNGKey] = None
+        self,
+        dataset: ShardableDataset[np.ndarray],
+        QPos: Axis,
+        KPos: Axis,
+        fcm_prob: float = 0.0,
+        key: Optional[PRNGKey] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
@@ -85,17 +91,20 @@ class CausalLmDataset(ShardableDataset[LmExample]):
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key
         for tokens in self.dataset:
+            with use_cpu_device():
+                attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
+                if self.fcm_prob > 0:
+                    assert self.key is not None
+                    this_key, key = jax.random.split(key)
+                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                    attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
 
-            attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
-            if self.fcm_prob > 0:
-                assert self.key is not None
-                this_key, key = jax.random.split(key)
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+                targets = np.roll(tokens, -1)
+                # loss_mask = hax.ones_like(targets)
+                loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
 
-            targets = hax.roll(tokens, -1, self.QPos)
-            # loss_mask = hax.ones_like(targets)
-            loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
+                targets = hax.named(targets, self.QPos)
+                tokens = hax.named(tokens, self.QPos)
 
             yield LmExample(tokens, targets, attn_mask, loss_mask)
 
@@ -109,7 +118,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         )
 
 
-class TokenSeqDataset(ShardableDataset[NamedArray]):
+class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
 
@@ -117,22 +126,18 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
     :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
     """
 
-    def __init__(self, doc_cache, Pos: Axis, stride: Optional[int] = None):
+    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
         self.doc_cache = doc_cache
-        self.Pos = Pos
+        self.seq_len = seq_len
         self.stride = stride
-
-    @property
-    def seq_len(self) -> int:
-        return self.Pos.size
 
     def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.Pos, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
-    def __iter__(self) -> Iterator[NamedArray]:
+    def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
             # TODO: we could be cleverer here, and avoid these expensive copies etc
@@ -148,16 +153,17 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
-                    yield hax.named(ids, self.Pos)
+                    # yield hax.named(ids, self.Pos)
+                    yield ids
 
     @property
     def item_shape(self) -> PyTree:
-        return NamedShapeSpec((self.Pos,), jnp.int32)
+        return ShapeSpec((self.seq_len,), np.int32)
 
     @staticmethod
-    def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
+    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return TokenSeqDataset(doc_cache, pos, stride)
+        return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
 def _load_old_ledger(cache_dir):

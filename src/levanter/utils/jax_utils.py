@@ -1,4 +1,4 @@
-import functools
+import contextlib
 import functools as ft
 import json
 from pathlib import Path
@@ -31,6 +31,13 @@ Y = TypeVar("Y")
 def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
     res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
     return res[0]
+
+
+@contextlib.contextmanager
+def use_cpu_device():
+    """Temporarily sets the default device to CPU"""
+    with jax.default_device(jax.devices("cpu")[0]):
+        yield
 
 
 def flops_estimate(fn, *args):
@@ -227,7 +234,7 @@ def recursive_checkpoint(funs, threshold=2):
         f1, f2 = funs
         return lambda x: f2(f1(x))
     elif len(funs) <= threshold:
-        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
+        return ft.reduce(lambda f, g: lambda x: g(f(x)), funs)
     else:
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])

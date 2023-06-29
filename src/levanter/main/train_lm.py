@@ -120,7 +120,7 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos), Pos, KeyPos),
+        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -129,7 +129,7 @@ def main(config: TrainLmConfig):
     train_loader = ShardedBatchLoader(
         # TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.task.build(
-            TokenSeqDataset(config.data.build_or_load_cache("train"), Pos), Pos, KeyPos, tokenizer, data_key
+            TokenSeqDataset(config.data.build_or_load_cache("train"), Pos.size), Pos, KeyPos, tokenizer, data_key
         ),
         config.trainer.device_mesh,
         Batch,

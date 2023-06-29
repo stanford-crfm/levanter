@@ -2,16 +2,16 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import haliax as hax
 import jax
 import jmp
 import numpy
 import tqdm
-
-import haliax as hax
-import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import named_jit, round_axis_for_partitioning
+
+import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
@@ -46,9 +46,9 @@ def main(config: EvalLmConfig):
     Batch = Axis("batch", config.trainer.eval_batch_size)
 
     if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos.size)
     else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
+        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos.size)
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
 

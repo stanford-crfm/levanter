@@ -18,6 +18,7 @@ from transformers import PreTrainedTokenizerBase
 from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.data.text import LmExample
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+from levanter.utils.jax_utils import use_cpu_device
 
 
 class Ul2Example(eqx.Module):
@@ -223,7 +224,7 @@ class Ul2rConfig:
 class Ul2rDataset(ShardableDataset[LmExample]):
     def __init__(
         self,
-        base_dataset: Dataset[hax.NamedArray],
+        base_dataset: Dataset[np.ndarray],
         Pos: hax.Axis,
         KPos: hax.Axis,
         key: PRNGKey,
@@ -247,10 +248,13 @@ class Ul2rDataset(ShardableDataset[LmExample]):
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.initial_key
+        # to cpu
+        key = jax.device_put(key, jax.devices("cpu")[0])
         for example in self.base_dataset:
-            key, subkey = jax.random.split(key)
-            ul2example = self.generator.sample(example, subkey)
-            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
+            with use_cpu_device():
+                key, subkey = jax.random.split(key)
+                ul2example = self.generator.sample(example, subkey)
+                decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
             yield decoder_only
 
     @property
@@ -298,8 +302,8 @@ class Ul2InstanceGenerator:
             self.tokenizer.convert_tokens_to_ids(config.task_token) for config in task_configs
         ]
 
-    def sample(self, tokens: hax.NamedArray, key: PRNGKey) -> Ul2Example:
-        with jax.default_device(jax.devices("cpu")[0]):
+    def sample(self, tokens: jnp.ndarray, key: PRNGKey) -> Ul2Example:
+        with use_cpu_device():
             """Generate a single Ul2Example from a string"""
             # first decide if we're doing S-denoiser or not
             # gonna be lazy with keys here
@@ -310,7 +314,7 @@ class Ul2InstanceGenerator:
             task_config = self.task_configs[task_id]
             task_token_id = self.denoiser_task_tokens[task_id]
 
-            return task_config.sample(key, tokens.array, self.sentinel_token_ids, task_token_id)
+            return task_config.sample(key, tokens, self.sentinel_token_ids, task_token_id)
 
 
 # from https://github.com/google-research/text-to-text-transfer-transformer/blob/main/t5/data/preprocessors.py
