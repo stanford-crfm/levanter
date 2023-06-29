@@ -9,6 +9,7 @@ import draccus
 import equinox as eqx
 import haliax as hax
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.random import PRNGKey
 from jaxtyping import PyTree
@@ -39,7 +40,13 @@ class Ul2Example(eqx.Module):
 
 
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, KPos: hax.Axis):
-    all_tokens = np.concatenate([[example.task_token], example.inputs, example.outputs])
+    all_tokens = []
+    if example.task_token is not None:
+        all_tokens.append(example.task_token)
+    all_tokens.extend(example.inputs)
+    all_tokens.extend(example.outputs)
+
+    all_tokens = np.array(all_tokens)
     initial_length = len(all_tokens)
 
     max_seq_len = QPos.size
@@ -49,6 +56,7 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, K
         all_tokens = all_tokens[:max_seq_len]
     elif len(all_tokens) < max_seq_len:
         num_padding = max_seq_len - len(all_tokens)
+        assert pad_token_id is not None, "pad_token_id must be defined"
         all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
 
     all_tokens = hax.named(all_tokens, QPos)
@@ -66,7 +74,8 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, K
     # 3) last token of targets and padding
     loss_mask = loss_mask & (hax.arange(QPos) < initial_length - 1)
     # 4) padding
-    loss_mask = loss_mask & (all_tokens != pad_token_id)
+    if pad_token_id is not None:
+        loss_mask = loss_mask & (all_tokens != pad_token_id)
 
     return LmExample(all_tokens, targets, attention_mask, loss_mask)
 
@@ -130,23 +139,23 @@ class MaskDenoisingConfig(DenoisingConfig):
 @DenoisingConfig.register_subclass("x")
 @dataclass(frozen=True)
 class XDenoisingConfig(MaskDenoisingConfig):
-    task_token = X_TASK_TOKEN
-    mask_prob = 0.5
-    mean_span_length = 3.0
+    task_token: Optional[str] = X_TASK_TOKEN
+    mask_prob: float = 0.5
+    mean_span_length: float = 3.0
 
 
 @DenoisingConfig.register_subclass("r")
 @dataclass(frozen=True)
 class RDenoisingConfig(MaskDenoisingConfig):
-    task_token = R_TASK_TOKEN
-    mask_prob = 0.15
-    mean_span_length = 3.0
+    task_token: Optional[str] = R_TASK_TOKEN
+    mask_prob: float = 0.15
+    mean_span_length: float = 3.0
 
 
 @DenoisingConfig.register_subclass("s")
 @dataclass(frozen=True)
 class SDenoisingConfig(DenoisingConfig):
-    task_token = S_TASK_TOKEN
+    task_token: Optional[str] = S_TASK_TOKEN
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
@@ -157,10 +166,11 @@ class SDenoisingConfig(DenoisingConfig):
 
 # these aren't in the UL2(R) papers but they're nice to have
 @DenoisingConfig.register_subclass("c")
+@dataclass(frozen=True)
 class CDenoisingConfig(DenoisingConfig):
     """This is just causal language modeling. Technically it's a kind of S-Denoising"""
 
-    task_token = None
+    task_token: Optional[str] = None
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an C-denoiser example from a list of tokens"""
@@ -170,6 +180,7 @@ class CDenoisingConfig(DenoisingConfig):
 
 # TODO:f denoising
 # @DenoisingConfig.register_subclass("f")
+# @dataclass(frozen=True)
 # class FDenoisingConfig(DenoisingConfig):
 #     """This is forgetful causal masking, which we could layer onto S-Denoising, but don't for now"""
 #     task_token = None
@@ -235,17 +246,17 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         key = self.initial_key
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
-            ul2example = self.generator.sample(subkey, example)
+            ul2example = self.generator.sample(example, subkey)
             decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
             yield decoder_only
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return LmExample(
-            tokens=NamedShapeSpec((self.Pos,)),  # type: ignore
-            targets=NamedShapeSpec((self.Pos,)),  # type: ignore
-            attn_mask=NamedShapeSpec((self.Pos, self.KPos)),  # type: ignore
-            loss_mask=NamedShapeSpec((self.Pos,)),  # type: ignore
+            tokens=NamedShapeSpec((self.Pos,), jnp.int32),  # type: ignore
+            targets=NamedShapeSpec((self.Pos,), jnp.int32),  # type: ignore
+            attn_mask=NamedShapeSpec((self.Pos, self.KPos), jnp.bool_),  # type: ignore
+            loss_mask=NamedShapeSpec((self.Pos,), jnp.bool_),  # type: ignore
         )
 
     def shard(self, shard_id: int, num_shards: int) -> "Ul2rDataset":
@@ -275,7 +286,7 @@ class Ul2InstanceGenerator:
         self.task_weights = task_weights
 
         self.tokenizer.add_tokens(sentinel_tokens, special_tokens=True)
-        task_tokens = list(set([config.task_token for config in task_configs]))
+        task_tokens = list(set([config.task_token for config in task_configs if config.task_token is not None]))
         self.tokenizer.add_tokens(task_tokens, special_tokens=True)
 
         self.sentinel_token_ids = np.array([self.tokenizer.convert_tokens_to_ids(token) for token in sentinel_tokens])
