@@ -371,7 +371,7 @@ class Gpt2Transformer(TorchSerializationMixin, eqx.Module):
 
 class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
     token_embeddings: NamedArray
-    position_embeddings: NamedArray
+    # position_embeddings: NamedArray
     token_out_embeddings: Optional[NamedArray]
     dropout: hnn.Dropout
 
@@ -392,14 +392,14 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
         key,
     ):
         super().__init__()
-        k_wte, k_wpe, k_out = jrandom.split(key, 3)
+        k_wte, k_out = jrandom.split(key, 2) # k_wpe,
 
         self.Vocab = Vocab
         self.SeqLen = SeqLen
         self.Embed = Embed
 
         self.token_embeddings = sharded_normal(key=k_wte, shape=(Vocab, Embed)) * initializer_range
-        self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
+        # self.position_embeddings = sharded_normal(key=k_wpe, shape=(SeqLen, Embed)) * (initializer_range / 2)
         self.dropout = hnn.Dropout(pdrop=dropout_prob)
 
         if tie_word_embeddings:
@@ -410,9 +410,9 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
     @named_call
     def embed(self, input_ids, inference, *, key):
         input_embeds = self.token_embeddings.take(self.Vocab, input_ids)
-        position_embeds = self.position_embeddings
+        #position_embeds = self.position_embeddings
 
-        hidden_states = input_embeds + position_embeds
+        hidden_states = input_embeds #+ position_embeds
         hidden_states = self.dropout(hidden_states, inference=inference, key=key)
 
         return hidden_states
@@ -423,7 +423,7 @@ class Gpt2Embeddings(TorchSerializationMixin, eqx.Module):
 
     def _torch_key_map(self) -> Optional[Dict[str, Optional[str]]]:
         assert self.token_out_embeddings is None
-        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+        return {"token_embeddings": "wte.weight"} # , "position_embeddings": "wpe.weight"}
 
 
 class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
