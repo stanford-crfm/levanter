@@ -61,6 +61,9 @@ dev-mode-dirs = [".", "src"]
 [tool.hatch.build.targets.wheel]
 packages = ["levanter"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
