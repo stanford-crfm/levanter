@@ -12,10 +12,12 @@ import datasets
 import equinox as eqx
 import fsspec
 import haliax as hax
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from chex import PRNGKey
 from draccus import field
 from haliax import Axis, NamedArray
 from jaxtyping import PyTree
@@ -65,20 +67,46 @@ class LmExample(eqx.Module):
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
-    def __init(self, dataset: "TokenSeqDataset[NamedArray]", QPos: Axis, KPos: Axis):
+    def __init__(
+        self, dataset: "TokenSeqDataset", QPos: Axis, KPos: Axis, fcm_prob: float = 0.0, key: Optional[PRNGKey] = None
+    ):
         self.dataset = dataset
         self.QPos = QPos
         self.KPos = KPos
+        self.fcm_prob = fcm_prob
+        self.key = key
+
+        if self.fcm_prob > 0.0 and self.key is None:
+            raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(self.dataset.shard(shard_id, num_shards))
+        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key)
 
     def __iter__(self) -> Iterator[LmExample]:
+        key = self.key
         for tokens in self.dataset:
-            targets = hax.roll(tokens, -1, self.QPos)
+
             attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
-            loss_mask = hax.ones_like(targets)
+            if self.fcm_prob > 0:
+                assert self.key is not None
+                this_key, key = jax.random.split(key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+
+            targets = hax.roll(tokens, -1, self.QPos)
+            # loss_mask = hax.ones_like(targets)
+            loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
+
             yield LmExample(tokens, targets, attn_mask, loss_mask)
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return LmExample(
+            tokens=NamedShapeSpec((self.QPos,), jnp.int32),
+            targets=NamedShapeSpec((self.QPos,), jnp.int32),
+            attn_mask=NamedShapeSpec((self.QPos, self.KPos), jnp.bool_),
+            loss_mask=NamedShapeSpec((self.QPos,), jnp.bool_),
+        )
 
 
 class TokenSeqDataset(ShardableDataset[NamedArray]):

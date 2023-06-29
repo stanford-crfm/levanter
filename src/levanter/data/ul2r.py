@@ -184,25 +184,25 @@ class CDenoisingConfig(DenoisingConfig):
 @dataclass(frozen=True)
 class Ul2rConfig:
     task_configs: List[DenoisingConfig]
-    denoiser_probs: Optional[List[float]] = None
+    task_probs: Optional[List[float]] = None
 
     def __post_init__(self):
-        if self.denoiser_probs is not None:
-            if len(self.denoiser_probs) != len(self.task_configs):
+        if self.task_probs is not None:
+            if len(self.task_probs) != len(self.task_configs):
                 raise ValueError("denoiser_probs must have the same length as task_configs")
 
     def build(
         self,
         base_dataset: Dataset[hax.NamedArray],
-        SeqLen: hax.Axis,
-        KSeqLen: hax.Axis,
-        key: PRNGKey,
+        Pos: hax.Axis,
+        KPos: hax.Axis,
         tokenizer: PreTrainedTokenizerBase,
+        key: PRNGKey,
     ):
         return Ul2rDataset(
             base_dataset,
-            SeqLen,
-            KSeqLen,
+            Pos,
+            KPos,
             key,
             tokenizer,
             self.task_configs,
@@ -213,8 +213,8 @@ class Ul2rDataset(ShardableDataset[LmExample]):
     def __init__(
         self,
         base_dataset: Dataset[hax.NamedArray],
-        SeqLen: hax.Axis,
-        KSeqLen: hax.Axis,
+        Pos: hax.Axis,
+        KPos: hax.Axis,
         key: PRNGKey,
         tokenizer: PreTrainedTokenizerBase,
         task_configs: List[DenoisingConfig],
@@ -222,13 +222,11 @@ class Ul2rDataset(ShardableDataset[LmExample]):
     ):
         super().__init__()
         self.base_dataset = base_dataset
-        self.SeqLen = SeqLen
-        self.KSeqLen = KSeqLen
+        self.Pos = Pos
+        self.KPos = KPos
         self.initial_key = key
 
-        sentinel_tokens = [
-            f"<sentinel_{k}>" for k in range(1000)
-        ]  # if we need more than 1000, we have bigger problems
+        sentinel_tokens = [f"<sentinel_{k}>" for k in range(100)]
 
         self.generator = Ul2InstanceGenerator(tokenizer, sentinel_tokens, task_configs, task_probs)
         self.tokenizer = tokenizer
@@ -238,23 +236,23 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         for example in self.base_dataset:
             key, subkey = jax.random.split(key)
             ul2example = self.generator.sample(subkey, example)
-            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.SeqLen, self.KSeqLen)
+            decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
             yield decoder_only
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return LmExample(
-            tokens=NamedShapeSpec((self.SeqLen,)),  # type: ignore
-            targets=NamedShapeSpec((self.SeqLen,)),  # type: ignore
-            attn_mask=NamedShapeSpec((self.SeqLen, self.KSeqLen)),  # type: ignore
-            loss_mask=NamedShapeSpec((self.SeqLen,)),  # type: ignore
+            tokens=NamedShapeSpec((self.Pos,)),  # type: ignore
+            targets=NamedShapeSpec((self.Pos,)),  # type: ignore
+            attn_mask=NamedShapeSpec((self.Pos, self.KPos)),  # type: ignore
+            loss_mask=NamedShapeSpec((self.Pos,)),  # type: ignore
         )
 
     def shard(self, shard_id: int, num_shards: int) -> "Ul2rDataset":
         return Ul2rDataset(
             self.base_dataset.shard(shard_id, num_shards),  # type: ignore
-            self.SeqLen,
-            self.KSeqLen,
+            self.Pos,
+            self.KPos,
             self.initial_key,
             self.tokenizer,
             self.generator.task_configs,
