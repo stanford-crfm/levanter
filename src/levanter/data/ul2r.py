@@ -1,7 +1,7 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
 # See https://arxiv.org/pdf/2210.11399v2.pdf
 import dataclasses
-import logging
+import warnings
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Union
 
@@ -237,7 +237,10 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         self.KPos = KPos
         self.initial_key = key
 
-        sentinel_tokens = [f"<sentinel_{k}>" for k in range(100)]
+        # for the standard x-denoiser (r=0.5,msl=3), we produce (seqlen/msl/2) masked spans per example
+        # So, for seqlen 2048, we produce ~341 masked spans per example
+        # 4096, we'd produce ~682 masked spans per example
+        sentinel_tokens = [f"<sentinel_{k}>" for k in range(1000)]
 
         self.generator = Ul2InstanceGenerator(tokenizer, sentinel_tokens, task_configs, task_probs)
         self.tokenizer = tokenizer
@@ -264,7 +267,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             self.base_dataset.shard(shard_id, num_shards),  # type: ignore
             self.Pos,
             self.KPos,
-            self.initial_key,
+            jax.random.fold_in(self.initial_key, shard_id),
             self.tokenizer,
             self.generator.task_configs,
         )
@@ -435,7 +438,7 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
 
     segments = np.cumsum(first_noise_tokens.astype(tokens.dtype))
     if int(np.max(segments)) > len(sentinel_tokens):
-        logging.warning("Too many noise spans, reusing sentinels")
+        warnings.warn(f"Too many noise spans, reusing sentinels: {int(np.max(segments))} > {len(sentinel_tokens)}")
     sentinel = sentinel_tokens[segments % len(sentinel_tokens)]
 
     tokens = np.where(first_noise_tokens, sentinel, tokens)

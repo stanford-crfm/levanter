@@ -6,7 +6,6 @@ from typing import Optional, Union
 import equinox as eqx
 import haliax as hax
 import haliax.random
-import jax.debug
 import jax.random as jrandom
 import jmp
 from chex import PRNGKey
@@ -324,11 +323,6 @@ def main(config: TrainLmConfig):
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
-
-                if jax.process_index() == 0:
-                    example_leaves = jax.tree_leaves(example)
-                    for leaf in example_leaves:
-                        print(leaf.shape, leaf.dtype, leaf.sharding)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, example, example_keys)
                 step_loss = jax_step_loss.item()
