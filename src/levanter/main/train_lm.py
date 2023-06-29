@@ -241,10 +241,10 @@ def main(config: TrainLmConfig):
         )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
+        checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
+            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_id)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
             engine.add_hook(

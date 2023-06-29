@@ -13,7 +13,7 @@ import numpy as np
 import optax
 from chex import PRNGKey
 from draccus import field
-from jax._src.interpreters.pxla import Mesh
+from jax.sharding import Mesh
 from jaxtyping import PyTree
 
 from haliax.partitioning import ResourceAxis, ResourceMapping
@@ -131,6 +131,12 @@ class TrainerConfig:
         return wandb.run.name or wandb.run.id
 
     @property
+    def run_id(self) -> str:
+        import wandb
+
+        return wandb.run.id
+
+    @property
     def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
 
@@ -214,7 +220,7 @@ class TrainerConfig:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
-            checkpointer = self.checkpointer.create(self.run_name)
+            checkpointer = self.checkpointer.create(self.run_id)
             assert (
                 self.load_checkpoint_path is not None
             ), "load_checkpoint_path should have been set during initialization"
@@ -257,7 +263,7 @@ class TrainerConfig:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
         if self.load_checkpoint_path is None:
-            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_name)
+            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_id)
 
 
 @dataclass
