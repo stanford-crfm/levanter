@@ -73,7 +73,7 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, K
     return _create_prefix_lm_example(QPos, KPos, all_tokens, targets, initial_length, num_inputs, pad_token_id)
 
 
-@eqx.filter_jit
+@eqx.filter_jit(args=(False, False, True, True, True, True, True))
 def _create_prefix_lm_example(QPos, KPos, tokens, targets, unpadded_length, num_inputs, pad_token_id):
     attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
     # don't compute loss on:
