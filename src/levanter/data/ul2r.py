@@ -42,33 +42,36 @@ class Ul2Example(eqx.Module):
 
 
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, KPos: hax.Axis):
-    all_tokens = []
-    if example.task_token is not None:
-        all_tokens.append(example.task_token)
-    all_tokens.extend(example.inputs)
-    all_tokens.extend(example.outputs)
-
-    all_tokens = np.array(all_tokens)
-    initial_length = len(all_tokens)
-
     max_seq_len = QPos.size
+    padded, num_inputs, unpadded_length = pack_inputs_and_outputs(example, max_seq_len, pad_token_id)
+    padded = hax.named(padded, QPos)
 
-    # pad or truncate
-    if len(all_tokens) > max_seq_len:
-        all_tokens = all_tokens[:max_seq_len]
-    elif len(all_tokens) < max_seq_len:
-        num_padding = max_seq_len - len(all_tokens)
-        assert pad_token_id is not None, "pad_token_id must be defined"
-        all_tokens = np.pad(all_tokens, (0, num_padding), constant_values=pad_token_id)
+    # Create attention masks
+    return _create_prefix_lm_example(QPos, KPos, padded, unpadded_length, num_inputs, pad_token_id)
 
-    all_tokens = hax.named(all_tokens, QPos)
+
+def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
+    all_tokens = np.full(max_seq_len, pad_token_id or 0)
+    used_tokens = 0
+
+    # TODO: do something more sophisticated for packing when seqlen is too long
+    if example.task_token is not None:
+        all_tokens[0] = example.task_token
+        used_tokens = 1
+    inputs = example.inputs[: max_seq_len - used_tokens]
+    all_tokens[used_tokens : used_tokens + len(inputs)] = inputs
+    used_tokens += len(inputs)
+    outputs = example.outputs[: max_seq_len - used_tokens]
+    all_tokens[used_tokens : used_tokens + len(outputs)] = outputs
+    used_tokens += len(outputs)
 
     num_inputs = len(example.inputs)
     if example.task_token is not None:
         num_inputs += 1
 
-    # Create attention masks
-    return _create_prefix_lm_example(QPos, KPos, all_tokens, initial_length, num_inputs, pad_token_id)
+    num_inputs = min(num_inputs, max_seq_len)
+
+    return all_tokens, num_inputs, used_tokens
 
 
 # @eqx.filter_jit(args=(False, False, True, True, True, True, True))
