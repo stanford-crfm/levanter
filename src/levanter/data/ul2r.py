@@ -169,7 +169,8 @@ class SDenoisingConfig(DenoisingConfig):
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
         # choose a random length
-        pivot = int(jax.random.randint(key, (), 1, len(tokens) + 1))
+        np_rng = np.random.default_rng(np.array(key))
+        pivot = int(np_rng.integers(1, len(tokens) + 1))
         return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), task_token_id)
 
 
