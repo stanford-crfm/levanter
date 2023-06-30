@@ -40,6 +40,7 @@ class Ul2Example(eqx.Module):
         return convert_to_decoder_only(self, pad_token_id, QPos, KPos)
 
 
+@eqx.filter_jit(args=(True, False, False, False))
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, KPos: hax.Axis):
     all_tokens = []
     if example.task_token is not None:
@@ -302,19 +303,19 @@ class Ul2InstanceGenerator:
             self.tokenizer.convert_tokens_to_ids(config.task_token) for config in task_configs
         ]
 
+    @eqx.filter_jit
     def sample(self, tokens: jnp.ndarray, key: PRNGKey) -> Ul2Example:
-        with use_cpu_device():
-            """Generate a single Ul2Example from a string"""
-            # first decide if we're doing S-denoiser or not
-            # gonna be lazy with keys here
-            choice_key, key = jax.random.split(key)
-            np_rng = np.random.default_rng(np.array(choice_key))
+        """Generate a single Ul2Example from a string"""
+        # first decide if we're doing S-denoiser or not
+        # gonna be lazy with keys here
+        choice_key, key = jax.random.split(key)
+        np_rng = np.random.default_rng(np.array(choice_key))
 
-            task_id = np_rng.choice(np.arange(len(self.task_configs)), p=self.task_weights)
-            task_config = self.task_configs[task_id]
-            task_token_id = self.denoiser_task_tokens[task_id]
+        task_id = np_rng.choice(np.arange(len(self.task_configs)), p=self.task_weights)
+        task_config = self.task_configs[task_id]
+        task_token_id = self.denoiser_task_tokens[task_id]
 
-            return task_config.sample(key, tokens, self.sentinel_token_ids, task_token_id)
+        return task_config.sample(key, tokens, self.sentinel_token_ids, task_token_id)
 
 
 # from https://github.com/google-research/text-to-text-transfer-transformer/blob/main/t5/data/preprocessors.py
