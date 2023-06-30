@@ -40,7 +40,6 @@ class Ul2Example(eqx.Module):
         return convert_to_decoder_only(self, pad_token_id, QPos, KPos)
 
 
-@eqx.filter_jit(args=(True, False, False, False))
 def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, KPos: hax.Axis):
     all_tokens = []
     if example.task_token is not None:
