@@ -14,5 +14,6 @@ fi
 source $VENV/bin/activate
 
 pip install -U pyrallis
+pip install -U torch torchvision torchaudio
 
 PYTHONPATH=${LEV_ROOT}:${LEV_ROOT}/src:${LEV_ROOT}/examples:$PYTHONPATH "$@"
