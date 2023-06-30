@@ -64,21 +64,28 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, K
 
     # shift back by one since we're predicting the next token
     targets = hax.roll(all_tokens, -1, QPos)
+    num_inputs = len(example.inputs)
+
+    if example.task_token is not None:
+        num_inputs += 1
 
     # Create attention masks
-    attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, len(example.inputs) + 1)
+    return _create_prefix_lm_example(QPos, KPos, all_tokens, targets, initial_length, num_inputs, pad_token_id)
 
+
+@eqx.filter_jit
+def _create_prefix_lm_example(QPos, KPos, tokens, targets, unpadded_length, num_inputs, pad_token_id):
+    attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
-    loss_mask = hax.arange(QPos) >= len(example.inputs)
+    loss_mask = hax.arange(QPos) >= (num_inputs - 1)
     # 3) last token of targets and padding
-    loss_mask = loss_mask & (hax.arange(QPos) < initial_length - 1)
+    loss_mask = loss_mask & (hax.arange(QPos) < unpadded_length - 1)
     # 4) padding
     if pad_token_id is not None:
-        loss_mask = loss_mask & (all_tokens != pad_token_id)
-
-    return LmExample(all_tokens, targets, attention_mask, loss_mask)
+        loss_mask = loss_mask & (tokens != pad_token_id)
+    return LmExample(tokens, targets, attention_mask, loss_mask)
 
 
 S_TASK_TOKEN = "[S2S]"
