@@ -1,6 +1,7 @@
 # Routines for creating UL2R-type objectives: R-denoisers, X-denoisers, S-denoisers
 # See https://arxiv.org/pdf/2210.11399v2.pdf
 import dataclasses
+import functools
 import warnings
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Union
@@ -62,19 +63,19 @@ def convert_to_decoder_only(example: Ul2Example, pad_token_id, QPos: hax.Axis, K
 
     all_tokens = hax.named(all_tokens, QPos)
 
-    # shift back by one since we're predicting the next token
-    targets = hax.roll(all_tokens, -1, QPos)
     num_inputs = len(example.inputs)
-
     if example.task_token is not None:
         num_inputs += 1
 
     # Create attention masks
-    return _create_prefix_lm_example(QPos, KPos, all_tokens, targets, initial_length, num_inputs, pad_token_id)
+    return _create_prefix_lm_example(QPos, KPos, all_tokens, initial_length, num_inputs, pad_token_id)
 
 
-@eqx.filter_jit(args=(False, False, True, True, True, True, True))
-def _create_prefix_lm_example(QPos, KPos, tokens, targets, unpadded_length, num_inputs, pad_token_id):
+# @eqx.filter_jit(args=(False, False, True, True, True, True, True))
+@functools.partial(jax.jit, static_argnums=(0, 1))
+def _create_prefix_lm_example(QPos, KPos, tokens, unpadded_length, num_inputs, pad_token_id):
+    # shift back by one since we're predicting the next token
+    targets = hax.roll(tokens, -1, QPos)
     attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
     # don't compute loss on:
     # 1) task token
