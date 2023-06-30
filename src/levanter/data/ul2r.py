@@ -313,8 +313,6 @@ class Ul2InstanceGenerator:
 
     def sample(self, tokens: jnp.ndarray, key: PRNGKey) -> Ul2Example:
         """Generate a single Ul2Example from a string"""
-        # first decide if we're doing S-denoiser or not
-        # gonna be lazy with keys here
         choice_key, key = jax.random.split(key)
         np_rng = np.random.default_rng(np.array(choice_key))
 
