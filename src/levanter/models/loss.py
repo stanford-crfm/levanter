@@ -1,8 +1,8 @@
-from typing import Callable, Optional
-
-import jax.numpy as jnp
+from typing import Optional
 
 import haliax as hax
+import haliax.wrap
+import jax.numpy as jnp
 from haliax import NamedArray
 from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 
@@ -13,8 +13,7 @@ def next_token_loss(
     pred_ids: NamedArray,
     true_ids: NamedArray,
     loss_mask: Optional[NamedArray] = None,
-    loss_fn: Callable[[NamedArray, hax.AxisSelector, NamedArray], NamedArray] = cross_entropy_loss,
-    reduction: Optional[hax.ReductionFunction] = hax.mean,
+    reduction: Optional[haliax.wrap.ReductionFunction] = hax.mean,
 ):
     Pos, Vocab = pred_ids.resolve_axis((Pos, Vocab))
     # need to roll the target tokens back by one so that each token is predicting the next token
@@ -28,11 +27,7 @@ def next_token_loss(
     else:
         loss_mask = not_last_loss_mask
 
-    loss = loss_fn(pred_ids, Vocab, target_y)
-    if reduction is not None:
-        loss = reduction(loss, where=loss_mask, axis=Pos)
-
-    return loss
+    return cross_entropy_loss(pred_ids, Vocab, target_y, reduction=reduction, where=loss_mask, reduction_axis=Pos)
 
 
 def cross_entropy_and_logsumexp_penalty(
