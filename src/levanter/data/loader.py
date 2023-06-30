@@ -1,22 +1,23 @@
 import abc
+import functools
 import itertools
 import logging
 from collections import defaultdict
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
 
+import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
+from haliax.partitioning import ResourceMapping
+from haliax.util import is_named_array
 from jax._src.array import ArrayImpl
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
-import haliax as hax
 import levanter.mesh
-from haliax.partitioning import ResourceMapping
-from haliax.util import is_named_array
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -106,7 +107,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
             batch_offset = self.process_data_pos * self.local_batch_size
             local_batch = list(itertools.islice(one_item_generator, self.local_batch_size))
-            batch_tree_structure = None
+            batch_tree_structure: Optional[PyTree] = None
 
             def get_local_batch(begin: int, end: int) -> List[Array]:
                 nonlocal batch_tree_structure
@@ -117,7 +118,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
                 individual_datums = local_batch[(begin - batch_offset) : (end - batch_offset)]
 
-                device_batch = jax.tree_map(self._stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+                device_batch = _stack_tree_leaves(self.Batch.name, individual_datums)
                 batch_leaves, _batch_structure = jax.tree_util.tree_flatten(device_batch)
 
                 if batch_tree_structure is None:
@@ -185,15 +186,16 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         """Returns the 'local' batch size: the number of examples in a batch on this host"""
         return self.batch_size // self.num_data_process_groups
 
-    def _stack_leaves_unchecked(self, *leaves):
-        assert len(leaves) <= self.Batch.size
-        assert self.Batch.size % len(leaves) == 0
 
+@functools.partial(jax.jit, static_argnums=(0,))
+def _stack_tree_leaves(batch_name, individual_datums):
+    def _stack_leaves_unchecked(*leaves):
         if is_named_array(leaves[0]):
-            with hax.enable_shape_checks(False):  # because we're building parts of the array on each device
-                return hax.stack(self.Batch, leaves)
+            return hax.stack(batch_name, leaves)
         else:
-            return np.stack(leaves)
+            return jnp.stack(leaves)
+
+    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
 
 
 class ReplicatedBatchLoader(BatchLoader[Ex]):
