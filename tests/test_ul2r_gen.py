@@ -22,7 +22,7 @@ def test_ul2_generator_seed_works():
     )
 
     for i in range(B.size):
-        tokens = synthetic_data["B", i]
+        tokens = synthetic_data["B", i].array
         a = ul2_generator.sample(tokens, jax.random.PRNGKey(i)).render(tokenizer)
         b = ul2_generator.sample(tokens, jax.random.PRNGKey(i)).render(tokenizer)
         assert a == b
@@ -44,7 +44,7 @@ def test_ul2_generator_can_handle_too_few_sentinels():
     )
 
     for i in range(B.size):
-        tokens = synthetic_data["B", i]
+        tokens = synthetic_data["B", i].array
         # just make sure it doesn't crash
         ul2_generator.sample(tokens, jax.random.PRNGKey(i))
 

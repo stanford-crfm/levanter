@@ -206,7 +206,7 @@ class Ul2rConfig:
 
     def build(
         self,
-        base_dataset: Dataset[hax.NamedArray],
+        base_dataset: Dataset[np.ndarray],
         Pos: hax.Axis,
         KPos: hax.Axis,
         tokenizer: PreTrainedTokenizerBase,
@@ -303,7 +303,6 @@ class Ul2InstanceGenerator:
             self.tokenizer.convert_tokens_to_ids(config.task_token) for config in task_configs
         ]
 
-    @eqx.filter_jit
     def sample(self, tokens: jnp.ndarray, key: PRNGKey) -> Ul2Example:
         """Generate a single Ul2Example from a string"""
         # first decide if we're doing S-denoiser or not
