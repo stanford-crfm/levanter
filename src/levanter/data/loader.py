@@ -94,6 +94,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
         one_item_generator = non_caching_cycle(self.item_dataset)
 
+        shape_leaves, shape_structure = jax.tree_util.tree_flatten(self.item_shape)
+
         for i, item in enumerate(one_item_generator):
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
@@ -127,15 +129,17 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
                 return batch_leaves
 
-            shape_leaves, shape_structure = jax.tree_util.tree_flatten(self.item_shape)
-
             # Callback passed to jax.make_array_from_callback to get the data for each device
             def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
                 batch_slice = indices[0]
                 begin, end, _ = batch_slice.indices(self.Batch.size)
                 local_batch = get_local_batch(begin, end)
                 leaf = local_batch[leaf_index]
-                return leaf[(..., *indices[1:])]
+                other_indices = indices[1:]
+                if all(idx == slice(None) for idx in other_indices):
+                    return leaf
+                else:
+                    return leaf[(..., *indices[1:])]
 
             def make_global_array_for_leaf(leaf_index, item_leaf_shape: Union[ShapeSpec, NamedShapeSpec]):
                 raw_array = jax.make_array_from_callback(
