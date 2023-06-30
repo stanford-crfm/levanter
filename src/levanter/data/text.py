@@ -1,4 +1,5 @@
 import copy
+import functools
 import json
 import logging
 import os
@@ -92,21 +93,24 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         key = self.key
         for tokens in self.dataset:
             with use_cpu_device():
-                attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
-                if self.fcm_prob > 0:
-                    assert self.key is not None
-                    this_key, key = jax.random.split(key)
-                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                    attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+                example = self._create_lm_example(tokens, key)
+                yield example
 
-                targets = np.roll(tokens, -1)
-                # loss_mask = hax.ones_like(targets)
-                loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
-
-                targets = hax.named(targets, self.QPos)
-                tokens = hax.named(tokens, self.QPos)
-
-            yield LmExample(tokens, targets, attn_mask, loss_mask)
+    @functools.partial(jax.jit, static_argnums=(0))
+    def _create_lm_example(self, tokens, key):
+        attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
+        if self.fcm_prob > 0:
+            assert self.key is not None
+            this_key, key = jax.random.split(key)
+            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+            attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+        targets = jnp.roll(tokens, -1)
+        # loss_mask = hax.ones_like(targets)
+        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
+        targets = hax.named(targets, self.QPos)
+        tokens = hax.named(tokens, self.QPos)
+        example = LmExample(tokens, targets, attn_mask, loss_mask)
+        return example
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
