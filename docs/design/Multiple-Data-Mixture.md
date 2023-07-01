@@ -19,7 +19,52 @@ of work that uses a weighted sampling approach, such as [PaLM](https://arxiv.org
 
 In this design, we want to implement the weighted sampling approach in Levanter. Specifically:
 1. Users can specify the weight of each domain in the dataset, through the configuration file.
-2. At every batch, the weight of each domain is used to sample the number of tokens from the corresponding domain.
+2. At every batch, the weight of each domain is used to sample the number of tokens from the 
+corresponding domain.
 
 We still want to preserve the reproducibility and deterministic batches of Levaner, as specified in the 
 [Data Loader design](Data-Loader-Design.md).
+
+## Design and Implementation
+### Configuration
+Currently, in a configuration file, under "data" section, users would only specify a single dataset, 
+for example:
+
+```yaml
+data:
+  train_urls:
+      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+```
+
+In the new design, users can specify multiple datasets in the form of a list and the weight of each
+dataset, for example:
+
+```yaml
+data:
+    - name: "openwebtext"
+      weight: 0.5
+      train_urls:
+        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+      validation_urls:
+          - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+      cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+    - name: "reddit"
+      weight: 0.5
+      train_urls:
+        - "gs://pubmed-mosaic/reddit-sharded/reddit_train.{1..128}-of-128.jsonl.gz"
+      validation_urls:
+        - "gs://pubmed-mosaic/reddit-sharded/reddit_val.{1..8}-of-8.jsonl.gz"
+      cache_dir: "gs://pubmed-mosaic/tokenized/reddit/"
+```
+
+### Data Loader
+The data loader will be modified to support the new configuration. Specifically, the data loader will
+take in a list of datasets, each with a weight. The data loader will then sample the number of tokens
+from each dataset based on the weight.
+
+### Deterministic Batches
+The deterministic batches will be preserved. Specifically, the data loader will sample the number of
+tokens from each dataset based on the weight, and then sample the tokens from each dataset uniformly.
