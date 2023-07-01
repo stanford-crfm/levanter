@@ -478,7 +478,7 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
         maxpos = config.seq_len
         self.attn_heads = config.num_heads
         slopes = jnp.array(get_slopes(self.attn_heads))
-        self.alibi = jnp.expand_dims(jnp.expand_dims(slopes, 1), 1) * jnp.expand_dims(jnp.expand_dims(jnp.arange(maxpos), 0), 0).repeat(attn_heads, axis=0)
+        self.alibi = jnp.expand_dims(jnp.expand_dims(slopes, 1), 1) * jnp.expand_dims(jnp.expand_dims(jnp.arange(maxpos), 0), 0).repeat(self.attn_heads, axis=0)
         print("alibi shape 1", self.alibi.shape)
         self.alibi = self.alibi.reshape(self.attn_heads, 1, maxpos)
         print("alibi shape 2", self.alibi.shape)
