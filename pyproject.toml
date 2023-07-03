@@ -81,6 +81,9 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 line_length = 119
+src_paths = ["src", "tests"]
+known_haliax = ["haliax"]
+sections=["FUTURE", "STDLIB", "THIRDPARTY", "HALIAX", "FIRSTPARTY", "LOCALFOLDER"]
 
 [tool.mypy]
 python_version = "3.10"

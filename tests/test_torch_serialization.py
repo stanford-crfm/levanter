@@ -2,6 +2,7 @@ import jax
 import pytest
 
 import haliax as hax
+
 from levanter.compat.torch_serialization import flatten_linear_layer, jax_tree_from_state_dict, unflatten_linear_layer
 
 

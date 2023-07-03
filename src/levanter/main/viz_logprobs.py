@@ -5,10 +5,11 @@ import jax
 import jmp
 
 import haliax as hax
-import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import named_jit, round_axis_for_partitioning
+
+import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader

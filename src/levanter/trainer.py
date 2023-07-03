@@ -16,8 +16,9 @@ from draccus import field
 from jax._src.interpreters.pxla import Mesh
 from jaxtyping import PyTree
 
-import levanter.logging
 from haliax.partitioning import ResourceAxis, ResourceMapping
+
+import levanter.logging
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.distributed import DistributedConfig, RayConfig
