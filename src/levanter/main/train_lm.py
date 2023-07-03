@@ -8,13 +8,13 @@ import haliax as hax
 import haliax.random
 import jax.random as jrandom
 import jmp
+import wandb
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 from jax.sharding import PartitionSpec
 
 import levanter
-import wandb
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader

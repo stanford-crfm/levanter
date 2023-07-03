@@ -10,11 +10,11 @@ from typing import List, Optional, Union
 
 import draccus
 import jax
+import wandb
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
 
-import wandb
 from levanter.utils import jax_utils
 from levanter.utils.jax_utils import jnp_to_python
 
