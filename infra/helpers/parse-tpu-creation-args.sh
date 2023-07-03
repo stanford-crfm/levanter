@@ -15,7 +15,7 @@
 # set defaults
 ZONE="us-east1-d"
 TYPE="v3-32"
-VM_IMAGE="tpu-vm-base"
+VM_IMAGE="tpu-ubuntu2204-base"
 PREEMPTIBLE=false
 AUTODELETE=true
 SETUP_SCRIPT="$SCRIPT_DIR/setup-tpu-vm.sh"
