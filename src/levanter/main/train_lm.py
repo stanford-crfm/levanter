@@ -271,7 +271,7 @@ def main(config: TrainLmConfig):
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
             ),
             every=config.trainer.steps_per_eval,
         )
