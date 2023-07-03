@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import logging as pylogging
+import os
 import tempfile
 import time
 from dataclasses import dataclass
@@ -153,7 +154,6 @@ class WandbConfig:
 
     def init(self, hparams=None, **extra_hparams):
         import wandb
-        import os
 
         if hparams is None:
             hparams_to_save = {}
