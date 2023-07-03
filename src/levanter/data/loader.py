@@ -124,7 +124,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
                 individual_datums = local_batch[(begin - batch_offset) : (end - batch_offset)]
 
                 device_batch = _stack_tree(self.Batch.name, individual_datums)
-                batch_leaves = jax.tree_leaves(device_batch)
+                batch_leaves = jax.tree_util.tree_leaves(device_batch)
 
                 stacked_local_batches[key] = batch_leaves
 
