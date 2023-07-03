@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional
@@ -54,7 +55,7 @@ def main(config: ConvertLmConfig):
         model = filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):
-            model = tree_deserialize_leaves_tensorstore(f"{config.checkpoint_path}/model", model)
+            model = tree_deserialize_leaves_tensorstore(os.path.join(config.checkpoint_path, "model"), model)
 
         model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
 

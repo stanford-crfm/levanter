@@ -333,13 +333,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         id, rev = self._get_ref(ref)
 
-        if os.path.exists(f"{id}/{SAFE_TENSORS_MODEL}"):
-            state_dict = safetensors.numpy.load_file(f"{id}/{SAFE_TENSORS_MODEL}")
-        elif os.path.exists(f"{id}/{PYTORCH_MODEL}"):
+        if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
+            state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
+        elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
             import torch
 
             device = torch.device("cpu")
-            state_dict = torch.load(f"{id}/{PYTORCH_MODEL}", map_location=device)
+            state_dict = torch.load(os.path.join(id, PYTORCH_MODEL), map_location=device)
             state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
         else:
             try:
@@ -440,7 +440,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if self.config_overrides:
             dict_config.update(self.config_overrides)
 
-        with open(f"{path}/config.json", "w") as f:
+        with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(dict_config, f)
 
         # Model
@@ -465,7 +465,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # now that we've moved the model to the CPU, we don't need to do this on all processes
         if jax.process_index() == 0:
             # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-            safetensors.numpy.save_file(state_dict, f"{path}/{SAFE_TENSORS_MODEL}", metadata={"format": "pt"})
+            safetensors.numpy.save_file(state_dict, os.path.join(path, SAFE_TENSORS_MODEL), metadata={"format": "pt"})
 
         global _GLOBAL_SAVE_COUNT
         sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
@@ -638,7 +638,7 @@ def save_hf_checkpoint_callback(
             my_upload_kwargs = hf_upload_kwargs
         converter.save_pretrained(
             cast(LmWithHfSerializationMixin, step.model),
-            f"{base_path}/step-{step.step}",
+            os.path.join(base_path, f"step-{step.step}"),
             upload_to_hf=upload_to_hf,
             **my_upload_kwargs,
         )
