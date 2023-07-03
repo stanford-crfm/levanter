@@ -462,6 +462,13 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             key=k_embeddings,
         )
 
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
+        if not inference and key is None:
+            raise ValueError("key must be provided for training")
+
+        k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
+        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
+
         # Create ALiBi matrix
         def get_slopes(n):
             def get_slopes_power_of_2(n):
@@ -475,35 +482,18 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
                 closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround. 
                 return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
         
-        maxpos = config.seq_len
-        self.attn_heads = config.num_heads
-        slopes = jnp.array(get_slopes(self.attn_heads))
-        self.alibi = jnp.expand_dims(jnp.expand_dims(slopes, 1), 1) * jnp.expand_dims(jnp.expand_dims(jnp.arange(maxpos), 0), 0).repeat(self.attn_heads, axis=0)
-        print("alibi shape 1", self.alibi.shape)
-        self.alibi = self.alibi.reshape(self.attn_heads, 1, maxpos)
-        print("alibi shape 2", self.alibi.shape)
-        self.alibi = jnp.tile(self.alibi, (config.seq_len // maxpos, 1, 1))
-        print("alibi shape 3", self.alibi.shape)
+        maxpos = self.embeddings.SeqLen.size
+        attn_heads = self.transformer.config.num_heads
+        slopes = jnp.array(get_slopes(attn_heads))
+        alibi = jnp.expand_dims(jnp.expand_dims(slopes, 1), 1) * jnp.expand_dims(jnp.expand_dims(jnp.arange(maxpos), 0), 0).repeat(attn_heads, axis=0)
+        future_mask = jnp.triu(
+            jnp.full((maxpos, maxpos), -jnp.inf),
+            k=1
+        )
+        future_mask = jnp.expand_dims(future_mask, axis=0) + alibi
+        future_attn_mask = NamedArray(future_mask, (self.transformer.config.Heads, self.transformer.config.SeqLen, self.transformer.config.KeySeqLen))
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key):
-        if not inference and key is None:
-            raise ValueError("key must be provided for training")
-
-        k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-
-        dim = hidden_states.array.shape[1]
-        print("attn mask", attn_mask.axes)
-        attn_arr = attn_mask.array
-        print('original attn arr', attn_arr)
-        attn_arr = jnp.expand_dims(attn_arr, 0) + self.alibi
-        print("attn arr shape", attn_arr.shape)
-        attn_arr = attn_arr[:hidden_states.array.shape[0] * self.attn_heads, :dim, :dim]
-        print("attn arr shape final", attn_arr.shape)
-        print("end attn arr", attn_arr)
-        attn_mask = NamedArray(attn_arr, attn_mask.axes)
-    
-        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
+        hidden_states = self.transformer(hidden_states, future_attn_mask, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
