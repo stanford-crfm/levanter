@@ -6,14 +6,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh
 from jaxtyping import PyTree
-from test_utils import skip_if_not_enough_devices
 
 import haliax
-import levanter.data
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
+
+import levanter.data
 from levanter.data.loader import ShardedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+from test_utils import skip_if_not_enough_devices
 
 
 NUM_SHARDS_TINY = 16

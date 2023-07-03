@@ -111,4 +111,5 @@ def causal_sliding_window_attention(
     _, blocked_attn = hax.scan(attend_block, Block)(None, hax.arange(Block))  # type: ignore
 
     # now we need to unblock the attention
-    return blocked_attn.flatten_axes((Block, Q), Pos)
+    # TODO: see if the rearrange and flatten_axes have perf implications
+    return blocked_attn.flatten_axes((Block, Q), Pos).rearrange(value.axes)

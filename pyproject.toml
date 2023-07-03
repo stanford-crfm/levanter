@@ -46,6 +46,7 @@ dependencies = [
     "tblib>=1.7.0,<2.0.0",
     "dataclasses_json",
     "ray[default]",
+    "pydantic<2",  # temporary pin until Ray supports pydantic 2.0
     "rich>=13",
 ]
 
@@ -84,6 +85,9 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 line_length = 119
+src_paths = ["src", "tests"]
+known_haliax = ["haliax"]
+sections=["FUTURE", "STDLIB", "THIRDPARTY", "HALIAX", "FIRSTPARTY", "LOCALFOLDER"]
 
 [tool.mypy]
 python_version = "3.10"

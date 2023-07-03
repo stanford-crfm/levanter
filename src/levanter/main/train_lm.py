@@ -4,19 +4,20 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import equinox as eqx
-import haliax as hax
-import haliax.random
 import jax.random as jrandom
 import jmp
-from chex import PRNGKey
+import wandb
+from jax.random import PRNGKey
+from jax.sharding import PartitionSpec
+
+import haliax as hax
+import haliax.random
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
-from jax.sharding import PartitionSpec
 
 import levanter
-import wandb
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
@@ -291,7 +292,7 @@ def main(config: TrainLmConfig):
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
             ),
             every=config.trainer.steps_per_eval,
         )

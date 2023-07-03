@@ -1,14 +1,13 @@
 from typing import Protocol, Tuple, TypeVar
 
-import haliax as hax
 import jax
+import jax.numpy as jnp
+
+import haliax as hax
 from haliax import Axis
 from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis, shard_with_axis_mapping
 from haliax.util import is_named_array
-from jax import numpy as jnp
-from jax.experimental.pjit import with_sharding_constraint
-from jax.sharding import PartitionSpec
 
 from levanter.utils.jax_utils import reduce
 

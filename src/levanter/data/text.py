@@ -12,7 +12,6 @@ import braceexpand
 import datasets
 import equinox as eqx
 import fsspec
-import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -20,8 +19,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
-from haliax import Axis
 from jaxtyping import PyTree
+
+import haliax as hax
+from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -33,17 +34,16 @@ from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedToken
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
+from levanter.data.shard_cache import CacheLedger  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
-    CacheLedger,
     ChunkMetadata,
     LoggerMetricsMonitor,
     MetricsMonitor,
     ShardCache,
     ShardedDataSource,
     WandbMetricsMonitor,
-    _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
 )
