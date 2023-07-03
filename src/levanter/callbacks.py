@@ -14,12 +14,12 @@ import humanfriendly
 import jax
 import jax.numpy as jnp
 import numpy as np
+import wandb
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 from tqdm import tqdm
 
 import levanter.visualization as viz
-import wandb
 from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer import StepInfo
 

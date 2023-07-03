@@ -1,8 +1,9 @@
 from typing import Optional
 
-import haliax as hax
 import jax.lax
 import jax.numpy as jnp
+
+import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.types import PrecisionLike
 

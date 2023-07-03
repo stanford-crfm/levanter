@@ -10,6 +10,7 @@ from haliax import Axis
 from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis, shard_with_axis_mapping
 from haliax.util import is_named_array
+
 from levanter.utils.jax_utils import reduce
 
 

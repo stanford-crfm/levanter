@@ -8,9 +8,10 @@ import jax
 
 import haliax as hax
 import haliax.tree_util as htu
-import levanter
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
+
+import levanter
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig

@@ -2,8 +2,9 @@ import dataclasses
 
 import fsspec
 
-import levanter.config
 from haliax.partitioning import ResourceAxis
+
+import levanter.config
 from levanter.trainer import TrainerConfig
 
 

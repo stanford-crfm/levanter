@@ -14,9 +14,10 @@ from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
-import levanter.mesh
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
+
+import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape

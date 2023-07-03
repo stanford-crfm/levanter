@@ -3,15 +3,16 @@ import tempfile
 import jax
 import numpy as np
 from jax.random import PRNGKey
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
 import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
+
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
 VOCAB_SIZE = 50264
