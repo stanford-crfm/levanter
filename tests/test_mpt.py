@@ -9,8 +9,7 @@ from transformers import AutoModelForCausalLM
 import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
-
-from .test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch

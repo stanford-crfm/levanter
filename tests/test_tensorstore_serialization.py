@@ -8,8 +8,7 @@ import optax
 from chex import assert_trees_all_close
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
-
-from .test_utils import MLP, arrays_only, assert_trees_not_close
+from test_utils import MLP, arrays_only, assert_trees_not_close
 
 
 def test_tensorstore_checkpoint_simple():

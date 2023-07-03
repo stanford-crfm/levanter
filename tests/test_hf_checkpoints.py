@@ -9,8 +9,7 @@ import haliax
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
-
-from .test_utils import skip_if_no_torch
+from test_utils import skip_if_no_torch
 
 
 @skip_if_no_torch

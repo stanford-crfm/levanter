@@ -14,8 +14,7 @@ from haliax.partitioning import ResourceAxis
 import levanter.data
 from levanter.data.loader import ShardedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
-
-from .test_utils import skip_if_not_enough_devices
+from test_utils import skip_if_not_enough_devices
 
 
 NUM_SHARDS_TINY = 16

@@ -14,8 +14,7 @@ from haliax.partitioning import ResourceAxis
 import levanter.data
 from levanter.data.loader import ReplicatedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
-
-from .test_utils import skip_if_not_enough_devices
+from test_utils import skip_if_not_enough_devices
 
 
 def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDataset[Sequence[int]]:

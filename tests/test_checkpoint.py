@@ -19,8 +19,7 @@ from levanter.checkpoint import (
     save_checkpoint,
 )
 from levanter.trainer import StepInfo
-
-from .test_utils import MLP, arrays_only, assert_trees_not_close
+from test_utils import MLP, arrays_only, assert_trees_not_close
 
 
 def _dummy_step_info(step):

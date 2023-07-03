@@ -8,8 +8,7 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-
-from .test_utils import check_load_config, parameterize_with_configs
+from test_utils import check_load_config, parameterize_with_configs
 
 
 def test_gradient_checkpointing():

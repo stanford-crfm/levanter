@@ -19,8 +19,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer import OptimizerConfig
-
-from .test_utils import skip_if_no_torch
+from test_utils import skip_if_no_torch
 
 
 @skip_if_no_torch

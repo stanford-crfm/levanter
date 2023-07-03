@@ -11,8 +11,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.models.backpack import BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.trainer import TrainerConfig
-
-from .test_utils import skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible, skip_if_no_torch
+from test_utils import skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible, skip_if_no_torch
 
 
 HF_BACKPACK = "stanford-crfm/levanter-backpacks-test"
