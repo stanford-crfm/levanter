@@ -22,8 +22,9 @@ In this design, we want to implement the weighted sampling approach in Levanter.
 2. At every batch, the weight of each domain is used to sample the number of tokens from the 
 corresponding domain.
 
-We still want to preserve the reproducibility and deterministic batches of Levaner, as specified in the 
-[Data Loader design](Data-Loader-Design.md).
+Ideally, we still want to preserve the reproducibility and deterministic batches of Levaner, 
+as specified in the [Data Loader design](Data-Loader-Design.md).
+
 
 ## Design and Implementation
 ### Configuration
@@ -39,8 +40,8 @@ data:
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 ```
 
-In the new design, users can specify multiple datasets in the form of a list and the weight of each
-dataset, for example:
+In the new design, users can specify multiple datasets as a list of LMDatasetConfig. Within
+each LMDatasetConfig, users can specify the weight of each dataset, for example:
 
 ```yaml
 data:
@@ -60,11 +61,32 @@ data:
       cache_dir: "gs://pubmed-mosaic/tokenized/reddit/"
 ```
 
-### Data Loader
-The data loader will be modified to support the new configuration. Specifically, the data loader will
-take in a list of datasets, each with a weight. The data loader will then sample the number of tokens
-from each dataset based on the weight.
+Note that this design is backward compatible, as users can still specify a single dataset in the
+configuration file, and the weight of the dataset will be 1.0 by default.
+
+### Mixing at Batch Level
+Currently at training, `ShardedBatchLoader` takes in a single dataset of TokenSeqDataset class, 
+and implements the batching and sharding logic. Therefore, the mixing of multiple datasets should 
+be implemented at ShardedBatchLoader. 
+
+Specifically, at every step of `ShardedBatchLoader.__iter__()`, instead of slicing B sequences from 
+a single dataset, we will sample B sequences from N datasets, where N is the number of datasets.
+
+*TODO: remove the following question*
+> Question: I don't following understand the logic that, at `ShardedBatchLoader.__iter__()`, we have
+a for loop over `one_item_generator`, then at every step, we slice from `one_item_generator` to get 
+B sequence, what do we want to achieve with the first for loop?
+
+### Weighted Sampling
+At every step of `ShardedBatchLoader.__iter__()`, we need to sample B sequences from N datasets. 
+The weights of the datasets are used to sample from N datasets. Specifically, we will sample
+B sequences from the i-th dataset with probability `weight[i] / sum(weight)`. 
 
 ### Deterministic Batches
-The deterministic batches will be preserved. Specifically, the data loader will sample the number of
-tokens from each dataset based on the weight, and then sample the tokens from each dataset uniformly.
+I am not sure if we can still achieve deterministic batches with weighted sampling.
+
+### Validation Set
+We will apply the same logic to `ReplicatedBatchLoader` for validation sets. 
+
+*TODO: remove the following question*
+> Question: right now does Levanter supports a dataset that only has a training set but no validation set?
