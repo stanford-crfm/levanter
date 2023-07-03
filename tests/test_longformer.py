@@ -1,7 +1,8 @@
-import haliax as hax
 import jax.config
 import jax.numpy as jnp
 import numpy as np
+
+import haliax as hax
 from haliax import Axis
 from haliax.nn.attention import causal_mask
 
