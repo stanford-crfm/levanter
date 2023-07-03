@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 import draccus
 import fsspec
-import haliax
 import huggingface_hub
 import jax
 import jax.numpy as jnp
@@ -22,9 +21,6 @@ import numpy as np
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
-from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
-from haliax.partitioning import ResourceMapping
 from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental import multihost_utils
@@ -35,6 +31,11 @@ from transformers import PretrainedConfig as HfConfig
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
+
+import haliax
+from haliax import Axis
+from haliax.jax_utils import filter_eval_shape
+from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel

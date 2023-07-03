@@ -5,17 +5,18 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Type, Union
 
 import equinox as eqx
-import haliax
-import haliax as hax
-import haliax.nn as hnn
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from jax.random import PRNGKey
+from transformers import AutoModelForCausalLM
+
+import haliax
+import haliax as hax
+import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
-from jax.random import PRNGKey
-from transformers import AutoModelForCausalLM
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (

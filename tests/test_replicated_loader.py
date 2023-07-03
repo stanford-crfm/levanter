@@ -1,19 +1,21 @@
 import itertools
 from typing import Sequence, Union
 
-import haliax
 import jax
 import jax.numpy as jnp
 import numpy as np
-from haliax import Axis
-from haliax.partitioning import ResourceAxis
 from jax.sharding import Mesh
 from jaxtyping import PyTree
-from test_utils import skip_if_not_enough_devices
+
+import haliax
+from haliax import Axis
+from haliax.partitioning import ResourceAxis
 
 import levanter.data
 from levanter.data.loader import ReplicatedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+
+from .test_utils import skip_if_not_enough_devices
 
 
 def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDataset[Sequence[int]]:

@@ -1,14 +1,16 @@
 import tempfile
 
-import haliax
 import numpy as np
 import numpy.testing
 from jax.random import PRNGKey
-from test_utils import skip_if_no_torch
+
+import haliax
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
+
+from .test_utils import skip_if_no_torch
 
 
 @skip_if_no_torch

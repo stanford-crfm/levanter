@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional
 
+import jax
+
 import haliax as hax
 import haliax.tree_util as htu
-import jax
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 

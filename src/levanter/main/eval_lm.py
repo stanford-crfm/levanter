@@ -2,11 +2,12 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import haliax as hax
 import jax
 import jmp
 import numpy
 import tqdm
+
+import haliax as hax
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import named_jit, round_axis_for_partitioning

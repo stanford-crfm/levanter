@@ -2,13 +2,14 @@ import re
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
 
 import equinox as eqx
-import haliax as hax
-import haliax.nn as hnn
 import jax.numpy as jnp
 import numpy
+from jaxtyping import PyTree
+
+import haliax as hax
+import haliax.nn as hnn
 from haliax import NamedArray
 from haliax.util import ensure_tuple
-from jaxtyping import PyTree
 
 
 StateDict = Dict[str, Any]

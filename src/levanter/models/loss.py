@@ -1,8 +1,9 @@
 from typing import Optional
 
+import jax.numpy as jnp
+
 import haliax as hax
 import haliax.wrap
-import jax.numpy as jnp
 from haliax import NamedArray
 from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 
