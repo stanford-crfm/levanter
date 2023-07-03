@@ -1,13 +1,13 @@
 import itertools
 from typing import Sequence, Union
 
-import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh
 from jaxtyping import PyTree
 
+import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
 
