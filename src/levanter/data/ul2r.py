@@ -8,13 +8,14 @@ from typing import Iterator, List, Optional, Union
 
 import draccus
 import equinox as eqx
-import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.random import PRNGKey
 from jaxtyping import PyTree
 from transformers import PreTrainedTokenizerBase
+
+import haliax as hax
 
 from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.data.text import LmExample

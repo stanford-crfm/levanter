@@ -1,9 +1,10 @@
-import haliax as hax
 import jax
 import jax.numpy as jnp
 import numpy as np
-import test_utils
 
+import haliax as hax
+
+import test_utils
 from levanter.data.ul2r import DenoisingConfig, Ul2Example, Ul2InstanceGenerator
 
 
