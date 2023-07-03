@@ -3,18 +3,18 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
-from transformers import PretrainedConfig
-from transformers import PretrainedConfig as HfConfig
-
 import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
+import jax
+import jax.numpy as jnp
+import jax.random as jrandom
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
 from haliax.util import ensure_tuple
+from transformers import PretrainedConfig
+from transformers import PretrainedConfig as HfConfig
+
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,

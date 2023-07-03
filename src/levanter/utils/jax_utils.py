@@ -7,14 +7,13 @@ from typing import Any, Callable, Optional, Tuple, TypeVar
 import equinox as eqx
 import jax
 from chex import PRNGKey
+from haliax.jax_utils import is_jax_array_like, shaped_rng_split
+from haliax.util import ensure_tuple
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
 from jax.sharding import PartitionSpec
 from jaxtyping import PyTree
-
-from haliax.jax_utils import is_jax_array_like, shaped_rng_split
-from haliax.util import ensure_tuple
 
 
 def jnp_to_python(a: jnp.ndarray):

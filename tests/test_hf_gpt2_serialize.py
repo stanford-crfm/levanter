@@ -2,19 +2,19 @@ import tempfile
 
 import equinox
 import fsspec
+import haliax as hax
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as onp
 from fsspec import AbstractFileSystem
+from haliax import Axis
 from jax.random import PRNGKey
 from test_utils import skip_if_no_torch
 from transformers import AutoModelForCausalLM
 from transformers import GPT2Config as HfGpt2Config
 from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 
-import haliax as hax
-from haliax import Axis
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss

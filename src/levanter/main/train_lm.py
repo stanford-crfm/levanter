@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import equinox as eqx
-import jax.random as jrandom
-import jmp
-from jax.sharding import PartitionSpec
-
 import haliax as hax
 import haliax.random
-import levanter
-import wandb
+import jax.random as jrandom
+import jmp
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
+from jax.sharding import PartitionSpec
+
+import levanter
+import wandb
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader

@@ -2,9 +2,8 @@ import abc
 from typing import Generic, Optional, Type, TypeVar
 
 import draccus
-from jax.random import PRNGKey
-
 from haliax import Axis, NamedArray
+from jax.random import PRNGKey
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")

@@ -13,11 +13,11 @@ import numpy as np
 import optax
 from chex import PRNGKey
 from draccus import field
+from haliax.partitioning import ResourceAxis, ResourceMapping
 from jax._src.interpreters.pxla import Mesh
 from jaxtyping import PyTree
 
 import levanter.logging
-from haliax.partitioning import ResourceAxis, ResourceMapping
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.distributed import DistributedConfig, RayConfig

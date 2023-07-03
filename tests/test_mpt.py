@@ -1,5 +1,6 @@
 import tempfile
 
+import haliax
 import jax
 import numpy as np
 import pytest
@@ -7,7 +8,6 @@ from jax.random import PRNGKey
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 from transformers import AutoModelForCausalLM
 
-import haliax
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 
 
