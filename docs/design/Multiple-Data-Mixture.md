@@ -12,10 +12,10 @@ Wikipedia (2.4%), etc.
 - The [Falcon 40B](https://huggingface.co/tiiuae/falcon-40b) model is trained on 1T tokens from 
 sources including RedfinedWeb English (75%), Books (6%), Conversations (5%), etc. 
 
-The common approach at training, used in LLaMA, MPT, and Falcon models, is to sample from each domain in 
-the dataset uniformly, based on the percentage of tokens in each domain. Recently, we have seen a new line 
-of work that uses a weighted sampling approach, such as [PaLM](https://arxiv.org/abs/2204.02311) and 
-[DoReMi](https://arxiv.org/abs/2305.10429). 
+The common approach at training, used in LLaMA, MPT, and Falcon models, is to sample token sequence from 
+the entire training corpus uniformly. GPT-3 and Pile uses heuristically-chosen domain weights.
+Recently, we have seen a new line of work that applies systematic approach at determining optimal domain 
+weights, such as [PaLM](https://arxiv.org/abs/2204.02311) and [DoReMi](https://arxiv.org/abs/2305.10429). 
 
 In this design, we want to implement the weighted sampling approach in Levanter. Specifically:
 1. Users can specify the weight of each domain in the dataset, through the configuration file.
