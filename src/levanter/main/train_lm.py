@@ -1,6 +1,6 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import equinox as eqx
@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: LMDatasetConfig = LMDatasetConfig()
-    trainer: TrainerConfig = TrainerConfig()
-    model: LmConfig = Gpt2Config()
-    optimizer: OptimizerConfig = OptimizerConfig()
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
