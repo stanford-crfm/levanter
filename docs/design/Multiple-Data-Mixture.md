@@ -22,7 +22,7 @@ In this design, we want to implement the weighted sampling approach in Levanter.
 2. At every batch, the weight of each domain is used to sample the number of tokens from the 
 corresponding domain.
 
-Ideally, we still want to preserve the reproducibility and deterministic batches of Levaner, 
+Ideally, we still want to preserve the reproducibility and deterministic batches of Levanter, 
 as specified in the [Data Loader design](Data-Loader-Design.md).
 
 
