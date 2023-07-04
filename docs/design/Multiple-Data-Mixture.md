@@ -64,18 +64,17 @@ data:
 Note that this design is backward compatible, as users can still specify a single dataset in the
 configuration file, and the weight of the dataset will be 1.0 by default.
 
-### Mixing at Batch Level
-Currently at training, `ShardedBatchLoader` takes in a single dataset of TokenSeqDataset class, 
-and implements the batching and sharding logic. Therefore, the mixing of multiple datasets should 
-be implemented at ShardedBatchLoader. 
+### MixtureDataset
+Currently at training, `ShardedBatchLoader` takes in a `TokenSeqDataset` instance. `TokenSeqDataset`
+iterates over documents and yield token sequences; `ShardedBatchLoader` implements the batching 
+and sharding logic. 
 
-Specifically, at every step of `ShardedBatchLoader.__iter__()`, instead of slicing B sequences from 
-a single dataset, we will sample B sequences from N datasets, where N is the number of datasets.
+To support a mixture of multiple datasets, we will implement a new `MixtureDataset` class, which 
+takes a list of datasets and yield token sequences, so that the implementation of `ShardedBatchLoader`
+remains the same.
 
-### Weighted Sampling
-At every step of `ShardedBatchLoader.__iter__()`, we need to sample B sequences from N datasets. 
-The weights of the datasets are used to sample from N datasets. Specifically, we will sample
-B sequences from the i-th dataset with probability `weight[i] / sum(weight)`. 
+Specifically, in `MixtureDataset`, it takes in a list of datasets, each with its tokenized document
+cache (of the `TokenizedDocumentCache` class) and weights (float). At every step of `MixtureDataset.__iter__()`, it will sample a dataset from the list of datasets, with probability proportional to the weight of the dataset. Then, it will yield a token sequence from the sampled dataset.
 
 ### Validation Set
 We will not apply weighted sampling to the validation set. Instead, we will report performance on each
