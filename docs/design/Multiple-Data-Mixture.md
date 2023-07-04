@@ -74,7 +74,10 @@ takes a list of datasets and yield token sequences, so that the implementation o
 remains the same.
 
 Specifically, in `MixtureDataset`, it takes in a list of datasets, each with its tokenized document
-cache (of the `TokenizedDocumentCache` class) and weights (float). At every step of `MixtureDataset.__iter__()`, it will sample a dataset from the list of datasets, with probability proportional to the weight of the dataset. Then, it will yield a token sequence from the sampled dataset.
+cache (of the `TokenizedDocumentCache` class) and weights (float). At every step of 
+`MixtureDataset.__iter__()`, it will sample a dataset from the list of datasets, with probability 
+proportional to the weight of the dataset. Then, it will yield a token sequence from the sampled 
+dataset.
 
 ### Validation Set
 We will not apply weighted sampling to the validation set. Instead, we will report performance on each
