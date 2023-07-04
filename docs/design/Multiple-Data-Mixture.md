@@ -72,21 +72,11 @@ be implemented at ShardedBatchLoader.
 Specifically, at every step of `ShardedBatchLoader.__iter__()`, instead of slicing B sequences from 
 a single dataset, we will sample B sequences from N datasets, where N is the number of datasets.
 
-*TODO: remove the following question*
-> Question: I don't following understand the logic that, at `ShardedBatchLoader.__iter__()`, we have
-a for loop over `one_item_generator`, then at every step, we slice from `one_item_generator` to get 
-B sequence, what do we want to achieve with the first for loop?
-
 ### Weighted Sampling
 At every step of `ShardedBatchLoader.__iter__()`, we need to sample B sequences from N datasets. 
 The weights of the datasets are used to sample from N datasets. Specifically, we will sample
 B sequences from the i-th dataset with probability `weight[i] / sum(weight)`. 
 
-### Deterministic Batches
-I am not sure if we can still achieve deterministic batches with weighted sampling.
-
 ### Validation Set
-We will apply the same logic to `ReplicatedBatchLoader` for validation sets. 
-
-*TODO: remove the following question*
-> Question: right now does Levanter supports a dataset that only has a training set but no validation set?
+We will not apply weighted sampling to the validation set. Instead, we will report performance on each
+validation set separately.
