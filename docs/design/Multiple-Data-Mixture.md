@@ -64,6 +64,11 @@ data:
 Note that this design is backward compatible, as users can still specify a single dataset in the
 configuration file, and the weight of the dataset will be 1.0 by default.
 
+### LMMixtureDatasetConfig
+We will introduce a new data class `MixtureDatasetConfig`, which takes in a list of `LMDatasetConfig`
+with weights. `MixtureDatasetConfig` provides a consistent interface as `LMDatasetConfig`, so that we don't need to introduce many special logic at training/evaluation for handling mixture datasets.
+
+
 ### MixtureDataset
 Currently at training, `ShardedBatchLoader` takes in a `TokenSeqDataset` instance. `TokenSeqDataset`
 iterates over documents and yield token sequences; `ShardedBatchLoader` implements the batching 

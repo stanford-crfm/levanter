@@ -108,6 +108,30 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
         return TokenSeqDataset(doc_cache, pos, stride)
 
 
+class MixtureDataset(ShardableDataset[NamedArray]):
+    """MixtureDataset supports loading data from multiple datasets.
+    It takes a list of datasets and yield token sequences from them with their associated weights.
+    """
+    def __init__(self, doc_cache_list: List, Pos: Axis, weight_list: List):
+        self.doc_cache_list = doc_cache_list
+        self.Pos = Pos
+        self.weight_list = weight_list
+
+    def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
+        pass
+
+    def __init__(self) -> Iterator[NamedArray]:
+        pass
+
+    @property
+    def seq_len(self) -> int:
+        return self.Pos.size
+    
+    @property
+    def item_shape(self) -> PyTree:
+        return NamedShapeSpec((self.Pos,), jnp.int32)
+
+
 def _load_old_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
 
@@ -416,6 +440,7 @@ class LMDatasetConfig:
     id: Optional[str] = None  # id (or path) for hf dataset
     name: Optional[str] = None  # name for hf dataset
     stream: bool = True  # whether to use streaming when doing hf
+    weight: float = 1.0  # weight for this dataset when sampling
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
@@ -435,7 +460,9 @@ class LMDatasetConfig:
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return load_tokenizer(self.tokenizer)
 
-    def build_or_load_cache(self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True):
+    def build_or_load_cache(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> TokenizedDocumentCache:
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)
         try:
@@ -508,6 +535,32 @@ class LMDatasetConfig:
             return HFDatasetDataSource(self, split)
         return TextDataSource(self, split)
 
+
+@dataclass
+class LMMixtureDatasetConfig:
+    """This class represents a mixture of datasets with their associated weights.
+    It provides a consistent interface as LMDatasetConfig.
+    """
+    datasets: List[LMDatasetConfig]
+    
+    def __post_init__(self):
+        if len(self.datasets) == 0:
+            raise ValueError("Must provide at least one dataset")
+
+        # normalize datasets weights
+        total_weight = sum([d.weight for d in self.datasets])
+        factor = 1.0 / total_weight
+        for d in self.datasets:
+            d.weight *= factor
+        
+        # to be consistent with LMDatasetConfig
+        tokenizer: str = self.datasets[0].tokenizer
+
+    def build_or_load_cache(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> TokenizedDocumentCache:
+        pass
+    
 
 class HFDatasetDataSource(ShardedDataSource[str]):
     """

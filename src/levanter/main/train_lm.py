@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import equinox as eqx
 import jax.random as jrandom
@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: LMDatasetConfig = LMDatasetConfig()
+    # TODO: figure out how to pick the right dataclass to use based on the input config
+    data: Union[LMDatasetConfig, List[LMDatasetConfig]] = LMDatasetConfig()
     trainer: TrainerConfig = TrainerConfig()
     model: LmConfig = Gpt2Config()
     optimizer: OptimizerConfig = OptimizerConfig()
