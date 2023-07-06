@@ -171,7 +171,7 @@ class Gpt2Attention(TorchSerializationMixin, eqx.Module):
         attn_scores = hax.dot(self.HeadDim, q, k)
 
         if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
+            attn_scores = attn_scores + mask
 
         attn_weights = hnn.softmax(attn_scores, axis=self.KeySeqLen).astype(hidden_states.dtype)
         attn_weights = self.dropout(attn_weights, key=key, inference=inference)
@@ -489,7 +489,16 @@ class Gpt2LMHeadModel(TorchSerializationMixin, eqx.Module):
             k=1
         )
         future_mask = jnp.expand_dims(future_mask, axis=0) + alibi
-        future_attn_mask = NamedArray(future_mask, (self.transformer.config.Heads, self.transformer.config.SeqLen, self.transformer.config.KeySeqLen))
+        
+        if len(hidden_states.axes) > 2:
+            batch = hidden_states.axes[0].size
+            if len(future_mask.shape) == 3:
+                future_mask = jnp.tile(future_mask, (batch, 1, 1, 1))
+            # future_mask is now a matrix of shape (batch, attn_heads, maxpos, maxpos)
+            Batch = hidden_states.axes[0]
+            future_attn_mask = NamedArray(future_mask, (Batch, self.transformer.config.Heads, self.transformer.config.SeqLen, self.transformer.config.KeySeqLen))
+        else:
+            future_attn_mask = NamedArray(future_mask, (self.transformer.config.Heads, self.transformer.config.SeqLen, self.transformer.config.KeySeqLen))
 
         hidden_states = self.transformer(hidden_states, future_attn_mask, inference=inference, key=k_transformer)
         lm_logits = self.embeddings.unembed(hidden_states)
