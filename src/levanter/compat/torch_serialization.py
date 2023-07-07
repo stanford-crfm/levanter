@@ -121,7 +121,7 @@ def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateD
 
 
 def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: Optional[str] = None) -> Mod:
-    key_map = getattr(mod, "_state_dict_key_map", lambda: {})()
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     names = []
     values = []
     for field in fields(mod):
@@ -145,7 +145,7 @@ def default_eqx_module_to_state_dict(mod: eqx.Module, prefix: Optional[str] = No
 def default_update_state_dict_with_eqx_module(
     state_dict: StateDict, mod: eqx.Module, prefix: Optional[str] = None
 ) -> StateDict:
-    key_map = getattr(mod, "_state_dict_key_map", lambda: {})()
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     for field in fields(mod):
         if field.metadata.get("static", False):
             continue
@@ -156,7 +156,6 @@ def default_update_state_dict_with_eqx_module(
 
 
 def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # the model might have been stacked/blocked so we need to allow for an extra dimension
     # TODO: might be nicer to use vmap here
     weight = layer.weight
     bias = layer.bias
@@ -181,16 +180,13 @@ def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool
 
 
 def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # the model might have been stacked/blocked so we need to allow for an extra dimension
     # TODO: might be nicer to use vmap here
-    # ensure it's numpy
     weight = statedict[apply_prefix(prefix, "weight")]
     bias = statedict.get(apply_prefix(prefix, "bias"), None)
 
     Out = ensure_tuple(layer.Out)
     In = ensure_tuple(layer.In)
     InOut = In + Out
-    # extra_dims = tuple(ax for ax in layer.bias.axes if ax not in Out)
     extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
 
     if out_dims_first_in_dict:

@@ -13,7 +13,7 @@ import numpy as np
 import optax
 from draccus import field
 from jax._src.interpreters.pxla import Mesh
-from jaxtyping import PyTree, PRNGKeyArray
+from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.partitioning import ResourceAxis, ResourceMapping
 

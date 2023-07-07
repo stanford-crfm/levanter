@@ -11,7 +11,7 @@ from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
 from jax.sharding import PartitionSpec
-from jaxtyping import PyTree, PRNGKeyArray
+from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
 from haliax.util import ensure_tuple
