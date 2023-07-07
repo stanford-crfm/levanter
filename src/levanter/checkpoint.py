@@ -12,7 +12,7 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Unio
 import fsspec
 import jax
 from draccus import field
-from equinox.serialisation import _is_index, default_deserialise_filter_spec, default_serialise_filter_spec
+from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 
@@ -327,7 +327,7 @@ def tree_serialise_leaves(
     path: PathLike,
     pytree: PyTree,
     filter_spec=default_serialise_filter_spec,
-    is_leaf: Callable[[Any], bool] = _is_index,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> None:
     """Analog to `equinox.tree_serialise_leaves`, but saves the leaves of a PyTree using fsspec."""
 
@@ -348,7 +348,7 @@ def tree_deserialise_leaves(
     path: PathLike,
     like: PyTree,
     filter_spec=default_deserialise_filter_spec,
-    is_leaf: Callable[[Any], bool] = _is_index,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
     fs=None,
 ) -> PyTree:
     """
