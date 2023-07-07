@@ -1,4 +1,4 @@
-name: Python package
+name: Pre-Commit
 
 on: [push]
 
@@ -20,7 +20,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install flake8 pytest pre-commit
-          pip install --upgrade "jax[cpu]==0.4.10"
+          pip install --upgrade "jax[cpu]==0.4.11" "jaxlib==0.4.11"
           pip install .
 #      - name: Lint with flake8
 #        run: |
