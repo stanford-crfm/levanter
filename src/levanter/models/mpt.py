@@ -17,6 +17,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -95,7 +96,7 @@ class MptConfig(HFCompatConfig):
     expansion_ratio: int = 4
     max_seq_len: int = 2048
     learned_pos_emb: bool = True
-    attn_config: MptAttentionConfig = MptAttentionConfig()
+    attn_config: MptAttentionConfig = field(default_factory=MptAttentionConfig)
     logit_scale: Optional[Union[float, str]] = None
     use_bias: bool = True
 
@@ -439,10 +440,8 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return output_logits
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
-        return {
-            "wte": "transformer.wte",
-        }
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"wte": "transformer.wte"}
 
     @staticmethod
     def from_hf_pretrained(

@@ -6,14 +6,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh
 from jaxtyping import PyTree
-from test_utils import skip_if_not_enough_devices
 
-import haliax
-import levanter.data
+import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
+
+import levanter.data
 from levanter.data.loader import ShardedBatchLoader, check_sharded_consistency
 from levanter.shapes import NamedShapeSpec, ShapeSpec
+from test_utils import skip_if_not_enough_devices
 
 
 NUM_SHARDS_TINY = 16
@@ -49,7 +50,7 @@ def test_sharded_data_loading_model_axis_2():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -69,7 +70,7 @@ def test_sharded_data_loading_model_axis_1():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -125,9 +126,46 @@ def test_structured_batches_model_axis_1():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
+        Batch = Axis("batch", len(devices))
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
+
+        batches = list(itertools.islice(loader, 10))
+        for batch in batches:
+            check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
+
+
+class ScalarDataset(levanter.data.ShardableDataset[hax.NamedArray]):
+    def __init__(self, begin, end, stride):
+        self.begin = begin
+        self.end = end
+        self.stride = stride
+
+    def __getitem__(self, item):
+        return hax.named(jnp.array(item), ())
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return NamedShapeSpec((), jnp.int32)
+
+    def __iter__(self):
+        for i in range(self.begin, self.end, self.stride):
+            yield self[i]
+
+    def shard(self, shard_id: int, num_shards: int):
+        return ScalarDataset(self.begin + shard_id, self.end, self.stride * num_shards)
+
+
+def test_can_batch_named_scalars():
+
+    devices = jax.devices()
+    model_axis_size = 1
+
+    mesh = Mesh(np.array(devices).reshape(-1, model_axis_size), (ResourceAxis.DATA, ResourceAxis.MODEL))
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+        dataset = ScalarDataset(0, 256, 1)
         Batch = Axis("batch", len(devices))
         loader = ShardedBatchLoader(dataset, mesh, Batch)
 
@@ -145,7 +183,7 @@ def test_structured_batches_model_axis_2():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
@@ -170,7 +208,7 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
             + index * 1000
         )
 
-        return haliax.named(image, (self.Height, self.Width))
+        return hax.named(image, (self.Height, self.Width))
 
     def __getitem__(self, item):
         return {
@@ -178,8 +216,9 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
             "labels": self._gen_image(item),
             "extra": {
                 "input_ids": self._gen_image(item),
-                "mask": haliax.arange(self.Height) + item * 1000,
+                "mask": hax.arange(self.Height) + item * 1000,
             },
+            "id": hax.named(jnp.array(item), ()),
         }
 
     @property
@@ -191,6 +230,7 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
                 "input_ids": NamedShapeSpec((self.Height, self.Width), jnp.int32),
                 "mask": NamedShapeSpec((self.Height,), jnp.int32),
             },
+            "id": NamedShapeSpec((), jnp.int32),
         }
 
     def __iter__(self):
@@ -211,7 +251,7 @@ def test_structured_batches_model_axis_1_with_names():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
@@ -232,7 +272,7 @@ def test_structured_batches_model_axis_2_with_names():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
@@ -256,7 +296,7 @@ def test_structured_batches_model_axis_2_subsharded():
     )
     Height = Axis("Height", 16)
     Width = Axis("Width", 16)
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
         loader = ShardedBatchLoader(dataset, mesh, Batch)
@@ -264,3 +304,28 @@ def test_structured_batches_model_axis_2_subsharded():
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
+
+
+def test_sharded_loader_doesnt_throw_away_data():
+    devices = jax.devices()
+    model_axis_size = 1
+
+    mesh = Mesh(
+        np.array(devices).reshape(-1, model_axis_size),
+        (ResourceAxis.DATA, ResourceAxis.MODEL),
+    )
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+        dataset = ScalarDataset(0, 256, 1)
+        Batch = Axis("batch", len(devices))
+        loader = ShardedBatchLoader(dataset, mesh, Batch)
+
+        batches = list(itertools.islice(loader, 10))
+        dataset_examples = list(itertools.islice(dataset, 10 * Batch.size))
+
+        def unbatch_example(example):
+            return example.unbind("batch")
+
+        loader_examples = [ex for b in batches for ex in unbatch_example(b)]
+
+        for ex_d, ex_l in zip(dataset_examples, loader_examples):
+            assert jnp.all(ex_d.array == ex_l.array)

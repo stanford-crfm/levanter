@@ -1,4 +1,4 @@
-name: Python package
+name: Pre-Commit
 
 on: [push]
 
@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 pytest
+          pip install flake8 pytest pre-commit
           pip install --upgrade "jax[cpu]==0.4.11" "jaxlib==0.4.11"
           # install haliax from source b/c it's changing in parallel with this repo
           pip install git+https://github.com/stanford-crfm/haliax.git
@@ -30,6 +30,7 @@ jobs:
 #          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 #          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
 #          flake8 . --count --exit-zero --max-complexity=50 --max-line-length=127 --statistics
-      - name: Test with pytest
+      - name: "Run Pre-commit"
         run: |
-          XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. pytest tests
+          pre-commit run --all-files --show-diff-on-failure
+

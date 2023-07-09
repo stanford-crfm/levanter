@@ -2,6 +2,7 @@
 # * Orbax: https://github.com/google/orbax/blob/11d2934ecfff77e86b5e07d0fef02b67eff4511b/orbax/checkpoint/pytree_checkpoint_handler.py#L312
 import asyncio
 import logging
+import os
 from functools import partial
 
 import jax
@@ -33,7 +34,7 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
 
 
 def _tensorstore_spec_for(checkpoint_dir, key_path: str):
-    checkpoint_path = f"{checkpoint_dir}/{key_path.replace('.', '/')}"
+    checkpoint_path = os.path.join(checkpoint_dir, *key_path.split("."))
     ts_spec = array_ser.get_tensorstore_spec(checkpoint_path)
     return ts_spec
 

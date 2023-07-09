@@ -30,17 +30,16 @@ from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedToken
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
+from levanter.data.shard_cache import CacheLedger  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
     BatchProcessor,
-    CacheLedger,
     ChunkMetadata,
     LoggerMetricsMonitor,
     MetricsMonitor,
     ShardCache,
     ShardedDataSource,
     WandbMetricsMonitor,
-    _load_cache_ledger,
     _serialize_json_and_commit,
     cache_dataset,
 )

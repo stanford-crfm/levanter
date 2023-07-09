@@ -3,12 +3,11 @@ from typing import List, Sequence, TypeVar
 
 import pytest
 import ray
-from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 from transformers import AutoTokenizer, BatchEncoding
 
-from haliax import Axis
 from levanter.data.shard_cache import ShardedDataSource, cache_dataset
 from levanter.data.text import TokenizedDocumentCache
+from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")

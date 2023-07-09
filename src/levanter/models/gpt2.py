@@ -15,6 +15,7 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -282,7 +283,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
 
         return x
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"blocks": "h"}
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
@@ -337,7 +338,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def unembed(self, x: NamedArray):
         return hax.dot("embed", x, self.token_embeddings)
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
 
@@ -380,7 +381,7 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return lm_logits
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": None, "embeddings": None}
 
 

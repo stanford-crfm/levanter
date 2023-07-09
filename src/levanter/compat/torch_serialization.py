@@ -1,4 +1,5 @@
 import re
+from dataclasses import fields
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
 
 import equinox as eqx
@@ -55,9 +56,9 @@ class StateDictSerializationMixin:
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         return default_update_state_dict_with_eqx_module(state_dict, self, prefix)
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         """Returns a dict mapping eqx.Module keys to torch keys that need to be renamed for serialization"""
-        return None
+        return {}
 
 
 def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> PyTree:
@@ -120,50 +121,41 @@ def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateD
 
 
 def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: Optional[str] = None) -> Mod:
-    key_map = None
-    if hasattr(mod, "_state_dict_key_map"):
-        key_map = mod._state_dict_key_map()
-
-    old_values, mod_state = mod.tree_flatten()
-    dyn_keys = mod_state[0]
-
-    new_values = []
-    for k, old in zip(dyn_keys, old_values):
-        if key_map is not None and k in key_map:
-            k = key_map[k]
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
+    names = []
+    values = []
+    for field in fields(mod):
+        if field.metadata.get("static", False):
+            continue
+        key = key_map.get(field.name, field.name)
+        value = getattr(mod, field.name)
         # TODO: might want to add a flag that allows missing keys?
-        new_values.append(jax_tree_from_state_dict(old, state_dict, apply_prefix(prefix, k)))
+        new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
+        names.append(field.name)
+        values.append(new)
+    return eqx.tree_at(lambda m: [getattr(m, name) for name in names], mod, values)
 
-    return mod.tree_unflatten(mod_state, new_values)
 
-
-def default_eqx_module_to_state_dict(mod: Mod, prefix: Optional[str] = None) -> StateDict:
+def default_eqx_module_to_state_dict(mod: eqx.Module, prefix: Optional[str] = None) -> StateDict:
     state_dict: StateDict = {}
     default_update_state_dict_with_eqx_module(state_dict, mod, prefix)
-
     return state_dict
 
 
 def default_update_state_dict_with_eqx_module(
-    state_dict: StateDict, mod: Mod, prefix: Optional[str] = None
+    state_dict: StateDict, mod: eqx.Module, prefix: Optional[str] = None
 ) -> StateDict:
-    key_map = None
-    if hasattr(mod, "_state_dict_key_map"):
-        key_map = mod._state_dict_key_map()
-
-    values, mod_state = mod.tree_flatten()
-    dyn_keys = mod_state[0]
-    for k, v in zip(dyn_keys, values):
-        if key_map is not None and k in key_map:
-            k = key_map[k]
-
-        update_state_dict_with_jax_tree(v, state_dict, apply_prefix(prefix, k))
-
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
+    for field in fields(mod):
+        if field.metadata.get("static", False):
+            continue
+        key = key_map.get(field.name, field.name)
+        value = getattr(mod, field.name)
+        update_state_dict_with_jax_tree(value, state_dict, apply_prefix(prefix, key))
     return state_dict
 
 
 def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # the model might have been stacked/blocked so we need to allow for an extra dimension
     # TODO: might be nicer to use vmap here
     weight = layer.weight
     bias = layer.bias
@@ -188,16 +180,13 @@ def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool
 
 
 def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # the model might have been stacked/blocked so we need to allow for an extra dimension
     # TODO: might be nicer to use vmap here
-    # ensure it's numpy
     weight = statedict[apply_prefix(prefix, "weight")]
     bias = statedict.get(apply_prefix(prefix, "bias"), None)
 
     Out = ensure_tuple(layer.Out)
     In = ensure_tuple(layer.In)
     InOut = In + Out
-    # extra_dims = tuple(ax for ax in layer.bias.axes if ax not in Out)
     extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
 
     if out_dims_first_in_dict:

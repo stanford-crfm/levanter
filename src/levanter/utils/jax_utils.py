@@ -1,17 +1,17 @@
 import functools
 import functools as ft
 import json
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
 import equinox as eqx
 import jax
-from chex import PRNGKey
 from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
 from jax.sharding import PartitionSpec
-from jaxtyping import PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
 from haliax.util import ensure_tuple
@@ -79,7 +79,7 @@ def set_hardware_rng_ops(enabled: bool = True):
         jax.config.update("jax_default_prng_impl", "threefry2x32")
 
 
-def global_key_array(key: PRNGKey, global_shape, mesh, mesh_axes):
+def global_key_array(key: PRNGKeyArray, global_shape, mesh, mesh_axes):
     """
     Create a global array with the given key. This ensures that:
     * individual keys at positions are unique
@@ -207,11 +207,16 @@ def leaf_key_paths(pytree, prefix: str = ""):
     elif isinstance(pytree, tuple):
         return tuple(leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
-        values, aux = pytree.tree_flatten()
-        field_names = aux[0]
-        rec_values = [leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in zip(field_names, values)]
-
-        return pytree.tree_unflatten(aux, rec_values)
+        names = []
+        rec_values = []
+        for field in fields(pytree):
+            if field.metadata.get("static", False):
+                continue
+            names.append(field.name)
+            field_prefix = f"{prefix}.{field.name}" if prefix else field.name
+            rec_value = leaf_key_paths(getattr(pytree, field.name), prefix=field_prefix)
+            rec_values.append(rec_value)
+        return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree)
         if len(leaves) == 1:

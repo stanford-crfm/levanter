@@ -14,9 +14,10 @@ from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
-import levanter.mesh
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
+
+import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -92,7 +93,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def __iter__(self) -> Iterator[PyTree[jax.Array]]:
         one_item_generator = non_caching_cycle(self.item_dataset)
 
-        for i, item in enumerate(one_item_generator):
+        while True:
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -148,10 +149,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             ]
 
             gda_tree = jax.tree_util.tree_unflatten(batch_tree_structure, gda_leaves)
-
-            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
-                for leaf in gda_leaves:
-                    check_sharded_consistency(leaf, True)
 
             yield gda_tree  # type: ignore
 

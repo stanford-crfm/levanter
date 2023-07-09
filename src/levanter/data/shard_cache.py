@@ -32,6 +32,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
 import tblib
+import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -44,8 +45,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
-import wandb
 
 
 T = TypeVar("T")

@@ -1,20 +1,21 @@
 import logging
 import os
-from dataclasses import dataclass
-from typing import Optional, Union, List
+from dataclasses import dataclass, field
+from typing import Optional, Union
 
 import equinox as eqx
 import jax.random as jrandom
 import jmp
+import wandb
 from jax.sharding import PartitionSpec
 
 import haliax as hax
 import haliax.random
-import levanter
-import wandb
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
+
+import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
@@ -34,11 +35,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    # TODO: figure out how to pick the right dataclass to use based on the input config
-    data: Union[LMDatasetConfig, List[LMDatasetConfig]] = LMDatasetConfig()
-    trainer: TrainerConfig = TrainerConfig()
-    model: LmConfig = Gpt2Config()
-    optimizer: OptimizerConfig = OptimizerConfig()
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
@@ -272,7 +272,7 @@ def main(config: TrainLmConfig):
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, f"{config.trainer.run_dir}/log_probs"
+                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
             ),
             every=config.trainer.steps_per_eval,
         )

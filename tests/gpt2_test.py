@@ -1,13 +1,14 @@
 import dataclasses
 
-import haliax as hax
 import jax
 import jax.numpy as jnp
-from haliax import Axis
 from jax.random import PRNGKey
-from test_utils import check_load_config, parameterize_with_configs
+
+import haliax as hax
+from haliax import Axis
 
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from test_utils import check_load_config, parameterize_with_configs
 
 
 def test_gradient_checkpointing():
