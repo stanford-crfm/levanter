@@ -19,7 +19,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import LMDatasetConfig, TokenSeqDataset
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, TokenSeqDataset, MixtureDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)

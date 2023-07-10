@@ -582,13 +582,21 @@ class LMMixtureDatasetConfig:
         for d in self.datasets:
             d.weight *= factor
 
-        # to be consistent with LMDatasetConfig
-        tokenizer: str = self.datasets[0].tokenizer
+        # ensure all datasets use the same tokenizer
+        if len(set([d.tokenizer for d in self.datasets])) != 1:
+            raise ValueError("All datasets must use the same tokenizer")
+
+    @cached_property
+    def the_tokenizer(self) -> PreTrainedTokenizerFast:
+        return load_tokenizer(self.datasets[0].tokenizer)
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> TokenizedDocumentCache:
-        pass
+    ) -> List[TokenizedDocumentCache]:
+        caches = []
+        for d in self.datasets:
+            caches.append(d.build_or_load_cache(split, monitors))
+        return caches
 
 
 class HFDatasetDataSource(ShardedDataSource[str]):
