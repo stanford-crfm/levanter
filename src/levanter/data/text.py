@@ -109,23 +109,17 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
 
 class MixtureDataset(ShardableDataset[NamedArray]):
     """MixtureDataset supports loading data from multiple datasets.
-    It takes a list of TokenizedDocumentCache and yield token sequences from them with 
-    their associated weights. 
+    It takes a list of TokenizedDocumentCache and yield token sequences from them with
+    their associated weights.
     We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
 
     :param doc_cache_list: a list of TokenizedDocumentCache to draw from
     :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
     :param weight_list: a list of weights for each dataset
     """
-    def __init__(
-        self, 
-        doc_caches: List,
-        Pos: Axis, 
-        weights: List[float]
-    ):
-        self.token_seq_datasets = [
-            TokenSeqDataset(doc_cache, Pos) for doc_cache in doc_caches
-        ]
+
+    def __init__(self, doc_caches: List, Pos: Axis, weights: List[float]):
+        self.token_seq_datasets = [TokenSeqDataset(doc_cache, Pos) for doc_cache in doc_caches]
         self.Pos = Pos
         self.weight_list = self.normalize_weights(weights)
 
@@ -137,14 +131,12 @@ class MixtureDataset(ShardableDataset[NamedArray]):
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
-        sharded_doc_caches = [
-            cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets
-        ]
+        sharded_doc_caches = [cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets]
         return MixtureDataset(sharded_doc_caches, self.Pos, self.weight_list)
 
     def __iter__(self) -> Iterator[NamedArray]:
         """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
-        docs from doc_cache and yield batches of token sequences. We leverage this 
+        docs from doc_cache and yield batches of token sequences. We leverage this
         implementation of iteration. This function mainly samples a dataset according to
         the weights and call __iter__() function from corresponding TokenSeqDataset.
 
@@ -162,7 +154,7 @@ class MixtureDataset(ShardableDataset[NamedArray]):
     @property
     def seq_len(self) -> int:
         return self.Pos.size
-    
+
     @property
     def item_shape(self) -> PyTree:
         return NamedShapeSpec((self.Pos,), jnp.int32)
@@ -577,8 +569,9 @@ class LMMixtureDatasetConfig:
     """This class represents a mixture of datasets with their associated weights.
     It provides a consistent interface as LMDatasetConfig.
     """
+
     datasets: List[LMDatasetConfig]
-    
+
     def __post_init__(self):
         if len(self.datasets) == 0:
             raise ValueError("Must provide at least one dataset")
@@ -588,7 +581,7 @@ class LMMixtureDatasetConfig:
         factor = 1.0 / total_weight
         for d in self.datasets:
             d.weight *= factor
-        
+
         # to be consistent with LMDatasetConfig
         tokenizer: str = self.datasets[0].tokenizer
 
@@ -596,7 +589,7 @@ class LMMixtureDatasetConfig:
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> TokenizedDocumentCache:
         pass
-    
+
 
 class HFDatasetDataSource(ShardedDataSource[str]):
     """
