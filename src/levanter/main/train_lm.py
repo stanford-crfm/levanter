@@ -19,7 +19,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, TokenSeqDataset, MixtureDataset
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, MixtureDataset, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
