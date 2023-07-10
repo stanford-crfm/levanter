@@ -109,18 +109,55 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
 
 class MixtureDataset(ShardableDataset[NamedArray]):
     """MixtureDataset supports loading data from multiple datasets.
-    It takes a list of datasets and yield token sequences from them with their associated weights.
+    It takes a list of TokenizedDocumentCache and yield token sequences from them with 
+    their associated weights. 
+    We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
+
+    :param doc_cache_list: a list of TokenizedDocumentCache to draw from
+    :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
+    :param weight_list: a list of weights for each dataset
     """
-    def __init__(self, doc_cache_list: List, Pos: Axis, weight_list: List):
-        self.doc_cache_list = doc_cache_list
+    def __init__(
+        self, 
+        doc_caches: List,
+        Pos: Axis, 
+        weights: List[float]
+    ):
+        self.token_seq_datasets = [
+            TokenSeqDataset(doc_cache, Pos) for doc_cache in doc_caches
+        ]
         self.Pos = Pos
-        self.weight_list = weight_list
+        self.weight_list = self.normalize_weights(weights)
+
+    @staticmethod
+    def normalize_weights(weights):
+        total_weight = sum(weights)
+        factor = 1.0 / total_weight
+        return [w * factor for w in weights]
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
-        pass
+        """Return a MixtureDataset with the sharded doc_caches."""
+        sharded_doc_caches = [
+            cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets
+        ]
+        return MixtureDataset(sharded_doc_caches, self.Pos, self.weight_list)
 
-    def __init__(self) -> Iterator[NamedArray]:
-        pass
+    def __iter__(self) -> Iterator[NamedArray]:
+        """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
+        docs from doc_cache and yield batches of token sequences. We leverage this 
+        implementation of iteration. This function mainly samples a dataset according to
+        the weights and call __iter__() function from corresponding TokenSeqDataset.
+
+        Yields:
+            Iterator[NamedArray]: _description_
+        """
+        dataset_index = self.sample_index(self.weight_list)
+        yield from self.token_seq_datasets[dataset_index]
+
+    @staticmethod
+    def sample_index(weights):
+        """Sample a dataset according to the weights"""
+        return np.random.choice(len(weights), p=weights)
 
     @property
     def seq_len(self) -> int:
