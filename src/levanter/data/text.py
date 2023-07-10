@@ -121,7 +121,7 @@ class MixtureDataset(ShardableDataset[NamedArray]):
     def __init__(self, doc_caches: List, Pos: Axis, weights: List[float]):
         self.token_seq_datasets = [TokenSeqDataset(doc_cache, Pos) for doc_cache in doc_caches]
         self.Pos = Pos
-        self.weight_list = self.normalize_weights(weights)
+        self.weights = self.normalize_weights(weights)
 
     @staticmethod
     def normalize_weights(weights):
@@ -132,7 +132,7 @@ class MixtureDataset(ShardableDataset[NamedArray]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
         sharded_doc_caches = [cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets]
-        return MixtureDataset(sharded_doc_caches, self.Pos, self.weight_list)
+        return MixtureDataset(sharded_doc_caches, self.Pos, self.weights)
 
     def __iter__(self) -> Iterator[NamedArray]:
         """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
@@ -143,7 +143,7 @@ class MixtureDataset(ShardableDataset[NamedArray]):
         Yields:
             Iterator[NamedArray]: _description_
         """
-        dataset_index = self.sample_index(self.weight_list)
+        dataset_index = self.sample_index(self.weights)
         yield from self.token_seq_datasets[dataset_index]
 
     @staticmethod
@@ -576,11 +576,7 @@ class LMMixtureDatasetConfig:
         if len(self.datasets) == 0:
             raise ValueError("Must provide at least one dataset")
 
-        # normalize datasets weights
-        total_weight = sum([d.weight for d in self.datasets])
-        factor = 1.0 / total_weight
-        for d in self.datasets:
-            d.weight *= factor
+        self.weights = [d.weight for d in self.datasets]
 
         # ensure all datasets use the same tokenizer
         if len(set([d.tokenizer for d in self.datasets])) != 1:

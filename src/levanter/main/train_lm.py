@@ -19,6 +19,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
+from levanter.data.dataset import ShardableDataset
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, MixtureDataset, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
@@ -96,15 +97,33 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    # define train_dataset
+    train_dataset: ShardableDataset
+    eval_dataset: ShardableDataset
+    if isinstance(config.data, LMMixtureDatasetConfig):
+        train_dataset = MixtureDataset(
+            doc_caches=config.data.build_or_load_cache("train"),
+            Pos=Pos,
+            weights=config.data.weights,
+        )
+        eval_dataset = MixtureDataset(
+            doc_caches=config.data.build_or_load_cache("validation"),
+            Pos=Pos,
+            weights=config.data.weights,
+        )
+    else:
+        train_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), Pos)
+        eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos)
+
     eval_loader = ReplicatedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
+        eval_dataset,
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
     )
 
     train_loader = ShardedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
+        train_dataset,
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
