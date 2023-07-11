@@ -1,9 +1,4 @@
-data:
-  train_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+data: !include data/openwebtext_source.yaml
 model:
   type: gpt2
   hidden_dim: 1024
