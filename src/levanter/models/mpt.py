@@ -96,7 +96,7 @@ class MptConfig(HFCompatConfig):
     expansion_ratio: int = 4
     max_seq_len: int = 2048
     learned_pos_emb: bool = True
-    attn_config: MptAttentionConfig = MptAttentionConfig()
+    attn_config: MptAttentionConfig = field(default_factory=MptAttentionConfig)
     logit_scale: Optional[Union[float, str]] = None
     use_bias: bool = True
 
@@ -440,10 +440,8 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return output_logits
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
-        return {
-            "wte": "transformer.wte",
-        }
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"wte": "transformer.wte"}
 
     @staticmethod
     def from_hf_pretrained(

@@ -97,7 +97,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
         shape_leaves, shape_structure = jax.tree_util.tree_flatten(self.item_shape)
 
-        for i, item in enumerate(one_item_generator):
+        while True:
             # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
             # the relevant data for each process.
             # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -159,10 +159,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             ]
 
             gda_tree = jax.tree_util.tree_unflatten(shape_structure, gda_leaves)
-
-            if i % 100 == 0 and logger.getEffectiveLevel() <= logging.DEBUG:
-                for leaf in gda_leaves:
-                    check_sharded_consistency(leaf, True)
 
             yield gda_tree  # type: ignore
 

@@ -413,7 +413,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return lm_logits
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {
             "transformer": "backpack.gpt2_model",
             "embeddings": "backpack.gpt2_model",

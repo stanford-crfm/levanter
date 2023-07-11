@@ -11,10 +11,9 @@ import jax
 import jmp
 import numpy as np
 import optax
-from chex import PRNGKey
 from draccus import field
 from jax._src.interpreters.pxla import Mesh
-from jaxtyping import PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.partitioning import ResourceAxis, ResourceMapping
 
@@ -41,7 +40,7 @@ class StepInfo:
     model: PyTree
     opt_state: Any
     loss: float
-    next_key: PRNGKey
+    next_key: PRNGKeyArray
     step_duration: float
 
 
@@ -74,7 +73,7 @@ class TrainerConfig:
     seed: int = 0
     mp: jmp.Policy = jmp.get_policy("f32")
 
-    wandb: WandbConfig = WandbConfig()
+    wandb: WandbConfig = field(default_factory=WandbConfig)
     log_dir: Path = Path("logs/")
     run_base_dir: Path = Path("runs/")
 
@@ -104,7 +103,7 @@ class TrainerConfig:
     steps_per_eval: int = 1_000  # how often to evaluate
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
-    checkpointer: CheckpointerConfig = CheckpointerConfig()
+    checkpointer: CheckpointerConfig = field(default_factory=CheckpointerConfig)
     load_checkpoint: Optional[bool] = None
     """if None (default), we'll load a checkpoint if it exists. If true, we must load a checkpoint"""
     load_checkpoint_path: Optional[str] = None
@@ -115,7 +114,7 @@ class TrainerConfig:
     )  # config to pass to jax.config.update
 
     distributed: DistributedConfig = DistributedConfig()
-    ray: RayConfig = RayConfig()
+    ray: RayConfig = field(default_factory=RayConfig)
 
     # whether or not to require an accelerator (e.g. TPU or GPU).
     # default depends on the platform: on macos False, else True
