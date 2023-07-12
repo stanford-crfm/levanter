@@ -55,7 +55,7 @@ def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
     all_tokens = np.full(max_seq_len, pad_token_id or 0)
     used_tokens = 0
 
-    # TODO: do something more sophisticated for packing when seqlen is too long
+    # TODO: it'd be better if we made sure the examples we were creating were of the right length to begin with
     if example.task_token is not None:
         all_tokens[0] = example.task_token
         used_tokens = 1
