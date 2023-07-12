@@ -87,7 +87,6 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
             if extra_tokens is not None:
                 doc = _stack_batch_encodings(extra_tokens, doc)
                 extra_tokens = None
-
             for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride, drop_remainder=False):
                 if len(encoded_slice["input_ids"]) < self.seq_len:
                     assert extra_tokens is None
@@ -96,6 +95,26 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
                     yield hax.named(ids, self.Pos)
+
+    def __init__(self):
+        return self
+
+    def __next__(self):
+        if self.current_doc is None or self.current_pos is None or self.current_pos >= self.current_doc.size:
+            try:
+                self.current_doc = next(self.doc_cache)
+                self.current_pos = 0
+            except StopIteration:
+                print(f"No more docs in {self.doc_cache}")
+                raise StopIteration
+            
+            # TODO: finish the implementation 
+            # ...
+            encoded_slice = process_slice_of_doc(self.current_doc, self.current_position, self.seq_len, self.stride)
+
+            self.current_position += self.stride  # update current_position
+
+            return hax.named(encoded_slice, self.Pos)
 
     @property
     def item_shape(self) -> PyTree:
