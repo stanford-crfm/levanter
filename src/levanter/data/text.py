@@ -143,8 +143,9 @@ class MixtureDataset(ShardableDataset[NamedArray]):
         Yields:
             Iterator[NamedArray]: _description_
         """
-        dataset_index = self.sample_index(self.weights)
-        yield from self.token_seq_datasets[dataset_index]
+        while True:
+            dataset_index = self.sample_index(self.weights)
+            yield from self.token_seq_datasets[dataset_index]
 
     @staticmethod
     def sample_index(weights):
