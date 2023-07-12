@@ -1,7 +1,4 @@
-data:
-  id: EleutherAI/pile
-  cache_dir: "gs://levanter-data/tokenized/pile-old/"
-  tokenizer: "EleutherAI/gpt-neox-20b"
+data: !include data/pile_source_old.yaml
 model:
   type: gpt2
   hidden_dim: 768
