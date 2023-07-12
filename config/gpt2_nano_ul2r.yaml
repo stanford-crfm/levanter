@@ -24,15 +24,25 @@ trainer:
 task:
   ul2r:
     task_configs:
-      - type: c
-      - type: s
-      - type: x
+      causal:
+        type: c
+      prefix:
+        type: s
+      x1:
+        type: x
         mask_prob: 0.5
         mean_span_length: 3
-      - type: x
+      x2:
+        type: x
         mask_prob: 0.15
         mean_span_length: 32
-      - type: r
+      r:
+        type: r
         mask_prob: 0.15
         mean_span_length: 3
-    task_probs: [0.5, 0.25, 0.125, 0.0625, 0.0625]
+    task_probs:
+      causal: 0.5
+      prefix: 0.25
+      x1: 0.125
+      x2: 0.0625
+      r: 0.0625

@@ -4,7 +4,7 @@ import dataclasses
 import functools
 import warnings
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Union
+from typing import Dict, Iterator, List, Optional, Union
 
 import draccus
 import equinox as eqx
@@ -123,7 +123,7 @@ class DenoisingConfig(draccus.ChoiceRegistry):
             XDenoisingConfig(x_task_token, 0.5, 8.0),
             XDenoisingConfig(x_task_token, 0.15, 64.0),
             XDenoisingConfig(x_task_token, 0.5, 64.0),
-            SDenoisingConfig(s_task_token),
+            PrefixLmConfig(s_task_token),
         ]
 
     @staticmethod
@@ -134,7 +134,7 @@ class DenoisingConfig(draccus.ChoiceRegistry):
             RDenoisingConfig(r_task_token, 0.15, 3.0),
             XDenoisingConfig(x_task_token, 0.15, 32.0),
             XDenoisingConfig(x_task_token, 0.5, 3.0),
-            SDenoisingConfig(s_task_token),
+            PrefixLmConfig(s_task_token),
         ]
 
 
@@ -171,7 +171,7 @@ class RDenoisingConfig(MaskDenoisingConfig):
 
 @DenoisingConfig.register_subclass("s")
 @dataclass(frozen=True)
-class SDenoisingConfig(DenoisingConfig):
+class PrefixLmConfig(DenoisingConfig):
     task_token: Optional[str] = S_TASK_TOKEN
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
@@ -185,7 +185,7 @@ class SDenoisingConfig(DenoisingConfig):
 # these aren't in the UL2(R) papers but they're nice to have
 @DenoisingConfig.register_subclass("c")
 @dataclass(frozen=True)
-class CDenoisingConfig(DenoisingConfig):
+class CausalLmConfig(DenoisingConfig):
     """This is just causal language modeling. Technically it's a kind of S-Denoising"""
 
     task_token: Optional[str] = None
@@ -212,13 +212,23 @@ class CDenoisingConfig(DenoisingConfig):
 
 @dataclass(frozen=True)
 class Ul2rConfig:
-    task_configs: List[DenoisingConfig]
-    task_probs: Optional[List[float]] = None
+    task_configs: Dict[str, DenoisingConfig]
+    task_probs: Optional[Dict[str, float]] = None
+
+    @property
+    def task_configs_list(self):
+        return list(self.task_configs.values())
+
+    @property
+    def task_weights_list(self):
+        if self.task_probs is None:
+            return None
+        return [self.task_probs[task] for task in self.task_configs]
 
     def __post_init__(self):
         if self.task_probs is not None:
-            if len(self.task_probs) != len(self.task_configs):
-                raise ValueError("denoiser_probs must have the same length as task_configs")
+            if self.task_probs.keys() != self.task_configs.keys():
+                raise ValueError("task_probs keys must match task_configs keys")
 
     def build(
         self,
@@ -234,7 +244,8 @@ class Ul2rConfig:
             KPos,
             key,
             tokenizer,
-            self.task_configs,
+            self.task_configs_list,
+            self.task_weights_list,
         )
 
 
