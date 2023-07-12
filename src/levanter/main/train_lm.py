@@ -106,14 +106,22 @@ def main(config: TrainLmConfig):
             Pos=Pos,
             weights=config.data.weights,
         )
-        eval_dataset = MixtureDataset(
-            doc_caches=config.data.build_or_load_cache("validation"),
-            Pos=Pos,
-            weights=config.data.weights,
-        )
+        try:
+            # need a better way of handle cases where we don't have a validation set
+            eval_dataset = MixtureDataset(
+                doc_caches=config.data.build_or_load_cache("validation"),
+                Pos=Pos,
+                weights=config.data.weights,
+            )
+        except ValueError:
+            eval_dataset = train_dataset
     else:
         train_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), Pos)
-        eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos)
+        try:
+            # need a better way of handle cases where we don't have a validation set
+            eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos)
+        except ValueError:
+            eval_dataset = train_dataset
 
     eval_loader = ReplicatedBatchLoader(
         eval_dataset,
