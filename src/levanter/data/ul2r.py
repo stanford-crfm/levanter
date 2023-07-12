@@ -59,23 +59,25 @@ def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
     if example.task_token is not None:
         all_tokens[0] = example.task_token
         used_tokens = 1
-    inputs = example.inputs[: max_seq_len - used_tokens]
-    all_tokens[used_tokens : used_tokens + len(inputs)] = inputs
-    used_tokens += len(inputs)
-    outputs = example.outputs[: max_seq_len - used_tokens]
-    all_tokens[used_tokens : used_tokens + len(outputs)] = outputs
-    used_tokens += len(outputs)
 
-    num_inputs = len(example.inputs)
-    if example.task_token is not None:
-        num_inputs += 1
+    total_tokens_to_use = used_tokens + len(example.inputs) + len(example.outputs)
 
-    num_inputs = min(num_inputs, max_seq_len)
+    if total_tokens_to_use > max_seq_len:
+        warnings.warn(f"Example is too long to fit in {max_seq_len} tokens. Truncating.")
+
+    # we take some from the inputs and some from the outputs. take from the left of each
+    num_inputs_to_take = max((max_seq_len // 2) - used_tokens, max_seq_len - used_tokens - len(example.outputs))
+    all_tokens[used_tokens : used_tokens + num_inputs_to_take] = example.inputs[:num_inputs_to_take]
+    used_tokens += num_inputs_to_take
+    num_inputs = used_tokens
+
+    num_outputs_to_take = max_seq_len - used_tokens
+    all_tokens[used_tokens : used_tokens + num_outputs_to_take] = example.outputs[:num_outputs_to_take]
+    used_tokens += num_outputs_to_take
 
     return all_tokens, num_inputs, used_tokens
 
 
-# @eqx.filter_jit(args=(False, False, True, True, True, True, True))
 @functools.partial(jax.jit, static_argnums=(0, 1))
 def _create_prefix_lm_example(QPos, KPos, tokens, unpadded_length, num_inputs, pad_token_id):
     # shift back by one since we're predicting the next token

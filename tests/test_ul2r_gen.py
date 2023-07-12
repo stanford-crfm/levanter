@@ -120,3 +120,15 @@ def test_ul2r_prefix_attention():
     # the values for the outputs should all close to 300
     assert jnp.allclose(result[input_length + 1 :, 1], 300)
     assert jnp.allclose(result[0 : input_length + 1, 1], 0)
+
+
+def test_ul2r_decoder_only_uses_both_inputs_and_outputs():
+    ex = Ul2Example(task_token=1000, inputs=np.arange(10), outputs=np.arange(20, 30))
+    decoder_only = ex.to_decoder_only(1001, hax.Axis("L", 10), hax.Axis("KL", 10))
+    assert decoder_only.loss_mask.size == 10
+    assert hax.sum(decoder_only.loss_mask, "L") == 5
+
+    ex = Ul2Example(task_token=1000, inputs=np.arange(10), outputs=np.arange(20, 23))
+    decoder_only = ex.to_decoder_only(1001, hax.Axis("L", 10), hax.Axis("KL", 10))
+    assert decoder_only.loss_mask.size == 10
+    assert hax.sum(decoder_only.loss_mask, "L") == 3
