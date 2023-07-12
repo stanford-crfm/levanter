@@ -66,12 +66,14 @@ def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
         warnings.warn(f"Example is too long to fit in {max_seq_len} tokens. Truncating.")
 
     # we take some from the inputs and some from the outputs. take from the left of each
-    num_inputs_to_take = max((max_seq_len // 2) - used_tokens, max_seq_len - used_tokens - len(example.outputs))
+    num_inputs_to_take = min(
+        max((max_seq_len // 2) - used_tokens, max_seq_len - used_tokens - len(example.outputs)), len(example.inputs)
+    )
     all_tokens[used_tokens : used_tokens + num_inputs_to_take] = example.inputs[:num_inputs_to_take]
     used_tokens += num_inputs_to_take
     num_inputs = used_tokens
 
-    num_outputs_to_take = max_seq_len - used_tokens
+    num_outputs_to_take = min(max_seq_len - used_tokens, len(example.outputs))
     all_tokens[used_tokens : used_tokens + num_outputs_to_take] = example.outputs[:num_outputs_to_take]
     used_tokens += num_outputs_to_take
 
