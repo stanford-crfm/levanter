@@ -37,12 +37,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TaskConfig:
+    # TODO: should we move this to choice types?
     fcm_prob: float = 0.0  # forgetful causal masking prob. recommended 0.15, https://arxiv.org/abs/2210.13432
     ul2r: Optional[Ul2rConfig] = None
 
     def __post_init__(self):
         if self.fcm_prob > 0 and self.ul2r is not None:
-            # TODO: it should be possible to define an "f-denoiser" though it's a bit weird
             raise ValueError("You can't use both fcm and ul2r")
 
     def build(self, raw_dataset: TokenSeqDataset, Pos: hax.Axis, KPos: hax.Axis, tokenizer, key: PRNGKey):
