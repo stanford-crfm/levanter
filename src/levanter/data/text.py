@@ -109,12 +109,12 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
             attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
 
-        targets = jnp.roll(tokens, -1)
+        tokens = hax.named(tokens, self.QPos)
+        targets = hax.roll(tokens, -1, self.QPos)
+
         loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
 
-        targets = hax.named(targets, self.QPos)
-        tokens = hax.named(tokens, self.QPos)
-        example = LmExample(tokens, targets, attn_mask, loss_mask)
+        example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
     @property
