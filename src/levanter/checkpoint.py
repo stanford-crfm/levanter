@@ -395,7 +395,7 @@ def _assert_same(new, old):
 @dataclass
 class CheckpointerConfig:
     base_path: str = "checkpoints/"
-    save_interval: timedelta = timedelta(hours=6)
+    save_interval: timedelta = timedelta(minutes=15)
     # TODO: I'd like to write this, but it's not supported by draccus
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
     keep: List[dict] = field(
