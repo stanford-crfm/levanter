@@ -214,7 +214,10 @@ def main(config: TrainLmConfig):
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
         model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            model, (opt_state, training_key)
+            model,
+            (opt_state, training_key),
+            axis_mapping=parameter_axis_mapping,
+            mesh=mesh,
         )
 
         if resume_step is None:
