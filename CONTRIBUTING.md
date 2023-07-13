@@ -62,7 +62,7 @@ When your changes are operational you should verify that the current tests are p
 
 Set up your environment for running the tests:
 
-    export PYTHONPATH=/path/to/levanter/src
+    export PYTHONPATH=/path/to/levanter/src:path/to/levanter/tests:$PYTHONPATH
     wandb offline
 
 You can run the tests with this command:

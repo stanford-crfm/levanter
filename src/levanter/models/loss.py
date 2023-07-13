@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -13,7 +13,6 @@ def next_token_loss(
     pred_ids: NamedArray,
     true_ids: NamedArray,
     loss_mask: Optional[NamedArray] = None,
-    loss_fn: Callable[[NamedArray, hax.AxisSelector, NamedArray], NamedArray] = cross_entropy_loss,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
 ):
     Pos, Vocab = pred_ids.resolve_axis((Pos, Vocab))
@@ -28,11 +27,7 @@ def next_token_loss(
     else:
         loss_mask = not_last_loss_mask
 
-    loss = loss_fn(pred_ids, Vocab, target_y)
-    if reduction is not None:
-        loss = reduction(loss, where=loss_mask, axis=Pos)
-
-    return loss
+    return cross_entropy_loss(pred_ids, Vocab, target_y, reduction=reduction, where=loss_mask, reduction_axis=Pos)
 
 
 def cross_entropy_and_logsumexp_penalty(

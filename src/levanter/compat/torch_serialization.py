@@ -1,16 +1,35 @@
 import re
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
+from dataclasses import fields
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
 
 import equinox as eqx
 import jax.numpy as jnp
 import numpy
 from jaxtyping import PyTree
 
+import haliax as hax
+import haliax.nn as hnn
 from haliax import NamedArray
+from haliax.util import ensure_tuple
 
 
 StateDict = Dict[str, Any]
 Tensor = Any
+
+
+@overload
+def apply_prefix(prefix: Optional[str], leaf: str) -> str:
+    ...
+
+
+@overload
+def apply_prefix(prefix: Optional[str], leaf: None) -> Optional[str]:
+    ...
+
+
+@overload
+def apply_prefix(prefix: None, leaf: Optional[str]) -> Optional[str]:
+    ...
 
 
 def apply_prefix(prefix: Optional[str], leaf: Optional[str]) -> Optional[str]:
@@ -37,9 +56,9 @@ class StateDictSerializationMixin:
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         return default_update_state_dict_with_eqx_module(state_dict, self, prefix)
 
-    def _state_dict_key_map(self) -> Optional[Dict[str, Optional[str]]]:
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         """Returns a dict mapping eqx.Module keys to torch keys that need to be renamed for serialization"""
-        return None
+        return {}
 
 
 def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> PyTree:
@@ -102,46 +121,96 @@ def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateD
 
 
 def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: Optional[str] = None) -> Mod:
-    key_map = None
-    if hasattr(mod, "_state_dict_key_map"):
-        key_map = mod._state_dict_key_map()
-
-    old_values, mod_state = mod.tree_flatten()
-    dyn_keys = mod_state[0]
-
-    new_values = []
-    for k, old in zip(dyn_keys, old_values):
-        if key_map is not None and k in key_map:
-            k = key_map[k]
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
+    names = []
+    values = []
+    for field in fields(mod):
+        if field.metadata.get("static", False):
+            continue
+        key = key_map.get(field.name, field.name)
+        value = getattr(mod, field.name)
         # TODO: might want to add a flag that allows missing keys?
-        new_values.append(jax_tree_from_state_dict(old, state_dict, apply_prefix(prefix, k)))
+        new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
+        names.append(field.name)
+        values.append(new)
+    return eqx.tree_at(lambda m: [getattr(m, name) for name in names], mod, values)
 
-    return mod.tree_unflatten(mod_state, new_values)
 
-
-def default_eqx_module_to_state_dict(mod: Mod, prefix: Optional[str] = None) -> StateDict:
+def default_eqx_module_to_state_dict(mod: eqx.Module, prefix: Optional[str] = None) -> StateDict:
     state_dict: StateDict = {}
     default_update_state_dict_with_eqx_module(state_dict, mod, prefix)
-
     return state_dict
 
 
 def default_update_state_dict_with_eqx_module(
-    state_dict: StateDict, mod: Mod, prefix: Optional[str] = None
+    state_dict: StateDict, mod: eqx.Module, prefix: Optional[str] = None
 ) -> StateDict:
-    key_map = None
-    if hasattr(mod, "_state_dict_key_map"):
-        key_map = mod._state_dict_key_map()
-
-    values, mod_state = mod.tree_flatten()
-    dyn_keys = mod_state[0]
-    for k, v in zip(dyn_keys, values):
-        if key_map is not None and k in key_map:
-            k = key_map[k]
-
-        update_state_dict_with_jax_tree(v, state_dict, apply_prefix(prefix, k))
-
+    key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
+    for field in fields(mod):
+        if field.metadata.get("static", False):
+            continue
+        key = key_map.get(field.name, field.name)
+        value = getattr(mod, field.name)
+        update_state_dict_with_jax_tree(value, state_dict, apply_prefix(prefix, key))
     return state_dict
+
+
+def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
+    # TODO: might be nicer to use vmap here
+    weight = layer.weight
+    bias = layer.bias
+
+    ret_dict: StateDict = {}
+
+    weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+    if bias is not None:
+        bias = bias.flatten_axes(layer.Out, "__OUT__")
+
+    if out_dims_first_in_dict:
+        weight = weight.rearrange((..., "__OUT__", "__IN__"))
+    else:
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+
+    if bias is not None:
+        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+    return ret_dict
+
+
+def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
+    # TODO: might be nicer to use vmap here
+    weight = statedict[apply_prefix(prefix, "weight")]
+    bias = statedict.get(apply_prefix(prefix, "bias"), None)
+
+    Out = ensure_tuple(layer.Out)
+    In = ensure_tuple(layer.In)
+    InOut = In + Out
+    extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+
+    if out_dims_first_in_dict:
+        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+    else:
+        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+    # now unflatten
+    weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
+
+    if bias is not None:
+        bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
+        bias = bias.unflatten_axis("__OUT__", layer.Out)
+
+    # tree_structure = jax.tree_structure(layer)
+    # return jax.tree_unflatten(tree_structure, (weight, bias))
+
+    ret_dict: StateDict = {}
+    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+    if bias is not None:
+        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+    return ret_dict
 
 
 def reshape_linear_layer(
@@ -221,3 +290,24 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
         vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
 
     return vectorized_dict
+
+
+def reshape_mlp_linear_layer(
+    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
+) -> StateDict:
+    """
+    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
+    This is different from reshape_linear_layer as we removed (-1,) from the shape
+    of the weights and bias.
+    """
+    new_dict: StateDict = {}
+    weight_key = cast(str, apply_prefix(prefix, "weight"))
+    bias_key = cast(str, apply_prefix(prefix, "bias"))
+    weight = in_dict[weight_key]
+    bias = in_dict[bias_key]
+    weight = weight.reshape(in_shape + out_shape)
+    bias = bias.reshape(out_shape)
+    new_dict[weight_key] = weight
+    new_dict[bias_key] = bias
+
+    return new_dict

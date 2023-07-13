@@ -12,6 +12,7 @@ repos:
     -   id: trailing-whitespace
     -   id: end-of-file-fixer
     -   id: check-yaml
+        args: ['--unsafe']
     -   id: check-toml
     -   id: check-merge-conflict
     -   id: check-added-large-files
@@ -26,7 +27,7 @@ repos:
     hooks:
     -   id: isort
 
--   repo: https://gitlab.com/pycqa/flake8
+-   repo: https://github.com/PyCQA/flake8
     rev: 3.9.2
     hooks:
     -   id: flake8

@@ -1,4 +1,4 @@
-# Getting Started with Levanter on TPU VMs
+# Getting Started on TPU VMs
 
 This guide will walk you through the steps to get started with Levanter on TPU VMs.
 
@@ -86,7 +86,7 @@ Now that you have a TPU VM instance, you can follow the [Running Levanter] steps
 
 ### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
@@ -95,7 +95,7 @@ on each worker.
 ### Launch a GPT-2 Small in interactive mode
 This version writes to the terminal, you should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Using the "babysitting" script with a preemptible (or TRC) TPU VM
@@ -112,7 +112,7 @@ You can run it like this:
 
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
-    WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path levanter/config/gpt2_small.yaml
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
 ```
 
 That `--` is important! It separates the spin up args from the running args. Also, you should never use `launch.sh`
@@ -131,7 +131,7 @@ Afterwards, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
-    WANDB_API_KEY=... levanter/infra/run.sh python levanter/examples/gpt2_example.py --config_path gs://my_bucket/my_config.yaml \
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
     --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 

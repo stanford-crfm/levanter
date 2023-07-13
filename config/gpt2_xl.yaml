@@ -1,10 +1,6 @@
-data:
-  train_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
+data: !include data/openwebtext_source.yaml
 model:
+  type: gpt2
   hidden_dim: 1600
   num_heads: 25
   num_layers: 48
@@ -16,7 +12,8 @@ trainer:
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
   mp: p=f32,c=bfloat16
+  per_device_parallelism: 1
+optimizer:
   learning_rate: 1E-4
   weight_decay: 0.1
-  model_axis_size: 2
-  per_device_parallelism: 1
+  min_lr_ratio: 0.1

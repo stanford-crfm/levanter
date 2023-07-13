@@ -1,6 +1,9 @@
+import glob
+import os
 from functools import reduce
 from typing import Callable, List, Optional, Sequence, TypeVar
 
+import draccus
 import equinox as eqx
 import jax
 import pyarrow as pa
@@ -10,6 +13,7 @@ from equinox import nn as nn
 from equinox import static_field
 from transformers import BatchEncoding
 
+from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
 from levanter.data.text import _as_record_batch, _stack_batch_encodings
 
@@ -121,6 +125,33 @@ def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
 
 
+def skip_if_checkpoint_not_accessible(path: str):
+    def try_load_path(path):
+        try:
+            fs, path_to_open = _get_fs_and_plain_path(path)
+            fs.open(path_to_open, "rb")
+        except Exception:
+            return False
+        else:
+            return True
+
+    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")(lambda x: x)
+
+
+def skip_if_hf_model_not_accessible(model_id: str):
+    def try_load_hf(model_id):
+        try:
+            from transformers import AutoModelForCausalLM
+
+            AutoModelForCausalLM.from_pretrained(model_id)
+        except Exception:
+            return False
+        else:
+            return True
+
+    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")(lambda x: x)
+
+
 class IdentityProcessor(BatchProcessor[BatchEncoding]):
     def __call__(self, batch: Sequence[BatchEncoding]) -> pa.RecordBatch:
         stacked = reduce(_stack_batch_encodings, batch)
@@ -153,3 +184,19 @@ class SingleShardDocumentSource(ShardedDataSource[T]):
 
     def open_shard_at_row(self, shard_name: str, row: int):
         return self.docs[row:]
+
+
+def parameterize_with_configs(pattern, config_path=None):
+    test_path = os.path.dirname(os.path.abspath(__file__))
+    if config_path is None:
+        config_path = os.path.join(test_path, "..", "config")
+
+    configs = glob.glob(os.path.join(config_path, pattern))
+    return pytest.mark.parametrize("config_file", configs, ids=lambda x: f"{os.path.basename(x)}")
+
+
+def check_load_config(config_class, config_file):
+    try:
+        draccus.parse(config_class, config_file, args=[])
+    except Exception as e:
+        raise Exception(f"failed to parse {config_file}") from e
