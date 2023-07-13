@@ -54,6 +54,6 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
     ) -> NamedArray:
         pass

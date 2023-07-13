@@ -1,8 +1,8 @@
 from typing import Protocol, Tuple, TypeVar
 
 import jax
-from jax import numpy as jnp
-from jax.experimental.pjit import with_sharding_constraint
+import jax.numpy as jnp
+from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
 
 import haliax as hax
