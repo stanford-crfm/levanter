@@ -165,15 +165,6 @@ def main(config: TrainLmConfig):
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
-        # def compute_loss_old(model: LmHeadModel, input_ids, attn_mask, key, inference):
-        #     with hax.axis_mapping(compute_axis_mapping):
-        #         model = mp.cast_to_compute(model)
-        #
-        #         pred_y = model(input_ids, attn_mask, key=key, inference=inference)
-        #         pred_y = mp.cast_to_output(pred_y)
-        #
-        #         return next_token_loss(Pos, Vocab, pred_y, input_ids)
-
         def train_batch_loss(model, examples: LmExample, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
