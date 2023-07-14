@@ -114,7 +114,7 @@ async def _deserialize_named_array(like, spec, axis_mapping, mesh):
         print("deserializing a NamedArray that is not yet an array")
         sharding = hax.partitioning.sharding_for_axis(like.axes)
         array = await array_ser.async_deserialize(sharding, spec, global_shape=like.array.shape, dtype=like.dtype)
-        assert sharding.is_equivalent_to(like.array.sharding, len(like.array.shape))
+        assert sharding.is_equivalent_to(array.sharding, len(like.array.shape))
         return hax.NamedArray(array, like.axes)
     else:
         print("deserializing a NamedArray that is already an array")
