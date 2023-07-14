@@ -88,6 +88,8 @@ async def load_array_from_tensorstore(spec):
 
 async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
     if is_named_array(like):
+        assert axis_mapping is not None
+        assert mesh is not None
         return await _deserialize_named_array(like, spec, axis_mapping, mesh)
     elif isinstance(like, jax.Array):
         if not like.is_fully_addressable:
@@ -109,10 +111,13 @@ async def _deserialize_named_array(like, spec, axis_mapping, mesh):
     # the main thing we're worried about is deserialized NamedArrays that are not yet arrays but are ShapedDtypeStructs.
     # These don't (currently) have sharding info, but we can infer it from the axes
     if isinstance(like.array, jax.ShapeDtypeStruct):
+        print("deserializing a NamedArray that is not yet an array")
         sharding = hax.partitioning.sharding_for_axis(like.axes)
         array = await array_ser.async_deserialize(sharding, spec, global_shape=like.array.shape, dtype=like.dtype)
+        assert sharding.is_equivalent_to(like.array.sharding, len(like.array.shape))
         return hax.NamedArray(array, like.axes)
     else:
+        print("deserializing a NamedArray that is already an array")
         array = await _deserialize_one_leaf(like.array, spec, axis_mapping, mesh)
         return hax.NamedArray(array, like.axes)
 
@@ -120,6 +125,8 @@ async def _deserialize_named_array(like, spec, axis_mapping, mesh):
 def tree_deserialize_leaves_tensorstore(
     checkpoint_dir, pytree, axis_mapping: Optional[ResourceMapping] = None, mesh: Optional[Mesh] = None
 ):
+    assert axis_mapping is not None
+    assert mesh is not None
     """
     Deserializes a PyTree of Arrays and NamedArrays from a Tensorstore checkpoint, returning a pytree with the same shape
     as the one provided. This method is capable of deserializing NamedArrays that are the result of an eval_shape call
