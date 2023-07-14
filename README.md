@@ -26,7 +26,7 @@ that resumes are much faster and so that subsequent runs are even faster. As soo
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
 * **Optimization**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
-  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
+  though our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 * **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
 
 <!--levanter-intro-end-->

@@ -10,7 +10,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar,
 import jax
 import jmp
 import numpy as np
-import optax
 from draccus import field
 from jax._src.interpreters.pxla import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
@@ -259,60 +258,3 @@ class TrainerConfig:
             self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_name)
 
 
-@dataclass
-class OptimizerConfig:
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    min_lr_ratio: float = 0.0
-    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    def build(self, num_train_steps):
-        """Creates the optimizer"""
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
-    def lr_scheduler(self, num_train_steps):
-        warmup_steps = int(self.warmup_ratio * num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps
-        min_lr = self.learning_rate * self.min_lr_ratio
-
-        if self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-        elif self.lr_schedule == "linear":
-            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
-
-        return schedule
