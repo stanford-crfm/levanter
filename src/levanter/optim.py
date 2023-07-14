@@ -1,4 +1,5 @@
 # implements the prototype sofia optimizer
+import abc
 import functools
 import inspect
 import typing
@@ -18,8 +19,10 @@ from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
 import haliax
+
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
+
 
 @dataclass
 class OptimizerConfig(draccus.ChoiceRegistry):
@@ -48,6 +51,16 @@ class OptimizerConfig(draccus.ChoiceRegistry):
             schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
 
         return schedule
+
+
+@dataclass
+class HessianOptConfig(OptimizerConfig, abc.ABC):
+    state_update_interval: int = 10
+
+    def opt_state_update(
+        self, optimizer, opt_state, loss_fn: Callable, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    ):
+        raise NotImplementedError
 
 
 @OptimizerConfig.register_subclass("adam")
@@ -84,15 +97,17 @@ class AdamConfig(OptimizerConfig):
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
 
-GAMMA_SOPHIA_G=2e4
-GAMMA_SOPHIA_H=0.1
+GAMMA_SOPHIA_G = 2e4
+GAMMA_SOPHIA_H = 0.1
 
-@OptimizerConfig.register_subclass("sophia-g")
-class SophiaGConfig(OptimizerConfig):
+
+@dataclass
+class BaseSophiaConfig(HessianOptConfig):
+    """Base class for sophia variants. Doesn't implement the state update"""
+
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.999
-    gamma: float = GAMMA_SOPHIA_G
 
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
@@ -117,14 +132,42 @@ class SophiaGConfig(OptimizerConfig):
             return optimizer
 
         # Hong suggested using cosine decay for gamma
-        # TODO: verify with him we still want this
-        gamma_decay_schedule = optax.cosine_decay_schedule(GAMMA_SOPHIA_G, num_train_steps // 2, 0)
-        constant_gamma_schedule = optax.constant_schedule(GAMMA_SOPHIA_G)
-        gamma_schedule = optax.join_schedules(
-            [constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2]
-        )
+        gamma_decay_schedule = optax.cosine_decay_schedule(self.gamma, num_train_steps // 2, 0)  # type: ignore
+        constant_gamma_schedule = optax.constant_schedule(self.gamma)  # type: ignore
+        gamma_schedule = optax.join_schedules([constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2])
 
         return inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps), gamma=gamma_schedule)
+
+
+@OptimizerConfig.register_subclass("sophia-g")
+@dataclass
+class SophiaGConfig(HessianOptConfig):
+    gamma: float = GAMMA_SOPHIA_G
+    logit_axis: str = "vocab"  # axis to sample from, from logits
+
+    def opt_state_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        hess = stochastic_diag_gauss_newton(
+            loss_fn, model, *batch, **batch_kwargs, g_key=hess_key, Vocab=self.logit_axis
+        )
+
+        # distribute gradients across the mesh and apply them
+        opt_state = optimizer.hessian_update(hess, opt_state)
+
+        return opt_state
+
+
+@OptimizerConfig.register_subclass("sophia-h")
+@dataclass
+class SophiaHConfig(HessianOptConfig):
+    gamma: float = GAMMA_SOPHIA_H
+
+    def opt_state_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        hess = stochastic_hessian_diagonal(loss_fn, model, *batch, **batch_kwargs, h_key=hess_key)
+
+        # distribute gradients across the mesh and apply them
+        opt_state = optimizer.hessian_update(hess, opt_state)
+
+        return opt_state
 
 
 class ScaleByHessianState(NamedTuple):
@@ -172,7 +215,6 @@ def hvp(f, x, v):
     return jax.jvp(eqx.filter_grad(f), (x,), (v,))[1]
 
 
-
 # Use this for Sophia-H
 def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
@@ -212,6 +254,7 @@ def stochastic_diag_gauss_newton(fn, model, *args, g_key: PRNGKey, Vocab: haliax
 
 
 def tree_gaussian(key, tree):
+    """Samples a tree of gaussian noise with the same structure as `tree`."""
     leaves, structure = jax.tree_util.tree_flatten(tree)
     keys = jax.random.split(key, len(leaves))
     g = jax.tree_util.tree_map(lambda x, key: jax.random.normal(key, x.shape), leaves, list(keys))
@@ -244,7 +287,6 @@ def scale_by_sophia(
         # TODO: monitor param norm and momentum norm and trace(hessian) (aka sum of h_hat)
         # TODO: also track how often hessian is used (per coordinate)
         # TODO: track sum( jnp.abs(m) < gamma * jnp.maximum(v, 0) for m in mu_hat), we expect this to be ~70% later in training
-        # TODO: 10% update hessian
         # track how often hessian is used
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
         h_leaves = jax.tree_util.tree_leaves(h_hat)
@@ -474,5 +516,3 @@ def inject_hyperparams(
         return SecondOrderTransformation(init_fn, update_fn, update_hessian)
 
     return wrapped_transform
-
-
