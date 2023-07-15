@@ -158,19 +158,6 @@ def main(config: TrainLmConfig):
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        # masks for attention and loss
-        # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-        # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-        # mask instead of the activations.
-        def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
-
-            # forgetful causal masking
-            if not inference and config.task.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.task.fcm_prob, key=fcm_key)
-                causal_mask = causal_mask & fcm_mask
-            return causal_mask
-
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
@@ -178,7 +165,7 @@ def main(config: TrainLmConfig):
                 pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                target_y = hax.nn.one_hot(example.targets, Vocab)
+                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
@@ -188,9 +175,6 @@ def main(config: TrainLmConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, examples: LmExample, keys):
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
-            attn_mask = hax.auto_sharded(attn_mask)
-
             grad_loss = eqx.filter_value_and_grad(train_batch_loss)
 
             loss, grads = accumulate_gradients_sharded(
@@ -234,7 +218,10 @@ def main(config: TrainLmConfig):
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
         model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            model, (opt_state, training_key)
+            model,
+            (opt_state, training_key),
+            axis_mapping=parameter_axis_mapping,
+            mesh=mesh,
         )
 
         if resume_step is None:

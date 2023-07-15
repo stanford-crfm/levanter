@@ -16,6 +16,8 @@ from equinox import default_deserialise_filter_spec, default_serialise_filter_sp
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 
+import haliax.partitioning
+
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.utils.jax_utils import multihost_broadcast_sync
 
@@ -80,18 +82,35 @@ class Checkpointer:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
     def load_checkpoint(
-        self, model: M, training_state: S, path: Optional[PathLike] = None, *, discover_latest: bool = True
+        self,
+        model: M,
+        training_state: S,
+        path: Optional[PathLike] = None,
+        *,
+        discover_latest: bool = True,
+        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+        mesh: Optional[haliax.partitioning.Mesh] = None,
     ) -> Optional[Tuple[M, S, int]]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(model, training_state, path, discover_latest=discover_latest)
+        return load_checkpoint(
+            model, training_state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
+        )
 
     def load_model(
-        self, model: M, path: Optional[str] = None, *, discover_latest: bool = True
+        self,
+        model: M,
+        path: Optional[str] = None,
+        *,
+        discover_latest: bool = True,
+        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+        mesh: Optional[haliax.partitioning.Mesh] = None,
     ) -> Optional[Tuple[M, int]]:
         if path is None:
             path = self.base_path
-        ckpt = load_checkpoint(model, None, path, discover_latest=discover_latest)
+        ckpt = load_checkpoint(
+            model, None, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
+        )
         if ckpt is None:
             return None
         model, _, step = ckpt
@@ -242,7 +261,13 @@ def save_metadata(checkpoint_path, fs, step):
 
 
 def load_checkpoint(
-    model: M, training_state: S, checkpoint_path: PathLike, *, discover_latest=True
+    model: M,
+    training_state: S,
+    checkpoint_path: PathLike,
+    *,
+    discover_latest=True,
+    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+    mesh: Optional[jax.sharding.Mesh] = None,
 ) -> Optional[Tuple[M, S, int]]:
     """
     Load a checkpoint from a given path.
@@ -267,13 +292,15 @@ def load_checkpoint(
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
 
-    model = tree_deserialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model)
+    model = tree_deserialize_leaves_tensorstore(
+        os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
+    )
 
     if training_state is None:
         training_state = None
     else:
         training_state = tree_deserialize_leaves_tensorstore(
-            os.path.join(checkpoint_path, "training_state"), training_state
+            os.path.join(checkpoint_path, "training_state"), training_state, axis_mapping=axis_mapping, mesh=mesh
         )
 
     return model, training_state, metadata["step"]
@@ -395,7 +422,7 @@ def _assert_same(new, old):
 @dataclass
 class CheckpointerConfig:
     base_path: str = "checkpoints/"
-    save_interval: timedelta = timedelta(hours=6)
+    save_interval: timedelta = timedelta(minutes=15)
     # TODO: I'd like to write this, but it's not supported by draccus
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
     keep: List[dict] = field(

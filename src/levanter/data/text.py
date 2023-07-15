@@ -100,16 +100,21 @@ class CausalLmDataset(ShardableDataset[LmExample]):
     def _create_lm_example(self, tokens, key):
         attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
         if self.fcm_prob > 0:
+            # masks for attention
+            # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+            # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+            # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
             assert self.key is not None
             this_key, key = jax.random.split(key)
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
             attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
-        targets = jnp.roll(tokens, -1)
-        # loss_mask = hax.ones_like(targets)
-        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
-        targets = hax.named(targets, self.QPos)
+
         tokens = hax.named(tokens, self.QPos)
-        example = LmExample(tokens, targets, attn_mask, loss_mask)
+        targets = hax.roll(tokens, -1, self.QPos)
+
+        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
+
+        example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
     @property
