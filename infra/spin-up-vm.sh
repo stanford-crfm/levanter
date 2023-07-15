@@ -32,7 +32,7 @@ fi
 # spin loop until we get a good error code
 echo "Creating VM $VM_NAME"
 # create the command. note that --preemptible doesn't accept a value, so just append it if we want it
-CMD="gcloud alpha compute tpus tpu-vm create $VM_NAME \
+CMD="gcloud compute tpus tpu-vm create $VM_NAME \
   --zone=$ZONE \
   --accelerator-type=$TYPE \
   --version=$VM_IMAGE"

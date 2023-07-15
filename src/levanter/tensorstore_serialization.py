@@ -111,7 +111,7 @@ async def _deserialize_named_array(like, spec, axis_mapping, mesh):
     # the main thing we're worried about is deserialized NamedArrays that are not yet arrays but are ShapedDtypeStructs.
     # These don't (currently) have sharding info, but we can infer it from the axes
     if isinstance(like.array, jax.ShapeDtypeStruct):
-        sharding = hax.partitioning.sharding_for_axis(like.axes, axis_mapping, mesh)
+        sharding = hax.partitioning.sharding_for_axis(like.axes, axis_mapping)
         array = await array_ser.async_deserialize(sharding, spec, global_shape=like.array.shape, dtype=like.dtype)
         assert sharding.is_equivalent_to(array.sharding, len(like.array.shape))
         return hax.NamedArray(array, like.axes)
