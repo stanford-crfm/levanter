@@ -24,13 +24,22 @@ from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
 
 
+class SophiaGLossFn(typing.Protocol):
+    def __call__(self, logits: jaxtyping.PyTree, labels: jaxtyping.PyTree) -> jnp.ndarray:
+        ...
+
+
 @dataclass
-class OptimizerConfig(draccus.ChoiceRegistry):
+class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     learning_rate: float = 6e-4
 
     min_lr_ratio: float = 0.0
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
+
+    @abc.abstractmethod
+    def build(self, num_train_steps: int):
+        raise NotImplementedError
 
     def lr_scheduler(self, num_train_steps):
         warmup_steps = int(self.warmup_ratio * num_train_steps)
@@ -57,8 +66,9 @@ class OptimizerConfig(draccus.ChoiceRegistry):
 class HessianOptConfig(OptimizerConfig, abc.ABC):
     state_update_interval: int = 10
 
+    @abc.abstractmethod
     def opt_state_update(
-        self, optimizer, opt_state, loss_fn: Callable, model, *batch, hess_key: PRNGKey, **batch_kwargs
+        self, optimizer, opt_state, loss_fn: SophiaGLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
     ):
         raise NotImplementedError
 

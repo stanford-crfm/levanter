@@ -25,8 +25,8 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.optim import AdamConfig, HessianOptConfig, OptimizerConfig
 from levanter.trainer import StepInfo, TrainerConfig, TrainerHooks
-from levanter.optim import OptimizerConfig
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
@@ -39,7 +39,7 @@ class TrainLmConfig:
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
@@ -144,11 +144,6 @@ def main(config: TrainLmConfig):
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        # TODO: Fix
-        optimizer = sofia_from_config(config.trainer)
-        # optimizer = config.trainer.optimizer()
-        opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
-
         # masks for attention and loss
         # We support forgetful causal masking (FCM) which is a technique that improves training speed by
         # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
@@ -162,6 +157,9 @@ def main(config: TrainLmConfig):
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
+        def loss_fn(logits, labels):
+            return cross_entropy_loss(logits, Vocab, labels, where=example.loss_mask, reduction_axis=Pos)
+
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
@@ -171,7 +169,7 @@ def main(config: TrainLmConfig):
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
-                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+                return loss_fn(pred_y, target_y)
 
         def train_batch_loss(model, examples: LmExample, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=False)
@@ -200,28 +198,31 @@ def main(config: TrainLmConfig):
         # TODO: fix
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
+        if isinstance(config.optimizer, HessianOptConfig):
+            hessian_update_interval = config.optimizer.state_update_interval
 
-        @named_jit(
-            in_axis_resources=parameter_axis_mapping,
-            out_axis_resources=parameter_axis_mapping,
-            donate_args=(False, True, False, False),
-        )
-        def update_hessian(model, opt_state, input_ids, g_key):
-            attn_mask = hax.vmap(attention_mask, Batch)(True, None)
-            attn_mask = hax.auto_sharded(attn_mask)
+            @named_jit(
+                in_axis_resources=parameter_axis_mapping,
+                out_axis_resources=parameter_axis_mapping,
+                donate_args=(False, True, False, False),
+            )
+            def update_hessian(model, opt_state, input_ids, g_key):
+                attn_mask = hax.vmap(attention_mask, Batch)(True, None)
+                attn_mask = hax.auto_sharded(attn_mask)
 
-            def loss(logits, labels):
-                return next_token_loss(Pos, Vocab, logits, labels).mean().scalar()
+                with hax.axis_mapping(compute_axis_mapping):
+                    hess = stochastic_diag_gauss_newton(
+                        loss, model, input_ids, attn_mask, inference=True, key=None, g_key=g_key, Vocab=Vocab
+                    )
 
-            with hax.axis_mapping(compute_axis_mapping):
-                hess = stochastic_diag_gauss_newton(
-                    loss, model, input_ids, attn_mask, inference=True, key=None, g_key=g_key, Vocab=Vocab
-                )
+                    # distribute gradients across the mesh and apply them
+                    opt_state = optimizer.hessian_update(hess, opt_state)
 
-                # distribute gradients across the mesh and apply them
-                opt_state = optimizer.hessian_update(hess, opt_state)
+                return opt_state
 
-            return opt_state
+        else:
+            hesian_update_interval = None
+            hessian_update = None
 
         # evaluation loss and loop
         @named_jit(axis_resources=parameter_axis_mapping)
