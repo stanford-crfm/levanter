@@ -7,6 +7,8 @@ import numpy as np
 import optax
 from chex import assert_trees_all_close
 
+import haliax as hax
+
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from test_utils import MLP, arrays_only, assert_trees_not_close
 
@@ -91,3 +93,37 @@ def test_checkpoint_steps():
             jax.tree_util.tree_leaves(arrays_only(state)),
         )
         assert step == 3
+
+
+def test_tensorstore_gpt2_mlp():
+    from levanter.models.gpt2 import Gpt2Mlp
+
+    key0 = jax.random.PRNGKey(0)
+    key1 = jax.random.PRNGKey(1)
+
+    Embed = hax.Axis("embed", 64)
+    Intermediate = hax.Axis("intermediate", 128)
+
+    def make_state(key):
+        model = Gpt2Mlp.init(Embed, Intermediate, jax.nn.relu, key=key)
+        optim = optax.adam(1e-4)
+        opt_state = optim.init(arrays_only(model))
+
+        return model, opt_state, key
+
+    initial_model, initial_opt_state, initial_key = make_state(key0)
+    rep_model, rep_state, rep_key = make_state(key1)
+
+    assert_trees_not_close(initial_model, rep_model)
+
+    with TemporaryDirectory() as tmpdir:
+        tree_serialize_leaves_tensorstore(tmpdir, (initial_model, initial_opt_state, initial_key))
+        restored_model, restored_optstate, rkey = tree_deserialize_leaves_tensorstore(
+            tmpdir,
+            (rep_model, rep_state, rep_key),
+        )
+
+        assert_trees_all_close(
+            jax.tree_util.tree_leaves(arrays_only(restored_model)),
+            jax.tree_util.tree_leaves(arrays_only(initial_model)),
+        )
