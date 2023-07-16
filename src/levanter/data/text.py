@@ -161,7 +161,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
-                    # yield hax.named(ids, self.Pos)
                     yield ids
 
     @property
@@ -201,14 +200,11 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         sharded_doc_caches = [cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets]
         return MixtureDataset(sharded_doc_caches, self.seq_len, self.weights)
 
-    def __iter__(self) -> Iterator[NamedArray]:
+    def __iter__(self) -> Iterator[np.ndarray]:
         """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
         docs from doc_cache and yield batches of token sequences. We leverage this
         implementation of iteration. This function mainly samples a dataset according to
         the weights and call __iter__() function from corresponding TokenSeqDataset.
-
-        Yields:
-            Iterator[NamedArray]: _description_
         """
         while True:
             dataset_index = self.sample_index(self.weights)

@@ -20,7 +20,15 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample, TokenSeqDataset
+from levanter.data.dataset import ShardableDataset
+from levanter.data.text import (
+    CausalLmDataset,
+    LMDatasetConfig,
+    LMMixtureDatasetConfig,
+    LmExample,
+    MixtureDataset,
+    TokenSeqDataset,
+)
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
@@ -106,23 +114,23 @@ def main(config: TrainLmConfig):
     if isinstance(config.data, LMMixtureDatasetConfig):
         train_dataset = MixtureDataset(
             doc_caches=config.data.build_or_load_cache("train"),
-            Pos=Pos,
+            seq_len=Pos.size,
             weights=config.data.weights,
         )
         try:
             # need a better way of handle cases where we don't have a validation set
             eval_dataset = MixtureDataset(
                 doc_caches=config.data.build_or_load_cache("validation"),
-                Pos=Pos,
+                seq_len=Pos.size,
                 weights=config.data.weights,
             )
         except ValueError:
             eval_dataset = train_dataset
     else:
-        train_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), Pos)
+        train_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), Pos.size)
         try:
             # need a better way of handle cases where we don't have a validation set
-            eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos)
+            eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size)
         except ValueError:
             eval_dataset = train_dataset
 
