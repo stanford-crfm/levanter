@@ -148,7 +148,8 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
 
     def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
-        for doc in self.doc_cache:
+        while True:
+            doc = next(iter(self.doc_cache))
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -185,7 +186,9 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     """
 
     def __init__(self, doc_caches: List, seq_len: int, weights: List[float]):
+        self.doc_caches = doc_caches
         self.token_seq_datasets = [TokenSeqDataset(doc_cache, seq_len) for doc_cache in doc_caches]
+        self.token_seq_iterators = [iter(dataset) for dataset in self.token_seq_datasets]
         self.seq_len = seq_len
         self.weights = self.normalize_weights(weights)
 
@@ -197,7 +200,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
-        sharded_doc_caches = [cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets]
+        sharded_doc_caches = [doc_cache.shard(shard_id, num_shards) for doc_cache in self.doc_caches]
         return MixtureDataset(sharded_doc_caches, self.seq_len, self.weights)
 
     def __iter__(self) -> Iterator[np.ndarray]:
@@ -208,9 +211,8 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         """
         while True:
             dataset_index = self.sample_index(self.weights)
-            for item in self.token_seq_datasets[dataset_index]:
-                yield item
-                break
+            item = next(self.token_seq_iterators[dataset_index])
+            yield item
 
     @staticmethod
     def sample_index(weights):
