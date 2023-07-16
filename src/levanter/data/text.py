@@ -132,7 +132,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
 
     :param doc_cache: the TokenizedDocumentCache to draw from
-    :param seq_len: the sequence length in an example
+    :param seq_len: The max length of sequences to emit
     """
 
     def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
@@ -164,26 +164,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                     # yield hax.named(ids, self.Pos)
                     yield ids
 
-    def __init__(self):
-        return self
-
-    def __next__(self):
-        if self.current_doc is None or self.current_pos is None or self.current_pos >= self.current_doc.size:
-            try:
-                self.current_doc = next(self.doc_cache)
-                self.current_pos = 0
-            except StopIteration:
-                print(f"No more docs in {self.doc_cache}")
-                raise StopIteration
-            
-            # TODO: finish the implementation 
-            # ...
-            encoded_slice = process_slice_of_doc(self.current_doc, self.current_position, self.seq_len, self.stride)
-
-            self.current_position += self.stride  # update current_position
-
-            return hax.named(encoded_slice, self.Pos)
-
     @property
     def item_shape(self) -> PyTree:
         return ShapeSpec((self.seq_len,), np.int32)
@@ -194,14 +174,14 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
-class MixtureDataset(ShardableDataset[NamedArray]):
+class MixtureDataset(ShardableDataset[np.ndarray]):
     """MixtureDataset supports loading data from multiple datasets.
     It takes a list of TokenizedDocumentCache and yield token sequences from them with
     their associated weights.
     We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
 
     :param doc_cache_list: a list of TokenizedDocumentCache to draw from
-    :param seq_len: the sequence length in an example
+    :param seq_len: The max length of sequences to emit
     :param weight_list: a list of weights for each dataset
     """
 
@@ -232,7 +212,9 @@ class MixtureDataset(ShardableDataset[NamedArray]):
         """
         while True:
             dataset_index = self.sample_index(self.weights)
-            yield from self.token_seq_datasets[dataset_index]
+            for item in self.token_seq_datasets[dataset_index]:
+                yield item
+                break
 
     @staticmethod
     def sample_index(weights):
