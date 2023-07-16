@@ -1,4 +1,5 @@
 import copy
+import functools
 import json
 import logging
 import os
@@ -9,16 +10,19 @@ from typing import Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
+import equinox as eqx
 import fsspec
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from chex import PRNGKey
 from draccus import field
 from jaxtyping import PyTree
 
 import haliax as hax
-from haliax import Axis, NamedArray
+from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -44,6 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     cache_dataset,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
+from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
@@ -56,30 +61,92 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class TokenSeqDataset(ShardableDataset[NamedArray]):
+class LmExample(eqx.Module):
+    tokens: hax.NamedArray
+    targets: hax.NamedArray
+    attn_mask: hax.NamedArray
+    loss_mask: hax.NamedArray
+
+
+class CausalLmDataset(ShardableDataset[LmExample]):
+    def __init__(
+        self,
+        dataset: ShardableDataset[np.ndarray],
+        QPos: Axis,
+        KPos: Axis,
+        fcm_prob: float = 0.0,
+        key: Optional[PRNGKey] = None,
+    ):
+        self.dataset = dataset
+        self.QPos = QPos
+        self.KPos = KPos
+        self.fcm_prob = fcm_prob
+        self.key = key
+
+        if self.fcm_prob > 0.0 and self.key is None:
+            raise ValueError("must provide key if fcm_prob > 0.0")
+
+    def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
+        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key)
+
+    def __iter__(self) -> Iterator[LmExample]:
+        key = self.key
+        for tokens in self.dataset:
+            with use_cpu_device():
+                example = self._create_lm_example(tokens, key)
+                yield example
+
+    @functools.partial(jax.jit, static_argnums=(0))
+    def _create_lm_example(self, tokens, key):
+        attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
+        if self.fcm_prob > 0:
+            # masks for attention
+            # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+            # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+            # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+            assert self.key is not None
+            this_key, key = jax.random.split(key)
+            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+            attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+
+        tokens = hax.named(tokens, self.QPos)
+        targets = hax.roll(tokens, -1, self.QPos)
+
+        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
+
+        example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
+        return example
+
+    @property
+    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
+        return LmExample(
+            tokens=NamedShapeSpec((self.QPos,), jnp.int32),
+            targets=NamedShapeSpec((self.QPos,), jnp.int32),
+            attn_mask=NamedShapeSpec((self.QPos, self.KPos), jnp.bool_),
+            loss_mask=NamedShapeSpec((self.QPos,), jnp.bool_),
+        )
+
+
+class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
 
     :param doc_cache: the TokenizedDocumentCache to draw from
-    :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
+    :param seq_len: the sequence length in an example
     """
 
-    def __init__(self, doc_cache, Pos: Axis, stride: Optional[int] = None):
+    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
         self.doc_cache = doc_cache
-        self.Pos = Pos
+        self.seq_len = seq_len
         self.stride = stride
-
-    @property
-    def seq_len(self) -> int:
-        return self.Pos.size
 
     def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
         """
         Split the dataset into num_processes shards.
         """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.Pos, self.stride)
+        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
 
-    def __iter__(self) -> Iterator[NamedArray]:
+    def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
             # TODO: we could be cleverer here, and avoid these expensive copies etc
@@ -94,7 +161,8 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
-                    yield hax.named(ids, self.Pos)
+                    # yield hax.named(ids, self.Pos)
+                    yield ids
 
     def __init__(self):
         return self
@@ -118,12 +186,12 @@ class TokenSeqDataset(ShardableDataset[NamedArray]):
 
     @property
     def item_shape(self) -> PyTree:
-        return NamedShapeSpec((self.Pos,), jnp.int32)
+        return ShapeSpec((self.seq_len,), np.int32)
 
     @staticmethod
-    def load(pos: Axis, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
+    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return TokenSeqDataset(doc_cache, pos, stride)
+        return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
 class MixtureDataset(ShardableDataset[NamedArray]):
@@ -133,13 +201,13 @@ class MixtureDataset(ShardableDataset[NamedArray]):
     We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
 
     :param doc_cache_list: a list of TokenizedDocumentCache to draw from
-    :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
+    :param seq_len: the sequence length in an example
     :param weight_list: a list of weights for each dataset
     """
 
-    def __init__(self, doc_caches: List, Pos: Axis, weights: List[float]):
-        self.token_seq_datasets = [TokenSeqDataset(doc_cache, Pos) for doc_cache in doc_caches]
-        self.Pos = Pos
+    def __init__(self, doc_caches: List, seq_len: int, weights: List[float]):
+        self.token_seq_datasets = [TokenSeqDataset(doc_cache, seq_len) for doc_cache in doc_caches]
+        self.seq_len = seq_len
         self.weights = self.normalize_weights(weights)
 
     @staticmethod
@@ -151,7 +219,7 @@ class MixtureDataset(ShardableDataset[NamedArray]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
         sharded_doc_caches = [cache.shard(shard_id, num_shards) for cache in self.token_seq_datasets]
-        return MixtureDataset(sharded_doc_caches, self.Pos, self.weights)
+        return MixtureDataset(sharded_doc_caches, self.seq_len, self.weights)
 
     def __iter__(self) -> Iterator[NamedArray]:
         """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
@@ -172,12 +240,8 @@ class MixtureDataset(ShardableDataset[NamedArray]):
         return np.random.choice(len(weights), p=weights)
 
     @property
-    def seq_len(self) -> int:
-        return self.Pos.size
-
-    @property
     def item_shape(self) -> PyTree:
-        return NamedShapeSpec((self.Pos,), jnp.int32)
+        return ShapeSpec((self.seq_len,), np.int32)
 
 
 def _load_old_ledger(cache_dir):

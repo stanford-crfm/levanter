@@ -1,4 +1,4 @@
-import functools
+import contextlib
 import functools as ft
 import json
 from dataclasses import fields
@@ -32,6 +32,13 @@ Y = TypeVar("Y")
 def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
     res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
     return res[0]
+
+
+@contextlib.contextmanager
+def use_cpu_device():
+    """Temporarily sets the default device to CPU"""
+    with jax.default_device(jax.devices("cpu")[0]):
+        yield
 
 
 def flops_estimate(fn, *args):
@@ -194,18 +201,21 @@ def _isnamedtupleinstance(x):
     return all(type(n) == str for n in f)
 
 
-def leaf_key_paths(pytree, prefix: str = ""):
+def leaf_key_paths(pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any], bool]] = None):
     """Creates unique, hopefully meaningful key paths for each leaf in a pytree. This is useful for
     serialization mostly. This functions knows about dicts, lists, NamedTuples, tuples, and equinox-style modules"""
-    if isinstance(pytree, dict):
-        return {k: leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in pytree.items()}
+    # TODO: jax now has a tree_flatten_with_path function. We should use that instead
+    if is_leaf is not None and is_leaf(pytree):
+        return prefix
+    elif isinstance(pytree, dict):
+        return {k: leaf_key_paths(v, prefix=join_key(prefix, k)) for k, v in pytree.items()}
     elif _isnamedtupleinstance(pytree):
-        d = {k: leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in pytree._asdict().items()}
+        d = {k: leaf_key_paths(v, prefix=join_key(prefix, k), is_leaf=is_leaf) for k, v in pytree._asdict().items()}
         return pytree.__class__(**d)
     elif isinstance(pytree, list):
-        return [leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree)]
+        return [leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree)]
     elif isinstance(pytree, tuple):
-        return tuple(leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree))
+        return tuple(leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
         names = []
         rec_values = []
@@ -213,16 +223,20 @@ def leaf_key_paths(pytree, prefix: str = ""):
             if field.metadata.get("static", False):
                 continue
             names.append(field.name)
-            field_prefix = f"{prefix}.{field.name}" if prefix else field.name
-            rec_value = leaf_key_paths(getattr(pytree, field.name), prefix=field_prefix)
+            field_prefix = join_key(prefix, field.name)
+            rec_value = leaf_key_paths(getattr(pytree, field.name), prefix=field_prefix, is_leaf=is_leaf)
             rec_values.append(rec_value)
         return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
-        leaves, treedef = jax.tree_util.tree_flatten(pytree)
+        leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
         if len(leaves) == 1:
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
-            return jax.tree_util.tree_unflatten(treedef, [f"{prefix}.{i}" for i in range(len(leaves))])
+            return jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
+
+
+def join_key(prefix, k):
+    return f"{prefix}.{k}" if prefix else k
 
 
 # from https://github.com/google/jax/issues/4285
@@ -233,7 +247,7 @@ def recursive_checkpoint(funs, threshold=2):
         f1, f2 = funs
         return lambda x: f2(f1(x))
     elif len(funs) <= threshold:
-        return functools.reduce(lambda f, g: lambda x: g(f(x)), funs)
+        return ft.reduce(lambda f, g: lambda x: g(f(x)), funs)
     else:
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
