@@ -23,12 +23,15 @@ classifiers = [
 dependencies = [
     # we'll require that you install jax yourself, since the extras vary by system.
     # jax = {version = ">=0.4.10,<0.5.0"}
-    "haliax~=1.0.1",
-    "equinox~=0.9.0",
+#    "haliax~=1.0.2",
+    # Haliax changes in step with levanter, so we'll just use the git version except for releases.
+    "haliax @ git+https://github.com/stanford-crfm/haliax.git",
+    "equinox>=0.10.6",
+    "jaxtyping>=0.2.20",
     "transformers>=4.22.0",
     "optax",
     "wandb",
-    "draccus>=0.4",
+    "draccus>=0.6",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
     "datasets==2.11.0",
@@ -56,6 +59,10 @@ dev-mode-dirs = [".", "src"]
 [tool.hatch.build.sources]
 "src/levanter" = "levanter"
 "config" = "levanter/config"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
 
 
 [tool.hatch.build.targets.wheel]

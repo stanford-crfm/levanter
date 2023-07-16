@@ -1,6 +1,6 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import equinox as eqx
@@ -13,18 +13,18 @@ import haliax as hax
 import haliax.random
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
+from haliax.nn import cross_entropy_loss
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import LMDatasetConfig, TokenSeqDataset
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample, TokenSeqDataset
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.loss import next_token_loss
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import global_key_array, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: LMDatasetConfig = LMDatasetConfig()
-    trainer: TrainerConfig = TrainerConfig()
-    model: LmConfig = Gpt2Config()
-    optimizer: OptimizerConfig = OptimizerConfig()
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
@@ -85,6 +85,11 @@ def main(config: TrainLmConfig):
     # initialize training config *after* we've done the hf stuff b/c we might have changed the model config
     config.trainer.initialize(config)
 
+    # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
+    # this makes deterministic training pretty easy
+    seed = config.trainer.seed
+    data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+
     # some axes we need
     Batch = Axis("batch", config.trainer.train_batch_size)
     EvalBatch = Axis("batch", config.trainer.eval_batch_size)
@@ -97,14 +102,15 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     eval_loader = ReplicatedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
+        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
     )
 
     train_loader = ShardedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
+        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("train"), Pos.size), Pos, KeyPos),
+        # TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
@@ -148,32 +154,30 @@ def main(config: TrainLmConfig):
                 causal_mask = causal_mask & fcm_mask
             return causal_mask
 
-        def compute_loss(model: LmHeadModel, input_ids, attn_mask, key, inference):
+        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, key=key, inference=inference)
+                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(Pos, Vocab, pred_y, input_ids)
+                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
-        def train_batch_loss(model, input_ids, attn_mask, key):
-            per_ex_loss = hax.vmap(compute_loss, "batch")(model, input_ids, attn_mask, key, inference=False)
+                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+
+        def train_batch_loss(model, examples: LmExample, key):
+            per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=False)
             return hax.mean(per_ex_loss, "batch").scalar()
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, input_ids, keys):
-            attn_mask = hax.vmap(attention_mask, Batch)(False, keys)
-            attn_mask = hax.auto_sharded(attn_mask)
-
+        def train_step(model, opt_state, examples: LmExample, keys):
             grad_loss = eqx.filter_value_and_grad(train_batch_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
                 model,
-                input_ids,
-                attn_mask,
+                examples,
                 keys,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
@@ -186,9 +190,8 @@ def main(config: TrainLmConfig):
             return loss, model, opt_state
 
         @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(model, input_ids):
-            mask = hax.nn.attention.causal_mask(Pos, KeyPos)
-            return hax.mean(compute_loss(model, input_ids, mask, None, True)).scalar()
+        def eval_loss(model, example):
+            return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
         # There are a few ways we might initialize the model
@@ -211,7 +214,10 @@ def main(config: TrainLmConfig):
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
         model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            model, (opt_state, training_key)
+            model,
+            (opt_state, training_key),
+            axis_mapping=parameter_axis_mapping,
+            mesh=mesh,
         )
 
         if resume_step is None:
@@ -254,17 +260,14 @@ def main(config: TrainLmConfig):
 
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_log_probs(model, input_ids):
+        def compute_log_probs(model, example: LmExample):
             """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
-            attn_mask = hax.vmap(attention_mask, EvalBatch)(True, None)
-            attn_mask = hax.auto_sharded(attn_mask)
-
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = model(example.tokens, example.attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = next_token_loss(Pos, Vocab, pred_y, input_ids, reduction=None)
+                loss = cross_entropy_loss(pred_y, Vocab, example.targets, where=example.loss_mask, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, Pos)
@@ -299,13 +302,13 @@ def main(config: TrainLmConfig):
         for step in range(initial_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
                 with log_time_to_wandb("throughput/loading_time", step=step):
-                    input_ids = next(iter_data)
+                    example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
                     example_keys = global_key_array(
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
 
-                jax_step_loss, model, opt_state = train_step(model, opt_state, input_ids, example_keys)
+                jax_step_loss, model, opt_state = train_step(model, opt_state, example, example_keys)
                 step_loss = jax_step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):

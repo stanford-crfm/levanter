@@ -57,6 +57,20 @@ cd levanter
 pip install -e .
 wandb login  # optional, we use wandb for logging
 ```
+
+If you're developing Haliax and Levanter at the same time, you can do something like.
+```bash
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+cd ..
+git clone https://github.com/stanford-crfm/haliax.git
+cd haliax
+pip install -e .
+cd ../levanter
+```
+
+
 <!--levanter-installation-end-->
 
 Please refer to the [Installation Guide](docs/Installation.md) for more information on how to install Levanter.
