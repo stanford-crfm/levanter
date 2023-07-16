@@ -101,7 +101,6 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    # define train_dataset
     train_dataset: ShardableDataset
     eval_dataset: ShardableDataset
     if isinstance(config.data, LMMixtureDatasetConfig):
@@ -128,14 +127,14 @@ def main(config: TrainLmConfig):
             eval_dataset = train_dataset
 
     eval_loader = ReplicatedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
+        CausalLmDataset(eval_dataset, Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
     )
 
     train_loader = ShardedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
+        CausalLmDataset(train_dataset, Pos, KeyPos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
