@@ -24,8 +24,8 @@ from levanter.data.dataset import ShardableDataset
 from levanter.data.text import (
     CausalLmDataset,
     LMDatasetConfig,
-    LMMixtureDatasetConfig,
     LmExample,
+    LMMixtureDatasetConfig,
     MixtureDataset,
     TokenSeqDataset,
 )
