@@ -1,15 +1,19 @@
 data:
   datasets:
-    - id: togethercomputer/RedPajama-Data-1T-Sample
+    - train_urls:
+        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+      validation_urls:
+        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+      cache_dir: "gs://levanter-data/tokenized/openwebtext/"
+      tokenizer: "gpt2"
       weight: 0.5
-      cache_dir: gs://levanter-data/tokenized/redpajama-sample/
-      tokenizer: EleutherAI/gpt-neox-20b
-      splits:
-        - train
-      rows_per_chunk: 32768
-    - cache_dir: "gs://levanter-data/tokenized/pile-old/"
-      weight: 0.5
+    - train_urls:
+        - gs://levanter-data/pile/train/{00..29}.jsonl.zst
+      validation_urls:
+        - gs://levanter-data/pile/val.jsonl.zst
+      cache_dir: "gs://levanter-data/tokenized/pile-old/"
       tokenizer: "EleutherAI/gpt-neox-20b"
+      weight: 0.5
 model:
   type: gpt2
   hidden_dim: 768
