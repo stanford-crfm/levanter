@@ -136,8 +136,7 @@ infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-t
 ```
 
 The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
-to use WandB, and `--trainer.wandb.name` is a human-readable name for the run, though it is where checkpoints
-will be written (specifically to `gs://path/to/checkpoints/${RUN_NAME}`), so you should probably use a unique name.
+to use WandB, and `--trainer.wandb.name` is a human-readable name for the run,
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
 
