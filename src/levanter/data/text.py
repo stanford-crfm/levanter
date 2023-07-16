@@ -148,13 +148,13 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
 
     def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
-        while True:
-            doc = next(iter(self.doc_cache))
+        for doc in self.doc_cache:
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
                 doc = _stack_batch_encodings(extra_tokens, doc)
                 extra_tokens = None
+
             for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride, drop_remainder=False):
                 if len(encoded_slice["input_ids"]) < self.seq_len:
                     assert extra_tokens is None
