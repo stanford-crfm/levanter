@@ -34,7 +34,6 @@ class VizGpt2Config:
     num_docs: int = 256
 
 
-@levanter.config.main()
 def main(config: VizGpt2Config):
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
@@ -102,4 +101,4 @@ def main(config: VizGpt2Config):
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()
