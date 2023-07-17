@@ -24,7 +24,7 @@ from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
 
 
-class SophiaGLossFn(typing.Protocol):
+class SophiaLossFn(typing.Protocol):
     def __call__(self, logits: jaxtyping.PyTree, labels: jaxtyping.PyTree) -> jnp.ndarray:
         ...
 
@@ -67,8 +67,8 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
     state_update_interval: int = 10
 
     @abc.abstractmethod
-    def opt_state_update(
-        self, optimizer, opt_state, loss_fn: SophiaGLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    def hessian_update(
+        self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
     ):
         raise NotImplementedError
 
@@ -155,7 +155,7 @@ class SophiaGConfig(HessianOptConfig):
     gamma: float = GAMMA_SOPHIA_G
     logit_axis: str = "vocab"  # axis to sample from, from logits
 
-    def opt_state_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         hess = stochastic_diag_gauss_newton(
             loss_fn, model, *batch, **batch_kwargs, g_key=hess_key, Vocab=self.logit_axis
         )
@@ -171,7 +171,11 @@ class SophiaGConfig(HessianOptConfig):
 class SophiaHConfig(HessianOptConfig):
     gamma: float = GAMMA_SOPHIA_H
 
-    def opt_state_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update(self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        def hess_fn(params):
+            logits = model(params, *batch, **batch_kwargs)
+            loss = loss_fn(logits, batch)
+            return loss
         hess = stochastic_hessian_diagonal(loss_fn, model, *batch, **batch_kwargs, h_key=hess_key)
 
         # distribute gradients across the mesh and apply them

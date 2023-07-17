@@ -199,30 +199,23 @@ def main(config: TrainLmConfig):
         # TODO: add function analogous similar to ^^ that computes hessian and updates hessian of optimizer state
         # TODO: add function to optimizer that updates hessian of optimizer state
         if isinstance(config.optimizer, HessianOptConfig):
+            opt: HessianOptConfig = config.optimizer
             hessian_update_interval = config.optimizer.state_update_interval
+
+            def scalar_loss(logits, labels):
+                return hax.mean(loss_fn(logits, labels)).scalar()
 
             @named_jit(
                 in_axis_resources=parameter_axis_mapping,
                 out_axis_resources=parameter_axis_mapping,
                 donate_args=(False, True, False, False),
             )
-            def update_hessian(model, opt_state, input_ids, g_key):
-                attn_mask = hax.vmap(attention_mask, Batch)(True, None)
-                attn_mask = hax.auto_sharded(attn_mask)
-
-                with hax.axis_mapping(compute_axis_mapping):
-                    hess = stochastic_diag_gauss_newton(
-                        loss, model, input_ids, attn_mask, inference=True, key=None, g_key=g_key, Vocab=Vocab
-                    )
-
-                    # distribute gradients across the mesh and apply them
-                    opt_state = optimizer.hessian_update(hess, opt_state)
-
+            def update_hessian(model, opt_state, example, g_key):
+                opt_state = opt.hessian_update(optimizer, opt_state, scalar_loss, model, example, hess_key=g_key)
                 return opt_state
-
         else:
             hesian_update_interval = None
-            hessian_update = None
+            update_hessian = None
 
         # evaluation loss and loop
         @named_jit(axis_resources=parameter_axis_mapping)
@@ -341,8 +334,7 @@ def main(config: TrainLmConfig):
                         my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
                     )
 
-                # TODO: fix
-                if step % config.hessian_update_steps == 0:
+                if hessian_update_interval is not None and step % hessian_update_interval == 0:
                     with log_time_to_wandb("throughput/hessian_time", step=step):
                         g_key, training_key = jrandom.split(training_key, 2)
                         # g_key = jax.device_put_replicated(g_key, jax.local_devices())
