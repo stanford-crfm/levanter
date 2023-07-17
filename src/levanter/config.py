@@ -1,4 +1,5 @@
 import atexit
+import functools
 import inspect
 import os
 import sys
@@ -49,7 +50,7 @@ register_codecs()
 DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
 
 
-def main(*, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
+def main(fn=None, *, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
     """
     Like draccus.wrap but can handle config paths that are urls loadable by fsspec.
     This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.
@@ -57,32 +58,33 @@ def main(*, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
     :param args: the args to parse. If None, will use sys.argv[1:]
     :param config_dir: the directory to look for configs in (if the path does not exist already). If None, will only use the current working directory
     """
+
+    if fn is None:
+        return functools.partial(main, args=args, config_dir=config_dir)
+
     _cmdline_args = args
     if args is None:
         _cmdline_args = sys.argv[1:]
 
-    def wrapper_outer(fn):
-        @wraps(fn)
-        def wrapper_inner(*args, **kwargs):
-            config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
-            paths_to_check = [config_path, f"{config_path}.yaml", f"{config_path}.yml"]
-            if config_path is not None and config_dir is not None:
-                paths_to_check.extend([os.path.join(config_dir, p) for p in paths_to_check])
+    @wraps(fn)
+    def wrapper_inner(*args, **kwargs):
+        config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
+        paths_to_check = [config_path, f"{config_path}.yaml", f"{config_path}.yml"]
+        if config_path is not None and config_dir is not None:
+            paths_to_check.extend([os.path.join(config_dir, p) for p in paths_to_check])
 
-            for path in paths_to_check:
-                if path is not None and os.path.exists(path):
-                    config_path = path
-                    break
+        for path in paths_to_check:
+            if path is not None and os.path.exists(path):
+                config_path = path
+                break
 
-            argspec = inspect.getfullargspec(fn)
-            argtype = argspec.annotations[argspec.args[0]]
-            cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
-            response = fn(cfg, *args, **kwargs)
-            return response
+        argspec = inspect.getfullargspec(fn)
+        argtype = argspec.annotations[argspec.args[0]]
+        cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
+        response = fn(cfg, *args, **kwargs)
+        return response
 
-        return wrapper_inner
-
-    return wrapper_outer
+    return wrapper_inner
 
 
 def _maybe_get_config_path_and_cmdline_args(args: List[str]):
