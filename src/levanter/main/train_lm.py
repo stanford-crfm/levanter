@@ -20,7 +20,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample, TokenSeqDataset
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
@@ -55,7 +55,6 @@ class TrainLmConfig:
     hf_save_steps: int = 10000
 
 
-@levanter.config.main()
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
 
@@ -102,14 +101,14 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
     )
 
     train_loader = ShardedBatchLoader(
-        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("train"), Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos),
         # TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
@@ -117,11 +116,6 @@ def main(config: TrainLmConfig):
     )
 
     with config.trainer.device_mesh as mesh:
-        # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
-        # this makes deterministic training pretty easy
-        seed = config.trainer.seed
-        data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -140,19 +134,6 @@ def main(config: TrainLmConfig):
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-        # masks for attention and loss
-        # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-        # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-        # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-        def attention_mask(inference, fcm_key):
-            causal_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
-
-            # forgetful causal masking
-            if not inference and config.fcm_prob > 0:
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(KeyPos, config.fcm_prob, key=fcm_key)
-                causal_mask = causal_mask & fcm_mask
-            return causal_mask
 
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
@@ -328,4 +309,4 @@ def main(config: TrainLmConfig):
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()
