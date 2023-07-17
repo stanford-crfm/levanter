@@ -40,7 +40,6 @@ class EvalLmConfig:
     eval_on_train: bool = False
 
 
-@levanter.config.main()
 def main(config: EvalLmConfig):
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
@@ -140,4 +139,4 @@ def main(config: EvalLmConfig):
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()
