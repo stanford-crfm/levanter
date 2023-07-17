@@ -502,6 +502,10 @@ class LMDatasetConfig:
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         return load_tokenizer(self.tokenizer)
 
+    def token_seq_dataset(self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
+        cache = self.build_or_load_cache(split, monitors=monitors)
+        return TokenSeqDataset(cache, seq_len)
+
     def build_or_load_cache(self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True):
         source = self.get_shard_source(split)
         split_cache_dir = os.path.join(self.cache_dir, split)

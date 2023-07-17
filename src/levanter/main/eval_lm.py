@@ -1,3 +1,4 @@
+import functools
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -10,6 +11,7 @@ import tqdm
 import haliax as hax
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
+from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
@@ -17,10 +19,9 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
-from levanter.data.text import LMDatasetConfig, TokenSeqDataset
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.loss import next_token_loss
 from levanter.trainer import TrainerConfig
 
 
@@ -45,18 +46,15 @@ def main(config: EvalLmConfig):
     tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
-
-    if config.eval_on_train:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), config.model.Pos)
-    else:
-        raw_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), config.model.Pos)
-
-    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
-
-    # some axes we use outside the model proper
     Pos = config.model.Pos
     KeyPos = config.model.Pos
 
+    if config.eval_on_train:
+        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+    else:
+        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+
+    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -70,20 +68,20 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        def compute_loss(model: LmHeadModel, input_ids):
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                attn_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
-                pred_y = model(input_ids, inference=True, key=None, attn_mask=attn_mask)
+
+                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return hax.mean(next_token_loss(Pos, Vocab, pred_y, input_ids)).scalar()
+                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
-        compute_loss_pjit = named_jit(
-            compute_loss,
-            out_axis_resources=compute_axis_mapping,
-            axis_resources=compute_axis_mapping,
-        )
+                per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+                return hax.mean(per_ex_loss).scalar()
+
+        compute_loss = functools.partial(compute_loss, inference=True, key=None)
 
         total = config.trainer.max_eval_batches
 
@@ -101,7 +99,7 @@ def main(config: EvalLmConfig):
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
             # TODO: switch to throwing instead of returning None
-            loss = callbacks.eval_loss_loop(compute_loss_pjit, model, eval_loader, max_batches=total)
+            loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
 
             del model
             print("Loss from Levanter model: ", loss)
@@ -114,9 +112,7 @@ def main(config: EvalLmConfig):
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
-            loss = callbacks.eval_loss_loop(
-                compute_loss_pjit, model_from_hf_checkpoint, eval_loader, max_batches=total
-            )
+            loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
             print("Loss from HF model: ", loss)
 

@@ -7,16 +7,16 @@ import jmp
 import haliax as hax
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
+from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader
-from levanter.data.text import LMDatasetConfig, TokenSeqDataset
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
-from levanter.models.loss import next_token_loss
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo, TrainerConfig
 
 
@@ -46,7 +46,7 @@ def main(config: VizGpt2Config):
     KeyPos = config.model.KeyPos
 
     eval_loader = ReplicatedBatchLoader(
-        TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos),
+        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
     )
@@ -71,17 +71,16 @@ def main(config: VizGpt2Config):
         # don't want to compute the mask w.r.t. the final token
 
         @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_log_probs(model, input_ids):
-            attn_mask = hax.nn.attention.causal_mask(Pos, KeyPos)
-            attn_mask = hax.auto_sharded(attn_mask)
-
+        def compute_log_probs(model: LmHeadModel, example: LmExample):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-                pred_y = model(input_ids, attn_mask, inference=True, key=None)
+                pred_y = model(example.tokens, example.attn_mask, key=None, inference=True)
                 pred_y = mp.cast_to_output(pred_y)
 
-                return next_token_loss(Pos, Vocab, pred_y, input_ids).scalar()
+                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
+
+                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction=None).array
 
         # initialize the model
         with jax.default_device(jax.devices("cpu")[0]):
