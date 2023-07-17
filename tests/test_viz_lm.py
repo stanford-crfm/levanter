@@ -12,9 +12,6 @@ from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
-curdir = os.getcwd()
-
-
 @pytest.mark.entry
 def test_viz_lm():
     # just testing if eval_lm has a pulse
@@ -28,9 +25,7 @@ def test_viz_lm():
 
     with tempfile.TemporaryDirectory() as f:
         try:
-            data_config = viz_logprobs.LMDatasetConfig(
-                id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache"
-            )
+            data_config = viz_logprobs.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir="test_cache")
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
@@ -52,4 +47,7 @@ def test_viz_lm():
             )
             viz_logprobs.main(config)
         finally:
-            os.chdir(curdir)
+            try:
+                os.unlink("wandb")
+            except Exception:
+                pass

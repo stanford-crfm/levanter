@@ -8,18 +8,13 @@ import levanter.main.train_lm as train_lm
 from levanter.logging import WandbConfig
 
 
-curdir = os.getcwd()
-
-
 @pytest.mark.entry
 def test_train_lm():
     # just testing if train_lm has a pulse
-    with tempfile.TemporaryDirectory() as f:
+    with tempfile.TemporaryDirectory():
         try:
-            os.chdir(f)
-
             config = train_lm.TrainLmConfig(
-                data=train_lm.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache"),
+                data=train_lm.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir="test_cache"),
                 model=train_lm.Gpt2Config(
                     num_layers=2,
                     num_heads=2,
@@ -36,4 +31,7 @@ def test_train_lm():
             )
             train_lm.main(config)
         finally:
-            os.chdir(curdir)
+            try:
+                os.unlink("wandb")
+            except Exception:
+                pass
