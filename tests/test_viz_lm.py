@@ -12,6 +12,9 @@ from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
+curdir = os.getcwd()
+
+
 @pytest.mark.entry
 def test_viz_lm():
     # just testing if eval_lm has a pulse
@@ -23,28 +26,30 @@ def test_viz_lm():
         hidden_dim=32,
     )
 
-    curdir = os.getcwd()
     with tempfile.TemporaryDirectory() as f:
-        data_config = viz_logprobs.LMDatasetConfig(
-            id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache"
-        )
-        tok = data_config.the_tokenizer
-        Vocab = haliax.Axis("vocab", len(tok))
-        model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
+        try:
+            data_config = viz_logprobs.LMDatasetConfig(
+                id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache"
+            )
+            tok = data_config.the_tokenizer
+            Vocab = haliax.Axis("vocab", len(tok))
+            model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-        save_checkpoint(model, None, 0, f"{f}/ckpt")
+            save_checkpoint(model, None, 0, f"{f}/ckpt")
 
-        config = viz_logprobs.VizGpt2Config(
-            data=data_config,
-            model=model_config,
-            trainer=viz_logprobs.TrainerConfig(
-                per_device_eval_parallelism=len(jax.devices()),
-                max_eval_batches=1,
-                wandb=WandbConfig(mode="disabled"),
-                require_accelerator=False,
-            ),
-            checkpoint_path=f"{f}/ckpt",
-            num_docs=len(jax.devices()),
-            output_dir=f"{f}/viz",
-        )
-        viz_logprobs.main(config)
+            config = viz_logprobs.VizGpt2Config(
+                data=data_config,
+                model=model_config,
+                trainer=viz_logprobs.TrainerConfig(
+                    per_device_eval_parallelism=len(jax.devices()),
+                    max_eval_batches=1,
+                    wandb=WandbConfig(mode="disabled"),
+                    require_accelerator=False,
+                ),
+                checkpoint_path=f"{f}/ckpt",
+                num_docs=len(jax.devices()),
+                output_dir=f"{f}/viz",
+            )
+            viz_logprobs.main(config)
+        finally:
+            os.chdir(curdir)

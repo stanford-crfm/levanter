@@ -12,6 +12,9 @@ from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
 
 
+curdir = os.getcwd()
+
+
 @pytest.mark.entry
 def test_eval_lm():
     # just testing if eval_lm has a pulse
@@ -23,26 +26,27 @@ def test_eval_lm():
         hidden_dim=32,
     )
 
-    curdir = os.getcwd()
-
     with tempfile.TemporaryDirectory() as f:
-        data_config = eval_lm.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache")
-        tok = data_config.the_tokenizer
-        Vocab = haliax.Axis("vocab", len(tok))
-        os.chdir(f)
-        model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
+        try:
+            data_config = eval_lm.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir=f"{curdir}/test_cache")
+            tok = data_config.the_tokenizer
+            Vocab = haliax.Axis("vocab", len(tok))
+            os.chdir(f)
+            model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-        save_checkpoint(model, None, 0, f"{f}/ckpt")
+            save_checkpoint(model, None, 0, f"{f}/ckpt")
 
-        config = eval_lm.EvalLmConfig(
-            data=data_config,
-            model=model_config,
-            trainer=eval_lm.TrainerConfig(
-                per_device_eval_parallelism=len(jax.devices()),
-                max_eval_batches=1,
-                wandb=WandbConfig(mode="disabled"),
-                require_accelerator=False,
-            ),
-            checkpoint_path=f"{f}/ckpt",
-        )
-        eval_lm.main(config)
+            config = eval_lm.EvalLmConfig(
+                data=data_config,
+                model=model_config,
+                trainer=eval_lm.TrainerConfig(
+                    per_device_eval_parallelism=len(jax.devices()),
+                    max_eval_batches=1,
+                    wandb=WandbConfig(mode="disabled"),
+                    require_accelerator=False,
+                ),
+                checkpoint_path=f"{f}/ckpt",
+            )
+            eval_lm.main(config)
+        finally:
+            os.chdir(curdir)
