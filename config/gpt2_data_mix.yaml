@@ -1,11 +1,11 @@
 data:
   datasets:
-    - train_urls:
-        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-      validation_urls:
-        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-      cache_dir: "gs://levanter-data/tokenized/openwebtext/"
-      tokenizer: "gpt2"
+    - id: togethercomputer/RedPajama-Data-1T-Sample
+      cache_dir: gs://levanter-data/tokenized/redpajama-sample/
+      tokenizer: EleutherAI/gpt-neox-20b
+      splits:
+        - train
+      rows_per_chunk: 32768
       weight: 0.5
     - train_urls:
         - gs://levanter-data/pile/train/{00..29}.jsonl.zst
