@@ -109,22 +109,29 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    # TODO: simplify this;
+    # TODO: add similar logic to the eval lm script
+    train_doc_cache = config.data.build_or_load_cache("train")  # type: ignore
+    eval_doc_cache = config.data.build_or_load_cache("validation")  # type: ignore
+
     train_dataset: ShardableDataset
-    eval_dataset: ShardableDataset
+    eval_dataset: Optional[ShardableDataset]
     if isinstance(config.data, LMMixtureDatasetConfig):
         train_dataset = MixtureDataset(
-            doc_caches=config.data.build_or_load_cache("train"),
+            doc_caches=train_doc_cache,  # type: ignore
             seq_len=Pos.size,
             weights=config.data.weights,
         )
-        eval_dataset = MixtureDataset(
-            doc_caches=config.data.build_or_load_cache("validation"),
-            seq_len=Pos.size,
-            weights=config.data.weights,
-        )
+        if len(eval_doc_cache):  # type: ignore
+            eval_dataset = MixtureDataset(
+                doc_caches=eval_doc_cache,  # type: ignore
+                seq_len=Pos.size,
+                weights=config.data.weights,
+            )
     else:
-        train_dataset = TokenSeqDataset(config.data.build_or_load_cache("train"), Pos.size)
-        eval_dataset = TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size)
+        train_dataset = TokenSeqDataset(train_dataset, Pos.size)
+        if eval_doc_cache is not None:
+            eval_dataset = TokenSeqDataset(eval_doc_cache, Pos.size)
 
     if eval_dataset is not None:
         eval_loader = ReplicatedBatchLoader(

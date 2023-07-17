@@ -557,8 +557,12 @@ class LMDatasetConfig:
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> TokenizedDocumentCache:
-        source = self.get_shard_source(split)
+    ) -> Optional[TokenizedDocumentCache]:
+        try:
+            source = self.get_shard_source(split)
+        except ValueError as e:
+            logger.warning(f"Skipping {split} because of error: {e}")
+            return None
         split_cache_dir = os.path.join(self.cache_dir, split)
         try:
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
@@ -658,7 +662,9 @@ class LMMixtureDatasetConfig:
     ) -> List[TokenizedDocumentCache]:
         caches = []
         for d in self.datasets:
-            caches.append(d.build_or_load_cache(split, monitors))
+            cache = d.build_or_load_cache(split, monitors)
+            if cache is not None:
+                caches.append(cache)
         return caches
 
 
