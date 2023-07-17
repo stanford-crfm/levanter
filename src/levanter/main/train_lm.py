@@ -6,7 +6,6 @@ from typing import Optional, Union
 import equinox as eqx
 import jax.random as jrandom
 import jmp
-import wandb
 from jax.sharding import PartitionSpec
 
 import haliax as hax
@@ -17,6 +16,7 @@ from haliax.nn import cross_entropy_loss
 from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
 
 import levanter
+import wandb
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
@@ -55,7 +55,6 @@ class TrainLmConfig:
     hf_save_steps: int = 10000
 
 
-@levanter.config.main()
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
 
@@ -310,4 +309,4 @@ def main(config: TrainLmConfig):
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()
