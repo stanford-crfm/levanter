@@ -149,6 +149,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
     def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
+            print(f"====debug-TokenSeqDataset.__iter__, doc: {doc}=====")
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -162,6 +163,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
+                    print(f"====debug-TokenSeqDataset.__iter__, ids: {ids}=====")
                     yield ids
 
     @property
@@ -212,6 +214,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         while True:
             dataset_index = self.sample_index(self.weights)
             item = next(self.token_seq_iterators[dataset_index])
+            print(f"====debug-MixtureDataset.__iter__, item: {item}=====")
             yield item
 
     @staticmethod
