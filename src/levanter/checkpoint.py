@@ -429,13 +429,13 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
-    def expanded_path(self, run_name):
-        return os.path.expanduser(os.path.join(self.base_path, run_name))
+    def expanded_path(self, run_id):
+        return os.path.expanduser(os.path.join(self.base_path, run_id))
 
-    def create(self, run_name) -> Checkpointer:
+    def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
-            base_path=self.expanded_path(run_name),
+            base_path=self.expanded_path(run_id),
             save_interval=self.save_interval,
             step_policies=keeps,
         )

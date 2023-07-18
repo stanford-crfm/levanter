@@ -74,7 +74,6 @@ class TrainLmConfig:
     hf_save_steps: int = 10000
 
 
-@levanter.config.main()
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
 
@@ -121,7 +120,7 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(TokenSeqDataset(config.data.build_or_load_cache("validation"), Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
@@ -138,7 +137,6 @@ def main(config: TrainLmConfig):
     )
 
     with config.trainer.device_mesh as mesh:
-
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -251,10 +249,10 @@ def main(config: TrainLmConfig):
         )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = config.trainer.checkpointer.create(config.trainer.run_name)
+        checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_name)
+            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_id)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
             engine.add_hook(
@@ -332,4 +330,4 @@ def main(config: TrainLmConfig):
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()

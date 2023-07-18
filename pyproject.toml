@@ -96,3 +96,9 @@ python_version = "3.10"
 
 [tool.mypy-haliax.core]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
+]
