@@ -79,6 +79,8 @@ def main(config: EvalLmConfig):
             grad_sqrd = sum((g**2).sum() for g in jax.tree_util.tree_leaves(grad))
             return loss, grad_sqrd
 
+        compute_loss_and_grad_norm_pjit = named_jit(compute_loss_and_grad_norm, axis_resources=parameter_axis_mapping)
+
         total = config.trainer.max_eval_batches
 
         # initialize the model
@@ -100,7 +102,7 @@ def main(config: EvalLmConfig):
             if config.loss_only:
                 loss = compute_loss_pjit(model, batch, this_key, inference=False)
             else:
-                loss, grad_norm = compute_loss_and_grad_norm(model, batch, this_key, inference=False)
+                loss, grad_norm = compute_loss_and_grad_norm_pjit(model, batch, this_key, inference=False)
                 total_grad_norm += grad_norm
 
             total_loss += loss.item()
