@@ -3,6 +3,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 import jmp
 from tqdm import tqdm
@@ -32,7 +33,7 @@ class EvalLmConfig:
     data: LMDatasetConfig = LMDatasetConfig()
     model: LmConfig = Gpt2Config()
 
-    eval_on_train: bool = False
+    loss_only: bool = True
 
 
 def main(config: EvalLmConfig):
@@ -43,10 +44,7 @@ def main(config: EvalLmConfig):
     Pos = config.model.Pos
     KeyPos = config.model.Pos
 
-    if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
-    else:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+    raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
@@ -76,6 +74,11 @@ def main(config: EvalLmConfig):
 
         compute_loss_pjit = named_jit(compute_loss, axis_resources=parameter_axis_mapping)
 
+        def compute_loss_and_grad_norm(model: LmHeadModel, example: LmExample, key, inference):
+            loss, grad = eqx.filter_value_and_grad(compute_loss)(model, example, key, inference)
+            grad_sqrd = sum((g**2).sum() for g in jax.tree_util.tree_leaves(grad))
+            return loss, grad_sqrd
+
         total = config.trainer.max_eval_batches
 
         # initialize the model
@@ -85,6 +88,7 @@ def main(config: EvalLmConfig):
         total_loss = 0.0
         total_time = 0.0
         n = 0
+        total_grad_norm = 0.0
 
         pbar = tqdm(eval_loader, desc="eval", position=1, leave=False)
         for batch in pbar:
@@ -93,22 +97,32 @@ def main(config: EvalLmConfig):
             #     print(source)
             this_key, key = jax.random.split(key)
             time_in = time.time()
-            loss = compute_loss_pjit(model, batch, this_key, inference=False)
+            if config.loss_only:
+                loss = compute_loss_pjit(model, batch, this_key, inference=False)
+            else:
+                loss, grad_norm = compute_loss_and_grad_norm(model, batch, this_key, inference=False)
+                total_grad_norm += grad_norm
+
             total_loss += loss.item()
             time_out = time.time()
             if n > 0:
                 total_time += time_out - time_in
             n += 1
-            pbar.set_postfix(loss=total_loss / n)
-            pbar.set_description(f"eval ({time_out - time_in:.3f}s)")
+
+            if n > 1:
+                pbar.set_postfix(loss=total_loss / n, time=total_time / (n - 1))
 
             if total and n >= total:
                 break
 
         logger.info(f"eval loss: {total_loss / n:.3f}")
         logger.info(f"eval time: {total_time / (n-1):.3f}")
+        if not config.loss_only:
+            logger.info(f"eval grad norm: {total_grad_norm / (n-1):.3f}")
         print(f"eval loss: {total_loss / n:.3f}")
         print(f"eval time: {total_time / (n-1):.3f}")
+        if not config.loss_only:
+            print(f"eval grad norm: {total_grad_norm / (n-1):.3f}")
 
 
 if __name__ == "__main__":
