@@ -84,7 +84,7 @@ def main(config: EvalLmConfig):
         total = config.trainer.max_eval_batches
 
         # initialize the model
-        model = config.model.build(Vocab, key=key)
+        model = named_jit(lambda: config.model.build(Vocab, key=key), axis_resources=parameter_axis_mapping)()
         model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
         total_loss = 0.0
