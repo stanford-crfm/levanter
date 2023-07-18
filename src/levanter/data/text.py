@@ -214,7 +214,14 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         while True:
             dataset_index = self.sample_index(self.weights)
             print(f"====debug-MixtureDataset.__iter__, dataset_index: {dataset_index}=====")
-            iterator = self.token_seq_iterators[dataset_index]
+            try:
+                iterator = self.token_seq_iterators[dataset_index]
+            except IndexError as e:
+                print(f"====debug-MixtureDataset.__iter__, IndexError: {e}=====")
+                print(f"====debug-MixtureDataset.__iter__, self.token_seq_datasets: {self.token_seq_datasets}=====")
+                print(f"====debug-MixtureDataset.__iter__, self.token_seq_iterators: {self.token_seq_iterators}=====")
+                print(f"====debug-MixtureDataset.__iter__, self.self.weights: {self.weights}=====")
+                raise e
             item = next(iterator)
             print(f"====debug-MixtureDataset.__iter__, item: {item}=====")
             yield item
