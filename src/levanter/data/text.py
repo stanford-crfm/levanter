@@ -188,11 +188,21 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     """
 
     def __init__(self, doc_caches: List, seq_len: int, weights: List[float]):
+        doc_caches, weights = self._check_doc_cache(doc_caches, weights)
         self.doc_caches = doc_caches
         self.token_seq_datasets = [TokenSeqDataset(doc_cache, seq_len) for doc_cache in doc_caches]
         self.token_seq_iterators = [iter(dataset) for dataset in self.token_seq_datasets]
         self.seq_len = seq_len
         self.weights = self.normalize_weights(weights)
+
+    def _check_doc_cache(self, doc_caches, weights):
+        """Check if there's null doc_cache. If so, remove the doc_cache and corresponding weights"""
+        for i in range(len(doc_caches) - 1, -1, -1):
+            if doc_caches[i] is None:
+                print(f"====debug-MixtureDataset._check_doc_cache, doc_caches[{i}] is None=====")
+                del doc_caches[i]
+                del weights[i]
+        return doc_caches, weights
 
     @staticmethod
     def normalize_weights(weights):
@@ -668,18 +678,11 @@ class LMMixtureDatasetConfig:
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> List[TokenizedDocumentCache]:
-        caches, null_data_ids = [], []
-        for idx, d in enumerate(self.datasets):
+    ) -> List[Optional[TokenizedDocumentCache]]:
+        caches = []
+        for d in self.datasets:
             cache = d.build_or_load_cache(split, monitors)
-            if cache is None:
-                null_data_ids.append(idx)
-            else:
-                caches.append(cache)
-        # inversely go through the null_data_ids and remove the corresponding dataset
-        for idx in sorted(null_data_ids, reverse=True):
-            del self.datasets[idx]
-            self.weights.pop(idx)
+            caches.append(cache)
         return caches
 
 

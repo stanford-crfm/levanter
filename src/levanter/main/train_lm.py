@@ -122,24 +122,21 @@ def main(config: TrainLmConfig):
             seq_len=Pos.size,
             weights=config.data.weights,
         )
-        if len(eval_doc_cache):  # type: ignore
-            eval_dataset = MixtureDataset(
-                doc_caches=eval_doc_cache,  # type: ignore
-                seq_len=Pos.size,
-                weights=config.data.weights,
-            )
+        eval_dataset = MixtureDataset(
+            doc_caches=eval_doc_cache,  # type: ignore
+            seq_len=Pos.size,
+            weights=config.data.weights,
+        )
     else:
         train_dataset = TokenSeqDataset(train_dataset, Pos.size)
-        if eval_doc_cache is not None:
-            eval_dataset = TokenSeqDataset(eval_doc_cache, Pos.size)
+        eval_dataset = TokenSeqDataset(eval_doc_cache, Pos.size)
 
-    if eval_dataset is not None:
-        eval_loader = ReplicatedBatchLoader(
-            CausalLmDataset(eval_dataset, Pos, KeyPos),
-            config.trainer.device_mesh,
-            EvalBatch,
-            compute_axis_mapping,
-        )
+    eval_loader = ReplicatedBatchLoader(
+        CausalLmDataset(eval_dataset, Pos, KeyPos),
+        config.trainer.device_mesh,
+        EvalBatch,
+        compute_axis_mapping,
+    )
 
     train_loader = ShardedBatchLoader(
         CausalLmDataset(train_dataset, Pos, KeyPos),
@@ -273,11 +270,10 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
-        if eval_dataset is not None:
-            engine.add_hook(
-                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
-                every=config.trainer.steps_per_eval,
-            )
+        engine.add_hook(
+            callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
+            every=config.trainer.steps_per_eval,
+        )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
@@ -306,13 +302,12 @@ def main(config: TrainLmConfig):
                 logprobs = haliax.roll(logprobs, 1, Pos)
                 return logprobs.rearrange((EvalBatch, Pos)).array
 
-        if eval_dataset is not None:
-            engine.add_hook(
-                callbacks.compute_and_visualize_log_probs(
-                    eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-                ),
-                every=config.trainer.steps_per_eval,
-            )
+        engine.add_hook(
+            callbacks.compute_and_visualize_log_probs(
+                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
+            ),
+            every=config.trainer.steps_per_eval,
+        )
 
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
