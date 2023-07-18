@@ -149,7 +149,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
     def __iter__(self) -> Iterator[np.ndarray]:
         extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
         for doc in self.doc_cache:
-            print(f"====debug-TokenSeqDataset.__iter__, doc: {doc}=====")
             # TODO: we could be cleverer here, and avoid these expensive copies etc
             # should run some benchmarks to see if it's worth it
             if extra_tokens is not None:
@@ -163,7 +162,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
-                    print(f"====debug-TokenSeqDataset.__iter__, ids: {ids}=====")
                     yield ids
 
     @property
@@ -199,7 +197,6 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         """Check if there's null doc_cache. If so, remove the doc_cache and corresponding weights"""
         for i in range(len(doc_caches) - 1, -1, -1):
             if doc_caches[i] is None:
-                print(f"====debug-MixtureDataset._check_doc_cache, doc_caches[{i}] is None=====")
                 del doc_caches[i]
                 del weights[i]
         return doc_caches, weights
@@ -223,17 +220,8 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         """
         while True:
             dataset_index = self.sample_index(self.weights)
-            print(f"====debug-MixtureDataset.__iter__, dataset_index: {dataset_index}=====")
-            try:
-                iterator = self.token_seq_iterators[dataset_index]
-            except IndexError as e:
-                print(f"====debug-MixtureDataset.__iter__, IndexError: {e}=====")
-                print(f"====debug-MixtureDataset.__iter__, self.token_seq_datasets: {self.token_seq_datasets}=====")
-                print(f"====debug-MixtureDataset.__iter__, self.token_seq_iterators: {self.token_seq_iterators}=====")
-                print(f"====debug-MixtureDataset.__iter__, self.self.weights: {self.weights}=====")
-                raise e
+            iterator = self.token_seq_iterators[dataset_index]
             item = next(iterator)
-            print(f"====debug-MixtureDataset.__iter__, item: {item}=====")
             yield item
 
     @staticmethod
