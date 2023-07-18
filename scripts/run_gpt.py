@@ -1,3 +1,4 @@
+import functools
 import logging
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
+
+from jax_automin.interpreter import automin_function
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +61,6 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        @named_jit(axis_resources=parameter_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
@@ -71,6 +73,8 @@ def main(config: EvalLmConfig):
                 per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
                 return hax.mean(per_ex_loss).scalar()
 
+        compute_loss_pjit = named_jit(compute_loss, axis_resources=parameter_axis_mapping)
+
         total = config.trainer.max_eval_batches
 
         # initialize the model
@@ -82,10 +86,15 @@ def main(config: EvalLmConfig):
         n = 0
 
         pbar = tqdm(eval_loader, desc="eval", position=1, leave=False)
+        print(len(list(eval_loader)))
         for batch in pbar:
+            print(n)
+            # if n == 0:
+            #     source = automin_function(functools.partial(compute_loss, inference=False), model, batch, key)
+            #     print(source)
             this_key, key = jax.random.split(key)
             time_in = time.time()
-            loss = compute_loss(model, batch, this_key, inference=False)
+            loss = compute_loss_pjit(model, batch, this_key, inference=False)
             total_loss += loss.item()
             time_out = time.time()
             if n > 0:
