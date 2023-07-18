@@ -669,11 +669,17 @@ class LMMixtureDatasetConfig:
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> List[TokenizedDocumentCache]:
-        caches = []
-        for d in self.datasets:
+        caches, null_data_ids = [], []
+        for idx, d in enumerate(self.datasets):
             cache = d.build_or_load_cache(split, monitors)
-            if cache is not None:
+            if cache is None:
+                null_data_ids.append(idx)
+            else:
                 caches.append(cache)
+        # inversely go through the null_data_ids and remove the corresponding dataset
+        for idx in sorted(null_data_ids, reverse=True):
+            del self.datasets[idx]
+            self.weights.pop(idx)
         return caches
 
 
