@@ -72,10 +72,15 @@ def main(config: EvalLmConfig):
                 per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
                 return hax.mean(per_ex_loss).scalar()
 
-        compute_loss_pjit = named_jit(compute_loss, axis_resources=parameter_axis_mapping)
+        def compute_loss_vmap(model: LmHeadModel, examples: LmExample, key, inference):
+            key = jax.random.split(key, Batch.size)
+            per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=inference)
+            return hax.mean(per_ex_loss)
+
+        compute_loss_pjit = named_jit(compute_loss_vmap, axis_resources=parameter_axis_mapping)
 
         def compute_loss_and_grad_norm(model: LmHeadModel, example: LmExample, key, inference):
-            loss, grad = eqx.filter_value_and_grad(compute_loss)(model, example, key, inference)
+            loss, grad = eqx.filter_value_and_grad(compute_loss_vmap)(model, example, key, inference)
             grad_sqrd = sum((g**2).sum() for g in jax.tree_util.tree_leaves(grad))
             return loss, grad_sqrd
 
