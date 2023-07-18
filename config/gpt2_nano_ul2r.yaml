@@ -41,7 +41,7 @@ task:
         mask_prob: 0.15
         mean_span_length: 3
     task_probs:
-      causal: 0.5
+      causal: 1.5
       prefix: 0.25
       x1: 0.125
       x2: 0.0625
