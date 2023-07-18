@@ -1,4 +1,4 @@
-import functools
+# import functools
 import logging
 import time
 from dataclasses import dataclass
@@ -19,7 +19,8 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 
-from jax_automin.interpreter import automin_function
+
+# from jax_automin.interpreter import automin_function
 
 
 logger = logging.getLogger(__name__)
@@ -86,9 +87,7 @@ def main(config: EvalLmConfig):
         n = 0
 
         pbar = tqdm(eval_loader, desc="eval", position=1, leave=False)
-        print(len(list(eval_loader)))
         for batch in pbar:
-            print(n)
             # if n == 0:
             #     source = automin_function(functools.partial(compute_loss, inference=False), model, batch, key)
             #     print(source)
@@ -108,6 +107,8 @@ def main(config: EvalLmConfig):
 
         logger.info(f"eval loss: {total_loss / n:.3f}")
         logger.info(f"eval time: {total_time / (n-1):.3f}")
+        print(f"eval loss: {total_loss / n:.3f}")
+        print(f"eval time: {total_time / (n-1):.3f}")
 
 
 if __name__ == "__main__":
