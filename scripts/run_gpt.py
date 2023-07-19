@@ -22,6 +22,8 @@ mesh = Mesh(onp.array(jax.devices()), ("dp",))
 
 if USE_UNSAFE_RBG:
     jax.config.update("jax_default_prng_impl", "unsafe_rbg")
+else:
+    jax.config.update("jax_threefry_partitionable", True)
 
 with mesh:
     key = jax.random.PRNGKey(0)
@@ -67,7 +69,7 @@ with mesh:
     total_loss = 0.0
     total_time = 0.0
 
-    for n in range(100):
+    for n in range(20):
         this_key, key = jax.random.split(key)
         time_in = time.time()
         loss = compute_loss_pjit(batch, this_key)
