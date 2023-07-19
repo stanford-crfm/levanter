@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 from tqdm import tqdm
 
@@ -17,7 +18,7 @@ import levanter
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.trainer import TrainerConfig
 
 
@@ -60,27 +61,46 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
+        def model(tokens, mask, key, inference):
+            tokens = tokens % 128
+            embed = jnp.take(jnp.ones((128, 256)), tokens.array, axis=0)
+            # dumb fake gpt2 attn
+            for i in range(0, config.model.num_layers):  # type: ignore
+                attn = jnp.einsum("...ld,...kd->...lk", embed, embed)
 
+                if not inference and config.model.attn_pdrop > 0.0:  # type: ignore
+                    key, subkey = jax.random.split(key)
+                    dout = jax.random.bernoulli(subkey, config.model.attn_pdrop, shape=attn.shape)  # type: ignore
+                    attn = jnp.where(dout, jnp.zeros_like(attn), attn)  # type: ignore
+
+                attn = jax.nn.softmax(attn, axis=-1)
+                embed = jnp.einsum("...ld,...lk->...kd", attn, embed)
+
+            out = jnp.einsum("...ld,...kd->...lk", embed, jnp.ones((Vocab.size, 256)))
+
+            return out
+
+        def compute_loss(example: LmExample, key, inference):
+            with hax.axis_mapping(compute_axis_mapping):
                 pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
+                axes = example.tokens.axes
+                pred_y = hax.named(pred_y, (*axes, Vocab))
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
                 per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
                 return hax.mean(per_ex_loss).scalar()
 
-        def compute_loss_vmap(model: LmHeadModel, examples: LmExample, key, inference):
+        def compute_loss_vmap(examples: LmExample, key, inference):
             key = jax.random.split(key, Batch.size)
-            per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=inference)
+            per_ex_loss = hax.vmap(compute_loss, "batch")(examples, key, inference=inference)
             return hax.mean(per_ex_loss)
 
         compute_loss_pjit = named_jit(compute_loss_vmap, axis_resources=parameter_axis_mapping)
 
-        def compute_loss_and_grad_norm(model: LmHeadModel, example: LmExample, key, inference):
-            loss, grad = eqx.filter_value_and_grad(compute_loss_vmap)(model, example, key, inference)
+        def compute_loss_and_grad_norm(example: LmExample, key, inference):
+            loss, grad = eqx.filter_value_and_grad(compute_loss_vmap)(example, key, inference)
             grad_sqrd = sum((g**2).sum() for g in jax.tree_util.tree_leaves(grad))
             return loss, grad_sqrd
 
@@ -89,8 +109,8 @@ def main(config: EvalLmConfig):
         total = config.trainer.max_eval_batches
 
         # initialize the model
-        model = named_jit(lambda: config.model.build(Vocab, key=key), axis_resources=parameter_axis_mapping)()
-        model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+        # model = named_jit(lambda: config.model.build(Vocab, key=key), axis_resources=parameter_axis_mapping)()
+        # model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
         total_loss = 0.0
         total_time = 0.0
@@ -105,9 +125,9 @@ def main(config: EvalLmConfig):
             this_key, key = jax.random.split(key)
             time_in = time.time()
             if config.loss_only:
-                loss = compute_loss_pjit(model, batch, this_key, inference=False)
+                loss = compute_loss_pjit(batch, this_key, inference=False)
             else:
-                loss, grad_norm = compute_loss_and_grad_norm_pjit(model, batch, this_key, inference=False)
+                loss, grad_norm = compute_loss_and_grad_norm_pjit(batch, this_key, inference=False)
                 total_grad_norm += grad_norm
 
             total_loss += loss.item()
