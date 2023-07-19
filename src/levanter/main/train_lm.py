@@ -128,7 +128,7 @@ def main(config: TrainLmConfig):
             weights=config.data.weights,
         )
     else:
-        train_dataset = TokenSeqDataset(train_dataset, Pos.size)
+        train_dataset = TokenSeqDataset(train_doc_cache, Pos.size)
         eval_dataset = TokenSeqDataset(eval_doc_cache, Pos.size)
 
     eval_loader = ReplicatedBatchLoader(
