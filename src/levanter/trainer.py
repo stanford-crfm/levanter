@@ -279,7 +279,7 @@ class OptimizerConfig:
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
-    min_lr_ratio: float = 0.0
+    min_lr_ratio: float = 0.1
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
