@@ -129,6 +129,12 @@ class TrainerConfig:
         return wandb.run.name or wandb.run.id
 
     @property
+    def run_id(self) -> str:
+        import wandb
+
+        return wandb.run.id
+
+    @property
     def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
 
@@ -208,15 +214,19 @@ class TrainerConfig:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
-    def maybe_load_checkpoint(self, model: M, training_state: S) -> Tuple[M, S, Optional[int]]:
+    def maybe_load_checkpoint(
+        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
+    ) -> Tuple[M, S, Optional[int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
-            checkpointer = self.checkpointer.create(self.run_name)
+            checkpointer = self.checkpointer.create(self.run_id)
             assert (
                 self.load_checkpoint_path is not None
             ), "load_checkpoint_path should have been set during initialization"
-            ckpt = checkpointer.load_checkpoint(model, training_state, self.load_checkpoint_path)
+            ckpt = checkpointer.load_checkpoint(
+                model, training_state, self.load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+            )
 
             if ckpt is None:
                 if self.load_checkpoint is True:
@@ -255,6 +265,4 @@ class TrainerConfig:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
         if self.load_checkpoint_path is None:
-            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_name)
-
-
+            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_id)

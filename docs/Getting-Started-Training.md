@@ -54,13 +54,13 @@ To change the frequency of saving checkpoints, you can use the following command
 ```
 python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
-    --trainer.load_checkpoint_path checkpoints/gpt2/wandb_run_name  \
+    --trainer.load_checkpoint_path checkpoints/gpt2/  \
     --trainer.checkpointer.base_path checkpoints/gpt2/ \
     --trainer.checkpointer.save_interval 20m
 ```
 
 This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [checkpoint.py](src/levanter/checkpoint.py) to
-save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/` with the WandB name `wandb_run_name`.
+save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/${wandb_id}`
 
 Note that:
 - The `--trainer.load_checkpoint_path` argument is optional. You only need to specify it if you want to load a checkpoint from a previous
@@ -69,7 +69,6 @@ If you do not specify it, the trainer will start training from scratch.
 - Both `--trainer.load_checkpoint_path` and `--trainer.checkpointer.base_path` supports local path and cloud storage path (e.g. S3, GCS, etc.), as
 long as the path is accessible from the machine that you are running the training script on.
 - The `--trainer.checkpointer.save_interval` argument supports the following units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
-- We will soon change to use wandb_run_id instead of wandb_run_name as the checkpoint directory name.
 
 ### Change Evaluation Parameters
 To change how often the model is evaluated during training, you can use the following command:
@@ -126,7 +125,7 @@ To do so, you can use the following command:
 ```
 python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
-    --trainer.load_checkpoint_path checkpoints/gpt2/wandb_run_name  \
+    --trainer.load_checkpoint_path checkpoints/gpt2/wandb_id  \
     --trainer.wandb.resume True \
     --trainer.wandb.id asdf1234
 ```

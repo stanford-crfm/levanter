@@ -1,4 +1,4 @@
-name: Run tests
+name: Run entry tests
 
 on: [push]
 
@@ -26,4 +26,4 @@ jobs:
           pip install .
       - name: Test with pytest
         run: |
-          XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. pytest tests -m "not entry"
+          XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=$(pwd)/tests:$(pwd)/src:$(pwd):. pytest tests -m entry

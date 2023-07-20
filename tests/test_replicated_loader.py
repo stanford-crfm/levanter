@@ -222,6 +222,8 @@ def test_structured_batches_model_axis_1_with_names():
         for batch in batches:
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
+        assert len(batches) == 10
+
 
 @skip_if_not_enough_devices(2)
 def test_structured_batches_model_axis_2_with_names():
