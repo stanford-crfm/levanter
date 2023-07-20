@@ -26,6 +26,8 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
     if isinstance(opt_state, MultiStepsState):
         opt_state = opt_state.inner_opt_state
 
+    print("zzz")
+
     def wrap_key(key):
         if prefix:
             return f"{prefix}/{key}"
@@ -246,7 +248,7 @@ class WandbConfig:
         wandb.summary["backend"] = jax.default_backend()
 
     @staticmethod
-    def _infer_experiment_git_root() -> Optional[str]:
+    def _infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
         # sniff out the main directory (since we typically don't run from the root of the repo)
         # we'll walk the stack and directories for the files in the stack the until we're at a git root
         import os
