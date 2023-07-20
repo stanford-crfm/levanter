@@ -71,7 +71,7 @@ def log_to_wandb(step: StepInfo):
 
 
 def wandb_xla_logger(config: WandbConfig):
-    last_mtime = wandb.run.start_time
+    last_mtime = wandb.run and wandb.run.start_time or time.time()
 
     def log_xla_to_wandb(step: StepInfo):
         nonlocal last_mtime

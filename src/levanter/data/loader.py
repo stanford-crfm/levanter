@@ -40,6 +40,7 @@ class BatchLoader(Iterable[Ex]):
     def __iter__(self) -> Iterator[Ex]:
         ...
 
+    @property
     def batch_size(self) -> int:
         return self.Batch.size
 
