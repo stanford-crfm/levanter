@@ -127,13 +127,13 @@ class TrainerConfig:
     def run_name(self) -> str:
         import wandb
 
-        return wandb.run.name or wandb.run.id
+        return wandb.run and (wandb.run.name or wandb.run.id) or "unnamed"
 
     @property
     def run_id(self) -> str:
         import wandb
 
-        return wandb.run.id
+        return wandb.run and wandb.run.id or "unnamed"
 
     @property
     def run_dir(self) -> Path:
