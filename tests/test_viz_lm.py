@@ -8,6 +8,7 @@ from ray.util.client import ray
 import haliax
 
 import levanter.main.viz_logprobs as viz_logprobs
+import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.logging import WandbConfig
@@ -35,7 +36,7 @@ def test_viz_lm():
 
     with tempfile.TemporaryDirectory() as f:
         try:
-            data_config = viz_logprobs.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir="test_cache")
+            data_config = tiny_test_corpus.tiny_corpus_config(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
