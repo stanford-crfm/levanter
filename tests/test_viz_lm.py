@@ -30,8 +30,8 @@ def test_viz_lm():
     model_config = Gpt2Config(
         num_layers=2,
         num_heads=2,
-        seq_len=128,
         hidden_dim=32,
+        seq_len=32,
     )
 
     with tempfile.TemporaryDirectory() as f:
