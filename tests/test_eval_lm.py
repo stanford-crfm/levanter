@@ -3,13 +3,23 @@ import tempfile
 
 import jax
 import pytest
+import ray
 
 import haliax
 
 import levanter.main.eval_lm as eval_lm
 from levanter.checkpoint import save_checkpoint
+from levanter.distributed import RayConfig
 from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
+
+
+def setup_module(module):
+    ray.init("local", num_cpus=10)
+
+
+def teardown_module(module):
+    ray.shutdown()
 
 
 @pytest.mark.entry
@@ -40,6 +50,7 @@ def test_eval_lm():
                     max_eval_batches=1,
                     wandb=WandbConfig(mode="disabled"),
                     require_accelerator=False,
+                    ray=RayConfig(auto_start_cluster=False),
                 ),
                 checkpoint_path=f"{f}/ckpt",
             )

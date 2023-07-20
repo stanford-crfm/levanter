@@ -3,9 +3,19 @@ import tempfile
 
 import jax
 import pytest
+import ray
 
 import levanter.main.train_lm as train_lm
+from levanter.distributed import RayConfig
 from levanter.logging import WandbConfig
+
+
+def setup_module(module):
+    ray.init("local", num_cpus=10)
+
+
+def teardown_module(module):
+    ray.shutdown()
 
 
 @pytest.mark.entry
@@ -27,6 +37,7 @@ def test_train_lm():
                     max_eval_batches=1,
                     wandb=WandbConfig(mode="disabled"),
                     require_accelerator=False,
+                    ray=RayConfig(auto_start_cluster=False),
                 ),
             )
             train_lm.main(config)
