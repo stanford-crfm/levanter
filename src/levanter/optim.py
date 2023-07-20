@@ -171,11 +171,14 @@ class SophiaGConfig(HessianOptConfig):
 class SophiaHConfig(HessianOptConfig):
     gamma: float = GAMMA_SOPHIA_H
 
-    def hessian_update(self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update(
+        self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    ):
         def hess_fn(params):
             logits = model(params, *batch, **batch_kwargs)
             loss = loss_fn(logits, batch)
             return loss
+
         hess = stochastic_hessian_diagonal(loss_fn, model, *batch, **batch_kwargs, h_key=hess_key)
 
         # distribute gradients across the mesh and apply them
