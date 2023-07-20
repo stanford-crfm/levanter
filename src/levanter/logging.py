@@ -26,6 +26,8 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
     if isinstance(opt_state, MultiStepsState):
         opt_state = opt_state.inner_opt_state
 
+    print("zzz")
+
     def wrap_key(key):
         if prefix:
             return f"{prefix}/{key}"
