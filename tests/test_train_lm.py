@@ -6,6 +6,7 @@ import pytest
 import ray
 
 import levanter.main.train_lm as train_lm
+import tiny_test_corpus
 from levanter.distributed import RayConfig
 from levanter.logging import WandbConfig
 
@@ -21,10 +22,11 @@ def teardown_module(module):
 @pytest.mark.entry
 def test_train_lm():
     # just testing if train_lm has a pulse
-    with tempfile.TemporaryDirectory():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_config = tiny_test_corpus.tiny_corpus_config(tmpdir)
         try:
             config = train_lm.TrainLmConfig(
-                data=train_lm.LMDatasetConfig(id="dlwh/wikitext_103_detokenized", cache_dir="test_cache"),
+                data=data_config,
                 model=train_lm.Gpt2Config(
                     num_layers=2,
                     num_heads=2,
