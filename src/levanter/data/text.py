@@ -189,7 +189,6 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         doc_caches, weights = self._check_doc_cache(doc_caches, weights)
         self.doc_caches = doc_caches
         self.token_seq_datasets = [TokenSeqDataset(doc_cache, seq_len) for doc_cache in doc_caches]
-        self.token_seq_iterators = [iter(dataset) for dataset in self.token_seq_datasets]
         self.seq_len = seq_len
         self.weights = self.normalize_weights(weights)
 
@@ -217,12 +216,24 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         docs from doc_cache and yield batches of token sequences. We leverage this
         implementation of iteration. This function mainly samples a dataset according to
         the weights and call __iter__() function from corresponding TokenSeqDataset.
+
+        Edge cases to consider:
+        1. Some of the iterators have been exhausted. We need to drop them and corresponding weights.
+        2. Some of the datasets may have weights of 0.
         """
-        while True:
-            dataset_index = self.sample_index(self.weights)
-            iterator = self.token_seq_iterators[dataset_index]
-            item = next(iterator)
-            yield item
+        token_seq_iterators = [iter(dataset) for dataset in self.token_seq_datasets]
+        weights = self.weights
+        while len(token_seq_iterators) > 0 and sum(weights) > 0:
+            dataset_index = self.sample_index(weights)
+            iterator = token_seq_iterators[dataset_index]
+            try:
+                item = next(iterator)
+                yield item
+            except StopIteration:
+                # if the iterator is exhausted, we need to drop the iterator and its weight
+                del token_seq_iterators[dataset_index]
+                del weights[dataset_index]
+        raise StopIteration
 
     @staticmethod
     def sample_index(weights):
