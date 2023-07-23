@@ -233,7 +233,6 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
                 # if the iterator is exhausted, we need to drop the iterator and its weight
                 del token_seq_iterators[dataset_index]
                 del weights[dataset_index]
-        raise StopIteration
 
     @staticmethod
     def sample_index(weights):
