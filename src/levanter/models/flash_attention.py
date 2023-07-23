@@ -58,6 +58,9 @@ def flash_attention(
     Tr = hax.Axis("Tr", QPos.size // BLOCK_SIZE)
     Tc = hax.Axis("Tc", KPos.size // BLOCK_SIZE)
 
+    if mask is not None:
+        mask = mask.broadcast_to((QPos, KPos))  # make sure mask is broadcastable
+
     def do_o_block(i):
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
         q_i = q.slice(QPos, QPosBlock, i * BLOCK_SIZE)
@@ -70,9 +73,9 @@ def flash_attention(
         do_qk_block_i = functools.partial(do_qk_block, q_i, i)
         o_i, sumexp_i, max_i = hax.fold(do_qk_block_i, Tc)((o_i, sumexp_i, max_i), jnp.arange(Tc.size))
 
-        # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
         # Step 13: compute L_i = m_i^{Tc} + log(\ell_i^{Tc})
         o_i = o_i / sumexp_i
+        # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
         L_i = max_i + hax.log(sumexp_i)
 
         return o_i, L_i
@@ -88,7 +91,10 @@ def flash_attention(
         # Step 8: compute Sij = QiKj^T
         attn_ij = hax.dot(Key, q_i, k_j)
 
-        # TODO: mask
+        if mask is not None:
+            mask_ij = mask.slice(QPos, QPosBlock, i * BLOCK_SIZE).slice(KPos, KPosBlock, j * BLOCK_SIZE)
+            attn_ij = hax.where(mask_ij, attn_ij, -1e10)
+
         # TODO: causal
         # TODO: dropout
 
