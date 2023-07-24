@@ -50,7 +50,7 @@ register_codecs()
 DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
 
 
-def main(fn=None, *, args: list = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
+def main(fn=None, *, args: Optional[List[str]] = None, config_dir: Optional[str] = DEFAULT_CONFIG_DIR):
     """
     Like draccus.wrap but can handle config paths that are urls loadable by fsspec.
     This isn't documented in levanter.config.main_decorator, but only the first arg can be config-ified.

@@ -1,14 +1,15 @@
-from typing import Protocol, Tuple, TypeVar
+from typing import Optional, Protocol, Tuple, TypeVar
 
 import jax
 import jax.numpy as jnp
 from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
 from haliax.jax_utils import named_call
-from haliax.partitioning import ResourceAxis, shard_with_axis_mapping
+from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
 from levanter.utils.jax_utils import reduce
@@ -45,8 +46,10 @@ def accumulate_gradients_sharded(
     Batch: Axis,
     model: M,
     *inputs: X,
+    key: Optional[PRNGKeyArray] = None,
     per_device_parallelism: int,
     parameter_axis_mapping,
+    **kwargs,
 ) -> Tuple[float, M]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
@@ -57,6 +60,10 @@ def accumulate_gradients_sharded(
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
         parameter_axis_mapping: the axis mapping for the model parameters
+        key: an optional PRNG key for the random number generator.
+        If provided, this key will be split, 1 for each accum step
+        kwargs: passed to f
+
     """
     batch_size = Batch.size
     data_axis_size = hax.partitioning.physical_axis_size(Batch, parameter_axis_mapping)
@@ -76,32 +83,39 @@ def accumulate_gradients_sharded(
     Microbatch = Axis(Batch.name, microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
 
+    if key is not None:
+        key = jax.random.split(key, num_micro_steps)
+
     assert num_micro_steps * microbatch_size == batch_size
 
     # first things first, we want a copy of our gradient sharded like our model, along with a loss value
     loss = jnp.zeros(())
     with jax.named_scope("zeros"):
-        grad = jax.tree_map(jnp.zeros_like, model)
-        grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+        grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+        grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
     # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
     inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs, parameter_axis_mapping)
 
     # third, we want to do compute.
-    def loop(acc, microbatch):
+    def loop(acc, microbatch_key):
         loss, grad = acc
+        microbatch, microbatch_kwargs, key = microbatch_key
         with jax.named_scope("grad"):
-            this_loss, this_grad = f(model, *microbatch)
-            this_grad = shard_with_axis_mapping(this_grad, parameter_axis_mapping)
+            kwargs = microbatch_kwargs.copy()
+            if key is not None:
+                kwargs["key"] = key
+            this_loss, this_grad = f(model, *microbatch, **kwargs)
+            this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
         with jax.named_scope("accum"):
             loss += this_loss
             grad = jax.tree_map(jnp.add, grad, this_grad)
-            grad = shard_with_axis_mapping(grad, parameter_axis_mapping)
+            grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
         return loss, grad
 
-    loss, grad = hax.fold(loop, AccumStep)((loss, grad), inputs)
+    loss, grad = hax.fold(loop, AccumStep)((loss, grad), (inputs, kwargs, key))
 
     return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
 
@@ -118,4 +132,4 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             assert jnp.isscalar(x)
             return x
 
-    return jax.tree_map(_reshape, inputs, is_leaf=is_named_array)
+    return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)

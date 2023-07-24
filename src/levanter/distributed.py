@@ -204,6 +204,7 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, namespace=namespace, **kwargs)
+    atexit.register(lambda: ray.shutdown())
     _already_initialized = True
 
 
