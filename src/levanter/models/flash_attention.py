@@ -195,13 +195,43 @@ def _flash_attention_backward(
 
             # TODO: precision
             attn_ij  = hax.dot(Key, q_i, k_j)
+
+            if mask is not None:
+                mask_ij = mask.slice(QPos, QPosBlock, i * BLOCK_SIZE).slice(KPos, KPosBlock, j * BLOCK_SIZE)
+                attn_ij = hax.where(mask_ij, attn_ij, -1e10)
+
             p_ij = hax.exp(attn_ij - L_i)
             dV_j = dV_j + hax.dot(QBlock, p_ij, dO_i)
             dP_ij = hax.dot(Key, dO_i, v_j)
             dAttn_ij = p_ij * (dP_ij - D_i)
 
             dQ_i = dQ_i + hax.dot(KBlock, dAttn_ij, k_j)
+            # TODO: implement set_slice
             dQ = dQ.set_slice(QPos, QBlock, i * BLOCK_SIZE, dQ_i)
+            dK_j = dK_j + hax.dot(QBlock, dAttn_ij, q_i)
+
+            return (dQ, dK_j, dV_j)
+
+        dK_j = k_j * 0.0
+        dV_j = v_j * 0.0
+
+        dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
+
+        return dQ, (dK_j, dV_j)
+
+    dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
+
+    # dQ is already the right shape because it's folded over rather than scanned over
+    dK = dK.flatten_axes((Tc, KPosBlock), KPos)
+    dV = dV.flatten_axes((Tc, KPosBlock), KPos)
+
+    return dQ, dK, dV
+
+_flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
+
+
+
+
 
 
 
