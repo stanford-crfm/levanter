@@ -144,6 +144,7 @@ def _flash_attention_forward(
 
     # TODO: reorder axes so it works properly with batching
     o = o.flatten_axes((Tr, QPosBlock), QPos)
+    ell = ell.flatten_axes((Tr, QPosBlock), QPos)
 
     return o, (o, ell)
 
@@ -171,8 +172,8 @@ def _flash_attention_backward(
     if mask is not None:
         mask = mask.broadcast_to((QPos, KPos))  # make sure mask is broadcastable
 
-    KBlock = KPos.resize(BLOCK_SIZE)
-    QBlock = QPos.resize(BLOCK_SIZE)
+    KPosBlock = KPos.resize(BLOCK_SIZE)
+    QPosBlock = QPos.resize(BLOCK_SIZE)
 
     # Compute D = rowsum(dO * O), write D to HBM and divide it into Tr blocks of size Br each.
     # in the FA2 paper D is said to be \in R^{d}, but that doens't maske sense.
@@ -180,18 +181,18 @@ def _flash_attention_backward(
     D = hax.sum(dO * O, axis=Key)
 
     def do_kv_block(dQ, j):
-        k_j = k.slice(KPos, KBlock, j * BLOCK_SIZE)
-        v_j = v.slice(KPos, KBlock, j * BLOCK_SIZE)
+        k_j = k.slice(KPos, KPosBlock, j * BLOCK_SIZE)
+        v_j = v.slice(KPos, KPosBlock, j * BLOCK_SIZE)
 
         def do_inner_block(accum, i):
             dQ, dK_j, dV_j = accum
-            q_i = q.slice(QPos, QBlock, i * BLOCK_SIZE)
-            o_i = O.slice(QPos, QBlock, i * BLOCK_SIZE)
+            q_i = q.slice(QPos, QPosBlock, i * BLOCK_SIZE)
+            o_i = O.slice(QPos, QPosBlock, i * BLOCK_SIZE)
 
-            dQ_i = dQ.slice(QPos, QBlock, i * BLOCK_SIZE)
-            dO_i = dO.slice(QPos, QBlock, i * BLOCK_SIZE)
-            L_i = L.slice(QPos, QBlock, i * BLOCK_SIZE)
-            D_i = D.slice(QPos, QBlock, i * BLOCK_SIZE)
+            dQ_i = dQ.slice(QPos, QPosBlock, i * BLOCK_SIZE)
+            dO_i = dO.slice(QPos, QPosBlock, i * BLOCK_SIZE)
+            L_i = L.slice(QPos, QPosBlock, i * BLOCK_SIZE)
+            D_i = D.slice(QPos, QPosBlock, i * BLOCK_SIZE)
 
             # TODO: precision
             attn_ij  = hax.dot(Key, q_i, k_j)
@@ -201,14 +202,14 @@ def _flash_attention_backward(
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
-            dV_j = dV_j + hax.dot(QBlock, p_ij, dO_i)
+            dV_j = dV_j + hax.dot(QPosBlock, p_ij, dO_i)
             dP_ij = hax.dot(Key, dO_i, v_j)
             dAttn_ij = p_ij * (dP_ij - D_i)
 
-            dQ_i = dQ_i + hax.dot(KBlock, dAttn_ij, k_j)
+            dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j)
             # TODO: implement set_slice
-            dQ = dQ.set_slice(QPos, QBlock, i * BLOCK_SIZE, dQ_i)
-            dK_j = dK_j + hax.dot(QBlock, dAttn_ij, q_i)
+            dQ = dQ.set_slice(QPos, QPosBlock, i * BLOCK_SIZE, dQ_i)
+            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i)
 
             return (dQ, dK_j, dV_j)
 
@@ -219,6 +220,7 @@ def _flash_attention_backward(
 
         return dQ, (dK_j, dV_j)
 
+    dQ = q * 0.0
     dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
 
     # dQ is already the right shape because it's folded over rather than scanned over
