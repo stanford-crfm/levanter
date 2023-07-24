@@ -25,7 +25,7 @@ def test_hessian_optimizer():
 
     jit_diag = eqx.filter_jit(stochastic_hessian_diagonal)
     for i, k_i in enumerate(jax.random.split(key, 10000)):
-        hessian = jit_diag(loss_fn, model, data, g_key=k_i)
+        hessian = jit_diag(loss_fn, model, data, h_key=k_i)
         opt_state = optimizer.hessian_update(hessian, opt_state)
 
     # print('Test-estimated hessian: most coordinates should be approximately 2')
