@@ -138,9 +138,6 @@ def main(config: TrainLmConfig):
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        def loss_fn(logits, labels):
-            return cross_entropy_loss(logits, Vocab, labels, where=example.loss_mask, reduction_axis=Pos)
-
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
@@ -149,8 +146,7 @@ def main(config: TrainLmConfig):
                 pred_y = mp.cast_to_output(pred_y)
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                return loss_fn(pred_y, target_y)
+                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
         def train_batch_loss(model, examples: LmExample, key):
             per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=False)
@@ -183,16 +179,27 @@ def main(config: TrainLmConfig):
             opt: HessianOptConfig = config.optimizer
             hessian_update_interval = config.optimizer.state_update_interval
 
-            def scalar_loss(logits, labels):
-                return hax.mean(loss_fn(logits, labels)).scalar()
-
             @named_jit(
                 in_axis_resources=parameter_axis_mapping,
                 out_axis_resources=parameter_axis_mapping,
                 donate_args=(False, True, False, False),
             )
-            def update_hessian(model, opt_state, example, g_key):
-                opt_state = opt.hessian_update(optimizer, opt_state, scalar_loss, model, example, hess_key=g_key)
+            def update_hessian(model, opt_state, example, key):
+                def logits_fn(model, example):
+                    with hax.axis_mapping(compute_axis_mapping):
+                        logits = model(example.tokens, example.attn_mask, key=None, inference=True)
+                        return mp.cast_to_output(logits)
+
+                def scalar_loss(logits, labels):
+                    with hax.axis_mapping(compute_axis_mapping):
+                        if labels is None:
+                            labels = hax.nn.one_hot(example.targets, Vocab, dtype=logits.dtype)
+                        loss = cross_entropy_loss(logits, Vocab, labels, where=example.loss_mask, reduction_axis=Pos)
+                        return hax.mean(loss).scalar()
+
+                opt_state = opt.hessian_update(
+                    optimizer, opt_state, scalar_loss, logits_fn, model, example, hess_key=key
+                )
                 return opt_state
 
         else:

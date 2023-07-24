@@ -25,7 +25,7 @@ from levanter.utils.jax_utils import parameter_count
 
 
 class SophiaLossFn(typing.Protocol):
-    def __call__(self, logits: jaxtyping.PyTree, labels: jaxtyping.PyTree) -> jnp.ndarray:
+    def __call__(self, logits: jaxtyping.PyTree, targets: Optional[jaxtyping.PyTree] = None) -> jnp.ndarray:
         ...
 
 
@@ -68,7 +68,15 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
 
     @abc.abstractmethod
     def hessian_update(
-        self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+        self,
+        optimizer,
+        opt_state,
+        loss_fn: SophiaLossFn,
+        logits_fn: Callable,
+        model,
+        *batch,
+        hess_key: PRNGKey,
+        **batch_kwargs,
     ):
         raise NotImplementedError
 
@@ -151,13 +159,15 @@ class BaseSophiaConfig(HessianOptConfig):
 
 @OptimizerConfig.register_subclass("sophia-g")
 @dataclass
-class SophiaGConfig(HessianOptConfig):
+class SophiaGConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_G
     logit_axis: str = "vocab"  # axis to sample from, from logits
 
-    def hessian_update(self, optimizer, opt_state, loss_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update(
+        self, optimizer, opt_state, loss_fn, logits_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    ):
         hess = stochastic_diag_gauss_newton(
-            loss_fn, model, *batch, **batch_kwargs, g_key=hess_key, Vocab=self.logit_axis
+            loss_fn, logits_fn, model, *batch, **batch_kwargs, h_key=hess_key, Vocab=self.logit_axis
         )
 
         # distribute gradients across the mesh and apply them
@@ -168,18 +178,18 @@ class SophiaGConfig(HessianOptConfig):
 
 @OptimizerConfig.register_subclass("sophia-h")
 @dataclass
-class SophiaHConfig(HessianOptConfig):
+class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
 
     def hessian_update(
-        self, optimizer, opt_state, loss_fn: SophiaLossFn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+        self, optimizer, opt_state, loss_fn: SophiaLossFn, logits_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
     ):
-        def hess_fn(params):
-            logits = model(params, *batch, **batch_kwargs)
-            loss = loss_fn(logits, batch)
+        def hess_fn(params, *args, **kwargs):
+            logits = logits_fn(params, *args, **kwargs)
+            loss = loss_fn(logits, None)
             return loss
 
-        hess = stochastic_hessian_diagonal(loss_fn, model, *batch, **batch_kwargs, h_key=hess_key)
+        hess = stochastic_hessian_diagonal(hess_fn, model, *batch, **batch_kwargs, h_key=hess_key)
 
         # distribute gradients across the mesh and apply them
         opt_state = optimizer.hessian_update(hess, opt_state)
@@ -233,18 +243,18 @@ def hvp(f, x, v):
 
 
 # Use this for Sophia-H
-def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
+def stochastic_hessian_diagonal(fn, model, *args, h_key: PRNGKey, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
 
     Args:
         fn: function to compute the Hessian of
         model: model to compute the Hessian of
-        g_key: key for the normal distribution
+        h_key: key for the normal distribution
     """
     # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
     # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
     # https://arxiv.org/pdf/2208.03268.pdf
-    g = tree_gaussian(g_key, model)
+    g = tree_gaussian(h_key, model)
     # TODO: consider allowing for n > 1 gaussians
     product = hvp(lambda m: fn(m, *args, **kwargs), model, g)
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
@@ -253,18 +263,20 @@ def stochastic_hessian_diagonal(fn, model, *args, g_key: PRNGKey, **kwargs):
 
 
 # use this for Sophia-G
-def stochastic_diag_gauss_newton(fn, model, *args, g_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs):
+def stochastic_diag_gauss_newton(
+    loss_fn, logits_fn, model, *args, h_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs
+):
     """Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
 
     Args:
         fn: loss function of the form fn(logits, y). Should return a scalar, even if batched
         model:
-        g_key: key for sample from
+        h_key: key for sample from
     """
-    logits, model_backward = eqx.filter_vjp(lambda f: f(*args, **kwargs), model)
-    hat_y = haliax.random.categorical(g_key, logits, Vocab)
+    logits, model_backward = eqx.filter_vjp(lambda model: logits_fn(model, *args, **kwargs), model)
+    hat_y = haliax.random.categorical(h_key, logits, Vocab)
 
-    grad_loss_logits = eqx.filter_grad(fn)(logits, hat_y)
+    grad_loss_logits = eqx.filter_grad(loss_fn)(logits, hat_y)
     pseudo_g = model_backward(grad_loss_logits)[0]
 
     return jax.tree_util.tree_map(lambda x: x**2, pseudo_g)
