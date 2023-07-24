@@ -1,8 +1,9 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
-from typing import Optional
+from typing import Optional, Tuple
 
+import equinox
 import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray
@@ -45,6 +46,36 @@ def flash_attention(
     QPos = q.resolve_axis(QPos)
     KPos = k.resolve_axis(KPos)
 
+    return _flash_attention((q, k, v), QPos, KPos, Key, mask, dropout, inference=inference, key=key)
+
+
+@equinox.filter_custom_vjp
+def _flash_attention(
+    qkv: Tuple[hax.NamedArray, hax.NamedArray, hax.NamedArray],
+    QPos: hax.Axis,
+    KPos: hax.Axis,
+    Key: hax.Axis,
+    mask: Optional[hax.NamedArray] = None,
+    dropout: float = 0.0,
+    *,
+    inference: bool,
+    key: Optional[PRNGKeyArray] = None,
+) -> hax.NamedArray:
+    return _flash_attention_forward(qkv, QPos, KPos, Key, mask, dropout, inference=inference, key=key)[0]
+
+
+def _flash_attention_forward(
+        qkv,
+        QPos: hax.AxisSelector,
+        KPos: hax.AxisSelector,
+        Key: hax.AxisSelector,
+        mask: Optional[hax.NamedArray] = None,
+        dropout: float = 0.0,
+        *,
+        inference: bool,
+        key: Optional[PRNGKeyArray] = None,
+):
+    q, k, v = qkv
     if QPos.size % BLOCK_SIZE != 0:
         raise ValueError(f"q axis size {q.axis_size(QPos)} is not a multiple of {BLOCK_SIZE}")
     if KPos.size % BLOCK_SIZE != 0:
@@ -84,7 +115,7 @@ def flash_attention(
                 mask_ij = mask.slice(QPos, QPosBlock, i * BLOCK_SIZE).slice(KPos, KPosBlock, j * BLOCK_SIZE)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
-            # TODO: causal
+            # TODO: block causal
             # TODO: dropout
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
@@ -114,4 +145,68 @@ def flash_attention(
     # TODO: reorder axes so it works properly with batching
     o = o.flatten_axes((Tr, QPosBlock), QPos)
 
-    return o
+    return o, (o, ell)
+
+
+def _flash_attention_backward(
+        residuals,
+        grad_in: hax.NamedArray,
+        qkv,
+        QPos: hax.AxisSelector,
+        KPos: hax.AxisSelector,
+        Key: hax.AxisSelector,
+        mask: Optional[hax.NamedArray] = None,
+        dropout: float = 0.0,
+        *,
+        inference: bool,
+        key: Optional[PRNGKeyArray] = None,
+):
+    O, L = residuals
+    q, k, v = qkv
+    dO = grad_in
+
+    Tr = hax.Axis("Tr", QPos.size // BLOCK_SIZE)
+    Tc = hax.Axis("Tc", KPos.size // BLOCK_SIZE)
+
+    if mask is not None:
+        mask = mask.broadcast_to((QPos, KPos))  # make sure mask is broadcastable
+
+    KBlock = KPos.resize(BLOCK_SIZE)
+    QBlock = QPos.resize(BLOCK_SIZE)
+
+    # Compute D = rowsum(dO * O), write D to HBM and divide it into Tr blocks of size Br each.
+    # in the FA2 paper D is said to be \in R^{d}, but that doens't maske sense.
+    # Triton impl has it as R^{QPos}, which makes more sense.
+    D = hax.sum(dO * O, axis=Key)
+
+    def do_kv_block(dQ, j):
+        k_j = k.slice(KPos, KBlock, j * BLOCK_SIZE)
+        v_j = v.slice(KPos, KBlock, j * BLOCK_SIZE)
+
+        def do_inner_block(accum, i):
+            dQ, dK_j, dV_j = accum
+            q_i = q.slice(QPos, QBlock, i * BLOCK_SIZE)
+            o_i = O.slice(QPos, QBlock, i * BLOCK_SIZE)
+
+            dQ_i = dQ.slice(QPos, QBlock, i * BLOCK_SIZE)
+            dO_i = dO.slice(QPos, QBlock, i * BLOCK_SIZE)
+            L_i = L.slice(QPos, QBlock, i * BLOCK_SIZE)
+            D_i = D.slice(QPos, QBlock, i * BLOCK_SIZE)
+
+            # TODO: precision
+            attn_ij  = hax.dot(Key, q_i, k_j)
+            p_ij = hax.exp(attn_ij - L_i)
+            dV_j = dV_j + hax.dot(QBlock, p_ij, dO_i)
+            dP_ij = hax.dot(Key, dO_i, v_j)
+            dAttn_ij = p_ij * (dP_ij - D_i)
+
+            dQ_i = dQ_i + hax.dot(KBlock, dAttn_ij, k_j)
+            dQ = dQ.set_slice(QPos, QBlock, i * BLOCK_SIZE, dQ_i)
+
+
+
+
+
+
+
+
