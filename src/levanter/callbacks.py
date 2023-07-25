@@ -34,9 +34,10 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
     n = 0
 
     pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    iter_ = iter(pbar)
     while True:
         time_in = time.time()
-        batch = next(pbar, None)
+        batch = next(iter_, None)
         if batch is None:
             break
         load_time = time.time() - time_in
