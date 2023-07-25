@@ -257,9 +257,7 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
             # TODO: haliax-ify?
             if len(targets) * b_logprobs.shape[0] >= max_docs:
                 break
-        # capture edge case where there is no test data
-        if log_probs == []:
-            return
+
         log_probs = _concatenate(log_probs)
         targets = _concatenate([t.tokens.array for t in targets])
 
