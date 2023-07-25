@@ -29,20 +29,35 @@ logger = logging.getLogger(__name__)
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
     total_loss = 0.0
+    total_load_time = 0.0
+    total_loss_time = 0.0
     n = 0
 
     pbar = tqdm(dataset, desc="eval", position=1, leave=False)
-    for batch in pbar:
+    while True:
+        time_in = time.time()
+        batch = next(pbar, None)
+        if batch is None:
+            break
+        load_time = time.time() - time_in
+        total_load_time += load_time
+
         loss = loss_fn(model, batch)
         total_loss += loss.item()
         n += 1
-        pbar.set_postfix(loss=total_loss / n)
+        loss_time = time.time() - time_in - load_time
+        total_loss_time += loss_time
+
+        pbar.set_postfix(loss=total_loss / n, load_time=total_load_time / n, loss_time=total_loss_time / n)
 
         if max_batches is not None and n >= max_batches:
             break
 
     if n > 0:
         total_loss /= n
+
+    logger.info(f"eval loading time: {total_load_time / n:.3f} s/ba")
+    logger.info(f"eval loss time: {total_loss_time / n:.3f} s/ba")
 
     return total_loss
 
