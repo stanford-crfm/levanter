@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.shard_cache import ShardedDataSource, cache_dataset
 from levanter.data.text import TokenizedDocumentCache
+from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
 
 
@@ -16,7 +17,8 @@ T = TypeVar("T")
 
 
 def setup_module(module):
-    ray.init("local", num_cpus=10)
+    ray_designated_cores = max(1, logical_cpu_core_count())
+    ray.init("local", num_cpus=ray_designated_cores)
 
 
 def teardown_module(module):
