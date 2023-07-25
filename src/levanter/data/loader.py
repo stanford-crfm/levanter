@@ -5,9 +5,9 @@ import logging
 from collections import defaultdict
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax._src.array import ArrayImpl
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
@@ -227,7 +227,7 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
     def __iter__(self):
         item_iter = iter(self.local_dataset)
         for batch in self._batched(item_iter):
-            stacked = jax.tree_map(lambda *leaves: self._stack_leaves(*leaves), *batch, is_leaf=is_named_array)
+            stacked = _stack_tree(self.Batch.name, batch)
             yield self._shard(stacked)
 
     def _batched(self, item_iter):
@@ -238,14 +238,7 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
                 yield batch
                 batch = []
 
-    def _stack_leaves(self, *leaves):
-        assert len(leaves) == self.Batch.size
-
-        if is_named_array(leaves[0]):
-            return hax.stack(self.Batch, leaves)
-        else:
-            return np.stack(leaves)
-
+    @eqx.filter_jit
     def _shard(self, batch):
         def _shard_leaf(leaf):
             pspec = self._pspec_for(leaf)
