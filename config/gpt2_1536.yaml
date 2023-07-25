@@ -17,6 +17,7 @@ trainer:
   per_device_parallelism: 2
   per_device_eval_parallelism: 8
 optimizer:
+  type: adam
   learning_rate: 1E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1

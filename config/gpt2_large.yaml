@@ -16,5 +16,6 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: -1
 optimizer:
+  type: adam
   learning_rate: 2E-4
   weight_decay: 0.1

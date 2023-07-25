@@ -22,12 +22,6 @@ trainer:
 
   num_train_steps: 200000
 
-  # optimizer
-  learning_rate: 2E-4
-  beta1: 0.96
-  beta2: 0.99
-  weight_decay: 0.1
-
   axis_resources:
     batch: "data"
     vocab: "model"
@@ -35,3 +29,9 @@ trainer:
     heads: "model"
   parameter_axis_resources:
     embed: "data"
+optimizer:
+  type: sophia-g
+  learning_rate: 2E-4
+  beta1: 0.96
+  beta2: 0.99
+  weight_decay: 0.1

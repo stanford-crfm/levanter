@@ -143,6 +143,7 @@ trainer:
 
   train_batch_size: 512
 optimizer:
+  type: adam
   learning_rate: 6E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
