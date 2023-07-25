@@ -8,14 +8,13 @@ import jax.random as jrandom
 import jmp
 import wandb
 from jax.random import PRNGKey
-from jax.sharding import PartitionSpec
 
 import haliax as hax
 import haliax.random
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import ResourceAxis, named_jit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -28,7 +27,7 @@ from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
-from levanter.utils.jax_utils import global_key_array, parameter_count
+from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -167,20 +166,20 @@ def main(config: TrainLmConfig):
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
-        def train_batch_loss(model, examples: LmExample, key):
-            per_ex_loss = hax.vmap(compute_loss, "batch")(model, examples, key, inference=False)
-            return hax.mean(per_ex_loss, "batch").scalar()
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def train_loss(model, example, key):
+            return hax.mean(compute_loss(model, example, key, False)).scalar()
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, examples: LmExample, keys):
-            grad_loss = eqx.filter_value_and_grad(train_batch_loss)
+        def train_step(model, opt_state, examples: LmExample, key):
+            grad_loss = eqx.filter_value_and_grad(train_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
                 model,
                 examples,
-                keys,
+                key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
             )
@@ -306,11 +305,8 @@ def main(config: TrainLmConfig):
                 with log_time_to_wandb("throughput/loading_time", step=step):
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
-                    example_keys = global_key_array(
-                        my_key, config.trainer.train_batch_size, mesh, PartitionSpec(ResourceAxis.DATA)
-                    )
 
-                jax_step_loss, model, opt_state = train_step(model, opt_state, example, example_keys)
+                jax_step_loss, model, opt_state = train_step(model, opt_state, example, my_key)
                 step_loss = jax_step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):

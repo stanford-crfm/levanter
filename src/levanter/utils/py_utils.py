@@ -1,5 +1,14 @@
+import os
 from dataclasses import dataclass
 from typing import Callable, TypeVar
+
+
+def logical_cpu_core_count():
+    """Returns the number of logical CPU cores in the system."""
+    try:
+        return os.cpu_count()
+    except NotImplementedError:
+        return 1
 
 
 def non_caching_cycle(iterable):
@@ -53,6 +62,28 @@ def dataclass_with_default_init(_cls=None, *args, **kwargs):
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
+
+class classproperty(object):  # pylint: disable=invalid-name
+    """Class property decorator.
+
+    Example usage:
+
+    class MyClass(object):
+
+      @classproperty
+      def value(cls):
+        return '123'
+
+    > print MyClass.value
+    123
+    """
+
+    def __init__(self, func):
+        self._func = func
+
+    def __get__(self, owner_self, owner_cls):
+        return self._func(owner_cls)
 
 
 class _CachedClassProperty(object):

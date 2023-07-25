@@ -25,7 +25,7 @@ from levanter.compat.torch_serialization import (
     reshape_mlp_linear_layer,
     unflatten_linear_layer,
 )
-from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Mlp, Gpt2Transformer
+from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -42,7 +42,7 @@ class BackpackConfig(Gpt2Config):
         return BackpackLMHeadModel
 
     @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter:
+    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
             cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
@@ -98,7 +98,11 @@ class BackpackConfig(Gpt2Config):
         )
 
 
-class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
+class BackpackMlp(eqx.Module, StateDictSerializationMixin):
+    c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
+    c_proj: hnn.Linear  # projection from Intermediate to Embed
+    act: Callable = eqx.static_field()
+
     @staticmethod
     def init(
         Embed: Axis,
@@ -117,6 +121,13 @@ class BackpackMlp(StateDictSerializationMixin, Gpt2Mlp):
         act = activation_fn  # type: ignore
 
         return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act)
+
+    @named_call
+    def __call__(self, x: NamedArray):
+        x = self.c_fc(x)
+        x = self.act(x)
+        x = self.c_proj(x)
+        return x
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         d = {}
@@ -381,7 +392,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
             kq_selfattention=kq_selfattention,
         )
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None):
+    @named_call
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+    ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")
 

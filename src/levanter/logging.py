@@ -246,7 +246,7 @@ class WandbConfig:
         wandb.summary["backend"] = jax.default_backend()
 
     @staticmethod
-    def _infer_experiment_git_root() -> Optional[str]:
+    def _infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
         # sniff out the main directory (since we typically don't run from the root of the repo)
         # we'll walk the stack and directories for the files in the stack the until we're at a git root
         import os
@@ -258,7 +258,7 @@ class WandbConfig:
         for frame in stack:
             dirname = os.path.dirname(frame.filename)
             # bit hacky but we want to skip anything that's in the python env
-            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda"]):
+            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda", "pyenv"]):
                 continue
             # see if it's under a git root
             try:

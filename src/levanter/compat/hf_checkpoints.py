@@ -40,7 +40,7 @@ from haliax.partitioning import ResourceMapping
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
-from levanter.utils.py_utils import dataclass_with_default_init
+from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
 logger = logging.getLogger(__name__)
@@ -93,8 +93,7 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     def from_hf_config(cls, hf_config: HfConfig):
         pass
 
-    @classmethod
-    @property
+    @classproperty
     @abc.abstractmethod
     def default_hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
         """The default HFCheckpointConverter to use for this config class. We recommend that you
@@ -213,12 +212,12 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if trust_remote_code is not None:
             replacements["trust_remote_code"] = trust_remote_code
 
-        return dataclasses.replace(self, **replacements)
+        return dataclasses.replace(self, **replacements)  # type: ignore
 
     def with_config_overrides(self, config_overrides: dict, merge: bool = True) -> "HFCheckpointConverter":
         if self.config_overrides is not None and merge:
             config_overrides = {**self.config_overrides, **config_overrides}
-        return dataclasses.replace(self, config_overrides=config_overrides)
+        return dataclasses.replace(self, config_overrides=config_overrides)  # type: ignore
 
     @staticmethod
     def _infer_config_class(hf_config_class, ref, trust_remote_code):

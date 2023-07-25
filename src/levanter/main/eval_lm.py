@@ -46,7 +46,7 @@ def main(config: EvalLmConfig):
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
     Pos = config.model.Pos
-    KeyPos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
         raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
