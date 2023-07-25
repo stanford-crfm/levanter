@@ -40,6 +40,7 @@ class BatchLoader(Iterable[Ex]):
     def __iter__(self) -> Iterator[Ex]:
         ...
 
+    @property
     def batch_size(self) -> int:
         return self.Batch.size
 
@@ -235,6 +236,7 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
             batch.append(item)
             if len(batch) == self.Batch.size:
                 yield batch
+                batch = []
 
     def _stack_leaves(self, *leaves):
         assert len(leaves) == self.Batch.size

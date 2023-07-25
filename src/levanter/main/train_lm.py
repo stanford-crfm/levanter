@@ -111,8 +111,8 @@ def main(config: TrainLmConfig):
 
     # TODO: simplify this;
     # TODO: add similar logic to the eval lm script
-    train_doc_cache = config.data.build_or_load_cache("train")  # type: ignore
-    eval_doc_cache = config.data.build_or_load_cache("validation")  # type: ignore
+    train_doc_cache = config.data.token_seq_dataset("validation", Pos.size)  # type: ignore
+    eval_doc_cache = config.data.token_seq_dataset("validation", Pos.size)  # type: ignore
 
     train_dataset: ShardableDataset
     eval_dataset: Optional[ShardableDataset]

@@ -136,6 +136,9 @@ def _choose_port(id):
     return port
 
 
+_already_initialized = False
+
+
 def auto_ray_cluster(
     address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
 ):
@@ -147,6 +150,11 @@ def auto_ray_cluster(
     We don't use that because it's more geared towards submitting jobs to a ray cluster that is backed by slurm.
     Instead, we have our machines already.
     """
+    global _already_initialized
+
+    if _already_initialized:
+        logger.warning("auto_ray_cluster has already been called. Ignoring subsequent calls.")
+        return
 
     def _munge_address_port(address: str):
         # the coordinator address typically includes a port that jax wants to use. we want to use our own port
@@ -196,6 +204,8 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, namespace=namespace, **kwargs)
+    atexit.register(lambda: ray.shutdown())
+    _already_initialized = True
 
 
 @dataclass(frozen=True)

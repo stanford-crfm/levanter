@@ -573,7 +573,7 @@ class LMDatasetConfig:
         return load_tokenizer(self.tokenizer)
 
     def build_or_load_cache(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TokenizedDocumentCache]:
         try:
             source = self.get_shard_source(split)
