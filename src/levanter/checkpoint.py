@@ -148,8 +148,8 @@ class Checkpointer:
             my_should_save = True
             my_save_permanent_ckpt = False
 
-        should_save, save_permanent_ckpt = multihost_broadcast_sync(
-            (my_should_save, my_save_permanent_ckpt), timeout=500
+        should_save, save_permanent_ckpt = broadcast_one_to_all(
+            jax.numpy.array((my_should_save, my_save_permanent_ckpt), dtype=bool)
         )
 
         # log the decision
