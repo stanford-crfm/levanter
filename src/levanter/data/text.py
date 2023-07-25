@@ -21,12 +21,12 @@ from chex import PRNGKey
 from draccus import field
 from jaxtyping import PyTree
 
-from levanter.utils.py_utils import logical_cpu_core_count
 import haliax as hax
 from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
+from levanter.utils.py_utils import logical_cpu_core_count
 
 
 silence_transformer_nag()  # noqa
