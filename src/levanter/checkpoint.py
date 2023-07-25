@@ -14,6 +14,7 @@ import jax
 from draccus import field
 from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
