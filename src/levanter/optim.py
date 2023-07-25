@@ -84,7 +84,7 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
 @OptimizerConfig.register_subclass("adam")
 @dataclass
 class AdamConfig(OptimizerConfig):
-    weight_decay: float = 0.0
+    weight_decay: float = 0.1
     beta1: float = 0.9
     beta2: float = 0.999
     epsilon: float = 1e-8
@@ -115,7 +115,7 @@ class AdamConfig(OptimizerConfig):
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
 
-GAMMA_SOPHIA_G = 2e4
+GAMMA_SOPHIA_G = 200
 GAMMA_SOPHIA_H = 0.1
 
 
@@ -123,9 +123,9 @@ GAMMA_SOPHIA_H = 0.1
 class BaseSophiaConfig(HessianOptConfig):
     """Base class for sophia variants. Doesn't implement the state update"""
 
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
+    weight_decay: float = 0.1
+    beta1: float = 0.96
+    beta2: float = 0.99
 
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
@@ -264,14 +264,17 @@ def stochastic_hessian_diagonal(fn, model, *args, h_key: PRNGKey, **kwargs):
 
 # use this for Sophia-G
 def stochastic_diag_gauss_newton(
-    loss_fn, logits_fn, model, *args, h_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs
+    loss_fn: SophiaLossFn, logits_fn, model, *args, h_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs
 ):
     """Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
 
     Args:
-        fn: loss function of the form fn(logits, y). Should return a scalar, even if batched
-        model:
-        h_key: key for sample from
+        loss_fn: loss function
+        logits_fn: function to compute logits from model
+        model: model whose Hessian to compute
+        h_key: key for sampling
+        Vocab: axis to sample from
+        *args, **kwargs: passed to `logits_fn`
     """
     logits, model_backward = eqx.filter_vjp(lambda model: logits_fn(model, *args, **kwargs), model)
     hat_y = haliax.random.categorical(h_key, logits, Vocab)
@@ -279,7 +282,13 @@ def stochastic_diag_gauss_newton(
     grad_loss_logits = eqx.filter_grad(loss_fn)(logits, hat_y)
     pseudo_g = model_backward(grad_loss_logits)[0]
 
-    return jax.tree_util.tree_map(lambda x: x**2, pseudo_g)
+    bs = hat_y.size
+    # scale by imputed batch size: total number of tokens
+    # technically we should probably factor in the loss mask, but it's probably fine
+
+    h = jax.tree_util.tree_map(lambda x: x**2 * bs, pseudo_g)
+
+    return h
 
 
 def tree_gaussian(key, tree):
@@ -312,10 +321,6 @@ def scale_by_sophia(
         count_inc = numerics.safe_int32_increment(state.count)
         mu_hat = bias_correction(mu, b1, count_inc)
         h_hat = state.h
-        # TODO: Use slightly lower learning rate for adam, e.g. 0.85 * adam_lr
-        # TODO: monitor param norm and momentum norm and trace(hessian) (aka sum of h_hat)
-        # TODO: also track how often hessian is used (per coordinate)
-        # TODO: track sum( jnp.abs(m) < gamma * jnp.maximum(v, 0) for m in mu_hat), we expect this to be ~70% later in training
         # track how often hessian is used
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
         h_leaves = jax.tree_util.tree_leaves(h_hat)

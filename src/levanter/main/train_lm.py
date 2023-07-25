@@ -188,7 +188,8 @@ def main(config: TrainLmConfig):
                 def scalar_loss(logits, labels):
                     with hax.axis_mapping(compute_axis_mapping):
                         if labels is None:
-                            labels = hax.nn.one_hot(example.targets, Vocab, dtype=logits.dtype)
+                            labels = example.targets
+                        labels = hax.nn.one_hot(labels, Vocab, dtype=logits.dtype)
                         loss = cross_entropy_loss(logits, Vocab, labels, where=example.loss_mask, reduction_axis=Pos)
                         return hax.mean(loss).scalar()
 
@@ -203,7 +204,7 @@ def main(config: TrainLmConfig):
 
         # evaluation loss and loop
         @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(model, example):
+        def eval_loss(model, example: LmExample):
             return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
@@ -280,7 +281,8 @@ def main(config: TrainLmConfig):
 
                 pred_y = model(example.tokens, example.attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = cross_entropy_loss(pred_y, Vocab, example.targets, where=example.loss_mask, reduction=None)
+                targets = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
+                loss = cross_entropy_loss(pred_y, Vocab, targets, where=example.loss_mask, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, Pos)
