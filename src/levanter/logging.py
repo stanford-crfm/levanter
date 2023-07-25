@@ -258,7 +258,7 @@ class WandbConfig:
         for frame in stack:
             dirname = os.path.dirname(frame.filename)
             # bit hacky but we want to skip anything that's in the python env
-            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda"]):
+            if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda", "pyenv"]):
                 continue
             # see if it's under a git root
             try:
