@@ -26,6 +26,7 @@ from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
+from levanter.utils.py_utils import logical_cpu_core_count
 
 
 silence_transformer_nag()  # noqa
@@ -359,14 +360,6 @@ def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
         )
 
 
-def _cpu_count():
-    """Returns the number of CPUs in the system."""
-    try:
-        return os.cpu_count()
-    except NotImplementedError:
-        return 1
-
-
 def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
     if tokenizer.is_fast and os.getenv("TOKENIZERS_PARALLELISM") is None:
         # if we're using a fast tokenizer, we want to force parallelism
@@ -401,7 +394,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def num_cpus(self) -> int:
-        return max(1, _cpu_count() - 2)
+        return max(1, logical_cpu_core_count() - 2)
 
 
 def concatenate_and_group_texts(

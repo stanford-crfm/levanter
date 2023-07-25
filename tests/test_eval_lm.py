@@ -13,10 +13,12 @@ from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.utils.py_utils import logical_cpu_core_count
 
 
 def setup_module(module):
-    ray.init("local", num_cpus=10)
+    ray_designated_cores = max(1, logical_cpu_core_count())
+    ray.init("local", num_cpus=ray_designated_cores)
 
 
 def teardown_module(module):
