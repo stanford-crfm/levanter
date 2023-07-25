@@ -5,7 +5,14 @@ import numpy as np
 import haliax as hax
 
 import test_utils
-from levanter.data.ul2r import DenoisingConfig, Ul2Example, Ul2InstanceGenerator
+from levanter.data.ul2r import (
+    DenoisingConfig,
+    PrefixLmConfig,
+    RDenoisingConfig,
+    Ul2Example,
+    Ul2InstanceGenerator,
+    XDenoisingConfig,
+)
 
 
 def test_ul2_generator_seed_works():
@@ -132,3 +139,59 @@ def test_ul2r_decoder_only_uses_both_inputs_and_outputs():
     decoder_only = ex.to_decoder_only(1001, hax.Axis("L", 10), hax.Axis("KL", 10))
     assert decoder_only.loss_mask.size == 10
     assert hax.sum(decoder_only.loss_mask, "L") == 3
+
+
+def test_ul2r_task_weights_work():
+    tokenizer = test_utils.gpt2_tokenizer
+    B = hax.Axis("B", 200)
+    L = hax.Axis("L", 512)
+    synthetic_data = hax.random.randint(jax.random.PRNGKey(0), shape=(B, L), minval=0, maxval=1000)
+
+    tasks = [
+        RDenoisingConfig("[R]", 0.15, 3.0),
+        XDenoisingConfig("[X]", 0.15, 32.0),
+        XDenoisingConfig("[X]", 0.5, 3.0),
+        PrefixLmConfig("[P]"),
+    ]
+
+    ul2_generator_1 = Ul2InstanceGenerator(
+        tokenizer,
+        [f"<mask_{i}>" for i in range(2)],
+        tasks,
+        task_weights=[1.0, 0.0, 0.0, 1.0],
+    )
+
+    x_token_index = tokenizer.encode("[X]")[0]
+    r_token_index = tokenizer.encode("[R]")[0]
+    p_token_index = tokenizer.encode("[P]")[0]
+
+    samples_1 = [
+        ul2_generator_1.sample(synthetic_data["B", i].array, jax.random.PRNGKey(i)).task_token for i in range(B.size)
+    ]
+    # get count of task tokens
+    x_count_1 = np.sum([np.sum(s == x_token_index) for s in samples_1])
+    r_count_1 = np.sum([np.sum(s == r_token_index) for s in samples_1])
+    p_count_1 = np.sum([np.sum(s == p_token_index) for s in samples_1])
+
+    assert x_count_1 == 0
+    assert r_count_1 > B.size / 4
+    assert p_count_1 > B.size / 4
+
+    ul2_generator_2 = Ul2InstanceGenerator(
+        tokenizer,
+        [f"<mask_{i}>" for i in range(2)],
+        tasks,
+        task_weights=[0.0, 1.0, 0.0, 1.0],
+    )
+
+    samples_2 = [
+        ul2_generator_2.sample(synthetic_data["B", i].array, jax.random.PRNGKey(i)).task_token for i in range(B.size)
+    ]
+    # get count of task tokens
+    x_count_2 = np.sum([np.sum(s == x_token_index) for s in samples_2])
+    r_count_2 = np.sum([np.sum(s == r_token_index) for s in samples_2])
+    p_count_2 = np.sum([np.sum(s == p_token_index) for s in samples_2])
+
+    assert x_count_2 > B.size / 4
+    assert r_count_2 == 0
+    assert p_count_2 > B.size / 4

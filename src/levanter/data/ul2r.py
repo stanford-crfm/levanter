@@ -318,7 +318,10 @@ class Ul2InstanceGenerator:
         """Side effect warning: This constructor adds sentinel tokens and task tokens to the tokenizer"""
         self.tokenizer = tokenizer
         self.task_configs = task_configs
-        self.task_weights = task_weights
+        if task_weights is not None:
+            self.task_weights = np.array(task_weights) / np.sum(task_weights)
+        else:
+            self.task_weights = None
 
         self.tokenizer.add_tokens(sentinel_tokens, special_tokens=True)
         task_tokens = list(set([config.task_token for config in task_configs if config.task_token is not None]))
