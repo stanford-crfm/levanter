@@ -13,7 +13,7 @@ import haliax.random
 from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
