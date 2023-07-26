@@ -226,13 +226,16 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
 
     def __iter__(self):
         item_iter = iter(self.local_dataset)
+        count = 0
         for batch in self._batched(item_iter):
+            print(f"debug: ReplicatedBatchLoader.__iter__ - batch {count}: {batch}")
             stacked = jax.tree_map(lambda *leaves: self._stack_leaves(*leaves), *batch, is_leaf=is_named_array)
             yield self._shard(stacked)
 
     def _batched(self, item_iter):
         batch = []
         for item in item_iter:
+            print(f"debug: ReplicatedBatchLoader._batched - item {len(batch)}: {item}")
             batch.append(item)
             if len(batch) == self.Batch.size:
                 yield batch
