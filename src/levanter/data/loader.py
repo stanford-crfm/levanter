@@ -20,6 +20,7 @@ import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
+from levanter.utils.background_iterable import BackgroundIterable
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -32,23 +33,40 @@ logger = logging.getLogger(__name__)
 _TensorSliceIndex = Tuple[slice, ...]
 
 
-class BatchLoader(Iterable[Ex]):
+class BatchLoader(Iterable[Ex], abc.ABC):
     Batch: hax.Axis
     mesh: Mesh
-    axis_resources: ResourceMapping
+    axis_resources: Optional[ResourceMapping]
+
+    def __init__(self, max_capacity: int, axis_resources: Optional[ResourceMapping]):
+        self.max_capacity = max_capacity
+        self.axis_resources = axis_resources
+
+    def __iter__(self) -> Iterator[Ex]:
+        ax_resources = self.axis_resources
+        if ax_resources is None:
+            ax_resources = hax.partitioning.current_thread_local_mapping()
+
+        def produce_batches():
+            with hax.axis_mapping(ax_resources):
+                for batch in self._produce_batches():
+                    yield batch
+
+        bg_iter = BackgroundIterable(produce_batches, max_capacity=self.max_capacity)
+        yield from bg_iter
 
     @abc.abstractmethod
-    def __iter__(self) -> Iterator[Ex]:
-        ...
-
-    @property
-    def batch_size(self) -> int:
-        return self.Batch.size
+    def _produce_batches(self) -> Iterator[Ex]:
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         raise NotImplementedError
+
+    @property
+    def batch_size(self) -> int:
+        return self.Batch.size
 
     @functools.cached_property
     def _batch_structure(self) -> PyTree:
@@ -149,13 +167,13 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
+        max_capacity: int = 100,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
     ):
         self.mesh = mesh
         self.Batch = Batch
-        self.axis_resources = axis_resources
 
         process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
         num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
@@ -168,8 +186,9 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         assert self.Batch.size % num_data_process_groups == 0
 
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+        super().__init__(max_capacity, axis_resources)
 
-    def __iter__(self) -> Iterator[PyTree[jax.Array]]:
+    def _produce_batches(self):
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
 
@@ -222,21 +241,22 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
+        max_capacity: int = 100,
     ):
-        self.local_dataset = item_dataset
+        self.item_dataset = item_dataset
         self.mesh = mesh
         self.Batch = Batch
-        self.axis_resources = axis_resources
 
-    def __iter__(self):
-        item_iter = iter(self.local_dataset)
+        super().__init__(max_capacity, axis_resources)
 
-        for batch in _batched(item_iter, self.Batch.size):
-            yield self._construct_global_array_for_tree(lambda begin, end: batch[begin:end])
+    def _produce_batches(self):
+        for batch in _batched(self.item_dataset, self.Batch.size):
+            sharded = self._construct_global_array_for_tree(lambda begin, end: batch[begin:end])
+            yield sharded
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return _batchify_item_shape(self.local_dataset.item_shape, self.Batch)
+        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
 
 def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
