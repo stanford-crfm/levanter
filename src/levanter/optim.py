@@ -1,4 +1,3 @@
-# implements the prototype sofia optimizer
 import abc
 import functools
 import inspect
@@ -116,7 +115,7 @@ class AdamConfig(OptimizerConfig):
 
 
 GAMMA_SOPHIA_G = 200
-GAMMA_SOPHIA_H = 0.1
+GAMMA_SOPHIA_H = 0.01
 
 
 @dataclass
@@ -124,7 +123,7 @@ class BaseSophiaConfig(HessianOptConfig):
     """Base class for sophia variants. Doesn't implement the state update"""
 
     weight_decay: float = 0.1
-    beta1: float = 0.96
+    beta1: float = 0.965
     beta2: float = 0.99
 
     epsilon: float = 1e-8
@@ -282,9 +281,10 @@ def stochastic_diag_gauss_newton(
     grad_loss_logits = eqx.filter_grad(loss_fn)(logits, hat_y)
     pseudo_g = model_backward(grad_loss_logits)[0]
 
-    bs = hat_y.size
-    # scale by imputed batch size: total number of tokens
+    # TODO: not bothering to do gamma for this
     # technically we should probably factor in the loss mask, but it's probably fine
+    # bs = hat_y.size
+    bs = 1
 
     h = jax.tree_util.tree_map(lambda x: x**2 * bs, pseudo_g)
 
@@ -325,7 +325,7 @@ def scale_by_sophia(
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
         h_leaves = jax.tree_util.tree_leaves(h_hat)
 
-        # with sofia+ the max(h, 0) is not needed but no harm
+        # with sophia-g the max(h, 0) is not needed but no harm
         hessian_use_count = sum(
             jnp.sum(jnp.abs(mu) < gamma * jnp.maximum(h, 0)) for (mu, h) in zip(mu_leaves, h_leaves)
         )
