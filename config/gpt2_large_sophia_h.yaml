@@ -10,12 +10,12 @@ model:
 trainer:
   wandb:
     project: "levanter"
-    tags: [ "openwebtext", "gpt2", "sophia-g"]
+    tags: [ "openwebtext", "gpt2", "sophia-h"]
 
   num_train_steps: 200000
   mp: p=f32,c=bfloat16
 
 optimizer:
-  type: sophia-g
-  learning_rate: 2E-4
-  weight_decay: 0.15
+  type: sophia-h
+  learning_rate: 1.7E-4
+  weight_decay: 0.2
