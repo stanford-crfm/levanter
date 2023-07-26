@@ -21,4 +21,4 @@ trainer:
 optimizer:
   type: sophia-g
   learning_rate: 1E-3
-  weight_decay: 0.1
+  weight_decay: 0.15
