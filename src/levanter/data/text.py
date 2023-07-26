@@ -225,9 +225,8 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         weights = self.weights
         while len(token_seq_iterators) > 0 and sum(weights) > 0:
             dataset_index = self.sample_index(weights)
-            iterator = token_seq_iterators[dataset_index]
             try:
-                item = next(iterator)
+                item = next(token_seq_iterators[dataset_index])
                 yield item
             except StopIteration:
                 # if the iterator is exhausted, we need to drop the iterator and its weight
