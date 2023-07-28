@@ -22,9 +22,8 @@ from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 M = TypeVar("M", bound=PyTree)
 
 # Tasks
-# - Match layers to LoRA transform
-# - Define LoRA module
-# - Do the module surgery
+# - filter parameters for training
+# - training script
 # - Peft export
 # - Peft import
 # - bias
@@ -36,6 +35,7 @@ M = TypeVar("M", bound=PyTree)
 class LoraConfig:
     target_modules: Union[List[str], str]
     r: int = 8  # rank of LoRA transform
+    alpha: float = 8.0  # scaling factor for LoRA transform
     # TODO: bias
     # TODO: dropout
 
@@ -50,20 +50,21 @@ class LoraLinear(eqx.Module):
     Linear layer with LoRA transform.
     """
 
-    # TODO: is making this static a good idea?
     wrapped: hnn.Linear
     lora_A: hnn.Linear
     lora_B: hnn.Linear
+    alpha: float = eqx.field(static=True)
 
     def __call__(self, x):
         y = self.wrapped(x)
         z = self.lora_A(x)
         z = self.lora_B(z)
+        z = z * self.alpha
 
         return z + y
 
     @staticmethod
-    def init(wrapped: hnn.Linear, r: int, *, key):
+    def init(wrapped: hnn.Linear, r: int, alpha: float, *, key):
         """
         Initializes a LoraLinear module.
         """
@@ -72,7 +73,7 @@ class LoraLinear(eqx.Module):
         lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A)
         lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B)
 
-        return LoraLinear(wrapped, lora_A, lora_B)
+        return LoraLinear(wrapped, lora_A, lora_B, alpha)
 
 
 def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
@@ -136,7 +137,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         elif matches_target(key_path) and _is_lora_compatible_module(module):
             my_key = next(key_iter)
             batched_key = shaped_rng_split(my_key, [axis.size for axis in batch_dims])
-            return _batchify_ctor(LoraLinear.init)(module, config.r, key=batched_key)
+            return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, key=batched_key)
         else:
             return module
 

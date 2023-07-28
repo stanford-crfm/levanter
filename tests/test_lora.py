@@ -34,6 +34,9 @@ def test_loraize_simple():
     assert isinstance(loraized.first, hnn.Linear)
     assert isinstance(loraized.second, LoraLinear)
 
+    input = hax.random.normal(k0, (In,))
+    assert not hax.all(hax.isclose(module(input), loraized(input)))
+
 
 def test_lora_scan_layers():
     class Module(eqx.Module):
@@ -52,9 +55,10 @@ def test_lora_scan_layers():
 
     Layers = hax.Axis("Layers", 3)
 
-    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(jax.random.PRNGKey(0), 3))
+    k0 = jax.random.PRNGKey(0)
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
 
-    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=jax.random.PRNGKey(0))
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
     assert isinstance(loraized, hnn.Stacked)
     assert isinstance(loraized.stacked.first, LoraLinear)
     assert isinstance(loraized.stacked.second, hnn.Linear)
@@ -63,3 +67,5 @@ def test_lora_scan_layers():
     assert loraized.stacked.first.lora_B.weight.axes == (Layers, hax.Axis("LORA_R", 8), Mid)
 
     assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
+    input = hax.random.normal(k0, (In,))
+    assert not hax.all(hax.isclose(module.fold(input), loraized.fold(input)))
