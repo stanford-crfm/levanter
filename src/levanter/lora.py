@@ -30,6 +30,8 @@ M = TypeVar("M", bound=PyTree)
 # - dropout
 # - registry of targets for different models
 
+LORA_R = "LORA_R"
+
 
 @dataclass(frozen=True)
 class LoraConfig:
@@ -51,14 +53,15 @@ class LoraLinear(eqx.Module):
     """
 
     wrapped: hnn.Linear
-    lora_A: hnn.Linear
-    lora_B: hnn.Linear
+    lora_A: haliax.NamedArray
+    lora_B: haliax.NamedArray
     alpha: float = eqx.field(static=True)
 
     def __call__(self, x):
         y = self.wrapped(x)
-        z = self.lora_A(x)
-        z = self.lora_B(z)
+
+        z = haliax.dot(LORA_R, self.lora_A, x)
+        z = haliax.dot(LORA_R, self.lora_B, z)
         z = z * self.alpha
 
         return z + y
@@ -68,7 +71,7 @@ class LoraLinear(eqx.Module):
         """
         Initializes a LoraLinear module.
         """
-        _R = haliax.Axis("LORA_R", r)
+        _R = haliax.Axis(LORA_R, r)
         key_A, key_B = jax.random.split(key)
         lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A)
         lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B)
