@@ -191,9 +191,13 @@ def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_
 
     if out_dims_first_in_dict:
         weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
     else:
         weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+    if layer.out_first:
+        weight = weight.rearrange((..., "__OUT__", "__IN__"))
+    else:
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
 
     # now unflatten
     weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
@@ -213,7 +217,7 @@ def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_
     return ret_dict
 
 
-def reshape_linear_layer(
+def reshape_linear_layers(
     in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
 ) -> StateDict:
     """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
