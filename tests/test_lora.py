@@ -69,3 +69,23 @@ def test_lora_scan_layers():
     assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
     input = hax.random.normal(k0, (In,))
     assert not hax.all(hax.isclose(module.fold(input), loraized.fold(input)))
+
+
+def test_lora_peft_integration():
+    import peft
+    import transformers
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    base_hf_model = AutoModelForCausalLM.from_pretrained("stanford-crfm/expanse-gpt2-small-x777")
+    peft_config = peft.tuners.LoraConfig(
+        base_model_name_or_path="stanford-crfm/expanse-gpt2-small-x777",
+        peft_type="lora",
+    )
+    model = peft.get_peft_model(base_hf_model, peft_config)
+    model.print_trainable_parameters()
+
+    from peft.utils.save_and_load import get_peft_model_state_dict
+
+    model_state_dict = get_peft_model_state_dict(model)
+
+    print(model_state_dict.keys())
+

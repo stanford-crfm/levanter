@@ -53,15 +53,15 @@ class LoraLinear(eqx.Module):
     """
 
     wrapped: hnn.Linear
-    lora_A: haliax.NamedArray
-    lora_B: haliax.NamedArray
+    lora_A: hnn.Linear
+    lora_B: hnn.Linear
     alpha: float = eqx.field(static=True)
 
     def __call__(self, x):
         y = self.wrapped(x)
+        z = self.lora_A(x)
+        z = self.lora_B(z)
 
-        z = haliax.dot(LORA_R, self.lora_A, x)
-        z = haliax.dot(LORA_R, self.lora_B, z)
         z = z * self.alpha
 
         return z + y
@@ -73,8 +73,8 @@ class LoraLinear(eqx.Module):
         """
         _R = haliax.Axis(LORA_R, r)
         key_A, key_B = jax.random.split(key)
-        lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A)
-        lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B)
+        lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A, use_bias=False, out_first=True)
+        lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B, use_bias=False, out_first=True)
 
         return LoraLinear(wrapped, lora_A, lora_B, alpha)
 
@@ -114,20 +114,16 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
 
     if isinstance(config.target_modules, str):
         compiled = re.compile(config.target_modules)
-
-        def matches_target(key_path: str):
-            return compiled.match(key_path) is not None
-
+        matches_target = lambda key_path: compiled.match(key_path) is not None  # noqa
     else:
-
-        def matches_target(key_path: str):
-            return any(key_path.endswith(target) for target in config.target_modules)
+        matches_target = lambda key_path: any(key_path.endswith(target) for target in config.target_modules)  # noqa
 
     def _batchify_ctor(ctor):
         # this is gross but it basically just vmaps the ctor over each batch dimension
         return functools.reduce(lambda ctor, batch_axis: haliax.vmap(ctor, batch_axis), reversed(batch_dims), ctor)
 
     def _loraize_module(module, key_path):
+        # TODO: turn into a registry
         if isinstance(module, hnn.Stacked):
             new_inner = _loraize(
                 module.stacked,
