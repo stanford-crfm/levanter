@@ -1,6 +1,6 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -217,23 +217,6 @@ def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_
     return ret_dict
 
 
-def reshape_linear_layers(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
-) -> StateDict:
-    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape((-1,) + in_shape + out_shape)
-    bias = bias.reshape((-1,) + out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
-
-    return new_dict
-
-
 def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
     """
     Unstack all keys matching prefix in a new state dict, returning a state dict that has all keys matching
@@ -294,24 +277,3 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
         vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
 
     return vectorized_dict
-
-
-def reshape_mlp_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
-) -> StateDict:
-    """
-    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
-    This is different from reshape_linear_layer as we removed (-1,) from the shape
-    of the weights and bias.
-    """
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape(in_shape + out_shape)
-    bias = bias.reshape(out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
-
-    return new_dict
