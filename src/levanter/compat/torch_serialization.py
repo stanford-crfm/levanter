@@ -3,6 +3,7 @@ from dataclasses import fields
 from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy
 from jaxtyping import PyTree
@@ -11,6 +12,8 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import NamedArray
 from haliax.util import ensure_tuple
+
+from levanter.utils.jax_utils import leaf_key_paths
 
 
 StateDict = Dict[str, Any]
@@ -155,66 +158,91 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
-def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = layer.weight
-    bias = layer.bias
+def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in_dict: bool) -> StateDict:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    flattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
 
-    ret_dict: StateDict = {}
+    :param prefix: prefix to apply to the keys in the state dict
+    :param tree:
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix
+    This is the default in PyTorch, but not in Haliax.
+    """
 
-    weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
-    if bias is not None:
-        bias = bias.flatten_axes(layer.Out, "__OUT__")
+    def _flatten_linear(layer, prefix):
+        if not isinstance(layer, hnn.Linear):
+            return layer
 
-    if out_dims_first_in_dict:
-        weight = weight.rearrange((..., "__OUT__", "__IN__"))
-    else:
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+        weight = layer.weight
+        bias = layer.bias
 
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        ret_dict: StateDict = {}
 
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+        weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+        if bias is not None:
+            bias = bias.flatten_axes(layer.Out, "__OUT__")
 
-    return ret_dict
+        if out_dims_first_in_dict:
+            weight = weight.rearrange((..., "__OUT__", "__IN__"))
+        else:
+            weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(tree, prefix or "", is_leaf=lambda x: isinstance(x, hnn.Linear))
+    return jax.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
 
 
-def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = statedict[apply_prefix(prefix, "weight")]
-    bias = statedict.get(apply_prefix(prefix, "bias"), None)
+def unflatten_linear_layers(
+    prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool
+) -> StateDict:
+    def _unflatten_linear(layer, prefix):
+        if not isinstance(layer, hnn.Linear):
+            return layer
 
-    Out = ensure_tuple(layer.Out)
-    In = ensure_tuple(layer.In)
-    InOut = In + Out
-    extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+        weight = statedict[apply_prefix(prefix, "weight")]
+        bias = statedict.get(apply_prefix(prefix, "bias"), None)
 
-    if out_dims_first_in_dict:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
-    else:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+        Out = ensure_tuple(layer.Out)
+        In = ensure_tuple(layer.In)
+        InOut = In + Out
+        extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
 
-    if layer.out_first:
-        weight = weight.rearrange((..., "__OUT__", "__IN__"))
-    else:
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+        if out_dims_first_in_dict:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
+        else:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
 
-    # now unflatten
-    weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
+        if layer.out_first:
+            weight = weight.rearrange((..., "__OUT__", "__IN__"))
+        else:
+            weight = weight.rearrange((..., "__IN__", "__OUT__"))
 
-    if bias is not None:
-        bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
-        bias = bias.unflatten_axis("__OUT__", layer.Out)
+        # now unflatten
+        weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
 
-    # tree_structure = jax.tree_structure(layer)
-    # return jax.tree_unflatten(tree_structure, (weight, bias))
+        if bias is not None:
+            bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
+            bias = bias.unflatten_axis("__OUT__", layer.Out)
 
-    ret_dict: StateDict = {}
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+        # tree_structure = jax.tree_structure(layer)
+        # return jax.tree_unflatten(tree_structure, (weight, bias))
 
-    return ret_dict
+        ret_dict: StateDict = {}
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(layer, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear))
+    return jax.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
 
 
 def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
