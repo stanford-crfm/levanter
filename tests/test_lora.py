@@ -64,8 +64,8 @@ def test_lora_scan_layers():
     assert isinstance(loraized.stacked.first, LoraLinear)
     assert isinstance(loraized.stacked.second, hnn.Linear)
 
-    assert loraized.stacked.first.lora_A.weight.axes == (Layers, In, hax.Axis("LORA_R", 8))
-    assert loraized.stacked.first.lora_B.weight.axes == (Layers, hax.Axis("LORA_R", 8), Mid)
+    assert loraized.stacked.first.lora_A.weight.axes == (Layers, hax.Axis("LORA_R", 8), In)
+    assert loraized.stacked.first.lora_B.weight.axes == (Layers, Mid, hax.Axis("LORA_R", 8))
 
     assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
     input = hax.random.normal(k0, (In,))
@@ -85,13 +85,16 @@ def test_lora_peft_integration():
 
     from peft.utils.save_and_load import get_peft_model_state_dict
 
-    model_state_dict = get_peft_model_state_dict(model)
+    hf_dict = get_peft_model_state_dict(model)
 
     converter = Gpt2Config.default_hf_checkpoint_converter
     lev_model = converter.load_pretrained(Gpt2LMHeadModel, "stanford-crfm/expanse-gpt2-small-x777")
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
     # for some dumb reason, the hf state dict starts with this prefix
-    d = lora_state_dict(lora_lev_model, "base_model.model.transformer")
+    lev_dict = lora_state_dict(lora_lev_model, "base_model.model.transformer")
 
-    assert d.keys() == model_state_dict.keys()
+    assert lev_dict.keys() == hf_dict.keys()
+
+    for k, v in lev_dict.items():
+        assert v.shape == hf_dict[k].shape

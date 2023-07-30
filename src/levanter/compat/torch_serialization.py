@@ -158,7 +158,7 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
-def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in_dict: bool) -> StateDict:
+def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in_dict: Optional[bool]) -> StateDict:
     """
     In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
     linear layers can have arbitrary dimensions, grouped into input and output axes. This function
@@ -166,7 +166,8 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
 
     :param prefix: prefix to apply to the keys in the state dict
     :param tree:
-    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be left as-is.
     This is the default in PyTorch, but not in Haliax.
     """
 
@@ -184,10 +185,12 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
             if bias is not None:
                 bias = bias.flatten_axes(layer.Out, "__OUT__")
 
-            if out_dims_first_in_dict:
+            if out_dims_first_in_dict is True:
                 weight = weight.rearrange((..., "__OUT__", "__IN__"))
-            else:
+            elif out_dims_first_in_dict is False:
                 weight = weight.rearrange((..., "__IN__", "__OUT__"))
+            else:
+                pass
 
         ret_dict[apply_prefix(prefix, "weight")] = weight.array
 
@@ -196,19 +199,31 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
 
         return ret_dict
 
-    tree_prefixes = leaf_key_paths(
-        tree, prefix or "", is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True
-    )
+    tree_prefixes = leaf_key_paths(tree, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True)
     jax.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 
 def unflatten_linear_layers(
-    prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool
+    prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: Optional[bool]
 ) -> StateDict:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    unflattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
+
+    :param prefix: prefix to apply to the keys in the state dict
+    :param statedict: the state dict to source the flattened weights from
+    :param layer: the exemplar layer to use for unflattening
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be inferred from the linear
+    :return:
+    """
     ret_dict: StateDict = {}
 
     def _unflatten_linear(layer, prefix):
+        nonlocal out_dims_first_in_dict
+
         if not isinstance(layer, hnn.Linear):
             return layer
 
@@ -219,6 +234,9 @@ def unflatten_linear_layers(
         In = ensure_tuple(layer.In)
         InOut = In + Out
         extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+
+        if out_dims_first_in_dict is None:
+            out_dims_first_in_dict = layer.out_first
 
         if out_dims_first_in_dict:
             weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))

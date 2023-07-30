@@ -165,7 +165,11 @@ def _isnamedtupleinstance(x):
 
 
 def leaf_key_paths(
-    pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any], bool]] = None, use_state_dict_keys: bool = False
+    pytree,
+    prefix: Optional[str] = "",
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+    use_state_dict_keys: bool = False,
 ):
     """Creates unique, hopefully meaningful key paths for each leaf in a pytree. This is useful for
     serialization mostly. This functions knows about dicts, lists, NamedTuples, tuples, and equinox-style modules"""

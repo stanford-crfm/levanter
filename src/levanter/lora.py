@@ -43,9 +43,23 @@ class LoraConfig:
     # TODO: dropout
 
 
-def _is_lora_compatible_module(module):
-    # TODO: more modules
-    return isinstance(module, hnn.Linear)
+def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
+    """
+    Applies LoRA transform to the given model by replacing Linear layers that match the given pattern with LoraLinear layers.
+    """
+    return _loraize(model, config, key, "", batch_dims=())
+
+
+DEFAULT_DICT_PREFIX = "base_model.model"
+
+
+def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
+    """
+    Returns a state dict of the LoRA parameters of the given model without other parameters.
+    This method attempts to return a state dict compatible with PEFT's import method.
+    """
+    state_dict = jax_tree_to_state_dict(filter_lora_params(model), prefix=prefix)
+    return {k: v for k, v in state_dict.items() if v is not None}
 
 
 class LoraLinear(eqx.Module, StateDictSerializationMixin):
@@ -63,9 +77,13 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
         z = self.lora_A(x)
         z = self.lora_B(z)
 
-        z = z * self.alpha
+        z = z * (self.alpha / self.r)
 
         return z + y
+
+    @property
+    def r(self) -> int:
+        return self.lora_A.Out.size  # type: ignore
 
     @staticmethod
     def init(wrapped: hnn.Linear, r: int, alpha: float, *, key):
@@ -74,6 +92,7 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
         """
         _R = haliax.Axis(LORA_R, r)
         key_A, key_B = jax.random.split(key)
+        # Peft always uses out_first=True (i.e. normal Torch convention) for linear, even for gpt2-style Conv1d
         lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A, use_bias=False, out_first=True)
         lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B, use_bias=False, out_first=True)
 
@@ -83,6 +102,11 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
         return {
             "wrapped": None,
         }
+
+
+def _is_lora_compatible_module(module):
+    # TODO: more modules
+    return isinstance(module, hnn.Linear)
 
 
 def filter_lora_params(params: M) -> M:
@@ -96,13 +120,6 @@ def filter_lora_params(params: M) -> M:
         return dataclasses.replace(node, wrapped=None)
 
     return jax.tree_util.tree_map(_keep_only_lora_params, params, is_leaf=lambda node: isinstance(node, LoraLinear))
-
-
-def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
-    """
-    Applies LoRA transform to the given model by replacing Linear layers that match the given pattern with LoraLinear layers.
-    """
-    return _loraize(model, config, key, "", batch_dims=())
 
 
 def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str, batch_dims: Tuple[Axis, ...]) -> M:
@@ -165,14 +182,3 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         leaf_key_paths(model, is_leaf=_is_special_module, prefix=prefix),
         is_leaf=_is_special_module,
     )
-
-
-DEFAULT_DICT_PREFIX = "base_model.model"
-
-
-def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
-    """
-    Returns a state dict of the LoRA parameters of the given model without other parameters.
-    """
-    state_dict = jax_tree_to_state_dict(filter_lora_params(model), prefix=prefix)
-    return {k: v for k, v in state_dict.items() if v is not None}
