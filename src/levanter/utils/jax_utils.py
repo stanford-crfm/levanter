@@ -164,30 +164,41 @@ def _isnamedtupleinstance(x):
     return all(type(n) == str for n in f)
 
 
-def leaf_key_paths(pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any], bool]] = None):
+def leaf_key_paths(
+    pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any], bool]] = None, use_state_dict_keys: bool = False
+):
     """Creates unique, hopefully meaningful key paths for each leaf in a pytree. This is useful for
     serialization mostly. This functions knows about dicts, lists, NamedTuples, tuples, and equinox-style modules"""
     # TODO: jax now has a tree_flatten_with_path function. We should use that instead
+    rec = lambda x, p: leaf_key_paths(  # noqa: E731
+        x, prefix=join_key(prefix, p), is_leaf=is_leaf, use_state_dict_keys=use_state_dict_keys
+    )
+
     if is_leaf is not None and is_leaf(pytree):
         return prefix
     elif isinstance(pytree, dict):
-        return {k: leaf_key_paths(v, prefix=join_key(prefix, k)) for k, v in pytree.items()}
+        return {k: rec(v, k) for k, v in pytree.items()}
     elif _isnamedtupleinstance(pytree):
-        d = {k: leaf_key_paths(v, prefix=join_key(prefix, k), is_leaf=is_leaf) for k, v in pytree._asdict().items()}
+        d = {k: rec(v, k) for k, v in pytree._asdict().items()}
         return pytree.__class__(**d)
     elif isinstance(pytree, list):
-        return [leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree)]
+        return [rec(v, str(i)) for i, v in enumerate(pytree)]
     elif isinstance(pytree, tuple):
-        return tuple(leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree))
+        return tuple(rec(v, str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
         names = []
         rec_values = []
         for field in fields(pytree):
             if field.metadata.get("static", False):
                 continue
-            names.append(field.name)
-            field_prefix = join_key(prefix, field.name)
-            rec_value = leaf_key_paths(getattr(pytree, field.name), prefix=field_prefix, is_leaf=is_leaf)
+            field_name = field.name
+            field = getattr(pytree, field_name)
+            names.append(field_name)
+
+            if use_state_dict_keys and hasattr(field, "_state_dict_key_map"):
+                field_name = field._state_dict_key_map.get(field_name, field_name)
+
+            rec_value = rec(field, field_name)
             rec_values.append(rec_value)
         return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
@@ -199,6 +210,8 @@ def leaf_key_paths(pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any]
 
 
 def join_key(prefix, k):
+    if k is None:
+        return prefix
     return f"{prefix}.{k}" if prefix else k
 
 

@@ -4,7 +4,8 @@ import jax
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.lora import LoraConfig, LoraLinear, loraize
+from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
 In = hax.Axis("In", 10)
@@ -73,19 +74,24 @@ def test_lora_scan_layers():
 
 def test_lora_peft_integration():
     import peft
-    import transformers
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
+
     base_hf_model = AutoModelForCausalLM.from_pretrained("stanford-crfm/expanse-gpt2-small-x777")
     peft_config = peft.tuners.LoraConfig(
         base_model_name_or_path="stanford-crfm/expanse-gpt2-small-x777",
         peft_type="lora",
     )
     model = peft.get_peft_model(base_hf_model, peft_config)
-    model.print_trainable_parameters()
 
     from peft.utils.save_and_load import get_peft_model_state_dict
 
     model_state_dict = get_peft_model_state_dict(model)
 
-    print(model_state_dict.keys())
+    converter = Gpt2Config.default_hf_checkpoint_converter
+    lev_model = converter.load_pretrained(Gpt2LMHeadModel, "stanford-crfm/expanse-gpt2-small-x777")
 
+    lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
+    # for some dumb reason, the hf state dict starts with this prefix
+    d = lora_state_dict(lora_lev_model, "base_model.model.transformer")
+
+    assert d.keys() == model_state_dict.keys()

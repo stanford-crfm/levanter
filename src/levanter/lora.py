@@ -5,7 +5,7 @@ import dataclasses
 import functools
 import re
 from dataclasses import dataclass
-from typing import List, Tuple, TypeVar, Union
+from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -16,6 +16,7 @@ import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
 
+from levanter.compat.torch_serialization import StateDict, StateDictSerializationMixin, jax_tree_to_state_dict
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 
 
@@ -47,7 +48,7 @@ def _is_lora_compatible_module(module):
     return isinstance(module, hnn.Linear)
 
 
-class LoraLinear(eqx.Module):
+class LoraLinear(eqx.Module, StateDictSerializationMixin):
     """
     Linear layer with LoRA transform.
     """
@@ -77,6 +78,24 @@ class LoraLinear(eqx.Module):
         lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B, use_bias=False, out_first=True)
 
         return LoraLinear(wrapped, lora_A, lora_B, alpha)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {
+            "wrapped": None,
+        }
+
+
+def filter_lora_params(params: M) -> M:
+    """
+    Filters LoRA parameters from the given parameter tree.
+    """
+
+    def _keep_only_lora_params(node):
+        if not isinstance(node, LoraLinear):
+            return None
+        return dataclasses.replace(node, wrapped=None)
+
+    return jax.tree_util.tree_map(_keep_only_lora_params, params, is_leaf=lambda node: isinstance(node, LoraLinear))
 
 
 def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
@@ -146,3 +165,14 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         leaf_key_paths(model, is_leaf=_is_special_module, prefix=prefix),
         is_leaf=_is_special_module,
     )
+
+
+DEFAULT_DICT_PREFIX = "base_model.model"
+
+
+def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
+    """
+    Returns a state dict of the LoRA parameters of the given model without other parameters.
+    """
+    state_dict = jax_tree_to_state_dict(filter_lora_params(model), prefix=prefix)
+    return {k: v for k, v in state_dict.items() if v is not None}
