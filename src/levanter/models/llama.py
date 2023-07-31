@@ -1,9 +1,14 @@
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, Type
+
 import equinox as eqx
 
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
+from haliax.jax_utils import named_call
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
+from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig
 
 
@@ -57,7 +62,7 @@ class LlamaMlp(eqx.Module):
         act = activation_fn  # type: ignore
 
     @named_call
-    def __call__(self, x: Tensor, *, key: jnp.ndarray) -> Tensor:
+    def __call__(self, x: NamedArray) -> NamedArray:
         hidden_states = self.gate_proj(x)
         hidden_states = self.act(hidden_states)
         hidden_states = hidden_states * self.up_proj(x)
@@ -71,10 +76,10 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     k_proj: hnn.Linear  # projection from Embed to key
     v_proj: hnn.Linear  # projection from Embed to value
     o_proj: hnn.Linear  # projection from Heads to output
-    rotary_emb: hnn.RotaryEmbedding  # rotary embedding
+    # rotary_emb  # rotary embedding
 
     @staticmethod
-    def init(config: Llama2Config, *, key) -> "Llama2Attention":
+    def init(config: LlamaConfig, *, key) -> "LlamaAttention":
         use_bias = config.use_bias
         Embed = config.Embed
 
@@ -83,8 +88,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k_proj = hnn.Linear.init(In=Embed, Out=config.KVHeads * config.HeadDim, key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=config.KVHeads * config.HeadDim, key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=config.Heads * config.HeadDim, Out=Embed, key=k_o, use_bias=use_bias)
-        rotary_emb = _get_rotary_emb(config)
-        return Llama2Attention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
+        # rotary_emb = _get_rotary_emb(config)
+        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
     named_call
 
@@ -110,17 +115,21 @@ class LlamaLMHeadModel(eqx.Module):
 
 import jax
 import jax.numpy as jnp
-from flax import linen as nn
 
 
-class LlamaRotaryEmbedding(eqx.Module):
+class LlamaRotaryEmbedding():
     dim: int
     max_position_embeddings: int = 2048
     base: float = 10000
 
+    def __init__(self, dim, max_position_embeddings=2048, base=10000):
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.setup()
+
     def setup(self):
-        inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
-        self.inv_freq = inv_freq
+        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
 
         # Build here to make the embedding.
         self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=self.max_position_embeddings)
@@ -137,7 +146,7 @@ class LlamaRotaryEmbedding(eqx.Module):
 
         return cos_cached, sin_cached
 
-    def __call__(self, x, seq_len=None):
+    def __call__(self, x, seq_len: int):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
             self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=seq_len)
