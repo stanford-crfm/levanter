@@ -16,14 +16,11 @@ import draccus
 import fsspec
 import huggingface_hub
 import jax
-import jax.numpy as jnp
-import numpy as np
 import safetensors
 import safetensors.numpy
 from fsspec import AbstractFileSystem
 from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
-from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
@@ -37,7 +34,8 @@ from haliax import Axis
 from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin
+import levanter.compat.torch_serialization
+from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
@@ -129,7 +127,6 @@ def _coerce_to_rr(s: Union[str, RepoRef]) -> RepoRef:
 LevConfig = TypeVar("LevConfig", bound=HFCompatConfig)
 
 # just for generating unique ids
-_GLOBAL_SAVE_COUNT = 0
 
 KEYS_TO_COPY_FROM_BASE_CONFIG = {
     "architectures",
@@ -444,32 +441,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f)
 
         # Model
-
-        def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
-            if isinstance(arr, np.ndarray):
-                return arr
-            elif "cpu" in arr.device().device_kind:
-                return np.array(arr)
-            elif arr.is_fully_addressable:
-                r = np.array(arr)
-                return r
-            else:
-                return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
-
-        # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-        model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
-
-        # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
-        state_dict = model.to_state_dict()
-
-        # now that we've moved the model to the CPU, we don't need to do this on all processes
-        if jax.process_index() == 0:
-            # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-            safetensors.numpy.save_file(state_dict, os.path.join(path, SAFE_TENSORS_MODEL), metadata={"format": "pt"})
-
-        global _GLOBAL_SAVE_COUNT
-        sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
-        _GLOBAL_SAVE_COUNT += 1
+        save_state_dict(model, os.path.join(path, SAFE_TENSORS_MODEL))
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_pretrained(
@@ -532,9 +504,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             else:
                 logger.info(f"Waiting for process 0 to finish saving checkpoint to {path}")
 
-            global _GLOBAL_SAVE_COUNT
-            sync_global_devices(f"upload? {path}{_GLOBAL_SAVE_COUNT}")
-            _GLOBAL_SAVE_COUNT += 1
+            sync_global_devices(f"upload? {path}{levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT}")
+            levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT += 1
         finally:
             if tmpdir is not None:
                 shutil.rmtree(tmpdir)

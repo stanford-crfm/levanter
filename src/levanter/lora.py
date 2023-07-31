@@ -3,6 +3,8 @@ Implements LoRA https://arxiv.org/abs/2106.09685 transforms on Levanter models
 """
 import dataclasses
 import functools
+import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, TypeVar, Union
@@ -16,7 +18,12 @@ import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
 
-from levanter.compat.torch_serialization import StateDict, StateDictSerializationMixin, jax_tree_to_state_dict
+from levanter.compat.torch_serialization import (
+    StateDict,
+    StateDictSerializationMixin,
+    jax_tree_to_state_dict,
+    save_state_dict,
+)
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 
 
@@ -144,13 +151,6 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
     There are two ways we can approach scan layers: one is to ask implementors of lora layers to handle
     this themselves, and the other is to handle it here. The former is more flexible, but the latter is
     more convenient, even if it runs the risk of being a leaky abstraction. We choose the latter.
-
-    :param model:
-    :param config:
-    :param key:
-    :param prefix: prefix of the current key path
-    :param batch_dims: batch dimensions of the current key path
-    :return:
     """
     key_iter = key_iterator(key)
 
@@ -195,7 +195,8 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
 
 def merge_lora_modules(module: M) -> M:
     """
-    Merges LoRA modules into their wrapped modules.
+    Merges LoRA modules into their wrapped modules. That is, it adds the LoRA parameters to the wrapped weights,
+    producing a modified base model with no LoRA parameters.
     """
 
     def _merge_lora_modules(module):
@@ -205,3 +206,61 @@ def merge_lora_modules(module: M) -> M:
             return module
 
     return jax.tree_util.tree_map(_merge_lora_modules, module, is_leaf=lambda node: isinstance(node, LoraLinear))
+
+
+def save_peft_pretrained(lora_model: M, config: LoraConfig, base_model_name_or_path, path: str):
+    """
+    Saves a LoRA model as a HuggingFace checkpoint, compatible with Peft.
+    """
+    os.makedirs(path, exist_ok=True)
+    hf_config = to_hf_config(config, base_model_name_or_path=base_model_name_or_path)
+    lora_model = filter_lora_params(lora_model)
+    from peft.utils import CONFIG_NAME, SAFETENSORS_WEIGHTS_NAME
+
+    save_state_dict(lora_model, f"{path}/{SAFETENSORS_WEIGHTS_NAME}")
+
+    with open(f"{path}/{CONFIG_NAME}", "w") as f:
+        json.dump(hf_config, f)
+
+
+def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:
+    """
+    Converts a LoraConfig to a HuggingFace config.
+    """
+    # Example:
+    # {
+    #   "base_model_name_or_path": "decapoda-research/llama-7b-hf",
+    #   "bias": "none",
+    #   "enable_lora": null,
+    #   "fan_in_fan_out": false,
+    #   "inference_mode": true,
+    #   "lora_alpha": 16,
+    #   "lora_dropout": 0.05,
+    #   "merge_weights": false,
+    #   "modules_to_save": null,
+    #   "peft_type": "LORA",
+    #   "r": 16,
+    #   "target_modules": [
+    #     "q_proj",
+    #     "k_proj",
+    #     "v_proj",
+    #     "o_proj"
+    #   ],
+    #   "task_type": "CAUSAL_LM"
+    # }
+    return {
+        "base_model_name_or_path": base_model_name_or_path,
+        "bias": "none",  # TODO: support bias
+        "enable_lora": None,
+        "fan_in_fan_out": False,  # TODO: support fan_in_fan_out
+        "inference_mode": True,  # TODO: support inference_mode
+        "lora_alpha": config.alpha,
+        "lora_dropout": 0.00,  # TODO: support dropout
+        "merge_weights": False,
+        "modules_to_save": None,  # TODO: support modules_to_save?
+        "peft_type": "LORA",
+        "r": config.r,
+        "target_modules": config.target_modules,
+        "task_type": "CAUSAL_LM",  # TODO: support task_type
+        **kwargs,
+    }

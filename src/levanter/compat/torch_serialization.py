@@ -1,11 +1,15 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, TypeVar, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, Union, cast, overload
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy
+import numpy as np
+import safetensors.numpy
+from jax import numpy as jnp
+from jax.experimental import multihost_utils
+from jax.experimental.multihost_utils import sync_global_devices
 from jaxtyping import PyTree
 
 import haliax as hax
@@ -331,3 +335,47 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
         vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
 
     return vectorized_dict
+
+
+def to_numpy_state_dict(model):
+    """
+    Convert a model to a state dict, bringing all tensors to the CPU first and then converting to numpy.
+    This method is especially useful for saving models distributed across multiple hosts.
+    """
+
+    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
+        if isinstance(arr, np.ndarray):
+            return arr
+        elif "cpu" in arr.device().device_kind:
+            return np.array(arr)
+        elif arr.is_fully_addressable:
+            r = np.array(arr)
+            return r
+        else:
+            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+
+    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+    model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
+    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+    state_dict = model.to_state_dict()
+    return state_dict
+
+
+_GLOBAL_SAVE_COUNT = 0
+
+
+def save_state_dict(model, path):
+    """
+    Save a model's state dict to a file, bringing all tensors to the CPU first and then converting to numpy.
+    This will save using safetensors format
+    """
+    state_dict = to_numpy_state_dict(model)
+    # don't save none keys
+    state_dict = {k: v for k, v in state_dict.items() if v is not None}
+    # now that we've moved the model to the CPU, we don't need to do this on all processes
+    if jax.process_index() == 0:
+        # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+        safetensors.numpy.save_file(state_dict, path, metadata={"format": "pt"})
+    global _GLOBAL_SAVE_COUNT
+    sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
+    _GLOBAL_SAVE_COUNT += 1

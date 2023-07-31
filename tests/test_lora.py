@@ -1,11 +1,16 @@
+import tempfile
+
 import equinox as eqx
 import jax
+from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules, save_peft_pretrained
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from test_utils import skip_if_no_torch
 
 
 In = hax.Axis("In", 10)
@@ -129,3 +134,27 @@ def test_merge_lora():
 
     input = hax.random.normal(k0, (In,))
     assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
+
+
+@skip_if_no_torch
+def test_lora_roundtrip():
+    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
+    Vocab = converter.Vocab
+
+    model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from peft import PeftConfig, PeftModel
+
+        converter.save_pretrained(model, f"{tmpdir}/model")
+
+        lora_config = LoraConfig(r=8, target_modules=["c_attn"])
+        loraized = loraize(model, lora_config, key=jax.random.PRNGKey(0))
+
+        save_peft_pretrained(loraized, lora_config, f"{tmpdir}/model", f"{tmpdir}/loraized")
+
+        # load with peft
+        config = PeftConfig.from_pretrained(f"{tmpdir}/loraized")
+        hf_model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path, device_map="auto")
+        hf_model = PeftModel.from_pretrained(hf_model, f"{tmpdir}/loraized", device_map="auto")
