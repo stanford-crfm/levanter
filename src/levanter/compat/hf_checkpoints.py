@@ -35,7 +35,7 @@ from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 
 import levanter.compat.torch_serialization
-from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict
+from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
@@ -441,7 +441,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f)
 
         # Model
-        save_state_dict(model, os.path.join(path, SAFE_TENSORS_MODEL))
+        state_dict = to_numpy_state_dict(model)
+        save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_pretrained(

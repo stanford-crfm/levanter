@@ -21,8 +21,8 @@ from haliax.jax_utils import shaped_rng_split
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
-    jax_tree_to_state_dict,
     save_state_dict,
+    to_numpy_state_dict,
 )
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 
@@ -57,7 +57,7 @@ def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
     return _loraize(model, config, key, "", batch_dims=())
 
 
-DEFAULT_DICT_PREFIX = "base_model.model"
+DEFAULT_DICT_PREFIX = "base_model.model.transformer"
 
 
 def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
@@ -65,7 +65,7 @@ def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> St
     Returns a state dict of the LoRA parameters of the given model without other parameters.
     This method attempts to return a state dict compatible with PEFT's import method.
     """
-    state_dict = jax_tree_to_state_dict(filter_lora_params(model), prefix=prefix)
+    state_dict = to_numpy_state_dict(filter_lora_params(model), prefix=prefix)
     return {k: v for k, v in state_dict.items() if v is not None}
 
 
@@ -208,16 +208,21 @@ def merge_lora_modules(module: M) -> M:
     return jax.tree_util.tree_map(_merge_lora_modules, module, is_leaf=lambda node: isinstance(node, LoraLinear))
 
 
-def save_peft_pretrained(lora_model: M, config: LoraConfig, base_model_name_or_path, path: str):
+SAFETENSORS_WEIGHTS_NAME = "adapter_model.safetensors"
+CONFIG_NAME = "adapter_config.json"
+
+
+def save_peft_pretrained(
+    lora_model: M, config: LoraConfig, base_model_name_or_path, path: str, prefix: Optional[str] = DEFAULT_DICT_PREFIX
+):
     """
     Saves a LoRA model as a HuggingFace checkpoint, compatible with Peft.
     """
     os.makedirs(path, exist_ok=True)
     hf_config = to_hf_config(config, base_model_name_or_path=base_model_name_or_path)
-    lora_model = filter_lora_params(lora_model)
-    from peft.utils import CONFIG_NAME, SAFETENSORS_WEIGHTS_NAME
+    state_dict = lora_state_dict(lora_model, prefix=prefix)
 
-    save_state_dict(lora_model, f"{path}/{SAFETENSORS_WEIGHTS_NAME}")
+    save_state_dict(state_dict, f"{path}/{SAFETENSORS_WEIGHTS_NAME}")
 
     with open(f"{path}/{CONFIG_NAME}", "w") as f:
         json.dump(hf_config, f)

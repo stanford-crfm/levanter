@@ -337,7 +337,7 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
     return vectorized_dict
 
 
-def to_numpy_state_dict(model):
+def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
     """
     Convert a model to a state dict, bringing all tensors to the CPU first and then converting to numpy.
     This method is especially useful for saving models distributed across multiple hosts.
@@ -357,20 +357,18 @@ def to_numpy_state_dict(model):
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
     model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
     # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
-    state_dict = model.to_state_dict()
+    state_dict = model.to_state_dict(prefix=prefix)
     return state_dict
 
 
 _GLOBAL_SAVE_COUNT = 0
 
 
-def save_state_dict(model, path):
+def save_state_dict(state_dict: StateDict, path):
     """
     Save a model's state dict to a file, bringing all tensors to the CPU first and then converting to numpy.
     This will save using safetensors format
     """
-    state_dict = to_numpy_state_dict(model)
-    # don't save none keys
     state_dict = {k: v for k, v in state_dict.items() if v is not None}
     # now that we've moved the model to the CPU, we don't need to do this on all processes
     if jax.process_index() == 0:
