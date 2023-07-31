@@ -77,9 +77,18 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
         z = self.lora_A(x)
         z = self.lora_B(z)
 
-        z = z * (self.alpha / self.r)
+        z = z * self.scale_factor
 
         return z + y
+
+    @property
+    def scale_factor(self):
+        return self.alpha / self.r
+
+    def merge(self):
+        ab = haliax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale_factor
+        new_weight = self.wrapped.weight + ab
+        return dataclasses.replace(self.wrapped, weight=new_weight)
 
     @property
     def r(self) -> int:
@@ -182,3 +191,17 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         leaf_key_paths(model, is_leaf=_is_special_module, prefix=prefix),
         is_leaf=_is_special_module,
     )
+
+
+def merge_lora_modules(module: M) -> M:
+    """
+    Merges LoRA modules into their wrapped modules.
+    """
+
+    def _merge_lora_modules(module):
+        if isinstance(module, LoraLinear):
+            return module.merge()
+        else:
+            return module
+
+    return jax.tree_util.tree_map(_merge_lora_modules, module, is_leaf=lambda node: isinstance(node, LoraLinear))

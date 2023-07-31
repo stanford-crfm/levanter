@@ -4,7 +4,7 @@ import jax
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize
+from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 
 
@@ -98,3 +98,34 @@ def test_lora_peft_integration():
 
     for k, v in lev_dict.items():
         assert v.shape == hf_dict[k].shape
+
+
+def test_merge_lora():
+    class Module(eqx.Module):
+        first: hnn.Linear
+        second: hnn.Linear
+
+        def __call__(self, x):
+            return self.second(self.first(x))
+
+        @staticmethod
+        def init(*, key):
+            k1, k2 = jax.random.split(key)
+            first = hnn.Linear.init(In, Mid, key=k1)
+            second = hnn.Linear.init(Mid, In, key=k2)
+            return Module(first, second)
+
+    Layers = hax.Axis("Layers", 3)
+
+    k0 = jax.random.PRNGKey(0)
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
+
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+    assert isinstance(loraized, hnn.Stacked)
+
+    merged = merge_lora_modules(loraized)
+
+    assert isinstance(merged, hnn.Stacked)
+
+    input = hax.random.normal(k0, (In,))
+    assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
