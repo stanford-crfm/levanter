@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Dict, Optional, Type, cast
+from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
 import jax
@@ -21,8 +21,9 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    reshape_linear_layer,
+    flatten_linear_layer,
     stack_state_dict,
+    unflatten_linear_layer,
     unstack_state_dict,
 )
 from levanter.models.lm_model import LmConfig
@@ -197,12 +198,9 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-        es = cast(Axis, self.c_attn.In).size
         d = {}
-        num_heads = self.config.Heads.size
-        head_size = self.config.HeadSize.size
-        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_attn"), (es,), (3, num_heads, head_size)))
-        d.update(reshape_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (num_heads, head_size), (es,)))
+        d.update(unflatten_linear_layer(apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, False))
+        d.update(unflatten_linear_layer(apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, False))
 
         return super().from_state_dict(d, prefix)
 
@@ -212,14 +210,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        es = cast(Axis, self.c_attn.In).size
-        num_heads = self.config.Heads.size
-        head_size = self.config.HeadSize.size
-
-        my_dict.update(
-            reshape_linear_layer(my_dict, apply_prefix(prefix, "c_attn"), (es,), (3 * num_heads * head_size,))
-        )
-        my_dict.update(reshape_linear_layer(my_dict, apply_prefix(prefix, "c_proj"), (num_heads * head_size,), (es,)))
+        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, False))
+        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_proj"), self.c_proj, False))
 
         state_dict.update(my_dict)
         return state_dict
