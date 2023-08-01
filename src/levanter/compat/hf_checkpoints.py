@@ -13,6 +13,7 @@ from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 from urllib.parse import urlparse
 
 import draccus
+import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
@@ -25,13 +26,12 @@ from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import PretrainedConfig as HfConfig
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
 import haliax
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 
 import levanter.compat.torch_serialization
@@ -174,7 +174,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         LevConfigClass: Type[LevConfig],
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
         HfConfigClass: Optional[Union[str, Type]] = None,
-        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizer, PreTrainedTokenizerFast]] = None,
         config_overrides: Optional[dict] = None,
         trust_remote_code: bool = False,
         ignore_prefix: Optional[str] = None,
@@ -193,6 +193,30 @@ class HFCheckpointConverter(Generic[LevConfig]):
             config_overrides=config_overrides,
             trust_remote_code=trust_remote_code,
             ignore_prefix=ignore_prefix,
+        )
+
+    @staticmethod
+    def from_hf(model_name_or_path: Union[RepoRef, str], trust_remote_code: bool = False) -> "HFCheckpointConverter":
+        ref = _coerce_to_rr(model_name_or_path)
+        config_class = HFCheckpointConverter._infer_config_class(None, ref, trust_remote_code)
+        tokenizer = HFCheckpointConverter._infer_tokenizer(None, ref, trust_remote_code)
+
+        # TODO: this is very hacky, we should add another registry or something
+        # attempt to find the Levanter config class by checking the registry
+        for k, v in LmConfig.get_known_choices().items():
+            if issubclass(v, HFCompatConfig):
+                if v.default_hf_checkpoint_converter.HfConfigClass == config_class:
+                    LevConfigClass = v
+                    break
+        else:
+            raise ValueError(f"No Levanter config found for {config_class}")
+
+        return HFCheckpointConverter(
+            LevConfigClass=LevConfigClass,
+            reference_checkpoint=ref,
+            HfConfigClass=config_class,
+            tokenizer=tokenizer,
+            trust_remote_code=trust_remote_code,
         )
 
     def replaced(
@@ -244,7 +268,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return clss
 
     @staticmethod
-    def _infer_tokenizer(tokenizer, ref, trust_remote_code: bool = False):
+    def _infer_tokenizer(
+        tokenizer, ref, trust_remote_code: bool = False
+    ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
         if tokenizer is None:
             if ref is None:
                 raise ValueError("Must provide either tokenizer or reference_checkpoint")
@@ -261,7 +287,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             pass
 
-        assert isinstance(tokenizer, PreTrainedTokenizerBase)
+        assert isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast))
 
         return tokenizer
 
@@ -387,7 +413,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # TODO: i still think this isn't the best way to do this
         with jax.default_device(jax.devices("cpu")[0]):
-            lev_model = filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
         if axis_mapping is not None:

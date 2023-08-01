@@ -13,7 +13,7 @@ import equinox as eqx
 import jax
 from jaxtyping import PyTree
 
-import haliax
+import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
@@ -57,16 +57,31 @@ def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
     return _loraize(model, config, key, "", batch_dims=())
 
 
-DEFAULT_DICT_PREFIX = "base_model.model.transformer"
+class LowRankLinear(eqx.Module):
+    lora_A: hnn.Linear
+    lora_B: hnn.Linear
+    scale: float = eqx.field(static=True)
 
+    def __call__(self, x):
+        z = self.lora_A(x)
+        z = self.lora_B(z)
+        return z * self.scale
 
-def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
-    """
-    Returns a state dict of the LoRA parameters of the given model without other parameters.
-    This method attempts to return a state dict compatible with PEFT's import method.
-    """
-    state_dict = to_numpy_state_dict(filter_lora_params(model), prefix=prefix)
-    return {k: v for k, v in state_dict.items() if v is not None}
+    @staticmethod
+    def init(In: hax.Axis, Out: Axis, r: int, alpha: float, *, key):
+        """
+        Initializes a LoraLinear module.
+        """
+        _R = hax.Axis(LORA_R, r)
+        key_A, key_B = jax.random.split(key)
+        # Peft always uses out_first=True (i.e. normal Torch convention) for linear, even for gpt2-style Conv1d
+        lora_A = hnn.Linear.init(In, _R, key=key_A, use_bias=False, out_first=True)
+        lora_B = hnn.Linear.init(_R, Out, key=key_B, use_bias=False, out_first=True)
+
+        return LowRankLinear(lora_A, lora_B, alpha / r)
+
+    def merge(self) -> hax.NamedArray:
+        return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale_factor
 
 
 class LoraLinear(eqx.Module, StateDictSerializationMixin):
@@ -75,49 +90,25 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
     """
 
     wrapped: hnn.Linear
-    lora_A: hnn.Linear
-    lora_B: hnn.Linear
-    alpha: float = eqx.field(static=True)
+    lora: LowRankLinear
 
     def __call__(self, x):
-        y = self.wrapped(x)
-        z = self.lora_A(x)
-        z = self.lora_B(z)
-
-        z = z * self.scale_factor
-
-        return z + y
-
-    @property
-    def scale_factor(self):
-        return self.alpha / self.r
+        return self.lora(x) + self.wrapped(x)
 
     def merge(self):
-        ab = haliax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale_factor
-        new_weight = self.wrapped.weight + ab
-        return dataclasses.replace(self.wrapped, weight=new_weight)
-
-    @property
-    def r(self) -> int:
-        return self.lora_A.Out.size  # type: ignore
+        weight = self.lora.merge() + self.wrapped.weight
+        return dataclasses.replace(self.wrapped, weight=weight)
 
     @staticmethod
     def init(wrapped: hnn.Linear, r: int, alpha: float, *, key):
         """
         Initializes a LoraLinear module.
         """
-        _R = haliax.Axis(LORA_R, r)
-        key_A, key_B = jax.random.split(key)
-        # Peft always uses out_first=True (i.e. normal Torch convention) for linear, even for gpt2-style Conv1d
-        lora_A = hnn.Linear.init(wrapped.In, _R, key=key_A, use_bias=False, out_first=True)
-        lora_B = hnn.Linear.init(_R, wrapped.Out, key=key_B, use_bias=False, out_first=True)
-
-        return LoraLinear(wrapped, lora_A, lora_B, alpha)
+        lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, key=key)
+        return LoraLinear(wrapped, lora)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {
-            "wrapped": None,
-        }
+        return {"wrapped": None, "lora": None}
 
 
 def _is_lora_compatible_module(module):
@@ -130,12 +121,26 @@ def filter_lora_params(params: M) -> M:
     Filters LoRA parameters from the given parameter tree.
     """
 
-    def _keep_only_lora_params(node):
-        if not isinstance(node, LoraLinear):
-            return None
-        return dataclasses.replace(node, wrapped=None)
+    return eqx.filter(params, is_lora_param, is_leaf=is_lora_param)
 
-    return jax.tree_util.tree_map(_keep_only_lora_params, params, is_leaf=lambda node: isinstance(node, LoraLinear))
+
+def partition_lora_params(params: M) -> Tuple[M, M]:
+    """
+    Partitions the given parameter tree into base/non-LoRA parameters and non-LoRA parameters.
+    """
+    partitioned = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
+    return partitioned[1], partitioned[0]
+
+
+def combine_lora_params(params: M, lora_params: M) -> M:
+    """
+    Combines the given LoRA parameters with the given parameter tree.
+    """
+    return eqx.combine(params, lora_params, is_leaf=is_lora_param)
+
+
+def is_lora_param(node):
+    return isinstance(node, LowRankLinear)
 
 
 def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str, batch_dims: Tuple[Axis, ...]) -> M:
@@ -165,7 +170,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
 
     def _batchify_ctor(ctor):
         # this is gross but it basically just vmaps the ctor over each batch dimension
-        return functools.reduce(lambda ctor, batch_axis: haliax.vmap(ctor, batch_axis), reversed(batch_dims), ctor)
+        return functools.reduce(lambda ctor, batch_axis: hax.vmap(ctor, batch_axis), reversed(batch_dims), ctor)
 
     def _loraize_module(module, key_path):
         # TODO: turn into a registry
@@ -210,6 +215,7 @@ def merge_lora_modules(module: M) -> M:
 
 SAFETENSORS_WEIGHTS_NAME = "adapter_model.safetensors"
 CONFIG_NAME = "adapter_config.json"
+DEFAULT_DICT_PREFIX = "base_model.model.transformer"
 
 
 def save_peft_pretrained(
@@ -269,3 +275,12 @@ def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = No
         "task_type": "CAUSAL_LM",  # TODO: support task_type
         **kwargs,
     }
+
+
+def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> StateDict:
+    """
+    Returns a state dict of the LoRA parameters of the given model without other parameters.
+    This method attempts to return a state dict compatible with PEFT's import method.
+    """
+    state_dict = to_numpy_state_dict(filter_lora_params(model), prefix=prefix)
+    return {k: v for k, v in state_dict.items() if v is not None}
