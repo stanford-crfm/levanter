@@ -30,13 +30,13 @@ from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 M = TypeVar("M", bound=PyTree)
 
 # Tasks
-# - filter parameters for training
-# - training script
-# - Peft export
-# - Peft import
 # - bias
 # - dropout
 # - registry of targets for different models
+# - better filtering of parameters (make our own old-style filter_grad)
+# - replicate alpaca-lora functionality
+# - document alpaca-lora functionality
+
 
 LORA_R = "LORA_R"
 
@@ -81,7 +81,7 @@ class LowRankLinear(eqx.Module):
         return LowRankLinear(lora_A, lora_B, alpha / r)
 
     def merge(self) -> hax.NamedArray:
-        return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale_factor
+        return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
 
 
 class LoraLinear(eqx.Module, StateDictSerializationMixin):
