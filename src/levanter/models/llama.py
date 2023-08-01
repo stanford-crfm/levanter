@@ -131,9 +131,15 @@ class LlamaRotaryEmbedding(eqx.Module):
         self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
         self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=self.max_position_embeddings)
 
+    def _get_positional_ids(self):
+        """A helper function for the convenience of extending to two sub-classes
+        Here we use a standard positional encoding function, which was described in `Attention is all you need`.
+        """
+        return jnp.arange(self.max_seq_len_cached)
+
     def _set_cos_sin_cache(self, seq_len):
         self.max_seq_len_cached = seq_len
-        t = jnp.arange(self.max_seq_len_cached)
+        t = self._get_positional_ids()
 
         # Evaluates the Einstein summation convention on the operands.
         freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
@@ -165,46 +171,31 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         self.scaling_factor = scaling_factor
         super().__init__(dim, max_position_embeddings, base)
 
-    def _set_cos_sin_cache(self, seq_len):
-        """The main difference is that the scaling factor is applied to the time axis"""
-        self.max_seq_len_cached = seq_len
-        t = jnp.arange(self.max_seq_len_cached) / self.scaling_factor
-
-        freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = jnp.concatenate((freqs, freqs), axis=-1)
-        cos_cached = jnp.cos(emb)[None, None, :, :]
-        sin_cached = jnp.sin(emb)[None, None, :, :]
-
-        return cos_cached, sin_cached
+    def _get_positional_ids(self):
+        """Here we overwrite the function in the base class to implement linear scaling."""
+        return jnp.arange(self.max_seq_len_cached) / self.scaling_factor
 
 
 class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
-    """LlamaRotaryEmbedding extended with Dynamic NTK scaling. """
+    """LlamaRotaryEmbedding extended with Dynamic NTK scaling."""
+
     scaling_factor: float = 1.0
 
     def __init__(self, dim, max_position_embeddings=2048, base=10000, scaling_factor=1.0):
         self.scaling_factor = scaling_factor
         super().__init__(dim, max_position_embeddings, base)
 
-    def _set_cos_sin_cache(self, seq_len):
-        self.max_seq_len_cached = seq_len
-
-        if seq_len > self.max_position_embeddings:
+    def _get_positional_ids(self):
+        """Here we overwrite the function in the base class.
+        Here it adjusts the frequency base dynamically according to the sequence length.
+        """
+        if self.max_seq_len_cached > self.max_position_embeddings:
             base = self.base * (
                 (self.scaling_factor * seq_len / self.max_position_embeddings) - (self.scaling_factor - 1)
             ) ** (self.dim / (self.dim - 2))
             self.inv_freq = 1.0 / (base ** (jnp.arange(0, self.dim, 2) / self.dim))
 
-        t = jnp.arange(self.max_seq_len_cached)
-
-        freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = jnp.concatenate((freqs, freqs), axis=-1)
-        cos_cached = jnp.cos(emb)[None, None, :, :]
-        sin_cached = jnp.sin(emb)[None, None, :, :]
-
-        return cos_cached, sin_cached
+        return jnp.arange(self.max_seq_len_cached)
 
 
 def _get_rotary_emb(config: LlamaConfig):
