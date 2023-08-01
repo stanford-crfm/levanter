@@ -11,7 +11,6 @@ import wandb
 import haliax as hax
 import haliax.random
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
@@ -188,7 +187,7 @@ def main(config: TrainLmConfig):
             return model, opt_state
 
         # first get the shape of the model and optimizer state
-        model, opt_state = filter_eval_shape(init_model_and_opt_state, model_key)
+        model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
         wandb.summary["parameter_count"] = parameter_count(model)
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a

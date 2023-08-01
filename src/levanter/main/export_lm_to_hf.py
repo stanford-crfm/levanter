@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional
 
+import equinox as eqx
 import jax
 
 import haliax as hax
 import haliax.tree_util as htu
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 
 import levanter
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
@@ -53,7 +53,7 @@ def main(config: ConvertLmConfig):
     key = jax.random.PRNGKey(0)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        model = filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
+        model = eqx.filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):
             model = tree_deserialize_leaves_tensorstore(os.path.join(config.checkpoint_path, "model"), model)
