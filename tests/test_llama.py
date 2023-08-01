@@ -1,11 +1,11 @@
-from jax import random
-
 import numpy as np
 import torch
+from jax import random
 
 # src/transformers/models/llama/modeling_llama.py
 from transformers.models.llama.modeling_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+
 from levanter.models.llama import LlamaRotaryEmbedding
 
 
@@ -16,7 +16,6 @@ def test_llama_rotary_embedding():
     key = random.PRNGKey(0)
     x = random.normal(key, (1, seq_len))
     levanter_rotary_emb = LlamaRotaryEmbedding(dim=dim)
-    levanter_rotary_emb.setup()
     levanter_output = levanter_rotary_emb(x, seq_len=seq_len)
 
     hf_rotary_emb = HFLlamaRotaryEmbedding(dim=dim, device="cpu")

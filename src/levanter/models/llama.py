@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
@@ -113,23 +115,20 @@ class LlamaLMHeadModel(eqx.Module):
     pass
 
 
-import jax
-import jax.numpy as jnp
-
-
-class LlamaRotaryEmbedding():
+class LlamaRotaryEmbedding(eqx.Module):
     dim: int
     max_position_embeddings: int = 2048
     base: float = 10000
+    inv_freq: jnp.ndarray = eqx.static_field()
+    cos_cached: jnp.ndarray = eqx.static_field()
+    sin_cached: jnp.ndarray = eqx.static_field()
+    max_seq_len_cached: int = eqx.static_field()
 
     def __init__(self, dim, max_position_embeddings=2048, base=10000):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        self.setup()
-
-    def setup(self):
-        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
+        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))  
 
         # Build here to make the embedding.
         self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=self.max_position_embeddings)
@@ -139,7 +138,8 @@ class LlamaRotaryEmbedding():
         t = jnp.arange(self.max_seq_len_cached)
 
         freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        # Different from paper but following HF implementation
+        # It uses a different permutation in order to obtain the same calculation
         emb = jnp.concatenate((freqs, freqs), axis=-1)
         cos_cached = jnp.cos(emb)[None, None, :, :]
         sin_cached = jnp.sin(emb)[None, None, :, :]
