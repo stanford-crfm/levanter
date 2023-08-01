@@ -179,5 +179,33 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         return cos_cached, sin_cached
 
 
+class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
+    """LlamaRotaryEmbedding extended with Dynamic NTK scaling. """
+    scaling_factor: float = 1.0
+
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, scaling_factor=1.0):
+        self.scaling_factor = scaling_factor
+        super().__init__(dim, max_position_embeddings, base)
+
+    def _set_cos_sin_cache(self, seq_len):
+        self.max_seq_len_cached = seq_len
+
+        if seq_len > self.max_position_embeddings:
+            base = self.base * (
+                (self.scaling_factor * seq_len / self.max_position_embeddings) - (self.scaling_factor - 1)
+            ) ** (self.dim / (self.dim - 2))
+            self.inv_freq = 1.0 / (base ** (jnp.arange(0, self.dim, 2) / self.dim))
+
+        t = jnp.arange(self.max_seq_len_cached)
+
+        freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = jnp.concatenate((freqs, freqs), axis=-1)
+        cos_cached = jnp.cos(emb)[None, None, :, :]
+        sin_cached = jnp.sin(emb)[None, None, :, :]
+
+        return cos_cached, sin_cached
+
+
 def _get_rotary_emb(config: LlamaConfig):
     return None

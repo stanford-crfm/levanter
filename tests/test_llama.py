@@ -2,22 +2,20 @@ import numpy as np
 import torch
 from jax import random
 
-# src/transformers/models/llama/modeling_llama.py
-from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
-
-try:
-    from transformers.models.llama.modeling_llama import (
-        LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
-    )
-except ImportError:
-    HFLlamaLinearScalingRotaryEmbedding = None
-from levanter.models.llama import LlamaRotaryEmbedding, LlamaLinearScalingRotaryEmbedding
+# The latter 2 classes are only available in HuggingFace's transformers 4.30.0 or later
+from transformers.models.llama.modeling_llama import (
+    LlamaRotaryEmbedding as HFLlamaRotaryEmbedding,
+    LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
+    LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
+)
+from levanter.models.llama import LlamaRotaryEmbedding, LlamaLinearScalingRotaryEmbedding, LlamaDynamicNTKScalingRotaryEmbedding
 
 
 def test_llama_rotary_embedding():
     """Match against HuggingFace's implementation of LlamaRotaryEmbedding."""
     dim = 2048
     seq_len = 2048
+    scaling_factor = 2.0
     key = random.PRNGKey(0)
     device = "cpu"
 
@@ -39,9 +37,13 @@ def test_llama_rotary_embedding():
     )
 
     # test LlamaLinearScalingRotaryEmbedding
-    if HFLlamaLinearScalingRotaryEmbedding is not None:
-        scaling_factor = 2.0
-        test_levanter_against_hf(
-            levanter_class=LlamaLinearScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor),
-            hf_class=HFLlamaLinearScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor, device=device),
-        )
+    test_levanter_against_hf(
+        levanter_class=LlamaLinearScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor),
+        hf_class=HFLlamaLinearScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor, device=device),
+    )
+
+    # test LlamaDynamicNTKScalingRotaryEmbedding
+    test_levanter_against_hf(
+        levanter_class=LlamaDynamicNTKScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor), 
+        hf_class=HFLlamaDynamicNTKScalingRotaryEmbedding(dim=dim, scaling_factor=scaling_factor, device=device),
+    )
