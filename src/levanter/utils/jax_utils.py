@@ -199,8 +199,8 @@ def leaf_key_paths(
             field = getattr(pytree, field_name)
             names.append(field_name)
 
-            if use_state_dict_keys and hasattr(field, "_state_dict_key_map"):
-                field_name = field._state_dict_key_map.get(field_name, field_name)
+            if use_state_dict_keys and hasattr(pytree, "_state_dict_key_map"):
+                field_name = pytree._state_dict_key_map().get(field_name, field_name)
 
             rec_value = rec(field, field_name)
             rec_values.append(rec_value)

@@ -70,8 +70,8 @@ def test_lora_scan_layers():
     assert isinstance(loraized.stacked.first, LoraLinear)
     assert isinstance(loraized.stacked.second, hnn.Linear)
 
-    assert loraized.stacked.first.lora_A.weight.axes == (Layers, hax.Axis("LORA_R", 8), In)
-    assert loraized.stacked.first.lora_B.weight.axes == (Layers, Mid, hax.Axis("LORA_R", 8))
+    assert loraized.stacked.first.lora.lora_A.weight.axes == (Layers, hax.Axis("LORA_R", 8), In)
+    assert loraized.stacked.first.lora.lora_B.weight.axes == (Layers, Mid, hax.Axis("LORA_R", 8))
 
     assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
     input = hax.random.normal(k0, (In,))
