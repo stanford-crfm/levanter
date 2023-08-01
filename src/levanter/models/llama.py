@@ -128,15 +128,14 @@ class LlamaRotaryEmbedding(eqx.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))  
-
-        # Build here to make the embedding.
+        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
         self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=self.max_position_embeddings)
 
     def _set_cos_sin_cache(self, seq_len):
         self.max_seq_len_cached = seq_len
         t = jnp.arange(self.max_seq_len_cached)
 
+        # Evaluates the Einstein summation convention on the operands.
         freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
         # Different from paper but following HF implementation
         # It uses a different permutation in order to obtain the same calculation
@@ -155,6 +154,29 @@ class LlamaRotaryEmbedding(eqx.Module):
             self.cos_cached[:, :, :seq_len, ...],
             self.sin_cached[:, :, :seq_len, ...],
         )
+
+
+class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
+    """LlamaRotaryEmbedding extended with linear scaling"""
+
+    scaling_factor: float = 1.0
+
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, scaling_factor=1.0):
+        self.scaling_factor = scaling_factor
+        super().__init__(dim, max_position_embeddings, base)
+
+    def _set_cos_sin_cache(self, seq_len):
+        """The main difference is that the scaling factor is applied to the time axis"""
+        self.max_seq_len_cached = seq_len
+        t = jnp.arange(self.max_seq_len_cached) / self.scaling_factor
+
+        freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = jnp.concatenate((freqs, freqs), axis=-1)
+        cos_cached = jnp.cos(emb)[None, None, :, :]
+        sin_cached = jnp.sin(emb)[None, None, :, :]
+
+        return cos_cached, sin_cached
 
 
 def _get_rotary_emb(config: LlamaConfig):
