@@ -28,6 +28,7 @@ class LlamaConfig(HFCompatConfig):
         num_kv_heads (int, optional): number of key/value heads needed for Grouped Query Attention. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         max_position_embeddings (int, optional): maximum length of the position embedding. Defaults to 2048.
+        rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
     vocab_size: int = 32000
@@ -40,6 +41,12 @@ class LlamaConfig(HFCompatConfig):
     max_position_embeddings: int = 2048
     initializer_range: float = 0.02
     use_bias: bool = True
+    rope_scaling: Optional[Dict] = None
+
+    # Axis
+    Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
+    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
+    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
 
 class LlamaMlp(eqx.Module):
@@ -74,27 +81,29 @@ class LlamaMlp(eqx.Module):
 
 class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
+    hidden_dim: int = eqx.static_field()
+    max_position_embeddings: int = eqx.static_field()
     q_proj: hnn.Linear  # projection from Embed to query
     k_proj: hnn.Linear  # projection from Embed to key
     v_proj: hnn.Linear  # projection from Embed to value
     o_proj: hnn.Linear  # projection from Heads to output
-    # rotary_emb  # rotary embedding
+    rotary_emb: LlamaRotaryEmbedding  # rotary embedding
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaAttention":
         use_bias = config.use_bias
         Embed = config.Embed
-
+        head_dim = config.HeadSize.size
+        max_position_embeddings = config.max_position_embeddings
         k_q, k_k, k_v, k_o = eqx.split_key(key, 4)
         q_proj = hnn.Linear.init(In=Embed, Out=config.Heads * config.HeadDim, key=k_q, use_bias=use_bias)
         k_proj = hnn.Linear.init(In=Embed, Out=config.KVHeads * config.HeadDim, key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=config.KVHeads * config.HeadDim, key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=config.Heads * config.HeadDim, Out=Embed, key=k_o, use_bias=use_bias)
-        # rotary_emb = _get_rotary_emb(config)
-        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
+        rotary_emb = _get_rotary_emb(config, head_dim, max_position_embeddings)
+        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
-    named_call
-
+    @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
         k_q, k_k, k_v = eqx.split_key(key, 3)
 
@@ -198,5 +207,15 @@ class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
         return jnp.arange(self.max_seq_len_cached)
 
 
-def _get_rotary_emb(config: LlamaConfig):
-    return None
+def _get_rotary_emb(config: LlamaConfig, head_dim: int, max_position_embeddings: int) -> LlamaRotaryEmbedding:
+    if config.rope_scaling is None:
+        return LlamaRotaryEmbedding(head_dim, max_position_embeddings)
+    else:
+        scaling_type = config.rope_scaling["type"]
+        scaling_factor = config.rope_scaling["factor"]
+        if scaling_type == "linear":
+            return LlamaRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
+        elif scaling_type == "dynamic":
+            return LlamaRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
+        else:
+            raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
