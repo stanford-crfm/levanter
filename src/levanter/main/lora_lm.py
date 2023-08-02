@@ -129,13 +129,24 @@ def main(config: LoraLmConfig):
         # In LoRA and other so-called "parameter-efficient fine-tuning" methods, we have two sets of parameters:
         # 1) The "base" parameters, which are the parameters of the original foundation model
         # 2) The "adapter" parameters, which are the parameters of the "head" of the model that we're fine-tuning
-        # In q
-        # The adapter_model contains the parameters that we're actually updating,
-        # while the base_model contains the parameters that we're not updating.
-        # This is analogous to setting some parameters to requires_grad=False in PyTorch, but it's how you
-        # do it in equinox.
 
-        # NB: adapter_model comes first b/c we take the gradient wrt the first parameter
+        # Structurally, Equinox works best if we keep these two sets of parameters separate. As an example,
+        # consider a simple model with two parameters, attention and mlp. That might look like:
+        # model = Model(attention=Attention(proj_qkv=Linear), mlp=Mlp())
+        # with LoRA, our model might look more like:
+        # model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=LoraLinear(...)), mlp=Mlp())
+        # we keep this partitioned as two trees:
+        # base_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=None), mlp=Mlp())
+        # adapter_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=None, lora=LoraLinear(...)), mlp=None)
+        # and then we combine them at runtime:
+        # model = combine_lora_params(adapter_model, base_model)
+        # which just grounds out into a call to equinox.combine
+
+        # We unfortunately need to pass these two trees around more or less together, only really distinguishing
+        # them for gradients, optimizer state, and storing checkpoints.
+        # Additionally, the gradient api assumes we compute gradients with respect to the first argument,
+        # so adapter_model has to be the first argument to train_loss.
+
         @named_jit(axis_resources=parameter_axis_mapping)
         def train_loss(adapter_model, base_model, example, key):
             model = combine_lora_params(adapter_model, base_model)
@@ -167,24 +178,7 @@ def main(config: LoraLmConfig):
             model = combine_lora_params(base_model, adapter_model)
             return hax.mean(compute_loss(model, example, None, True)).scalar()
 
-        # initialize the model
-        def init_model_and_opt_state(model_key):
-            # This function is only called to get the shape of the model and optimizer state
-            model = model_config.build(Vocab, key=model_key)
-            combined_model = loraize(model, config.lora, key=lora_key)
-            combined_model = mp.cast_to_param(combined_model)
-            base_model, adapter_model = partition_lora_params(combined_model)
-            opt_state = optimizer.init(adapter_model)
-            return base_model, adapter_model, opt_state
-
-        # first get the shape of the model and optimizer state
-        # both base_model and adapter_model are the same shape, except that base_model has None for all lora params,
-        # while adapter_model has the lora params but None for all base params
-        # opt_state has the same shape as adapter_model
-        base_model_shape, adapter_model_shape, opt_state_shape = eqx.filter_eval_shape(
-            init_model_and_opt_state, model_key
-        )
-
+        # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
@@ -192,26 +186,23 @@ def main(config: LoraLmConfig):
         def loraize_hf_model(model):
             return loraize(model, config.lora, key=lora_key)
 
-        # second, try to load the model and opt state from a checkpoint. This may throw if we required a
-        # checkpoint but it wasn't found.
-        adapter_model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            adapter_model_shape,
-            (opt_state_shape, training_key),
-            axis_mapping=parameter_axis_mapping,
-            mesh=mesh,
-        )
-
         combined_model = loraize_hf_model(hf_model)
 
-        if resume_step is not None:
-            base_model, _ = partition_lora_params(combined_model)
-        else:
-            logger.info("Initializing model and optimizer state since no checkpoint was found")
-            base_model, adapter_model = partition_lora_params(combined_model)
-            opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(adapter_model)
+        # next, split model into base and adapter and create initial optimizer state
+        base_model, adapter_model = partition_lora_params(combined_model)
+        opt_state = haliax.named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(adapter_model)
 
         del hf_model
         del combined_model
+
+        # next, try to load the adapter model and opt state from a checkpoint. This may throw if we required a
+        # checkpoint but it wasn't found.
+        adapter_model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
+            adapter_model,
+            (opt_state, training_key),
+            axis_mapping=parameter_axis_mapping,
+            mesh=mesh,
+        )
 
         all_param_count = parameter_count(combine_lora_params(base_model, adapter_model))
         wandb.summary["parameter_count"] = all_param_count
@@ -297,7 +288,9 @@ def main(config: LoraLmConfig):
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
 
-                jax_step_loss, adapter_model, opt_state = train_step(base_model, adapter_model, opt_state, example, my_key)
+                jax_step_loss, adapter_model, opt_state = train_step(
+                    base_model, adapter_model, opt_state, example, my_key
+                )
                 step_loss = jax_step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
