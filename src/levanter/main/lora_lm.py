@@ -125,20 +125,30 @@ def main(config: LoraLmConfig):
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
-        # NB: lora_model comes first b/c we take the gradient wrt the first parameter
+        # A note on the difference between "adapter_model" and "base_model":
+        # In LoRA and other so-called "parameter-efficient fine-tuning" methods, we have two sets of parameters:
+        # 1) The "base" parameters, which are the parameters of the original foundation model
+        # 2) The "adapter" parameters, which are the parameters of the "head" of the model that we're fine-tuning
+        # In q
+        # The adapter_model contains the parameters that we're actually updating,
+        # while the base_model contains the parameters that we're not updating.
+        # This is analogous to setting some parameters to requires_grad=False in PyTorch, but it's how you
+        # do it in equinox.
+
+        # NB: adapter_model comes first b/c we take the gradient wrt the first parameter
         @named_jit(axis_resources=parameter_axis_mapping)
-        def train_loss(lora_model, base_model, example, key):
-            model = combine_lora_params(lora_model, base_model)
+        def train_loss(adapter_model, base_model, example, key):
+            model = combine_lora_params(adapter_model, base_model)
             return hax.mean(compute_loss(model, example, key, inference=False)).scalar()
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=(False, True, True, False, False))
-        def train_step(base_model, lora_model, opt_state, examples: LmExample, key):
+        def train_step(base_model, adapter_model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(train_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
-                lora_model,
+                adapter_model,
                 base_model,  # base_model is an "input" b/c we don't want to compute its gradient
                 examples,
                 key=key,
@@ -147,14 +157,14 @@ def main(config: LoraLmConfig):
             )
 
             # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=lora_model)
-            lora_model = eqx.apply_updates(lora_model, updates)
+            updates, opt_state = optimizer.update(grads, opt_state, params=adapter_model)
+            adapter_model = eqx.apply_updates(adapter_model, updates)
 
-            return loss, lora_model, opt_state
+            return loss, adapter_model, opt_state
 
         @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(base_model, lora_model, example):
-            model = combine_lora_params(base_model, lora_model)
+        def eval_loss(base_model, adapter_model, example):
+            model = combine_lora_params(base_model, adapter_model)
             return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
@@ -163,15 +173,15 @@ def main(config: LoraLmConfig):
             model = model_config.build(Vocab, key=model_key)
             combined_model = loraize(model, config.lora, key=lora_key)
             combined_model = mp.cast_to_param(combined_model)
-            base_model, lora_model = partition_lora_params(combined_model)
-            opt_state = optimizer.init(lora_model)
-            return base_model, lora_model, opt_state
+            base_model, adapter_model = partition_lora_params(combined_model)
+            opt_state = optimizer.init(adapter_model)
+            return base_model, adapter_model, opt_state
 
         # first get the shape of the model and optimizer state
-        # both base_model and lora_model are the same shape, except that base_model has None for all lora params,
-        # while lora_model has the lora params but None for all base params
-        # opt_state has the same shape as lora_model
-        base_model_shape, lora_model_shape, opt_state_shape = eqx.filter_eval_shape(
+        # both base_model and adapter_model are the same shape, except that base_model has None for all lora params,
+        # while adapter_model has the lora params but None for all base params
+        # opt_state has the same shape as adapter_model
+        base_model_shape, adapter_model_shape, opt_state_shape = eqx.filter_eval_shape(
             init_model_and_opt_state, model_key
         )
 
@@ -184,8 +194,8 @@ def main(config: LoraLmConfig):
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
-        lora_model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            lora_model_shape,
+        adapter_model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
+            adapter_model_shape,
             (opt_state_shape, training_key),
             axis_mapping=parameter_axis_mapping,
             mesh=mesh,
@@ -197,15 +207,15 @@ def main(config: LoraLmConfig):
             base_model, _ = partition_lora_params(combined_model)
         else:
             logger.info("Initializing model and optimizer state since no checkpoint was found")
-            base_model, lora_model = partition_lora_params(combined_model)
-            opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(lora_model)
+            base_model, adapter_model = partition_lora_params(combined_model)
+            opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(adapter_model)
 
         del hf_model
         del combined_model
 
-        all_param_count = parameter_count(combine_lora_params(base_model, lora_model))
+        all_param_count = parameter_count(combine_lora_params(base_model, adapter_model))
         wandb.summary["parameter_count"] = all_param_count
-        just_lora_params = parameter_count(lora_model)
+        just_lora_params = parameter_count(adapter_model)
         wandb.summary["trainable_parameter_count"] = just_lora_params
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
@@ -237,9 +247,9 @@ def main(config: LoraLmConfig):
 
         # visualize log probs
         @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_log_probs(base_model, lora_model, example: LmExample):
+        def compute_log_probs(base_model, adapter_model, example: LmExample):
             """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
-            model = combine_lora_params(base_model, lora_model)
+            model = combine_lora_params(base_model, adapter_model)
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
@@ -287,17 +297,17 @@ def main(config: LoraLmConfig):
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
 
-                jax_step_loss, lora_model, opt_state = train_step(base_model, lora_model, opt_state, example, my_key)
+                jax_step_loss, adapter_model, opt_state = train_step(base_model, adapter_model, opt_state, example, my_key)
                 step_loss = jax_step_loss.item()
 
             with log_time_to_wandb("throughput/hook_time", step=step):
                 engine.run_hooks(
-                    StepInfo(step, lora_model, opt_state, step_loss, training_key, step_duration=step_time())
+                    StepInfo(step, adapter_model, opt_state, step_loss, training_key, step_duration=step_time())
                 )
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
-            lora_model,
+            adapter_model,
             opt_state,
             step_loss,
             training_key,
