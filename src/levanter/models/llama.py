@@ -105,7 +105,26 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
-        k_q, k_k, k_v = eqx.split_key(key, 3)
+        q = self.q_proj(x)  # TODO: rearrange and possibly rename
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        cos, sin = self.rotary_emb(v, seq_len=self.config.KVHeads.size)
+
+        q, k = _apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+
+        scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
+
+        attn_weights = hax.dot("head_size", q, k) * scale
+        attn_weights = attn_weights + mask
+
+        # upcast attention to fp32. This is default for Llama Attention
+        attn_weights = attn_weights.astype(jnp.float32)
+        
+        attn_weights = hnn.softmax(attn_weights, axis="key_position").astype(q.dtype)
+        attn_output = hax.dot("key_position", attn_weights, v)
+        
+        # TODO: continue
 
 
 class LlamaBlock(StateDictSerializationMixin, eqx.Module):
@@ -157,8 +176,6 @@ class LlamaRotaryEmbedding(eqx.Module):
         emb = jnp.concatenate((freqs, freqs), axis=-1)
         cos_cached = jnp.cos(emb)[None, None, :, :]
         sin_cached = jnp.sin(emb)[None, None, :, :]
-
-        return cos_cached, sin_cached
 
     def __call__(self, x, seq_len: int):
         # x: [bs, num_attention_heads, seq_len, head_size]
@@ -219,3 +236,20 @@ def _get_rotary_emb(config: LlamaConfig, head_dim: int, max_position_embeddings:
             return LlamaRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
         else:
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+
+
+def _rotate_half(x):
+    """Rotates half of the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return jnp.concatenate((-x2, x1), axis=-1)
+
+
+def _apply_rotary_pos_emb(q, k, cos, sin, position_ids) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    cos = jnp.squeeze(cos, axis=1)  # from [1, 1, seq_len, dim] to [seq_len, dim]
+    sin = jnp.squeeze(sin, axis=1)
+    cos = cos[position_ids, None]  # [seq_len, dim] -> [bs, 1, seq_len, dim]
+    sin = sin[position_ids, None]
+    q_embed = q * cos + _rotate_half(q) * sin
+    k_embed = k * cos + _rotate_half(k) * sin
+    return q_embed, k_embed
