@@ -339,7 +339,9 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
 def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
     """
-    Convert a model to a state dict, bringing all tensors to the CPU first and then converting to numpy.
+    Convert a model to a state dict by first creating desharded copies of all parameters that reside in CPU
+    memory.
+
     This method is especially useful for saving models distributed across multiple hosts.
     """
 

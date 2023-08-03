@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LoraLmConfig:
+    # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     initialize_from_hf: str
     lora: LoraConfig
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
-    # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000

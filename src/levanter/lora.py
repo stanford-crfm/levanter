@@ -24,6 +24,7 @@ from levanter.compat.torch_serialization import (
     save_state_dict,
     to_numpy_state_dict,
 )
+from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 
 
@@ -229,15 +230,17 @@ def save_peft_pretrained(
 ):
     """
     Saves a LoRA model as a HuggingFace checkpoint, compatible with Peft.
+
+    path: the path to save the model to. May be a url, in which case we will use fsspec to save to that url.
     """
     os.makedirs(path, exist_ok=True)
     hf_config = to_hf_config(config, base_model_name_or_path=base_model_name_or_path)
     state_dict = lora_state_dict(lora_model, prefix=prefix)
 
-    save_state_dict(state_dict, f"{path}/{SAFETENSORS_WEIGHTS_NAME}")
-
-    with open(f"{path}/{CONFIG_NAME}", "w") as f:
-        json.dump(hf_config, f)
+    with temp_dir_before_upload(path) as local_path:
+        save_state_dict(state_dict, f"{local_path}/{SAFETENSORS_WEIGHTS_NAME}")
+        with open(f"{local_path}/{CONFIG_NAME}", "w") as f:
+            json.dump(hf_config, f)
 
 
 def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:

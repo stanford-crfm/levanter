@@ -19,7 +19,6 @@ import huggingface_hub
 import jax
 import safetensors
 import safetensors.numpy
-from fsspec import AbstractFileSystem
 from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
 from jax.experimental.multihost_utils import sync_global_devices
@@ -38,6 +37,7 @@ import levanter.compat.torch_serialization
 from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
+from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
@@ -497,45 +497,28 @@ class HFCheckpointConverter(Generic[LevConfig]):
         architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS
         :return:
         """
-        tmpdir: Optional[str] = None
-        if _is_url_like(path):
-            tmpdir = tempfile.mkdtemp()
-            logger.info(f"Saving model to {path} via temp path {tmpdir}")
-            local_path = tmpdir
-        else:
-            local_path = path
-
-        if isinstance(upload_to_hf, (str, RepoRef)):
-            hf_repo, hf_branch = self._get_ref(upload_to_hf)
-        elif upload_to_hf is True:
-            hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
-        else:
-            hf_repo = None
-
-        self._save_pretrained_local(
-            model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
-        )
-
-        try:
-            if jax.process_index() == 0:
-                if tmpdir is not None:  # we're uploading to GCS or similar
-                    logger.info(f"Copying HF-compatible checkpoint to {path}")
-                    fs: AbstractFileSystem = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
-                    fs.put(os.path.join(local_path, "*"), path, recursive=True)
-                    logger.info(f"Finished copying HF-compatible checkpoint to {path}")
-
-                if hf_repo is not None:
-                    logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
-                    huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
-                    logger.info(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
+        with temp_dir_before_upload(path) as local_path:
+            if isinstance(upload_to_hf, (str, RepoRef)):
+                hf_repo, hf_branch = self._get_ref(upload_to_hf)
+            elif upload_to_hf is True:
+                hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
             else:
-                logger.info(f"Waiting for process 0 to finish saving checkpoint to {path}")
+                hf_repo = None
 
-            sync_global_devices(f"upload? {path}{levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT}")
-            levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT += 1
-        finally:
-            if tmpdir is not None:
-                shutil.rmtree(tmpdir)
+            if path != local_path:
+                logger.info(f"Saving model to {path} via temp path {local_path}")
+
+            self._save_pretrained_local(
+                model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
+            )
+
+            if jax.process_index() == 0 and hf_repo is not None:
+                logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
+                huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
+                logger.info(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
+
+                sync_global_devices(f"upload? {path}{levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT}")
+                levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT += 1
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
