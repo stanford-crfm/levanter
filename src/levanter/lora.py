@@ -58,6 +58,12 @@ def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
 
 
 class LowRankLinear(eqx.Module):
+    """
+    A linear layer with a low-rank factorization. Used by LoRA.
+
+    A LowRankLinear is basically 2 matrices that have a common dimension
+    """
+
     lora_A: hnn.Linear
     lora_B: hnn.Linear
     scale: float = eqx.field(static=True)
