@@ -18,12 +18,14 @@ import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
 
+from levanter.compat.hf_checkpoints import RepoRef, upload_to_hub
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     save_state_dict,
     to_numpy_state_dict,
 )
+from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 
@@ -226,12 +228,25 @@ DEFAULT_DICT_PREFIX = "base_model.model.transformer"
 
 
 def save_peft_pretrained(
-    lora_model: M, config: LoraConfig, base_model_name_or_path, path: str, prefix: Optional[str] = DEFAULT_DICT_PREFIX
+    lora_model: M,
+    config: LoraConfig,
+    base_model_name_or_path,
+    path: str,
+    prefix: Optional[str] = DEFAULT_DICT_PREFIX,
+    upload_to: Optional[Union[str, RepoRef]] = None,
+    **upload_kwargs,
 ):
     """
     Saves a LoRA model as a HuggingFace checkpoint, compatible with Peft.
 
-    path: the path to save the model to. May be a url, in which case we will use fsspec to save to that url.
+    Args:
+        lora_model: the LoRA model to save
+        path: the path to save the model to. May be a url, in which case we will use fsspec to save to that url.
+        prefix: the prefix to use for the LoRA parameters. Defaults to "base_model.model.transformer", which is what
+            Peft seems to expect.
+        upload_to: if provided, will upload the saved model to the given hf hub repo. If a string, will be interpreted
+            as a repo name + branch
+        upload_kwargs: kwargs to pass to the upload function
     """
     os.makedirs(path, exist_ok=True)
     hf_config = to_hf_config(config, base_model_name_or_path=base_model_name_or_path)
@@ -241,6 +256,50 @@ def save_peft_pretrained(
         save_state_dict(state_dict, f"{local_path}/{SAFETENSORS_WEIGHTS_NAME}")
         with open(f"{local_path}/{CONFIG_NAME}", "w") as f:
             json.dump(hf_config, f)
+
+        if upload_to is not None:
+            upload_to = RepoRef.from_string(upload_to) if isinstance(upload_to, str) else upload_to
+            upload_to_hub(local_path, repo_ref=upload_to, **upload_kwargs)
+
+
+def save_peft_checkpoint_callback(
+    base_path,
+    config: LoraConfig,
+    base_model_name_or_path,
+    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    **hf_upload_kwargs,
+):
+    """
+    If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
+    any additional kwargs to the huggingface_hub.upload_folder function.
+
+    :param base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
+    may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
+    :param upload_to_hf:
+    :param hf_upload_kwargs:
+    :return:
+    """
+
+    def cb(step: StepInfo):
+        nonlocal hf_upload_kwargs
+        if step.step == 0:
+            return
+        if upload_to_hf is not None and "commit_message" not in hf_upload_kwargs:
+            my_upload_kwargs = hf_upload_kwargs.copy()
+            my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
+        else:
+            my_upload_kwargs = hf_upload_kwargs
+
+        save_peft_pretrained(
+            step.model,
+            config,
+            base_model_name_or_path,
+            os.path.join(base_path, f"step-{step.step}"),
+            upload_to=upload_to_hf,
+            **my_upload_kwargs,
+        )
+
+    return cb
 
 
 def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:

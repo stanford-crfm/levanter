@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LoraLmConfig:
-    # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     initialize_from_hf: str
     lora: LoraConfig
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
@@ -43,7 +42,7 @@ class LoraLmConfig:
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
-    hf_save_steps: int = 10000
+    hf_save_steps: int = 1000
 
     trust_remote_code: bool = False
 
@@ -229,10 +228,12 @@ def main(config: LoraLmConfig):
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_id)
-            from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
+            from levanter.lora import save_peft_checkpoint_callback
 
             engine.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter),
+                save_peft_checkpoint_callback(
+                    full_save_path, config.lora, config.initialize_from_hf, upload_to_hf=config.hf_upload
+                ),
                 every=config.hf_save_steps,
             )
 

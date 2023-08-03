@@ -33,7 +33,6 @@ import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
 
-import levanter.compat.torch_serialization
 from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
@@ -498,13 +497,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         :return:
         """
         with temp_dir_before_upload(path) as local_path:
-            if isinstance(upload_to_hf, (str, RepoRef)):
-                hf_repo, hf_branch = self._get_ref(upload_to_hf)
-            elif upload_to_hf is True:
-                hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
-            else:
-                hf_repo = None
-
             if path != local_path:
                 logger.info(f"Saving model to {path} via temp path {local_path}")
 
@@ -512,13 +504,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
             )
 
-            if jax.process_index() == 0 and hf_repo is not None:
-                logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
-                huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
-                logger.info(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
-
-                sync_global_devices(f"upload? {path}{levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT}")
-                levanter.compat.torch_serialization._GLOBAL_SAVE_COUNT += 1
+            if upload_to_hf is True:
+                if self.reference_checkpoint is None:
+                    raise ValueError("No reference checkpoint provided, so no repo name to upload to")
+                upload_to_hf = self.reference_checkpoint
+            if not isinstance(upload_to_hf, bool):
+                assert isinstance(upload_to_hf, (str, RepoRef))
+                upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
@@ -647,3 +639,23 @@ def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trus
         return AutoTokenizer.from_pretrained(
             model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
         )
+
+
+_sync_count = 0
+
+
+def upload_to_hub(local_path: str, repo_ref: Union[str, RepoRef], **hf_upload_kwargs):
+    ref = _coerce_to_rr(repo_ref)
+
+    if jax.process_index() == 0:
+        logger.info(f"Uploading HF-compatible checkpoint to {ref.model_name_or_path}")
+        huggingface_hub.upload_folder(
+            folder_path=local_path, repo_id=(ref.model_name_or_path), revision=(ref.revision), **hf_upload_kwargs
+        )
+        logger.info(f"Finished uploading HF-compatible checkpoint to {ref.model_name_or_path}")
+    else:
+        logger.info(f"Finished waiting for rank 0 to upload checkpoint to {ref.model_name_or_path}")
+
+    global _sync_count
+    sync_global_devices(f"upload? {ref.model_name_or_path}{ref.revision} {_sync_count}")
+    _sync_count += 1
