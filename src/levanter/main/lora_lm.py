@@ -94,23 +94,12 @@ def main(config: LoraLmConfig):
     )
 
     with config.trainer.device_mesh as mesh:
-        # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
-        # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
-        # tokens: gpt-2 has 50257, for example. So we round up.
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
-        # 1) compute (typically bfloat16)
-        # 2) parameter (typically float32)
-        # 3) output (sometimes float32)
-        # I like to think of these as "semantic" dtypes: compute is the dtype we do most of our math in, parameter is
-        # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
         mp: jmp.Policy = config.trainer.mp
-
-        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
@@ -138,7 +127,7 @@ def main(config: LoraLmConfig):
         # base_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=None), mlp=Mlp())
         # adapter_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=None, lora=LoraLinear(...)), mlp=None)
         # and then we combine them at runtime:
-        # model = combine_lora_params(adapter_model, base_model)
+        # model = combine_lora_params(base_model, lora_params=adapter_model)
         # which just grounds out into a call to equinox.combine
 
         # We unfortunately need to pass these two trees around more or less together, only really distinguishing
@@ -148,7 +137,7 @@ def main(config: LoraLmConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def train_loss(adapter_model, base_model, example, key):
-            model = combine_lora_params(adapter_model, base_model)
+            model = combine_lora_params(base_model, lora_params=adapter_model)
             return hax.mean(compute_loss(model, example, key, inference=False)).scalar()
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=(False, True, True, False, False))
@@ -174,7 +163,7 @@ def main(config: LoraLmConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def eval_loss(base_model, adapter_model, example):
-            model = combine_lora_params(base_model, adapter_model)
+            model = combine_lora_params(base_model, lora_params=adapter_model)
             return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # load the underlying hf model
@@ -273,7 +262,7 @@ def main(config: LoraLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume", leave=False, offset=1):
                 next(iter_data)
             initial_step = resume_step + 1
         else:
