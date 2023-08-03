@@ -260,6 +260,7 @@ def main(config: LoraLmConfig):
                 tokenizer,
                 partial(compute_log_probs, base_model),
                 os.path.join(config.trainer.run_dir, "log_probs"),
+                max_docs=EvalBatch.size,
             ),
             every=config.trainer.steps_per_eval,
         )

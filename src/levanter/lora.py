@@ -4,6 +4,7 @@ Implements LoRA https://arxiv.org/abs/2106.09685 transforms on Levanter models
 import dataclasses
 import functools
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -28,6 +29,9 @@ from levanter.compat.torch_serialization import (
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
+
+
+logger = logging.getLogger(__name__)
 
 
 M = TypeVar("M", bound=PyTree)
@@ -290,6 +294,8 @@ def save_peft_checkpoint_callback(
         else:
             my_upload_kwargs = hf_upload_kwargs
 
+        logger.info(f"Saving PEFT checkpoint for step {step.step} to {base_path}")
+
         save_peft_pretrained(
             step.model,
             config,
@@ -298,6 +304,8 @@ def save_peft_checkpoint_callback(
             upload_to=upload_to_hf,
             **my_upload_kwargs,
         )
+
+        logger.info("Saved checkpoint.")
 
     return cb
 
