@@ -84,6 +84,8 @@ def _flash_attention_forward(
     QPosBlock = QPos.resize(BLOCK_SIZE)  # Br in the paper
     KPosBlock = KPos.resize(BLOCK_SIZE)  # Bc in the paper
 
+    q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
+
     # number of blocks for Q and K
     Tr = hax.Axis("Tr", QPos.size // BLOCK_SIZE)
     Tc = hax.Axis("Tc", KPos.size // BLOCK_SIZE)
@@ -97,8 +99,9 @@ def _flash_attention_forward(
 
         # Step 2: init O_i = 0, sumexp_i = 0, max_i = -inf
         o_i = 0.0 * q_i  # unfortunately zeros_like doesn't work super well
-        sumexp_i = hax.zeros((QPosBlock,))
-        max_i = hax.full((QPosBlock,), -jnp.inf)
+
+        sumexp_i = hax.zeros(q_batch_axes + (QPosBlock,), q.dtype)
+        max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf)
 
         def do_qk_block(carry, j):  # computes softmax(Q_i K_j^T) V_j
             # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
