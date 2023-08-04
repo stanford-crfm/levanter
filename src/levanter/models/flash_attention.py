@@ -65,15 +65,15 @@ def _flash_attention(
 
 
 def _flash_attention_forward(
-        qkv,
-        QPos: hax.AxisSelector,
-        KPos: hax.AxisSelector,
-        Key: hax.AxisSelector,
-        mask: Optional[hax.NamedArray] = None,
-        dropout: float = 0.0,
-        *,
-        inference: bool,
-        key: Optional[PRNGKeyArray] = None,
+    qkv,
+    QPos: hax.AxisSelector,
+    KPos: hax.AxisSelector,
+    Key: hax.AxisSelector,
+    mask: Optional[hax.NamedArray] = None,
+    dropout: float = 0.0,
+    *,
+    inference: bool,
+    key: Optional[PRNGKeyArray] = None,
 ):
     q, k, v = qkv
     if QPos.size % BLOCK_SIZE != 0:
@@ -150,17 +150,17 @@ def _flash_attention_forward(
 
 
 def _flash_attention_backward(
-        residuals,
-        grad_in: hax.NamedArray,
-        qkv,
-        QPos: hax.AxisSelector,
-        KPos: hax.AxisSelector,
-        Key: hax.AxisSelector,
-        mask: Optional[hax.NamedArray] = None,
-        dropout: float = 0.0,
-        *,
-        inference: bool,
-        key: Optional[PRNGKeyArray] = None,
+    residuals,
+    grad_in: hax.NamedArray,
+    qkv,
+    QPos: hax.AxisSelector,
+    KPos: hax.AxisSelector,
+    Key: hax.AxisSelector,
+    mask: Optional[hax.NamedArray] = None,
+    dropout: float = 0.0,
+    *,
+    inference: bool,
+    key: Optional[PRNGKeyArray] = None,
 ):
     O, L = residuals
     q, k, v = qkv
@@ -187,7 +187,8 @@ def _flash_attention_backward(
         def do_inner_block(accum, i):
             dQ, dK_j, dV_j = accum
             q_i = q.slice(QPos, QPosBlock, i * BLOCK_SIZE)
-            o_i = O.slice(QPos, QPosBlock, i * BLOCK_SIZE)
+            # the FA2 paper says to read in this o_i, but it's not used anywhere. I think it's copypasta from FA1.
+            # o_i = O.slice(QPos, QPosBlock, i * BLOCK_SIZE)
 
             dQ_i = dQ.slice(QPos, QPosBlock, i * BLOCK_SIZE)
             dO_i = dO.slice(QPos, QPosBlock, i * BLOCK_SIZE)
@@ -195,10 +196,10 @@ def _flash_attention_backward(
             D_i = D.slice(QPos, QPosBlock, i * BLOCK_SIZE)
 
             # TODO: precision
-            attn_ij  = hax.dot(Key, q_i, k_j)
+            attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
-                mask_ij = mask.slice(QPos, QPosBlock, i * BLOCK_SIZE).slice(KPos, KPosBlock, j * BLOCK_SIZE)
+                mask_ij = mask.slice({QPos: i * BLOCK_SIZE, KPos: j * BLOCK_SIZE}, {QPos: QPosBlock, KPos: KPosBlock})
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
@@ -207,11 +208,11 @@ def _flash_attention_backward(
             dAttn_ij = p_ij * (dP_ij - D_i)
 
             dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j)
-            # TODO: implement set_slice
-            dQ = dQ.set_slice(QPos, QPosBlock, i * BLOCK_SIZE, dQ_i)
+            # dQ[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE] = dQi
+            dQ = dQ.updated_slice({QPos: i * BLOCK_SIZE}, dQ_i)
             dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i)
 
-            return (dQ, dK_j, dV_j)
+            return dQ, dK_j, dV_j
 
         dK_j = k_j * 0.0
         dV_j = v_j * 0.0
@@ -229,16 +230,5 @@ def _flash_attention_backward(
 
     return dQ, dK, dV
 
+
 _flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
-
-
-
-
-
-
-
-
-
-
-
-

@@ -58,10 +58,11 @@ def test_grad_attention():
     @equinox.filter_grad
     def d_attn(qkv, fn):
         q, k, v = qkv
-        return hax.mean(fn(QPos, KPos, Key, q, k, v, mask=mask)).scalar()
+        x_out = fn(QPos, KPos, Key, q, k, v, mask=mask)
+        return (x_out * x_out).sum().scalar()
 
     hax_dq, hax_dk, hax_dv = d_attn((q, k, v), hnn.attention.dot_product_attention)
-    fa_dq, fa_dk, fa_dv  = d_attn((q, k, v), functools.partial(flash_attention, inference=True))
+    fa_dq, fa_dk, fa_dv = d_attn((q, k, v), functools.partial(flash_attention, inference=True))
 
     assert hax_dq.axes == fa_dq.axes
     assert hax_dk.axes == fa_dk.axes
