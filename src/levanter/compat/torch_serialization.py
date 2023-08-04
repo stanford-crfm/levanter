@@ -1,6 +1,6 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -191,9 +191,13 @@ def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_
 
     if out_dims_first_in_dict:
         weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
     else:
         weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+    if layer.out_first:
+        weight = weight.rearrange((..., "__OUT__", "__IN__"))
+    else:
+        weight = weight.rearrange((..., "__IN__", "__OUT__"))
 
     # now unflatten
     weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
@@ -211,23 +215,6 @@ def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_
         ret_dict[apply_prefix(prefix, "bias")] = bias.array
 
     return ret_dict
-
-
-def reshape_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
-) -> StateDict:
-    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape((-1,) + in_shape + out_shape)
-    bias = bias.reshape((-1,) + out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
-
-    return new_dict
 
 
 def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
@@ -290,24 +277,3 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
         vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
 
     return vectorized_dict
-
-
-def reshape_mlp_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
-) -> StateDict:
-    """
-    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
-    This is different from reshape_linear_layer as we removed (-1,) from the shape
-    of the weights and bias.
-    """
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape(in_shape + out_shape)
-    bias = bias.reshape(out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
-
-    return new_dict

@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import equinox as eqx
 import jax
 import jmp
 import numpy
@@ -10,7 +11,6 @@ import tqdm
 
 import haliax as hax
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
@@ -46,7 +46,7 @@ def main(config: EvalLmConfig):
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
     Pos = config.model.Pos
-    KeyPos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
         raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
@@ -88,7 +88,7 @@ def main(config: EvalLmConfig):
         if config.checkpoint_path is not None:
             # initialize the model
             with jax.default_device(jax.devices("cpu")[0]):
-                model = filter_eval_shape(config.model.build, Vocab, key=key)
+                model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 ckpt = load_checkpoint(model, None, config.checkpoint_path)
 

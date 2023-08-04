@@ -13,6 +13,7 @@ from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 from urllib.parse import urlparse
 
 import draccus
+import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
@@ -34,7 +35,6 @@ from transformers.models.auto.auto_factory import _get_model_class
 
 import haliax
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
@@ -390,7 +390,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # TODO: i still think this isn't the best way to do this
         with jax.default_device(jax.devices("cpu")[0]):
-            lev_model = filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
         if axis_mapping is not None:

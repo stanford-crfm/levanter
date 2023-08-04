@@ -1,5 +1,14 @@
+import os
 from dataclasses import dataclass
 from typing import Callable, TypeVar
+
+
+def logical_cpu_core_count():
+    """Returns the number of logical CPU cores in the system."""
+    try:
+        return os.cpu_count()
+    except NotImplementedError:
+        return 1
 
 
 def non_caching_cycle(iterable):
