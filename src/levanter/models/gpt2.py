@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layer,
     unstack_state_dict,
 )
+from levanter.models.flash_attention import flash_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -57,6 +58,8 @@ class Gpt2Config(HFCompatConfig):
     gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = True
+    use_flash_attention: bool = False
+    flash_attention_block_size: int = 1024
 
     # Axes
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -167,31 +170,49 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
-        if self.config.scale_attn_by_inverse_layer_idx:
-            scale /= layer_idx + 1.0
+        if self.config.use_flash_attention:
+            # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
+            if self.config.scale_attn_by_inverse_layer_idx:
+                scale = 1 / (layer_idx + 1.0)
+            else:
+                scale = 1.0
+            # FA scales by 1/sqrt(head_size)
+            q = q * scale
+            attn_output = flash_attention(
+                self.config.Pos,
+                self.config.KeyPos,
+                self.config.HeadSize,
+                q,
+                k,
+                v,
+                inference=True,
+                block_size=self.config.flash_attention_block_size,
+            )
+            attn_output = self.c_proj(attn_output)
+            return attn_output
+        else:
+            scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
+            if self.config.scale_attn_by_inverse_layer_idx:
+                scale /= layer_idx + 1.0
 
-        # do this first to help keep FP values small
-        q = q * scale
+            q = q * scale
 
-        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
+            # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+            if self.config.upcast_attn:
+                q = q.astype(jnp.float32)
+                k = k.astype(jnp.float32)
 
-        attn_scores = hax.dot("head_size", q, k)
+            attn_scores = hax.dot("head_size", q, k)
 
-        if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
+            if mask is not None:
+                attn_scores = attn_scores + (1.0 - mask) * -1e9
 
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+            attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
+            attn_weights = self.dropout(attn_weights, key=key, inference=inference)
 
-        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
-
-        attn_output = self.c_proj(attn_output)
-        return attn_output
+            attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
+            attn_output = self.c_proj(attn_output)
+            return attn_output
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
