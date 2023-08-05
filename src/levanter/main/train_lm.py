@@ -24,7 +24,7 @@ from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
-from levanter.utils.jax_utils import parameter_count
+from levanter.utils.jax_utils import jnp_to_python, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -52,9 +52,20 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
+    # TODO: this is pretty hacky. would be better to revamp the logging system?
+    # It's convenient to be able to log from anywhere, so i'm resistent to callbacks for now
+    log_to_tensorboard: Optional[str] = None
+
 
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
+
+    if config.log_to_tensorboard is not None:
+        from levanter.utils.jaxboard import SummaryWriter
+
+        tb_writer = SummaryWriter(config.log_to_tensorboard)
+    else:
+        tb_writer = None
 
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
     # I recommend skipping it for now
@@ -189,6 +200,8 @@ def main(config: TrainLmConfig):
         # first get the shape of the model and optimizer state
         model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
         wandb.summary["parameter_count"] = parameter_count(model)
+        if tb_writer:
+            tb_writer.scalar("parameter_count", parameter_count(model), 0)
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
@@ -219,6 +232,21 @@ def main(config: TrainLmConfig):
         engine = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
+        if tb_writer:
+
+            def log_to_tb(stepinfo: StepInfo):
+                tb_writer.scalar("train/loss", stepinfo.loss, stepinfo.step)
+
+                def wrap_key(key):
+                    return f"optim/{key}"
+
+                if hasattr(opt_state, "hyperparams"):
+                    params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
+                    # wandb.log(params, step=step)
+                    tb_writer.scalars(params, step=stepinfo.step)
+
+            engine.add_hook(log_to_tb, every=1)
+
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
             callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
@@ -281,15 +309,19 @@ def main(config: TrainLmConfig):
         # finally, run the training loop
         for step in range(initial_step, config.trainer.num_train_steps):
             with capture_time() as step_time:
-                with log_time_to_wandb("throughput/loading_time", step=step):
+                with log_time_to_wandb("throughput/loading_time", step=step) as loading_time:
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
+                if tb_writer is not None:
+                    tb_writer.scalar("throughput/loading_time", loading_time(), step=step)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, example, my_key)
                 step_loss = jax_step_loss.item()
 
-            with log_time_to_wandb("throughput/hook_time", step=step):
+            with log_time_to_wandb("throughput/hook_time", step=step) as hook_time:
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
+            if tb_writer is not None:
+                tb_writer.scalar("throughput/hook_time", hook_time(), step=step)
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
