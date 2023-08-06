@@ -300,13 +300,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def Vocab(self) -> Axis:
         return Axis("vocab", len(self.tokenizer))
 
-    def config_from_hf_config(self, hf_config) -> LevConfig:
-        return self.LevConfigClass.from_hf_config(hf_config)
+    def config_from_hf_config(self, hf_config, overrides: Optional[dict] = None) -> LevConfig:
+        config = self.LevConfigClass.from_hf_config(hf_config)
+        if overrides is not None:
+            config = dataclasses.replace(config, **overrides)  # type: ignore
+        return config
 
     def hf_config_from_config(self, config: LevConfig, vocab_size: Optional[int] = None) -> HfConfig:
         if vocab_size is None:
             vocab_size = self.Vocab.size
-        return config.to_hf_config(vocab_size=vocab_size, config_overrides=self.config_overrides)
+        return config.to_hf_config(vocab_size=vocab_size)
 
     def config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> LevConfig:
         config = self.hf_config_from_hf_checkpoint(ref)
