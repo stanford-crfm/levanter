@@ -187,6 +187,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 v,
                 inference=True,
                 block_size=self.config.flash_attention_block_size,
+                mask=mask,
             )
             attn_output = self.c_proj(attn_output)
             return attn_output

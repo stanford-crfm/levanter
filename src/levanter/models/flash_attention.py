@@ -98,7 +98,7 @@ def _flash_attention_forward(
     Tc = hax.Axis("Tc", KPos.size // block_size)
 
     if mask is not None:
-        mask = mask.broadcast_to((QPos, KPos))  # make sure mask is broadcastable
+        mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
 
     def do_o_block(i):
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
@@ -182,7 +182,7 @@ def _flash_attention_backward(
     Tc = hax.Axis("Tc", KPos.size // block_size)
 
     if mask is not None:
-        mask = mask.broadcast_to((QPos, KPos))  # make sure mask is broadcastable
+        mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
 
     KPosBlock = KPos.resize(block_size)
     QPosBlock = QPos.resize(block_size)
