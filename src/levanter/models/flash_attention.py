@@ -52,7 +52,7 @@ def flash_attention(
     )
 
 
-@equinox.filter_custom_vjp
+# @equinox.filter_custom_vjp
 def _flash_attention(
     qkv: Tuple[hax.NamedArray, hax.NamedArray, hax.NamedArray],
     QPos: hax.Axis,
@@ -91,14 +91,14 @@ def _flash_attention_forward(
     QPosBlock = QPos.resize(block_size)  # Br in the paper
     KPosBlock = KPos.resize(block_size)  # Bc in the paper
 
-    q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
-
     # number of blocks for Q and K
     Tr = hax.Axis("Tr", QPos.size // block_size)
     Tc = hax.Axis("Tc", KPos.size // block_size)
 
     if mask is not None:
         mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
+
+    q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
 
     def do_o_block(i):
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
@@ -129,7 +129,7 @@ def _flash_attention_forward(
             # TODO: dropout
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
-            # ...    l_i^j = exp(m_i^{j-1} - max(S_i^j)) + rowsum(P_i^j)
+            # ...    l_i^j = exp(m_i^{j-1} - m_i^j) + rowsum(P_i^j)
             max_i = hax.maximum(old_max_i, hax.max(attn_ij, axis=KPosBlock))
             P_ij = hax.exp(attn_ij - max_i)
 
@@ -211,7 +211,7 @@ def _flash_attention_backward(
             attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
-                mask_ij = mask.slice({QPos: i * block_size, KPos: j * block_size}, {QPos: QPosBlock, KPos: KPosBlock})
+                mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
@@ -243,4 +243,4 @@ def _flash_attention_backward(
     return dQ.rearrange(q.axes), dK.rearrange(k.axes), dV.rearrange(v.axes)
 
 
-_flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
+# _flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)

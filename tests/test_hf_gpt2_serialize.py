@@ -1,4 +1,6 @@
+import dataclasses
 import tempfile
+from typing import Optional
 
 import equinox
 import fsspec
@@ -28,15 +30,19 @@ def test_hf_gpt2_roundtrip():
 
 
 @skip_if_no_torch
+def test_hf_gpt2_roundtrip_fa():
+    hf_config = HfGpt2Config.from_pretrained("gpt2")
+    config = Gpt2Config.from_hf_config(hf_config)
+    config = dataclasses.replace(config, use_flash_attention=True, flash_attention_block_size=128)
+    _roundtrip_compare_gpt2_checkpoint("gpt2", None, config=config)
+
+
+@skip_if_no_torch
 def test_mistral_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
 
 
-def _rand_input(key: PRNGKey, seq_len: int, vocab_size) -> jnp.ndarray:
-    return jrandom.randint(key, (seq_len,), 0, vocab_size)
-
-
-def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
+def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2Config] = None):
     import torch
 
     converter = Gpt2Config.default_hf_checkpoint_converter
@@ -44,7 +50,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision):
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_pretrained(Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
+    model = converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -83,14 +89,23 @@ def test_hf_gradient():
     _compare_gpt2_checkpoint_gradients("gpt2", None)
 
 
-def _compare_gpt2_checkpoint_gradients(model_id, revision):
+@skip_if_no_torch
+def test_hf_gradient_fa():
+    hf_config = HfGpt2Config.from_pretrained("gpt2")
+    config = Gpt2Config.from_hf_config(hf_config)
+    # keep block size small to make sure we test the tiling behavior
+    config = dataclasses.replace(config, use_flash_attention=True, flash_attention_block_size=128)
+    _compare_gpt2_checkpoint_gradients("gpt2", None, config=config)
+
+
+def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2Config] = None):
     import torch
 
     converter = Gpt2Config.default_hf_checkpoint_converter
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_pretrained(Gpt2LMHeadModel, RepoRef(model_id, revision))
+    model = converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
