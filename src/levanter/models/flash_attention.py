@@ -241,14 +241,14 @@ def _flash_attention_backward(
 
             return dQ, dK_j, dV_j
 
-        dK_j = (k_j * 0.0).as_type(k.dtype)
-        dV_j = (v_j * 0.0).as_type(v.dtype)
+        dK_j = (k_j * 0.0).astype(k.dtype)
+        dV_j = (v_j * 0.0).astype(v.dtype)
 
         dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
 
         return dQ, (dK_j, dV_j)
 
-    dQ = (q * 0.0).as_type(q.dtype)
+    dQ = (q * 0.0).astype(q.dtype)
     dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
 
     # dQ is already the right shape because it's folded over rather than scanned over
