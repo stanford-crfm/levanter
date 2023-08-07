@@ -217,6 +217,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         if self.config.upcast_attn:
             attn_output = attn_output.astype(x.dtype)
 
+        return attn_output
+
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
         # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
