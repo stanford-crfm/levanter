@@ -254,5 +254,5 @@ _flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
 
 
 def _infer_attention_output_block_shape(QPosBlock, KPos, Key, q_i, k, v):
-    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, QPosBlock, KPos, Key, q_i, k, v, inference=True)
+    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, QPosBlock, KPos, Key, q_i, k, v)
     return out_shape.axes
