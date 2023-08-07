@@ -281,7 +281,7 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
     return compute_and_viz_log_probs
 
 
-@partial(pjit, out_axis_resources=None)
+@partial(pjit, out_shardings=None)
 def _concatenate(x):
     return jnp.concatenate(x, axis=0)
 

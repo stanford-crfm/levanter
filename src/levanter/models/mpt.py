@@ -15,7 +15,7 @@ import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
+from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
@@ -198,8 +198,8 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
     @staticmethod
     def init(Embed: Axis, Intermediate: Axis, *, key, use_bias: bool = False):
         k_fc, k_proj = jrandom.split(key, 2)
-        up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias)
+        up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
+        down_proj = hnn.Linear.init(Out=Embed, In=Intermediate, key=k_proj, use_bias=use_bias, out_first=True)
         return MptMlp(up_proj=up_proj, down_proj=down_proj)
 
     @named_call
@@ -208,34 +208,6 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
         hidden_states = hnn.gelu(hidden_states, approximate=False)
         hidden_states = self.down_proj(hidden_states)
         return hidden_states
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # this is a bit annoying, Torch's Linear is the opposite of ours, so we need to transpose
-        ret_dict = {}
-
-        for k, v in state_dict.items():
-            if prefix is None or k.startswith(prefix):
-                if k.endswith("weight"):
-                    ret_dict[k] = v.swapaxes(-1, -2)
-                elif k.endswith("bias"):
-                    ret_dict[k] = v
-
-        return super().from_state_dict(ret_dict, prefix=prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # this is a bit annoying, Torch's Linear is the opposite of ours, so we need to transpose
-        ret_dict: StateDict = {}
-
-        super().update_state_dict(ret_dict, prefix=None)
-
-        for k, v in ret_dict.items():
-            if k.endswith("weight"):
-                state_dict[apply_prefix(prefix, k)] = v.swapaxes(-1, -2)
-            else:
-                assert k.endswith("bias")
-                state_dict[apply_prefix(prefix, k)] = v
-
-        return state_dict
 
 
 # Attention is the same as GPT-2 Attention, modulo alibi
@@ -254,8 +226,12 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
     ):
         k_c, k_proj = jrandom.split(key, 2)
         qkv = Axis("qkv", 3)
-        Wqkv = hnn.Linear.init(In=config.Embed, Out=(qkv, config.Head, config.HeadDim), key=k_c, use_bias=use_bias)
-        out_proj = hnn.Linear.init(In=(config.Head, config.HeadDim), Out=config.Embed, key=k_proj, use_bias=use_bias)
+        Wqkv = hnn.Linear.init(
+            In=config.Embed, Out=(qkv, config.Head, config.HeadDim), key=k_c, use_bias=use_bias, out_first=True
+        )
+        out_proj = hnn.Linear.init(
+            In=(config.Head, config.HeadDim), Out=config.Embed, key=k_proj, use_bias=use_bias, out_first=True
+        )
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
     def __call__(
@@ -298,10 +274,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        d = {}
-        d.update(
-            unflatten_linear_layer(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
-        )
+        d = unflatten_linear_layer(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
         d.update(
             unflatten_linear_layer(
                 apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, out_dims_first_in_dict=True
@@ -461,7 +434,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):
-            lev_model = filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
+            lev_model = eqx.filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
         if axis_mapping is not None:

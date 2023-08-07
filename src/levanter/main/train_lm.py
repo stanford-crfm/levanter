@@ -12,7 +12,6 @@ from jax.random import PRNGKey
 import haliax as hax
 import haliax.random
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
@@ -209,7 +208,7 @@ def main(config: TrainLmConfig):
             return model, opt_state
 
         # first get the shape of the model and optimizer state
-        model, opt_state = filter_eval_shape(init_model_and_opt_state, model_key)
+        model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
         wandb.summary["parameter_count"] = parameter_count(model)
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
@@ -268,7 +267,8 @@ def main(config: TrainLmConfig):
 
                 pred_y = model(example.tokens, example.attn_mask, inference=True, key=None)
                 pred_y = mp.cast_to_output(pred_y)
-                loss = cross_entropy_loss(pred_y, Vocab, example.targets, where=example.loss_mask, reduction=None)
+                targets = hax.nn.one_hot(example.tokens, Vocab, dtype=pred_y.dtype)
+                loss = cross_entropy_loss(pred_y, Vocab, targets, where=example.loss_mask, reduction=None)
                 logprobs = -loss
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, Pos)
