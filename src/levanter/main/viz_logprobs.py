@@ -14,9 +14,9 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import StepInfo, TrainerConfig
 
 

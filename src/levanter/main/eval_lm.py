@@ -11,7 +11,6 @@ import tqdm
 
 import haliax as hax
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
@@ -19,9 +18,9 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 
 
@@ -68,17 +67,10 @@ def main(config: EvalLmConfig):
         mp: jmp.Policy = config.trainer.mp
 
         @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
+        def compute_loss(model: LmHeadModel, example: LmExample):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
-                pred_y = mp.cast_to_output(pred_y)
-
-                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
-                return hax.mean(per_ex_loss).scalar()
+                return model.compute_loss(example, key=None, inference=True)
 
         compute_loss = functools.partial(compute_loss, inference=True, key=None)
 

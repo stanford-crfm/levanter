@@ -11,18 +11,17 @@ import wandb
 import haliax as hax
 import haliax.random
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -136,13 +135,7 @@ def main(config: TrainLmConfig):
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
-                pred_y = mp.cast_to_output(pred_y)
-
-                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+                return model.compute_loss(example, inference=inference, key=key)
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def train_loss(model, example, key):
@@ -243,12 +236,7 @@ def main(config: TrainLmConfig):
             """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, inference=True, key=None)
-                pred_y = mp.cast_to_output(pred_y)
-                targets = hax.nn.one_hot(example.tokens, Vocab, dtype=pred_y.dtype)
-                loss = cross_entropy_loss(pred_y, Vocab, targets, where=example.loss_mask, reduction=None)
-                logprobs = -loss
+                logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
                 # roll forward to get the loss for each predicted token
                 logprobs = haliax.roll(logprobs, 1, Pos)
                 return logprobs.rearrange((EvalBatch, Pos)).array
