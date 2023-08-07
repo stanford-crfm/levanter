@@ -1,12 +1,10 @@
 import dataclasses
 import tempfile
-from typing import Optional
+from typing import Optional, cast
 
 import equinox
 import fsspec
 import jax
-import jax.numpy as jnp
-import jax.random as jrandom
 import numpy as onp
 from fsspec import AbstractFileSystem
 from jax.random import PRNGKey
@@ -50,7 +48,9 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
+    model: Gpt2LMHeadModel = cast(
+        Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
+    )
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -105,7 +105,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision))
+    model = cast(Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision)))
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -121,14 +121,13 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
 
     jax_compute_grad = jax.value_and_grad(compute_loss)
+    jax_grad: Gpt2LMHeadModel
     jax_loss, jax_grad = jax_compute_grad(model, input)
 
     # gradients are kind of a pain to get at in torch, but we do it anyway
     torch_out.backward()
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
-
-    jax_grad: Gpt2LMHeadModel
 
     jax_grad_dict = jax_grad.to_state_dict()
 
