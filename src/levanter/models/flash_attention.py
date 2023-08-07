@@ -220,7 +220,7 @@ def _flash_attention_backward(
             D_i = D.slice(QPos, QPosBlock, i * block_size)
 
             # TODO: precision
-            attn_ij = hax.dot(Key, q_i, k_j)
+            attn_ij = hax.dot(Key, q_i, k_j, precision=jax.lax.Precision.HIGH)
 
             if mask is not None:
                 mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
