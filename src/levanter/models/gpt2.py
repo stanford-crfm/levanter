@@ -178,6 +178,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 scale = 1.0
             # FA scales by 1/sqrt(head_size)
             q = q * scale
+
+            # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+            if self.config.upcast_attn:
+                q = q.astype(jnp.float32)
+                k = k.astype(jnp.float32)
+
             attn_output = flash_attention(
                 self.config.Pos,
                 self.config.KeyPos,
