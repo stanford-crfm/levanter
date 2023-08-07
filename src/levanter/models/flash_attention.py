@@ -108,7 +108,13 @@ def _flash_attention_forward(
         o_i = 0.0 * q_i  # unfortunately zeros_like doesn't work super well
 
         sumexp_i = hax.zeros(q_batch_axes + (QPosBlock,), q.dtype)
-        max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf)
+        # max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf)
+        # TODO: test to see if the stabilization is the problem. XXX remove
+        attn_i = hax.dot(Key, q_i, k)
+        if mask is not None:
+            mask_i = mask.slice(QPos, QPosBlock, i * block_size)
+            attn_i = hax.where(mask_i, attn_i, -1e10)
+        max_i = hax.max(attn_i, axis=KPos)
 
         def do_qk_block(carry, j):  # computes softmax(Q_i K_j^T) V_j
             # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
@@ -208,7 +214,7 @@ def _flash_attention_backward(
             D_i = D.slice(QPos, QPosBlock, i * block_size)
 
             # TODO: precision
-            attn_ij = hax.dot(Key, q_i, k_j, precision=jax.lax.Precision.HIGH)
+            attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
                 mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
