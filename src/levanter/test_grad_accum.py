@@ -46,8 +46,6 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
     def loss_fn(mlp, x):
         return mlp(x).mean().scalar()
 
-    grad_fn = eqx.filter_value_and_grad(loss_fn)
-
     x = hax.random.normal(jax.random.PRNGKey(0), (Batch, In))
 
     x = jax.device_put(x, jax.sharding.PositionalSharding(jax.devices()).reshape((-1, 1)))
@@ -59,11 +57,15 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
     @hax.partitioning.named_jit(axis_resources=axis_mapping)
     def jit_grad_accum(mlp, x):
         acc_v, acc_g = accumulate_gradients_sharded(
-            grad_fn, Batch, mlp, x, per_device_parallelism=parallelism, parameter_axis_mapping=axis_mapping
+            loss_fn, Batch, per_device_parallelism=parallelism, parameter_axis_mapping=axis_mapping
+        )(
+            mlp,
+            x,
         )
         return acc_v, acc_g
 
     with mesh:
+        grad_fn = eqx.filter_value_and_grad(loss_fn)
         acc_v, acc_g = jit_grad_accum(mlp, x)
         v, g = grad_fn(mlp, x)
 
