@@ -131,7 +131,7 @@ def _flash_attention_forward(
 
             # TODO: precision
             # Step 8: compute Sij = QiKj^T
-            attn_ij = hax.dot(Key, q_i, k_j, precision=jax.lax.Precision.HIGH)
+            attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
                 mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
@@ -220,24 +220,24 @@ def _flash_attention_backward(
             D_i = D.slice(QPos, QPosBlock, i * block_size)
 
             # TODO: precision
-            attn_ij = hax.dot(Key, q_i, k_j, precision=jax.lax.Precision.HIGH)
+            attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
                 mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
-            dV_j = dV_j + hax.dot(QPosBlock, p_ij, dO_i).astype(dV_j.dtype)
 
             dP_ij = hax.dot(Key, dO_i, v_j)
             dAttn_ij = p_ij * (dP_ij - D_i)
             dAttn_ij = dAttn_ij.astype(dQ_i.dtype)
 
+            dV_j = dV_j + hax.dot(QPosBlock, p_ij, dO_i).astype(dV_j.dtype)
+            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i).astype(dK_j.dtype)
+
             dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j).astype(dQ.dtype)
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)
-
-            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i).astype(dK_j.dtype)
 
             return dQ, dK_j, dV_j
 
