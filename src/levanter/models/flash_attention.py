@@ -232,10 +232,11 @@ def _flash_attention_backward(
             dAttn_ij = p_ij * (dP_ij - D_i)
             dAttn_ij = dAttn_ij.astype(dQ_i.dtype)
 
-            dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j)
+            dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j).astype(dQ.dtype)
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)
-            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i)
+
+            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i).astype(dK_j.dtype)
 
             return dQ, dK_j, dV_j
 
