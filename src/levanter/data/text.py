@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
 from jaxtyping import PyTree
+from pyarrow._parquet import FileMetaData
 
 import haliax as hax
 from haliax import Axis
@@ -321,9 +322,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         }
 
 
-def _open_arrow_table(path) -> pa.Table:
+def _open_arrow_table(path) -> FileMetaData:
     fs, _, paths = fsspec.get_fs_token_paths(path)
-    return pq.read_table(path, filesystem=fs)
+    return pq.read_metadata(path, filesystem=fs)
 
 
 def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
