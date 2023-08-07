@@ -153,7 +153,7 @@ def _flash_attention_forward(
 
             return (o_i, sumexp_i, max_i)
 
-        o_i, sumexp_i, max_i = hax.fold(do_qk_block, Tc)((o_i, sumexp_i, max_i), jnp.arange(Tc.size))
+        o_i, sumexp_i, max_i = hax.fold(do_qk_block, Tc, reverse=True)((o_i, sumexp_i, max_i), jnp.arange(Tc.size))
 
         # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
         o_i = o_i / sumexp_i
