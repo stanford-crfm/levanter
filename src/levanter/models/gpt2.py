@@ -170,6 +170,11 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
+        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
+        if self.config.upcast_attn:
+            q = q.astype(jnp.float32)
+            k = k.astype(jnp.float32)
+
         if self.config.use_flash_attention:
             # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
             if self.config.scale_attn_by_inverse_layer_idx:
@@ -178,11 +183,6 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 scale = 1.0
             # FA scales by 1/sqrt(head_size)
             q = q * scale
-
-            # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-            if self.config.upcast_attn:
-                q = q.astype(jnp.float32)
-                k = k.astype(jnp.float32)
 
             attn_output = flash_attention(
                 self.config.Pos,
@@ -196,18 +196,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 mask=mask,
             )
             attn_output = self.c_proj(attn_output)
-            return attn_output
         else:
             scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
             if self.config.scale_attn_by_inverse_layer_idx:
                 scale /= layer_idx + 1.0
 
             q = q * scale
-
-            # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-            if self.config.upcast_attn:
-                q = q.astype(jnp.float32)
-                k = k.astype(jnp.float32)
 
             attn_scores = hax.dot("head_size", q, k)
 
@@ -219,7 +213,9 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
             attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
             attn_output = self.c_proj(attn_output)
-            return attn_output
+
+        if self.config.upcast_attn:
+            attn_output = attn_output.astype(x.dtype)
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
         # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
