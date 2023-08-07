@@ -15,7 +15,7 @@ import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import filter_eval_shape, named_call, shaped_rng_split
+from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
@@ -434,7 +434,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
         with jax.default_device(jax.devices("cpu")[0]):
-            lev_model = filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
+            lev_model = eqx.filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
         if axis_mapping is not None:
