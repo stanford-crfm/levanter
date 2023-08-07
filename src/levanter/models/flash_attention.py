@@ -230,6 +230,7 @@ def _flash_attention_backward(
             dV_j = dV_j + hax.dot(QPosBlock, p_ij, dO_i)
             dP_ij = hax.dot(Key, dO_i, v_j)
             dAttn_ij = p_ij * (dP_ij - D_i)
+            dAttn_ij = dAttn_ij.astype(dQ_i.dtype)
 
             dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j)
             # dQ[i*block_size:(i+1)*block_size] = dQi
