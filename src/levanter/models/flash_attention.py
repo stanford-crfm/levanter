@@ -52,7 +52,7 @@ def flash_attention(
     )
 
 
-# @equinox.filter_custom_vjp
+@equinox.filter_custom_vjp
 def _flash_attention(
     qkv: Tuple[hax.NamedArray, hax.NamedArray, hax.NamedArray],
     QPos: hax.Axis,
@@ -243,4 +243,4 @@ def _flash_attention_backward(
     return dQ.rearrange(q.axes), dK.rearrange(k.axes), dV.rearrange(v.axes)
 
 
-# _flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
+_flash_attention.defvjp(_flash_attention_forward, _flash_attention_backward)
