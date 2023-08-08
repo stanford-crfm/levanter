@@ -11,12 +11,14 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.jax_utils import named_call
 
 
 # TODO: tune
 BLOCK_SIZE = 128
 
 
+@named_call
 def flash_attention(
     QPos: hax.AxisSelector,
     KPos: hax.AxisSelector,
@@ -72,6 +74,7 @@ def _flash_attention(
     )[0]
 
 
+@named_call
 def _flash_attention_forward(
     qkv,
     QPos: hax.AxisSelector,
@@ -102,6 +105,7 @@ def _flash_attention_forward(
 
     q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
 
+    @named_call
     def do_o_block(i):
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
         q_i = q.slice(QPos, QPosBlock, i * block_size)
@@ -114,6 +118,7 @@ def _flash_attention_forward(
         sumexp_i = hax.zeros(q_batch_axes + (QPosBlock,), q.dtype)
         max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf, q.dtype)
 
+        @named_call
         def do_qk_block(carry, j):  # computes softmax(Q_i K_j^T) V_j
             # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
             #         K and V into 𝑇𝑐 = \ceil(𝑁/Bc) blocks of size Bc x d each.
@@ -164,6 +169,7 @@ def _flash_attention_forward(
     return o, (o, ell)
 
 
+@named_call
 def _flash_attention_backward(
     residuals,
     grad_in: hax.NamedArray,
@@ -196,10 +202,12 @@ def _flash_attention_backward(
     # Triton impl has it as R^{QPos}, which makes more sense.
     D = hax.sum(dO * O, axis=Key)
 
+    @named_call
     def do_kv_block(dQ, j):
         k_j = k.slice(KPos, KPosBlock, j * block_size)
         v_j = v.slice(KPos, KPosBlock, j * block_size)
 
+        @named_call
         def do_inner_block(accum, i):
             dQ, dK_j, dV_j = accum
             q_i = q.slice(QPos, QPosBlock, i * block_size)
