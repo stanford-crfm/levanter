@@ -1,31 +1,29 @@
-import numpy as np
-
-import haliax as hax
-import jax.numpy as jnp
 import torch
 from jax import random
 
 # The latter 2 classes are only available in HuggingFace's transformers 4.30.0 or later
 from transformers.models.llama.modeling_llama import (
-    LlamaRotaryEmbedding as HFLlamaRotaryEmbedding,
-    LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
     LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
-    LlamaAttention as HFLlamaAttention,
-    apply_rotary_pos_emb as hf_apply_rotary_pos_emb,
-    rotate_half as hf_rotate_half,
 )
+from transformers.models.llama.modeling_llama import (
+    LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
+)
+from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
+from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_half
+
+import haliax as hax
+
 from levanter.models.llama import (
     LlamaConfig,
-    LlamaRotaryEmbedding,
-    LlamaLinearScalingRotaryEmbedding,
     LlamaDynamicNTKScalingRotaryEmbedding,
-    LlamaAttention,
-    _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb,
-    _rotate_half as levanter_rotate_half,
+    LlamaLinearScalingRotaryEmbedding,
+    LlamaRotaryEmbedding,
 )
+from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
+from levanter.models.llama import _rotate_half as levanter_rotate_half
 
 
-"""
 def test_llama_rotary_embedding():
     llama_config = _get_llama_config()
     hidden_dim = llama_config.hidden_dim
@@ -64,26 +62,11 @@ def test_llama_rotary_embedding():
     )
 
 
-
-def test_llama_attention():
-    llama_config = _get_llama_config()
-    key = random.PRNGKey(4)
-    levanter_llama_att = LlamaAttention.init(config=llama_config, key=key)
-    seq_len = llama_config.seq_len
-
-    input_ids = hax.arange(llama_config.Pos, dtype=jnp.int32)
-    causal_mask = hax.nn.attention.causal_mask(llama_config.Pos, llama_config.KeyPos)
-    position_ids = random.randint(random.PRNGKey(0), (1, seq_len), 0, llama_config.Pos.size)
-    levanter_output = levanter_llama_att(input_ids, mask=causal_mask, position_ids=position_ids)
-"""
-
-
 def test_apply_rotary_pos_emb():
     llama_config = _get_llama_config()
 
     Pos = llama_config.Pos
     Heads = llama_config.Heads
-    KVHeads = llama_config.KVHeads
     HeadSize = llama_config.HeadSize
     Batch = hax.Axis("batch", 2)
 

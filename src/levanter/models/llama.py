@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Type, Tuple
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -11,7 +11,6 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig
 
@@ -78,6 +77,7 @@ class LlamaMlp(eqx.Module):
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
+        return LlamaMlp(gate_proj, up_proj, down_proj, act)
 
     @named_call
     def __call__(self, x: NamedArray) -> NamedArray:
@@ -242,7 +242,9 @@ def _get_rotary_emb(config: LlamaConfig, head_dim: int, max_position_embeddings:
         if scaling_type == "linear":
             return LlamaLinearScalingRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
         elif scaling_type == "dynamic":
-            return LlamaDynamicNTKScalingRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
+            return LlamaDynamicNTKScalingRotaryEmbedding(
+                head_dim, max_position_embeddings, scaling_factor=scaling_factor
+            )
         else:
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
 
@@ -263,18 +265,15 @@ def _apply_rotary_pos_emb(
     k: NamedArray,  # [batch, seq_len, kv_heads, head_size]
     cos: jnp.ndarray,  # [1, 1, seq_len, head_size]
     sin: jnp.ndarray,  # [1, 1, seq_len, head_size]
-    position_ids: jnp.ndarray  # [bs, seq_len]
+    position_ids: jnp.ndarray,  # [bs, seq_len]
 ) -> Tuple[NamedArray, NamedArray]:
-    """Applies rotary position embedding to q and k.
-    Note that all the multiplication below are element-wise, so I don't find it
-    helpful to write in haliax.
-    """
+    """Applies rotary position embedding to q and k."""
     cos = jnp.squeeze(jnp.squeeze(cos, axis=1), axis=0)  # from [1, 1, seq_len, dim] to [seq_len, dim]
     sin = jnp.squeeze(jnp.squeeze(sin, axis=1), axis=0)
-    cos = jnp.expand_dims(cos[position_ids], axis=2)  # [batch, seq_len, 1, head_size]
-    sin = jnp.expand_dims(sin[position_ids], axis=2)  # [batch, seq_len, 1, head_size]
-    q_embed = (q.array * cos) + (_rotate_half(q).array * sin)  # [batch, seq_len, heads, head_size]
-    k_embed = (k.array * cos) + (_rotate_half(k).array * sin)  # [batch, seq_len, kv_heads, head_size]
-    q_embed = hax.named(q_embed, q.axes)
-    k_embed = hax.named(k_embed, k.axes)
+    cos = cos[position_ids]  # [batch, seq_len, head_size]
+    sin = sin[position_ids]  # [batch, seq_len, head_size]
+    cos = hax.named(cos, ("batch", "position", "head_size"))
+    sin = hax.named(sin, ("batch", "position", "head_size"))
+    q_embed = hax.multiply(q, cos) + hax.multiply(_rotate_half(q), sin)
+    k_embed = hax.multiply(k, cos) + hax.multiply(_rotate_half(k), sin)
     return q_embed, k_embed
