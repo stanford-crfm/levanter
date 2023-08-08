@@ -126,7 +126,8 @@ def main(config: TrainLmConfig):
 
         @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            return model.compute_loss(example, inference=inference, key=key).scalar()
+            per_ex_loss = model.compute_loss(example, inference=inference, key=key, reduction_axis=Pos)
+            return per_ex_loss.mean()
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
