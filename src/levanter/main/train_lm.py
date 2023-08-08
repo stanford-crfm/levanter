@@ -175,7 +175,7 @@ def main(config: TrainLmConfig):
                 )
 
         # boilerplate hooks and such
-        engine = TrainerHooks()
+        engine: TrainerHooks = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
@@ -273,7 +273,7 @@ def main(config: TrainLmConfig):
         )
 
         engine.run_hooks(last_step, force=True)
-        checkpointer.on_step(last_step, force=True)
+        checkpointer.force_save(last_step)
 
 
 if __name__ == "__main__":

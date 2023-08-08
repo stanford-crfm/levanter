@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Dict, Generic, List, Mapping, Optional, Protocol, Tuple, TypeVar, Union
 
 import jax
 import jmp
@@ -13,7 +13,7 @@ import numpy as np
 import optax
 from draccus import field
 from jax._src.interpreters.pxla import Mesh
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray
 
 from haliax.partitioning import ResourceAxis, ResourceMapping
 
@@ -27,39 +27,51 @@ from levanter.utils import cloud_utils
 
 logger = pylogging.getLogger(__name__)
 
+M_co = TypeVar("M_co", covariant=True)
+S_co = TypeVar("S_co", covariant=True)
+
+M_con = TypeVar("M_con", contravariant=True)
+S_con = TypeVar("S_con", contravariant=True)
+
 M = TypeVar("M")
 S = TypeVar("S")
+
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
 }
 
 
 @dataclass
-class StepInfo:
+class StepInfo(Generic[M_co, S_co]):
     step: int
-    model: PyTree
-    opt_state: Any
+    model: M_co
+    opt_state: S_co
     loss: float
     next_key: PRNGKeyArray
     step_duration: float
 
 
+class CallbackFn(Protocol[M_con, S_con]):
+    def __call__(self, step: StepInfo[M_con, S_con]) -> None:
+        ...
+
+
 @dataclass
-class _Hook:
-    fn: Callable[[StepInfo], None]
+class _Hook(Generic[M_co, S_co]):
+    fn: CallbackFn[M_co, S_co]
     every: int
 
 
-class TrainerHooks:
-    hooks: List[_Hook] = []
+class TrainerHooks(Generic[M_co, S_co]):
+    hooks: List[_Hook[M_co, S_co]] = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 hook.fn(info)
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
-        def decorator(fn: Callable[[StepInfo], None]):
+    def add_hook(self, fn: Optional[CallbackFn[M_co, S_co]] = None, *, every: int = 1):
+        def decorator(fn: CallbackFn[M_co, S_co]):
             self.hooks.append(_Hook(fn, every))
 
         if fn is None:

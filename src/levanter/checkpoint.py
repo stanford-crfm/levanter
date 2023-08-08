@@ -116,13 +116,11 @@ class Checkpointer:
         model, _, step = ckpt
         return model, step
 
-    def on_step(self, info, force: bool = False):
+    def on_step(self, info):
         step = info.step
 
         if step == 0:
             self._last_save_time = self._dt_now_injection()
-            if not force:
-                return  # don't save checkpoint at step 0 unless forced
 
         if step == self._last_save_step:
             # we've already saved a checkpoint at this step
@@ -136,8 +134,8 @@ class Checkpointer:
         # then we could end up with a situation where one process saves a checkpoint, and then another process
         # saves a checkpoint for the next step, etc. This leads to partial checkpoints, no good.
         # we fix by having process 0 make the decision
-        my_should_save = force
-        my_save_permanent_ckpt = force
+        my_should_save = False
+        my_save_permanent_ckpt = False
 
         current_every = self._get_current_step_save_interval(step)
         last_save_time = self._dt_now_injection() - self._last_save_time
@@ -161,20 +159,20 @@ class Checkpointer:
                 logger.info(f"Saving temporary checkpoint at step {step}.{extra_str}")
 
         if should_save:
-            last_checkpoint = self._last_temporary_checkpoint
-            destination = f"step-{step}"
+            self.force_save(info, save_permanent_ckpt)
 
-            self.save_checkpoint(info, destination)
-
-            if not save_permanent_ckpt:
-                self._last_temporary_checkpoint = destination
-            else:
-                self._last_temporary_checkpoint = None
-
-            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
-            # so that we can delete it properly if we recover
-            if last_checkpoint is not None:
-                self._rm_checkpoint(last_checkpoint)
+    def force_save(self, info, permanent=True):
+        last_checkpoint = self._last_temporary_checkpoint
+        destination = f"step-{info.step}"
+        self.save_checkpoint(info, destination)
+        if not permanent:
+            self._last_temporary_checkpoint = destination
+        else:
+            self._last_temporary_checkpoint = None
+        # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
+        # so that we can delete it properly if we recover
+        if last_checkpoint is not None:
+            self._rm_checkpoint(last_checkpoint)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
