@@ -10,7 +10,6 @@ from typing import Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
-import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
@@ -27,6 +26,7 @@ from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
+from levanter.models.lm_model import LmExample
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -61,13 +61,6 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
-
-
-class LmExample(eqx.Module):
-    tokens: hax.NamedArray
-    targets: hax.NamedArray
-    attn_mask: hax.NamedArray
-    loss_mask: hax.NamedArray
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
