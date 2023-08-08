@@ -3,19 +3,18 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax
-import jmp
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import fsdp, round_axis_for_partitioning
+from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
-from levanter import callbacks
+import levanter.visualization
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.trainer import StepInfo, TrainerConfig
 
 
@@ -64,17 +63,6 @@ def main(config: VizGpt2Config):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        mp: jmp.Policy = config.trainer.mp
-
-        # don't want to compute the mask w.r.t. the final token
-
-        @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
-        def compute_log_probs(model: LmHeadModel, example: LmExample):
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = hax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
-
         # initialize the model
         with jax.default_device(jax.devices("cpu")[0]):
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
@@ -86,8 +74,13 @@ def main(config: VizGpt2Config):
 
         model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
-        cb = callbacks.compute_and_visualize_log_probs(
-            eval_loader, tokenizer, compute_log_probs, config.output_dir, max_docs=config.num_docs
+        cb = levanter.visualization.compute_and_visualize_log_probs(
+            eval_loader,
+            tokenizer,
+            config.output_dir,
+            parameter_axis_mapping,
+            compute_axis_mapping,
+            max_docs=config.num_docs,
         )
         cb(StepInfo(model=model, step=0, opt_state=None, loss=0.0, step_duration=0.0, next_key=0.0))
 

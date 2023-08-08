@@ -9,11 +9,11 @@ import jax.random as jrandom
 import jmp
 import wandb
 
-import haliax.random
 from haliax import Axis
 from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
 
 import levanter
+import levanter.visualization
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
@@ -186,7 +186,6 @@ def main(config: TrainLmConfig):
             every=config.trainer.steps_per_eval,
         )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
         engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
@@ -198,17 +197,14 @@ def main(config: TrainLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # visualize log probs
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        def compute_log_probs(model, example: LmExample):
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = haliax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
-
         engine.add_hook(
-            callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
+            levanter.visualization.compute_and_visualize_log_probs(
+                eval_loader,
+                tokenizer,
+                os.path.join(config.trainer.run_dir, "log_probs"),
+                parameter_axis_mapping,
+                compute_axis_mapping,
+                mp=mp,
             ),
             every=config.trainer.steps_per_eval,
         )
