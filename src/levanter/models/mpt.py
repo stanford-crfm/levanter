@@ -244,10 +244,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({self.config.Pos: self.config.KeyPos})
         v = v.rename({self.config.Pos: self.config.KeyPos})
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
-        # if self.scale_by_inverse_layer_idx:
-        #     scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
