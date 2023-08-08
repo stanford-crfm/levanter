@@ -121,41 +121,15 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
-        # 1) compute (typically bfloat16)
-        # 2) parameter (typically float32)
-        # 3) output (sometimes float32)
-        # I like to think of these as "semantic" dtypes: compute is the dtype we do most of our math in, parameter is
-        # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
+        # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
-
-        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
             return model.compute_loss(example, inference=inference, key=key).scalar()
 
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(compute_loss)
-
-            loss, grads = accumulate_gradients_sharded(
-                grad_loss,
-                Batch,
-                model,
-                examples,
-                inference=False,
-                key=key,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )
-
-            # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
-
-            return loss, model, opt_state
+        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         # initialize the model
         # There are a few ways we might initialize the model
@@ -239,6 +213,28 @@ def main(config: TrainLmConfig):
             every=config.trainer.steps_per_eval,
         )
 
+        # train step
+        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        def train_step(model, opt_state, examples: LmExample, key):
+            grad_loss = eqx.filter_value_and_grad(compute_loss)
+
+            loss, grads = accumulate_gradients_sharded(
+                grad_loss,
+                Batch,
+                model,
+                examples,
+                inference=False,
+                key=key,
+                per_device_parallelism=config.trainer.per_device_parallelism,
+                parameter_axis_mapping=parameter_axis_mapping,
+            )
+
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
+
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
 
@@ -254,6 +250,7 @@ def main(config: TrainLmConfig):
             initial_step = 0
 
         # assign these here in case num_train_steps == 0
+
         step_loss = 0.0
         step_time = lambda: 0.0  # noqa: E731
 
