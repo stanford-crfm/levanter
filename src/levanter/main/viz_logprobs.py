@@ -8,7 +8,7 @@ import jmp
 import haliax as hax
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -69,7 +69,7 @@ def main(config: VizGpt2Config):
 
         # don't want to compute the mask w.r.t. the final token
 
-        @named_jit(axis_resources=parameter_axis_mapping)
+        @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
         def compute_log_probs(model: LmHeadModel, example: LmExample):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)

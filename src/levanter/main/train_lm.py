@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Optional, Union
 
 import equinox as eqx
@@ -8,10 +9,9 @@ import jax.random as jrandom
 import jmp
 import wandb
 
-import haliax as hax
 import haliax.random
 from haliax import Axis
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -132,24 +132,20 @@ def main(config: TrainLmConfig):
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-                return model.compute_loss(example, inference=inference, key=key)
+        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
+            return model.compute_loss(example, inference=inference, key=key).scalar()
 
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def train_loss(model, example, key):
-            return hax.mean(compute_loss(model, example, key, False)).scalar()
-
-        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(train_loss)
+            grad_loss = eqx.filter_value_and_grad(compute_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
                 model,
                 examples,
+                inference=False,
                 key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
@@ -160,10 +156,6 @@ def main(config: TrainLmConfig):
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
-
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(model, example):
-            return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
         # There are a few ways we might initialize the model
@@ -214,7 +206,9 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
-            callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
+            callbacks.compute_validation_loss(
+                partial(compute_loss, inference=True), eval_loader, max_batches=config.trainer.max_eval_batches
+            ),
             every=config.trainer.steps_per_eval,
         )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
@@ -231,15 +225,13 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @named_jit(axis_resources=parameter_axis_mapping)
+        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def compute_log_probs(model, example: LmExample):
-            """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-                logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
-                # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, Pos)
-                return logprobs.rearrange((EvalBatch, Pos)).array
+            model = mp.cast_to_compute(model)
+            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+            # roll forward to get the loss for each predicted token
+            logprobs = haliax.roll(logprobs, 1, Pos)
+            return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(

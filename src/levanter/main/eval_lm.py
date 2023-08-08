@@ -11,7 +11,7 @@ import tqdm
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -66,11 +66,9 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        @named_jit(axis_resources=parameter_axis_mapping)
+        @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
         def compute_loss(model: LmHeadModel, example: LmExample):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-                return model.compute_loss(example, key=None, inference=True)
+            return model.compute_loss(example, key=None, inference=True)
 
         compute_loss = functools.partial(compute_loss, inference=True, key=None)
 
