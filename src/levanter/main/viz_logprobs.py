@@ -7,7 +7,6 @@ import jmp
 
 import haliax as hax
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
@@ -71,15 +70,10 @@ def main(config: VizGpt2Config):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
         def compute_log_probs(model: LmHeadModel, example: LmExample):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, key=None, inference=True)
-                pred_y = mp.cast_to_output(pred_y)
-
-                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction=None).array
+            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+            # roll forward to get the loss for each predicted token
+            logprobs = hax.roll(logprobs, 1, Pos)
+            return logprobs.rearrange((EvalBatch, Pos)).array
 
         # initialize the model
         with jax.default_device(jax.devices("cpu")[0]):

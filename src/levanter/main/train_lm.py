@@ -227,7 +227,6 @@ def main(config: TrainLmConfig):
         # visualize log probs
         @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def compute_log_probs(model, example: LmExample):
-            model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = haliax.roll(logprobs, 1, Pos)

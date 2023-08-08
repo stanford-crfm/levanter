@@ -82,6 +82,11 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
+        """
+        Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
+        across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+        reduced, and the result is a named array with axes (*batch axes, sequence_length).
+        """
         logits = self(example.tokens, example.attn_mask, inference=inference, key=key)
         target_y = hax.nn.one_hot(example.targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
