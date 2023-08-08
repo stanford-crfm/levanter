@@ -1,4 +1,3 @@
-import functools
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -69,8 +68,6 @@ def main(config: EvalLmConfig):
         @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
         def compute_loss(model: LmHeadModel, example: LmExample):
             return model.compute_loss(example, key=None, inference=True)
-
-        compute_loss = functools.partial(compute_loss, inference=True, key=None)
 
         total = config.trainer.max_eval_batches
 
