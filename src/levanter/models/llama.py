@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
+import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call
@@ -208,12 +209,12 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids):
         q = self.q_proj(x)  # TODO: rearrange and possibly rename
         k = self.k_proj(x)
         v = self.v_proj(x)
 
-        cos, sin = self.rotary_emb(v, seq_len=self.config.KVHeads.size)
+        cos, sin = self.rotary_emb(v, seq_len=self.config.seq_len)
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
@@ -246,18 +247,34 @@ def _get_rotary_emb(config: LlamaConfig, head_dim: int, max_position_embeddings:
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
 
 
-def _rotate_half(x):
-    """Rotates half of the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return jnp.concatenate((-x2, x1), axis=-1)
+def _rotate_half(x: NamedArray) -> NamedArray:
+    """Rotates half of the hidden dims of the input and concatenates them.
+    This is difficult to Haliax, so we do it in regular array ops.
+    """
+    x_array = x.array
+    x1 = x_array[..., : x_array.shape[-1] // 2]
+    x2 = x_array[..., x_array.shape[-1] // 2 :]
+    output = jnp.concatenate((-x2, x1), axis=-1)
+    return hax.named(output, x.axes)
 
 
-def _apply_rotary_pos_emb(q, k, cos, sin, position_ids) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    cos = jnp.squeeze(cos, axis=1)  # from [1, 1, seq_len, dim] to [seq_len, dim]
-    sin = jnp.squeeze(sin, axis=1)
-    cos = cos[position_ids, None]  # [seq_len, dim] -> [bs, 1, seq_len, dim]
-    sin = sin[position_ids, None]
-    q_embed = q * cos + _rotate_half(q) * sin
-    k_embed = k * cos + _rotate_half(k) * sin
+def _apply_rotary_pos_emb(
+    q: NamedArray,  # [batch, seq_len, heads, head_size]
+    k: NamedArray,  # [batch, seq_len, kv_heads, head_size]
+    cos: jnp.ndarray,  # [1, 1, seq_len, head_size]
+    sin: jnp.ndarray,  # [1, 1, seq_len, head_size]
+    position_ids: jnp.ndarray  # [bs, seq_len]
+) -> Tuple[NamedArray, NamedArray]:
+    """Applies rotary position embedding to q and k.
+    Note that all the multiplication below are element-wise, so I don't find it
+    helpful to write in haliax.
+    """
+    cos = jnp.squeeze(jnp.squeeze(cos, axis=1), axis=0)  # from [1, 1, seq_len, dim] to [seq_len, dim]
+    sin = jnp.squeeze(jnp.squeeze(sin, axis=1), axis=0)
+    cos = jnp.expand_dims(cos[position_ids], axis=2)  # [batch, seq_len, 1, head_size]
+    sin = jnp.expand_dims(sin[position_ids], axis=2)  # [batch, seq_len, 1, head_size]
+    q_embed = (q.array * cos) + (_rotate_half(q).array * sin)  # [batch, seq_len, heads, head_size]
+    k_embed = (k.array * cos) + (_rotate_half(k).array * sin)  # [batch, seq_len, kv_heads, head_size]
+    q_embed = hax.named(q_embed, q.axes)
+    k_embed = hax.named(k_embed, k.axes)
     return q_embed, k_embed
