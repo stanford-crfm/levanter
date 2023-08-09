@@ -82,23 +82,21 @@ def test_mpt_nano_compare(use_bias):
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
 
-# @skip_if_no_torch
-# def test_load_full_mpt():
-#     model = AutoModelForCausalLM.from_pretrained("mosaicml/mpt-7b", trust_remote_code=True)
-#
-#     state_dict = model.state_dict()
-#     # move to cpu
-#     state_dict = {k: v.cpu() for k, v in state_dict.items()}
-#     config = model.config
-#
-#     del model
-#
-#     lev_config = MptConfig.from_torch_config(config)
-#
-#     Vocab = haliax.Axis("vocab", config.vocab_size)
-#     lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
-#
-#     lev_model = lev_model.from_state_dict(state_dict)
+@skip_if_no_torch
+def test_load_full_mpt():
+    model = AutoModelForCausalLM.from_pretrained("mosaicml/mpt-7b", trust_remote_code=True)
+
+    state_dict = model.state_dict()
+    # move to cpu
+    state_dict = {k: v.cpu() for k, v in state_dict.items()}
+    config = model.config
+
+    del model
+
+    lev_config = MptConfig.from_hf_config(config)
+
+    Vocab = haliax.Axis("vocab", config.vocab_size)
+    lev_model = MptLmHeadModel.from_hf_pretrained("mosaicml/mpt-7b")
 
 
 @parameterize_with_configs("mpt*.yaml")
