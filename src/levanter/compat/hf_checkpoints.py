@@ -1,6 +1,5 @@
 import abc
 import dataclasses
-import functools
 import json
 import logging
 import os
@@ -372,7 +371,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
             device = torch.device("cpu")
             state_dict = torch.load(os.path.join(id, PYTORCH_MODEL), map_location=device)
-            state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+            state_dict = {k: _convert_to_jnp(v) for k, v in state_dict.items()}
         else:
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
@@ -383,7 +382,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
                 device = torch.device("cpu")
                 state_dict = torch.load(model_path, map_location=device)
-                state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
 
         return state_dict
 
@@ -407,7 +406,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             import torch
 
-            loader = functools.partial(torch.load, map_location="cpu")
+            def loader(path):
+                device = torch.device("cpu")
+                state_dict = torch.load(path, map_location=device)
+                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
 
         for shard_file in shard_files:
             shard_path = os.path.join(id, shard_file)
@@ -704,3 +706,15 @@ def upload_to_hub(local_path: str, repo_ref: Union[str, RepoRef], **hf_upload_kw
     global _sync_count
     sync_global_devices(f"upload? {ref.model_name_or_path}{ref.revision} {_sync_count}")
     _sync_count += 1
+
+
+def _convert_to_jnp(v):
+    import torch
+
+    # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
+    # if v.dtype == torch.bfloat16:
+    #     v = v.to(torch.float32)
+    if v.dtype == torch.bfloat16:
+        return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
+    else:
+        return jax.numpy.array(v.cpu().numpy())
