@@ -1,5 +1,6 @@
 import abc
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 PYTORCH_MODEL = "pytorch_model.bin"
 SAFE_TENSORS_MODEL = "model.safetensors"
+PYTORCH_WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
+SAFE_TENSORS_INDEX_NAME = "model.safetensors.index.json"
 
 
 @dataclass(frozen=True)
@@ -203,7 +206,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # TODO: this is very hacky, we should add another registry or something
         # attempt to find the Levanter config class by checking the registry
         # TODO: hacky hacky
-        LmConfig._discover_packages()
         for k, v in LmConfig.get_known_choices().items():
             if issubclass(v, HFCompatConfig):
                 if v.default_hf_checkpoint_converter.HfConfigClass.__name__ == config_class.__name__:
@@ -357,6 +359,12 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         id, rev = self._get_ref(ref)
 
+        for index_file in [PYTORCH_WEIGHTS_INDEX_NAME, SAFE_TENSORS_INDEX_NAME]:
+            try:
+                return self._load_shards(id, index_file, rev)
+            except EntryNotFoundError:
+                pass
+
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
             state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
         elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
@@ -378,6 +386,41 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
 
         return state_dict
+
+    def _load_shards(self, id: str, index_file: str, rev: Optional[str]) -> dict:
+        """Load model from sharded files based on the provided index."""
+        index_path = os.path.join(id, index_file)
+        if not os.path.exists(index_path):
+            # Download the index file if not found locally
+            index_path = hf_hub_download(id, index_file, revision=rev)
+
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+
+        shard_files = list(set(index["weight_map"].values()))
+        final_state_dict = {}
+
+        if "safetensors" in index_file:
+            import safetensors
+
+            loader = safetensors.numpy.load_file
+        else:
+            import torch
+
+            loader = functools.partial(torch.load, map_location="cpu")
+
+        for shard_file in shard_files:
+            shard_path = os.path.join(id, shard_file)
+            if not os.path.exists(shard_path):
+                # Download the shard if not found locally
+                shard_path = hf_hub_download(id, shard_file, revision=rev)
+
+            state_dict = loader(shard_path)
+            final_state_dict.update(state_dict)
+
+            del state_dict
+
+        return final_state_dict
 
     def load_pretrained(
         self,
