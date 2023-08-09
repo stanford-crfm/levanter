@@ -5,6 +5,7 @@ from functools import partial
 from typing import Optional
 
 import equinox as eqx
+import jax
 import jax.random as jrandom
 import jmp
 import wandb
@@ -107,6 +108,9 @@ def main(config: LoraLmConfig):
                 pred_y = mp.cast_to_output(pred_y)
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
+
+                print(pred_y.axes, target_y.axes, example.loss_mask.axes)
+                print(jax.nn.logsumexp(pred_y.array, axis=-1).shape)
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
