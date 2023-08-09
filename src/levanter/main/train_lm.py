@@ -242,7 +242,7 @@ def main(config: TrainLmConfig):
                 Batch,
                 model,
                 examples,
-                inference=False,
+                # inference=False,
                 key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
