@@ -20,7 +20,7 @@ import jax
 import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, HFValidationError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
@@ -363,6 +363,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 return self._load_shards(id, index_file, rev)
             except EntryNotFoundError:
                 pass
+            except HFValidationError:
+                pass
 
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
             state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
@@ -376,7 +378,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
                 state_dict = safetensors.numpy.load_file(model_path)
-            except EntryNotFoundError:  # noqa: E722
+            except (EntryNotFoundError, HFValidationError):
                 model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
                 import torch
 
