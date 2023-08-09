@@ -109,8 +109,8 @@ def main(config: LoraLmConfig):
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
-                print(pred_y.axes, target_y.axes, example.loss_mask.axes)
-                print(jax.nn.logsumexp(pred_y.array, axis=-1).shape)
+                print(pred_y.axes, target_y.axes, example.loss_mask.axes, flush=True)
+                print("ZZZZZ", jax.nn.logsumexp(pred_y.array, axis=-1).shape, flush=True)
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
