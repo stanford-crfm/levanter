@@ -136,12 +136,12 @@ def main(config: TrainLmConfig):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
 
-            pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
-            pred_y = mp.cast_to_output(pred_y)
+                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
+                pred_y = mp.cast_to_output(pred_y)
 
-            target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
+                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
-            return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
         @named_jit(axis_resources=parameter_axis_mapping)
         def train_loss(model, example, key):
