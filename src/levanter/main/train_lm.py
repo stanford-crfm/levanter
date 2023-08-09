@@ -1,7 +1,6 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Optional, Union
 
 import equinox as eqx
@@ -193,6 +192,10 @@ def main(config: TrainLmConfig):
                     model_key
                 )
 
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def eval_loss(model, example):
+            return hax.mean(compute_loss(model, example, None, True)).scalar()
+
         # boilerplate hooks and such
         engine = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
@@ -200,7 +203,7 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
             callbacks.compute_validation_loss(
-                partial(compute_loss, inference=True, key=None),
+                eval_loss,
                 eval_loader,
                 max_batches=config.trainer.max_eval_batches,
             ),
@@ -227,12 +230,13 @@ def main(config: TrainLmConfig):
             logprobs = haliax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        engine.add_hook(
-            callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-            ),
-            every=config.trainer.steps_per_eval,
-        )
+        #
+        # engine.add_hook(
+        #     callbacks.compute_and_visualize_log_probs(
+        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
+        #     ),
+        #     every=config.trainer.steps_per_eval,
+        # )
 
         # train step
         @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
