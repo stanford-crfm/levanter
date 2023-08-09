@@ -205,7 +205,7 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @named_jit(axis_resources=compute_axis_mapping)
+        @named_jit(in_axis_resources=parameter_axis_mapping, axis_resources=compute_axis_mapping)
         def compute_log_probs(model, example: LmExample):
             model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
