@@ -11,6 +11,7 @@ import wandb
 
 import haliax.random
 from haliax import Axis
+from haliax.nn import cross_entropy_loss
 from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
 
 import levanter
@@ -124,10 +125,27 @@ def main(config: TrainLmConfig):
         # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
 
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            per_ex_loss = model.compute_loss(example, inference=inference, key=key, reduction_axis=Pos)
-            return per_ex_loss.mean().scalar()
+        # @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        # def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
+        #     per_ex_loss = model.compute_loss(example, inference=inference, key=key, reduction_axis=Pos)
+        #     return per_ex_loss.mean().scalar()
+
+        import haliax as hax
+
+        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+
+            pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
+            pred_y = mp.cast_to_output(pred_y)
+
+            target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
+
+            return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
+
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def train_loss(model, example, key):
+            return hax.mean(compute_loss(model, example, key, False)).scalar()
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
@@ -217,7 +235,7 @@ def main(config: TrainLmConfig):
         # train step
         @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
         def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(compute_loss)
+            grad_loss = eqx.filter_value_and_grad(train_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
