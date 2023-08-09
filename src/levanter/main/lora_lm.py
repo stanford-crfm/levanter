@@ -1,12 +1,10 @@
 import logging
 import os
-import typing
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Optional
 
 import equinox as eqx
-import jax
 import jax.random as jrandom
 import jmp
 import wandb
@@ -15,7 +13,7 @@ import haliax as hax
 import haliax.random
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import named_jit
 
 import levanter
 from levanter import callbacks
@@ -26,7 +24,6 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.lora import LoraConfig, combine_lora_params, loraize, partition_lora_params
 from levanter.models.lm_model import LmHeadModel
-from levanter.models.mpt import MptLmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -78,6 +75,9 @@ def main(config: LoraLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
+    mp: jmp.Policy = config.trainer.mp
+
     eval_loader = ReplicatedBatchLoader(
         CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
         config.trainer.device_mesh,
@@ -94,31 +94,31 @@ def main(config: LoraLmConfig):
     )
 
     with config.trainer.device_mesh as mesh:
-        vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
-        if vocab_size != Vocab.size:
-            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
+        # load the underlying hf model
+        logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
+        hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        mp: jmp.Policy = config.trainer.mp
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
+        @haliax.named_jit(axis_resources=parameter_axis_mapping)
+        def loraize_hf_model(model):
+            return loraize(model, config.lora, key=lora_key)
+
+        combined_model = loraize_hf_model(hf_model)
+
+        # next, split model into base and adapter and create initial optimizer state
+        base_model, adapter_model = partition_lora_params(combined_model)
+        opt_state = haliax.named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(adapter_model)
+
+        Vocab = hf_model.Vocab
+        del hf_model
+        del combined_model
 
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
-                mx = typing.cast(MptLmHeadModel, model)
-
                 pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                print("mdklamdklad", mx.wte.weight.axes)
-                print(pred_y.axes, target_y.axes, example.loss_mask.axes, flush=True)
-                print("ZZZZZ", jax.nn.logsumexp(pred_y.array, axis=-1).shape, flush=True)
-                print(Vocab.size, target_y.axes, pred_y.axes, flush=True)
-                import sys
-
-                sys.exit(0)
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
@@ -174,23 +174,6 @@ def main(config: LoraLmConfig):
         def eval_loss(base_model, adapter_model, example):
             model = combine_lora_params(base_model, lora_params=adapter_model)
             return hax.mean(compute_loss(model, example, None, True)).scalar()
-
-        # load the underlying hf model
-        logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
-
-        @haliax.named_jit(axis_resources=parameter_axis_mapping)
-        def loraize_hf_model(model):
-            return loraize(model, config.lora, key=lora_key)
-
-        combined_model = loraize_hf_model(hf_model)
-
-        # next, split model into base and adapter and create initial optimizer state
-        base_model, adapter_model = partition_lora_params(combined_model)
-        opt_state = haliax.named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(adapter_model)
-
-        del hf_model
-        del combined_model
 
         # next, try to load the adapter model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
