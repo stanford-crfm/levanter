@@ -5,7 +5,7 @@ data:
     - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded-neox/"
   tokenizer: "EleutherAI/gpt-neox-20b"
-initialize_from_hf: mosaicml/mpt-7b
+initialize_from_hf: "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2"
 lora:
   r: 32
   alpha: 32.0
