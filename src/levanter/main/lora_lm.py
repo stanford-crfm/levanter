@@ -111,6 +111,10 @@ def main(config: LoraLmConfig):
 
                 print(pred_y.axes, target_y.axes, example.loss_mask.axes, flush=True)
                 print("ZZZZZ", jax.nn.logsumexp(pred_y.array, axis=-1).shape, flush=True)
+                print(Vocab.size, target_y.axes, pred_y.axes, flush=True)
+                import sys
+
+                sys.exit(0)
 
                 return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
 
