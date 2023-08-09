@@ -130,7 +130,11 @@ def main(config: TrainLmConfig):
             return model.compute_loss(example, inference=inference, key=key).scalar()
 
         train_loss = functools.partial(compute_loss, inference=False)
-        eval_loss = functools.partial(compute_loss, inference=True)
+
+        # eval loss needs to specify the parameter sharding
+        eval_loss = functools.partial(
+            named_jit(compute_loss, in_axis_resources=parameter_axis_mapping), inference=True
+        )
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
