@@ -200,7 +200,9 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
             callbacks.compute_validation_loss(
-                partial(compute_loss, inference=True), eval_loader, max_batches=config.trainer.max_eval_batches
+                partial(compute_loss, inference=True, key=None),
+                eval_loader,
+                max_batches=config.trainer.max_eval_batches,
             ),
             every=config.trainer.steps_per_eval,
         )
