@@ -8,10 +8,11 @@ import jax.random as jrandom
 import jmp
 import wandb
 
+import haliax as hax
 import haliax.random
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -124,12 +125,8 @@ def main(config: TrainLmConfig):
         # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
 
-        # @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        # def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-        #     per_ex_loss = model.compute_loss(example, inference=inference, key=key, reduction_axis=Pos)
-        #     return per_ex_loss.mean().scalar()
-
-        import haliax as hax
+        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
@@ -146,8 +143,29 @@ def main(config: TrainLmConfig):
         def train_loss(model, example, key):
             return hax.mean(compute_loss(model, example, key, False)).scalar()
 
-        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
+        def train_step(model, opt_state, examples: LmExample, key):
+            grad_loss = eqx.filter_value_and_grad(train_loss)
+
+            loss, grads = accumulate_gradients_sharded(
+                grad_loss,
+                Batch,
+                model,
+                examples,
+                key=key,
+                per_device_parallelism=config.trainer.per_device_parallelism,
+                parameter_axis_mapping=parameter_axis_mapping,
+            )
+
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
+
+        @named_jit(axis_resources=parameter_axis_mapping)
+        def eval_loss(model, example):
+            return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
         # There are a few ways we might initialize the model
@@ -192,10 +210,6 @@ def main(config: TrainLmConfig):
                     model_key
                 )
 
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(model, example):
-            return hax.mean(compute_loss(model, example, None, True)).scalar()
-
         # boilerplate hooks and such
         engine = TrainerHooks()
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
@@ -223,42 +237,19 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        def compute_log_probs(model, example: LmExample):
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = haliax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
+        # @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        # def compute_log_probs(model, example: LmExample):
+        #     logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+        #     # roll forward to get the loss for each predicted token
+        #     logprobs = haliax.roll(logprobs, 1, Pos)
+        #     return logprobs.rearrange((EvalBatch, Pos)).array
 
-        #
         # engine.add_hook(
         #     callbacks.compute_and_visualize_log_probs(
         #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
         #     ),
         #     every=config.trainer.steps_per_eval,
-        # )
-
-        # train step
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
-        def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(train_loss)
-
-            loss, grads = accumulate_gradients_sharded(
-                grad_loss,
-                Batch,
-                model,
-                examples,
-                # inference=False,
-                key=key,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )
-
-            # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
-
-            return loss, model, opt_state
+        #     )
 
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
