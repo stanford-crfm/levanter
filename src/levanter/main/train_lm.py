@@ -12,7 +12,7 @@ import haliax as hax
 import haliax.random
 from haliax import Axis
 from haliax.nn import cross_entropy_loss
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -143,7 +143,7 @@ def main(config: TrainLmConfig):
         def train_loss(model, example, key):
             return hax.mean(compute_loss(model, example, key, False)).scalar()
 
-        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
+        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping)
         def train_step(model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(train_loss)
 
