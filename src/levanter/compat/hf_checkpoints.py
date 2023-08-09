@@ -206,7 +206,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         LmConfig._discover_packages()
         for k, v in LmConfig.get_known_choices().items():
             if issubclass(v, HFCompatConfig):
-                if v.default_hf_checkpoint_converter.HfConfigClass == config_class:
+                if v.default_hf_checkpoint_converter.HfConfigClass.__name__ == config_class.__name__:
                     LevConfigClass = v
                     break
         else:
