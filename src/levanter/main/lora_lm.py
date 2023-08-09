@@ -1,5 +1,6 @@
 import logging
 import os
+import typing
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Optional
@@ -25,6 +26,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.lora import LoraConfig, combine_lora_params, loraize, partition_lora_params
 from levanter.models.lm_model import LmHeadModel
+from levanter.models.mpt import MptLmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -103,12 +105,14 @@ def main(config: LoraLmConfig):
         def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
+                mx = typing.cast(MptLmHeadModel, model)
 
                 pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
                 pred_y = mp.cast_to_output(pred_y)
 
                 target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
 
+                print("mdklamdklad", mx.wte.weight.axes)
                 print(pred_y.axes, target_y.axes, example.loss_mask.axes, flush=True)
                 print("ZZZZZ", jax.nn.logsumexp(pred_y.array, axis=-1).shape, flush=True)
                 print(Vocab.size, target_y.axes, pred_y.axes, flush=True)
