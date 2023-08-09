@@ -54,10 +54,7 @@ def main(config: LoraLmConfig):
     if tokenizer.vocab != converter.tokenizer.vocab:
         logger.warning("The tokenizers appear to be different. You may want to check this.")
 
-    if isinstance(config.initialize_from_hf, str):
-        converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
-    else:
-        converter = converter.replaced(tokenizer=tokenizer)
+    converter = converter.replaced(tokenizer=tokenizer)
 
     config.trainer.initialize(config)
     model_config = converter.default_config

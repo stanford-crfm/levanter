@@ -202,6 +202,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # TODO: this is very hacky, we should add another registry or something
         # attempt to find the Levanter config class by checking the registry
+        # TODO: hacky hacky
+        LmConfig._discover_packages()
         for k, v in LmConfig.get_known_choices().items():
             if issubclass(v, HFCompatConfig):
                 if v.default_hf_checkpoint_converter.HfConfigClass == config_class:
