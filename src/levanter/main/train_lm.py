@@ -9,7 +9,7 @@ import jax.random as jrandom
 import jmp
 import wandb
 
-import haliax.random
+import haliax as hax
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
@@ -206,7 +206,7 @@ def main(config: TrainLmConfig):
             model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
-            logprobs = haliax.roll(logprobs, 1, Pos)
+            logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
