@@ -129,8 +129,6 @@ def main(config: TrainLmConfig):
             model = mp.cast_to_compute(model)
             return model.compute_loss(example, inference=inference, key=key).scalar()
 
-        train_loss = functools.partial(compute_loss, inference=False)
-
         # eval loss needs to specify the parameter sharding
         eval_loss = functools.partial(
             named_jit(compute_loss, in_axis_resources=parameter_axis_mapping), inference=True
@@ -223,13 +221,14 @@ def main(config: TrainLmConfig):
         # train step
         @named_jit(in_axis_resources=parameter_axis_mapping, out_axis_resources=parameter_axis_mapping)
         def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(train_loss)
+            grad_loss = eqx.filter_value_and_grad(compute_loss)
 
             loss, grads = accumulate_gradients_sharded(
                 grad_loss,
                 Batch,
                 model,
                 examples,
+                inference=False,
                 key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
