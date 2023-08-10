@@ -14,7 +14,6 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
-from haliax.nn.attention import AttnMask
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
@@ -27,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.flash_attention import flash_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -206,9 +206,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
             attn_scores = hax.dot("head_size", q, k)
 
-            mask = hax.nn.attention.materialize_mask(mask)
-
             if mask is not None:
+                mask = materialize_mask(mask)
                 attn_scores = attn_scores + (1.0 - mask) * -1e9
 
             attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)

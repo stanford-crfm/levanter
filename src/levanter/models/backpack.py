@@ -13,7 +13,6 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
-from haliax.nn.attention import AttnMask
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
@@ -23,6 +22,7 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
+from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -198,9 +198,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         attn_scores = hax.dot("head_dim", q, k)
 
-        mask = hax.nn.attention.materialize_mask(mask)
-
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
