@@ -207,9 +207,7 @@ def main(config: TrainLmConfig):
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 if Vocab.size != model.vocab_size:
-                    logger.info(
-                        f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size"
-                    )
+                    logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
                     model = haliax.tree_util.resize_axis(model, Vocab, model_key)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
