@@ -13,6 +13,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
+from haliax.nn.attention import AttnMask
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
@@ -177,7 +178,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
@@ -196,6 +197,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
             k = k.astype(jnp.float32)
 
         attn_scores = hax.dot("head_dim", q, k)
+
+        mask = hax.nn.attention.materialize_mask(mask)
 
         if mask is not None:
             attn_scores = attn_scores + (1.0 - mask) * -1e15
@@ -379,7 +382,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
     @named_call
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
     ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")

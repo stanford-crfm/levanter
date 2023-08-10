@@ -14,6 +14,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.nn.attention import AttnMask
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
@@ -162,7 +163,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         return Gpt2Attention(config, c_attn, c_proj, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
         qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
@@ -204,6 +205,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             q = q * scale
 
             attn_scores = hax.dot("head_size", q, k)
+
+            mask = hax.nn.attention.materialize_mask(mask)
 
             if mask is not None:
                 attn_scores = attn_scores + (1.0 - mask) * -1e9
@@ -263,7 +266,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         return Gpt2Block(ln_1, attn, ln_2, mlp, resid_dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
         attn_output = self.attn(self.ln_1(x), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
@@ -294,7 +297,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return Gpt2Transformer(config, blocks, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), inference, key=keys)
         x = self.ln_f(x)
@@ -389,7 +392,7 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         return Gpt2LMHeadModel(transformer, embeddings)
 
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
     ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")
