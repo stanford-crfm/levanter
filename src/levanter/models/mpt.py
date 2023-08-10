@@ -380,6 +380,10 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
     _config: MptConfig = eqx.static_field()
 
     @property
+    def Pos(self) -> Axis:
+        return self._config.Pos
+
+    @property
     def Vocab(self) -> Axis:
         return self.wte.Vocab
 
