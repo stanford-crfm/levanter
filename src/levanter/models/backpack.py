@@ -19,8 +19,8 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
-    unflatten_linear_layer,
+    flatten_linear_layers,
+    unflatten_linear_layers,
 )
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
@@ -129,12 +129,12 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         d = {}
         d.update(
-            unflatten_linear_layer(
+            unflatten_linear_layers(
                 apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, out_dims_first_in_dict=False
             )
         )
         d.update(
-            unflatten_linear_layer(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
+            unflatten_linear_layers(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
         )
         return super().from_state_dict(d, prefix)
 
@@ -142,8 +142,10 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False))
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False)
+        )
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
 
         state_dict.update(my_dict)
         return state_dict
@@ -203,7 +205,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        d = unflatten_linear_layer(
+        d = unflatten_linear_layers(
             apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
         )
         return super().from_state_dict(d, prefix)
@@ -214,7 +216,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
 
         state_dict.update(my_dict)
         return state_dict

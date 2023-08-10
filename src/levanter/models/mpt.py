@@ -23,9 +23,9 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
+    flatten_linear_layers,
     stack_state_dict,
-    unflatten_linear_layer,
+    unflatten_linear_layers,
     unstack_state_dict,
 )
 from levanter.models.lm_model import LmConfig
@@ -244,10 +244,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({self.config.Pos: self.config.KeyPos})
         v = v.rename({self.config.Pos: self.config.KeyPos})
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
-        # if self.scale_by_inverse_layer_idx:
-        #     scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
@@ -274,9 +271,9 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        d = unflatten_linear_layer(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
+        d = unflatten_linear_layers(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
         d.update(
-            unflatten_linear_layer(
+            unflatten_linear_layers(
                 apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, out_dims_first_in_dict=True
             )
         )
@@ -286,9 +283,9 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # need to undo the reshape we did in from_state_dict
         # reminder that everything is vectorized
-        state_dict.update(flatten_linear_layer(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
+        state_dict.update(flatten_linear_layers(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
         state_dict.update(
-            flatten_linear_layer(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
+            flatten_linear_layers(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
         )
         return state_dict
 
