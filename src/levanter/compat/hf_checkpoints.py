@@ -17,19 +17,15 @@ import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
-import jax.numpy as jnp
-import numpy as np
 import safetensors
 import safetensors.numpy
-from fsspec import AbstractFileSystem
 from huggingface_hub import hf_hub_download, snapshot_download
-from huggingface_hub.utils import EntryNotFoundError
-from jax.experimental import multihost_utils
+from huggingface_hub.utils import EntryNotFoundError, HFValidationError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import PretrainedConfig as HfConfig
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.auto.auto_factory import _get_model_class
 
@@ -37,9 +33,10 @@ import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin
+from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
+from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
@@ -48,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 PYTORCH_MODEL = "pytorch_model.bin"
 SAFE_TENSORS_MODEL = "model.safetensors"
+PYTORCH_WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
+SAFE_TENSORS_INDEX_NAME = "model.safetensors.index.json"
 
 
 @dataclass(frozen=True)
@@ -129,7 +128,6 @@ def _coerce_to_rr(s: Union[str, RepoRef]) -> RepoRef:
 LevConfig = TypeVar("LevConfig", bound=HFCompatConfig)
 
 # just for generating unique ids
-_GLOBAL_SAVE_COUNT = 0
 
 KEYS_TO_COPY_FROM_BASE_CONFIG = {
     "architectures",
@@ -177,7 +175,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         LevConfigClass: Type[LevConfig],
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
         HfConfigClass: Optional[Union[str, Type]] = None,
-        tokenizer: Optional[Union[str, PreTrainedTokenizer]] = None,
+        tokenizer: Optional[Union[str, PreTrainedTokenizer, PreTrainedTokenizerFast]] = None,
         config_overrides: Optional[dict] = None,
         trust_remote_code: bool = False,
         ignore_prefix: Optional[str] = None,
@@ -196,6 +194,31 @@ class HFCheckpointConverter(Generic[LevConfig]):
             config_overrides=config_overrides,
             trust_remote_code=trust_remote_code,
             ignore_prefix=ignore_prefix,
+        )
+
+    @staticmethod
+    def from_hf(model_name_or_path: Union[RepoRef, str], trust_remote_code: bool = False) -> "HFCheckpointConverter":
+        ref = _coerce_to_rr(model_name_or_path)
+        config_class = HFCheckpointConverter._infer_config_class(None, ref, trust_remote_code)
+        tokenizer = HFCheckpointConverter._infer_tokenizer(None, ref, trust_remote_code)
+
+        # TODO: this is very hacky, we should add another registry or something
+        # attempt to find the Levanter config class by checking the registry
+        # TODO: hacky hacky
+        for k, v in LmConfig.get_known_choices().items():
+            if issubclass(v, HFCompatConfig):
+                if v.default_hf_checkpoint_converter.HfConfigClass.__name__ == config_class.__name__:
+                    LevConfigClass = v
+                    break
+        else:
+            raise ValueError(f"No Levanter config found for {config_class}")
+
+        return HFCheckpointConverter(
+            LevConfigClass=LevConfigClass,
+            reference_checkpoint=ref,
+            HfConfigClass=config_class,
+            tokenizer=tokenizer,
+            trust_remote_code=trust_remote_code,
         )
 
     def replaced(
@@ -247,7 +270,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return clss
 
     @staticmethod
-    def _infer_tokenizer(tokenizer, ref, trust_remote_code: bool = False):
+    def _infer_tokenizer(
+        tokenizer, ref, trust_remote_code: bool = False
+    ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
         if tokenizer is None:
             if ref is None:
                 raise ValueError("Must provide either tokenizer or reference_checkpoint")
@@ -264,7 +289,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             pass
 
-        assert isinstance(tokenizer, PreTrainedTokenizerBase)
+        assert isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast))
 
         return tokenizer
 
@@ -336,6 +361,14 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         id, rev = self._get_ref(ref)
 
+        for index_file in [PYTORCH_WEIGHTS_INDEX_NAME, SAFE_TENSORS_INDEX_NAME]:
+            try:
+                return self._load_shards(id, index_file, rev)
+            except EntryNotFoundError:
+                pass
+            except HFValidationError:
+                pass
+
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
             state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
         elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
@@ -343,20 +376,58 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
             device = torch.device("cpu")
             state_dict = torch.load(os.path.join(id, PYTORCH_MODEL), map_location=device)
-            state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+            state_dict = {k: _convert_to_jnp(v) for k, v in state_dict.items()}
         else:
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
                 state_dict = safetensors.numpy.load_file(model_path)
-            except EntryNotFoundError:  # noqa: E722
+            except (EntryNotFoundError, HFValidationError):
                 model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
                 import torch
 
                 device = torch.device("cpu")
                 state_dict = torch.load(model_path, map_location=device)
-                state_dict = {k: v.cpu().numpy() for k, v in state_dict.items()}
+                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
 
         return state_dict
+
+    def _load_shards(self, id: str, index_file: str, rev: Optional[str]) -> dict:
+        """Load model from sharded files based on the provided index."""
+        index_path = os.path.join(id, index_file)
+        if not os.path.exists(index_path):
+            # Download the index file if not found locally
+            index_path = hf_hub_download(id, index_file, revision=rev)
+
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+
+        shard_files = list(set(index["weight_map"].values()))
+        final_state_dict = {}
+
+        if "safetensors" in index_file:
+            import safetensors
+
+            loader = safetensors.numpy.load_file
+        else:
+            import torch
+
+            def loader(path):
+                device = torch.device("cpu")
+                state_dict = torch.load(path, map_location=device)
+                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
+
+        for shard_file in shard_files:
+            shard_path = os.path.join(id, shard_file)
+            if not os.path.exists(shard_path):
+                # Download the shard if not found locally
+                shard_path = hf_hub_download(id, shard_file, revision=rev)
+
+            state_dict = loader(shard_path)
+            final_state_dict.update(state_dict)
+
+            del state_dict
+
+        return final_state_dict
 
     def load_pretrained(
         self,
@@ -447,32 +518,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f)
 
         # Model
-
-        def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
-            if isinstance(arr, np.ndarray):
-                return arr
-            elif "cpu" in arr.device().device_kind:
-                return np.array(arr)
-            elif arr.is_fully_addressable:
-                r = np.array(arr)
-                return r
-            else:
-                return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
-
-        # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-        model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
-
-        # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
-        state_dict = model.to_state_dict()
-
-        # now that we've moved the model to the CPU, we don't need to do this on all processes
-        if jax.process_index() == 0:
-            # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
-            safetensors.numpy.save_file(state_dict, os.path.join(path, SAFE_TENSORS_MODEL), metadata={"format": "pt"})
-
-        global _GLOBAL_SAVE_COUNT
-        sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
-        _GLOBAL_SAVE_COUNT += 1
+        state_dict = to_numpy_state_dict(model)
+        save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_pretrained(
@@ -501,46 +548,21 @@ class HFCheckpointConverter(Generic[LevConfig]):
         architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS
         :return:
         """
-        tmpdir: Optional[str] = None
-        if _is_url_like(path):
-            tmpdir = tempfile.mkdtemp()
-            logger.info(f"Saving model to {path} via temp path {tmpdir}")
-            local_path = tmpdir
-        else:
-            local_path = path
+        with temp_dir_before_upload(path) as local_path:
+            if path != local_path:
+                logger.info(f"Saving model to {path} via temp path {local_path}")
 
-        if isinstance(upload_to_hf, (str, RepoRef)):
-            hf_repo, hf_branch = self._get_ref(upload_to_hf)
-        elif upload_to_hf is True:
-            hf_repo, hf_branch = self._get_ref(self.reference_checkpoint)
-        else:
-            hf_repo = None
+            self._save_pretrained_local(
+                model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
+            )
 
-        self._save_pretrained_local(
-            model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
-        )
-
-        try:
-            if jax.process_index() == 0:
-                if tmpdir is not None:  # we're uploading to GCS or similar
-                    logger.info(f"Copying HF-compatible checkpoint to {path}")
-                    fs: AbstractFileSystem = fsspec.core.get_fs_token_paths(path, mode="wb")[0]
-                    fs.put(os.path.join(local_path, "*"), path, recursive=True)
-                    logger.info(f"Finished copying HF-compatible checkpoint to {path}")
-
-                if hf_repo is not None:
-                    logger.info(f"Uploading HF-compatible checkpoint to {hf_repo}")
-                    huggingface_hub.upload_folder(local_path, hf_repo, **hf_upload_kwargs)
-                    logger.info(f"Finished uploading HF-compatible checkpoint to {hf_repo}")
-            else:
-                logger.info(f"Waiting for process 0 to finish saving checkpoint to {path}")
-
-            global _GLOBAL_SAVE_COUNT
-            sync_global_devices(f"upload? {path}{_GLOBAL_SAVE_COUNT}")
-            _GLOBAL_SAVE_COUNT += 1
-        finally:
-            if tmpdir is not None:
-                shutil.rmtree(tmpdir)
+            if upload_to_hf is True:
+                if self.reference_checkpoint is None:
+                    raise ValueError("No reference checkpoint provided, so no repo name to upload to")
+                upload_to_hf = self.reference_checkpoint
+            if not isinstance(upload_to_hf, bool):
+                assert isinstance(upload_to_hf, (str, RepoRef))
+                upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
@@ -669,3 +691,35 @@ def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trus
         return AutoTokenizer.from_pretrained(
             model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
         )
+
+
+_sync_count = 0
+
+
+def upload_to_hub(local_path: str, repo_ref: Union[str, RepoRef], **hf_upload_kwargs):
+    ref = _coerce_to_rr(repo_ref)
+
+    if jax.process_index() == 0:
+        logger.info(f"Uploading HF-compatible checkpoint to {ref.model_name_or_path}")
+        huggingface_hub.upload_folder(
+            folder_path=local_path, repo_id=(ref.model_name_or_path), revision=(ref.revision), **hf_upload_kwargs
+        )
+        logger.info(f"Finished uploading HF-compatible checkpoint to {ref.model_name_or_path}")
+    else:
+        logger.info(f"Finished waiting for rank 0 to upload checkpoint to {ref.model_name_or_path}")
+
+    global _sync_count
+    sync_global_devices(f"upload? {ref.model_name_or_path}{ref.revision} {_sync_count}")
+    _sync_count += 1
+
+
+def _convert_to_jnp(v):
+    import torch
+
+    # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
+    # if v.dtype == torch.bfloat16:
+    #     v = v.to(torch.float32)
+    if v.dtype == torch.bfloat16:
+        return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
+    else:
+        return jax.numpy.array(v.cpu().numpy())
