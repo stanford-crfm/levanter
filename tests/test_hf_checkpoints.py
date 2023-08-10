@@ -1,12 +1,14 @@
 import tempfile
 
+import jax.numpy as jnp
 import numpy as np
 import numpy.testing
+import pytest
 from jax.random import PRNGKey
 
 import haliax
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, _convert_to_jnp
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from test_utils import skip_if_no_torch
@@ -129,3 +131,17 @@ def test_save_backpack_model_with_code():
         np.testing.assert_allclose(
             model(torch_input).logits[0].detach().numpy(), loaded_model(torch_input).logits[0].detach().numpy()
         )
+
+
+@skip_if_no_torch
+def test_conversion_to_jnp_bfloat16():
+    import torch
+
+    x = torch.arange(10, dtype=torch.bfloat16) / 3.14
+    with pytest.raises(TypeError):
+        x.cpu().numpy()
+
+    x_jnp = _convert_to_jnp(x)
+    assert x_jnp.dtype == jnp.bfloat16
+    assert x_jnp.shape == x.shape
+    assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)

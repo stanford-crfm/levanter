@@ -123,6 +123,8 @@ def accumulate_gradients_sharded(
 def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs, axis_mapping):
     def _reshape(x):
         if isinstance(x, hax.NamedArray):
+            if not x.has_axis(Batch.name):
+                return x
             x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
             return hax.shard_with_axis_mapping(x, axis_mapping)
         elif isinstance(x, jnp.ndarray):

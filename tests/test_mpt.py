@@ -93,12 +93,10 @@ def test_mpt_nano_compare(use_bias):
 #
 #     del model
 #
-#     lev_config = MptConfig.from_torch_config(config)
+#     lev_config = MptConfig.from_hf_config(config)
 #
 #     Vocab = haliax.Axis("vocab", config.vocab_size)
-#     lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
-#
-#     lev_model = lev_model.from_state_dict(state_dict)
+#     lev_model = MptLmHeadModel.from_hf_pretrained("mosaicml/mpt-7b")
 
 
 @parameterize_with_configs("mpt*.yaml")

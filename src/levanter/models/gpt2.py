@@ -21,9 +21,9 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
+    flatten_linear_layers,
     stack_state_dict,
-    unflatten_linear_layer,
+    unflatten_linear_layers,
     unstack_state_dict,
 )
 from levanter.models.lm_model import LmConfig
@@ -199,8 +199,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
         d = {}
-        d.update(unflatten_linear_layer(apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, False))
-        d.update(unflatten_linear_layer(apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, False))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, None))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, None))
 
         return super().from_state_dict(d, prefix)
 
@@ -210,8 +210,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, False))
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_proj"), self.c_proj, False))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, None))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, None))
 
         state_dict.update(my_dict)
         return state_dict
