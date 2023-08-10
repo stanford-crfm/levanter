@@ -13,6 +13,8 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax.jax_utils import named_call
 
+from levanter.models.attention import AttnMask
+
 
 # TODO: tune
 BLOCK_SIZE = 128
@@ -26,7 +28,7 @@ def flash_attention(
     q: hax.NamedArray,
     k: hax.NamedArray,
     v: hax.NamedArray,
-    mask: Optional[hax.NamedArray] = None,
+    mask: Optional[AttnMask] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
@@ -62,7 +64,7 @@ def _flash_attention(
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.Axis,
-    mask: Optional[hax.NamedArray] = None,
+    mask: Optional[AttnMask] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
@@ -80,7 +82,7 @@ def _flash_attention_forward(
     QPos: hax.AxisSelector,
     KPos: hax.AxisSelector,
     Key: hax.AxisSelector,
-    mask: Optional[hax.NamedArray] = None,
+    mask: Optional[AttnMask] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
@@ -99,9 +101,6 @@ def _flash_attention_forward(
     # number of blocks for Q and K
     Tr = hax.Axis("Tr", QPos.size // block_size)
     Tc = hax.Axis("Tc", KPos.size // block_size)
-
-    if mask is not None:
-        mask = mask.broadcast_axis((QPos, KPos))
 
     q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
 
@@ -131,7 +130,11 @@ def _flash_attention_forward(
             attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
-                mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
+                if isinstance(mask, hax.NamedArray):
+                    mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
+                else:
+                    mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
+                    mask_ij = mask_ij.materialize()
                 # attn_ij = hax.where(mask_ij, attn_ij, -1e10)
                 attn_ij = attn_ij + (1.0 - mask_ij) * -1e9
 
