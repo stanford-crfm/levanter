@@ -65,8 +65,9 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        @fsdp(parameter_axis_mapping, compute_axis_mapping, mp)
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample):
+            model = mp.cast_to_compute(model)
             return model.compute_loss(example, key=None, inference=True)
 
         total = config.trainer.max_eval_batches

@@ -1,7 +1,7 @@
+import functools
 import logging
 import os
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Optional, Union
 
 import equinox as eqx
@@ -9,9 +9,9 @@ import jax.random as jrandom
 import jmp
 import wandb
 
-import haliax.random
+import haliax as hax
 from haliax import Axis
-from haliax.partitioning import fsdp, named_jit, round_axis_for_partitioning
+from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
@@ -122,9 +122,15 @@ def main(config: TrainLmConfig):
         # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
 
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        @named_jit(axis_resources=compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
+            model = mp.cast_to_compute(model)
             return model.compute_loss(example, inference=inference, key=key).scalar()
+
+        # eval loss needs to specify the parameter sharding
+        eval_loss = functools.partial(
+            named_jit(compute_loss, in_axis_resources=parameter_axis_mapping), inference=True
+        )
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
@@ -167,7 +173,7 @@ def main(config: TrainLmConfig):
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 if Vocab.size != model.vocab_size:
                     logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
-                    model = haliax.tree_util.resize_axis(model, Vocab, model_key)
+                    model = hax.tree_util.resize_axis(model, Vocab, model_key)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
@@ -182,9 +188,7 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         engine.add_hook(
-            callbacks.compute_validation_loss(
-                partial(compute_loss, inference=True), eval_loader, max_batches=config.trainer.max_eval_batches
-            ),
+            callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
             every=config.trainer.steps_per_eval,
         )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
@@ -201,11 +205,12 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        @named_jit(in_axis_resources=parameter_axis_mapping, axis_resources=compute_axis_mapping)
         def compute_log_probs(model, example: LmExample):
+            model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
-            logprobs = haliax.roll(logprobs, 1, Pos)
+            logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
@@ -216,7 +221,7 @@ def main(config: TrainLmConfig):
         )
 
         # train step
-        @fsdp(parameter_mapping=parameter_axis_mapping, compute_mapping=compute_axis_mapping, mp=mp)
+        @named_jit(in_axis_resources=parameter_axis_mapping, out_axis_resources=parameter_axis_mapping)
         def train_step(model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(compute_loss)
 
@@ -252,7 +257,6 @@ def main(config: TrainLmConfig):
             initial_step = 0
 
         # assign these here in case num_train_steps == 0
-
         step_loss = 0.0
         step_time = lambda: 0.0  # noqa: E731
 
