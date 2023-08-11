@@ -415,7 +415,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return output_logits
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "MptLmHeadModel":
-        if new_size == self.config.vocab_size:
+        if new_size == self.vocab_size:
             return self
 
         return dataclasses.replace(self, wte=self.wte.resize_embeddings(new_size, key=key))
