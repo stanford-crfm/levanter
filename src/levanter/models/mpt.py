@@ -384,6 +384,10 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return self.wte.Vocab
 
     @property
+    def Pos(self) -> Axis:
+        return self.config.Pos
+
+    @property
     def config(self) -> MptConfig:
         return self._config
 
