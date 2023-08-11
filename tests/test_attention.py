@@ -2,14 +2,14 @@ import jax.numpy as jnp
 
 import haliax as hax
 
-from levanter.models.attention import CausalAttentionMask
+from levanter.models.attention import CausalMask
 
 
 def test_causal_mask_blocking():
     pos = hax.Axis("pos", 128)
     key_pos = pos.alias("key_pos")
 
-    mask = CausalAttentionMask(pos, key_pos)
+    mask = CausalMask(pos, key_pos)
 
     blocked_mask = mask.blocked(pos, 16).blocked(key_pos, 16)
     assert blocked_mask.Pos.size == 128 // 16
@@ -30,7 +30,7 @@ def test_causal_mask_slicing():
     pos = hax.Axis("pos", 128)
     key_pos = pos.alias("key_pos")
 
-    mask = CausalAttentionMask(pos, key_pos)
+    mask = CausalMask(pos, key_pos)
 
     sliced = mask.slice(pos, 7, length=16).slice(key_pos, 24, length=16)
 

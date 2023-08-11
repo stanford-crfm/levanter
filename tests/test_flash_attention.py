@@ -7,7 +7,7 @@ import jax.random as jrandom
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import CausalAttentionMask
+from levanter.models.attention import CausalMask
 from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
 
 
@@ -32,7 +32,7 @@ def test_flash_attention_causal_mask():
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    mask = CausalAttentionMask(QPos, KPos)
+    mask = CausalMask(QPos, KPos)
 
     q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
     k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))

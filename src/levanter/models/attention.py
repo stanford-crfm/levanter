@@ -104,7 +104,7 @@ class AttentionMask(eqx.Module, abc.ABC):
         return OrAttentionMask(disjuncts)
 
 
-class CausalAttentionMask(AttentionMask):
+class CausalMask(AttentionMask):
     Pos: Axis = eqx.field(static=True)
     KeyPos: Axis = eqx.field(static=True)
     pos_start: int = eqx.field(static=True, default=0)
@@ -121,7 +121,7 @@ class CausalAttentionMask(AttentionMask):
         else:
             raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
 
-    def blocked(self, axis: AxisSelector, block_size: int) -> "CausalAttentionMask":
+    def blocked(self, axis: AxisSelector, block_size: int) -> "CausalMask":
         # a blocked causal mask is just a smaller causal mask
         if haliax.selects_axis(axis, self.Pos):
             if self.Pos.size % block_size != 0:
@@ -175,7 +175,7 @@ class PrefixAttentionMask(AttentionMask):
             raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
 
 
-class ExplicitAttentionMask(AttentionMask):
+class ExplicitMask(AttentionMask):
     mask: NamedArray
 
     def materialize(self) -> Optional[NamedArray]:
