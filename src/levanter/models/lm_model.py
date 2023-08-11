@@ -58,6 +58,10 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @property
+    def vocab_size(self) -> int:
+        return self.Vocab.size
+
+    @property
     @abc.abstractmethod
     def Pos(self) -> Axis:
         pass

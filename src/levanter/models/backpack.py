@@ -339,10 +339,6 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return self.transformer.config
 
     @property
-    def vocab_size(self) -> int:
-        return self.embeddings.Vocab.size
-
-    @property
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 

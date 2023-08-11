@@ -343,10 +343,6 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         return self.transformer.config
 
     @property
-    def vocab_size(self) -> int:
-        return self.Vocab.size
-
-    @property
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 
