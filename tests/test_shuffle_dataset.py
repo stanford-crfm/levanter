@@ -13,9 +13,6 @@ class RangeDataset(Dataset[int]):
     def __iter__(self) -> Iterator[int]:
         yield from range(self.start, self.end)
 
-    def item_shape(self):
-        raise NotImplementedError
-
 
 def test_shuffle_dataset():
     dataset = RangeDataset(0, 100)
