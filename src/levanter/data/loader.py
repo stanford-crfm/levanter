@@ -6,7 +6,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Ty
 
 import jax
 import jax.numpy as jnp
-from jax._src.array import ArrayImpl
+import jax.tree_util as jtu
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
@@ -60,23 +60,10 @@ class BatchLoader(Iterable[Ex], abc.ABC):
         raise NotImplementedError
 
     @property
-    @abc.abstractmethod
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        raise NotImplementedError
-
-    @property
     def batch_size(self) -> int:
         return self.Batch.size
 
-    @functools.cached_property
-    def _batch_structure(self) -> PyTree:
-        return jax.tree_util.tree_structure(self.item_shape)
-
-    @functools.cached_property
-    def _batch_shape_leaves(self) -> List[ShapeSpec | NamedShapeSpec]:
-        return jax.tree_util.tree_leaves(self.item_shape)
-
-    def _construct_global_array_for_tree(self, get_batch_items: Callable[[int, int], PyTree]):
+    def _construct_global_array_for_tree(self, item_exemplar: PyTree, get_batch_items: Callable[[int, int], PyTree]):
         # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
         # the relevant data for each process.
         # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -96,7 +83,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
             individual_datums = get_batch_items(begin, end)
 
             device_batch = _stack_tree(self.Batch.name, individual_datums)
-            batch_leaves = jax.tree_util.tree_leaves(device_batch)
+            batch_leaves = jtu.tree_leaves(device_batch)
 
             stacked_local_batch[key] = batch_leaves
 
@@ -124,12 +111,14 @@ class BatchLoader(Iterable[Ex], abc.ABC):
             else:
                 return raw_array
 
-        # TODO: with a bit more fanciness, we can avoid needing the item_shape
+        item_leaves, item_shape = jtu.tree_flatten(item_exemplar, is_leaf=is_named_array)
+
         gda_leaves = [
-            make_global_array_for_leaf(leaf_index, shape) for leaf_index, shape in enumerate(self._batch_shape_leaves)
+            make_global_array_for_leaf(leaf_index, _batchified_shape(self.Batch, item_leaf))
+            for leaf_index, item_leaf in enumerate(item_leaves)
         ]
 
-        gda_tree = jax.tree_util.tree_unflatten(self._batch_structure, gda_leaves)
+        gda_tree = jtu.tree_unflatten(item_shape, gda_leaves)
 
         return gda_tree
 
@@ -197,14 +186,11 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             local_batch: List[PyTree] = next(batched)
 
             batch = self._construct_global_array_for_tree(
-                lambda begin, end: local_batch[(begin - batch_offset) : (end - batch_offset)]
+                item_exemplar=local_batch[0],
+                get_batch_items=lambda begin, end: local_batch[(begin - batch_offset) : (end - batch_offset)],
             )
 
             yield batch
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
 
     @property
     def batch_size(self) -> int:
@@ -251,34 +237,27 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
 
     def _produce_batches(self):
         for batch in _batched(self.item_dataset, self.Batch.size):
-            sharded = self._construct_global_array_for_tree(lambda begin, end: batch[begin:end])
+            sharded = self._construct_global_array_for_tree(
+                item_exemplar=batch[0], get_batch_items=lambda begin, end: batch[begin:end]
+            )
             yield sharded
 
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return _batchify_item_shape(self.item_dataset.item_shape, self.Batch)
+
+def _batchified_shape(Batch, leaf: Union[NamedArray, Array]):
+    if isinstance(leaf, NamedArray):
+        return NamedShapeSpec((Batch,) + leaf.axes, leaf.dtype)
+    else:
+        return ShapeSpec((Batch.size,) + leaf.shape, leaf.dtype)
 
 
-def _batchify_item_shape(item_shape: PyTree[Union[ShapeSpec, NamedShapeSpec]], Batch: hax.Axis):
-    def _batchify_shape_spec(shape_spec: Union[ShapeSpec, NamedShapeSpec]):
-        shape = shape_spec.shape
-        assert shape is not None, "item_shape must have a fully determined shape to work with batching"
-        if isinstance(shape_spec, NamedShapeSpec):
-            return NamedShapeSpec((Batch,) + shape, shape_spec.dtype)
-        else:
-            return ShapeSpec((Batch.size,) + shape, shape_spec.dtype)
-
-    return jax.tree_map(_batchify_shape_spec, item_shape)
-
-
-def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_are_different: bool = False):
+def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different: bool = False):
     """Checks the following consistency conditions on an array:
     - all replicas have the same data
     - if check_disjoint_indices_are_different is True, then all shards with disjoint indices have different data
     """
     # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
 
-    def check_array(array: ArrayImpl):
+    def check_array(array):
         def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
             my_indices: Tuple[Tuple[int, int], ...] = tuple(
                 s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index)
@@ -329,7 +308,7 @@ def check_sharded_consistency(tree: PyTree[ArrayImpl], check_disjoint_indices_ar
                                 "Shard data is the same as another shard with disjoint indices", shard, other_array
                             )
 
-    for leaf in jax.tree_util.tree_leaves(tree):
+    for leaf in jtu.tree_leaves(tree):
         check_array(leaf)
 
 

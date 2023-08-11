@@ -1,11 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Iterable, Iterator, List, TypeVar, Union
+from typing import Iterable, Iterator, List, TypeVar
 
 import jax.random as jrandom
 from jax.random import PRNGKey
-from jaxtyping import PyTree
-
-from levanter.shapes import NamedShapeSpec, ShapeSpec
 
 
 T = TypeVar("T", covariant=True)
@@ -14,12 +11,6 @@ T = TypeVar("T", covariant=True)
 class Dataset(Iterable[T], ABC):
     @abstractmethod
     def __iter__(self) -> Iterator[T]:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        """Returns the shape and dtype of a single item in the dataset. May be a PyTree for structured objects"""
         raise NotImplementedError
 
 
@@ -42,10 +33,6 @@ class ShuffleDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "ShuffleDataset":
         key = jrandom.fold_in(self.key, shard_id)
         return ShuffleDataset(self.dataset.shard(shard_id, num_shards), key, self.buffer_size)  # type: ignore
-
-    @property
-    def item_shape(self) -> PyTree:
-        return self.dataset.item_shape
 
     def __iter__(self) -> Iterator[T]:
         inner = iter(self.dataset)
