@@ -173,7 +173,7 @@ def main(config: TrainLmConfig):
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 if Vocab.size != model.vocab_size:
                     logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
-                    model = named_jit(hax.tree_util.resize_axis, parameter_axis_mapping)(model, Vocab, model_key)
+                    model = named_jit(lambda m: m.resize_embeddings(Vocab.size), parameter_axis_mapping)(model)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:

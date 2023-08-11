@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
@@ -13,6 +14,7 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
+from haliax.tree_util import resize_axis
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
@@ -407,6 +409,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
+
+    def resize_embeddings(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+        new_weights = resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), weight=new_weights)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {

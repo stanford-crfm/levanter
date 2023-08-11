@@ -431,6 +431,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         lm_model_cls: Union[Type[LmWithHfSerializationMixin], LevConfig],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
+        override_vocab: Optional[Axis] = None,
     ) -> LmWithHfSerializationMixin:
         """
         Loads a levanter model from a huggingface checkpoint.
