@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import haliax as hax
 from haliax import NamedArray
 from haliax.nn import cross_entropy_loss, cross_entropy_loss_and_log_normalizers
-
+import jmp
 
 def next_token_loss(
     Pos: hax.AxisSelector,
@@ -14,6 +14,7 @@ def next_token_loss(
     true_ids: NamedArray,
     loss_mask: Optional[NamedArray] = None,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
+    loss_scale: Optional[jmp.LossScale] = None
 ):
     Pos, Vocab = pred_ids.resolve_axis((Pos, Vocab))
     # need to roll the target tokens back by one so that each token is predicting the next token
@@ -26,17 +27,24 @@ def next_token_loss(
         loss_mask = loss_mask * not_last_loss_mask
     else:
         loss_mask = not_last_loss_mask
-
-    return cross_entropy_loss(pred_ids, Vocab, target_y, reduction=reduction, where=loss_mask, reduction_axis=Pos)
+    
+    return cross_entropy_loss(pred_ids, Vocab, target_y, reduction=reduction, where=loss_mask, reduction_axis=Pos, loss_scale=loss_scale)
 
 
 def cross_entropy_and_logsumexp_penalty(
-    pred_y: NamedArray, Vocab: hax.Axis, target_y: NamedArray, logsumexp_weight=0.0
+    pred_y: NamedArray,
+    Vocab: hax.Axis,
+    target_y: NamedArray,
+    logsumexp_weight=0.0,
+    loss_scale: Optional[jmp.LossScale] = None
 ) -> NamedArray:
     """A loss function that combines cross entropy loss with a logsumexp penalty."""
     if logsumexp_weight == 0.0:
         return cross_entropy_loss(pred_y, Vocab, target_y)
 
     loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+    
+    if loss_scale is not None:
+        loss = loss_scale.scale(loss)
 
     return loss + logsumexp_weight * (log_normalizers**2)
