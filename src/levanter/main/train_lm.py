@@ -125,7 +125,7 @@ def main(config: TrainLmConfig):
         mp: jmp.Policy = config.trainer.mp
 
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            print(example)
+            print(example, flush=True)
             with hax.axis_mapping(compute_axis_mapping):
                 model = mp.cast_to_compute(model)
                 return model.compute_loss(example, inference=inference, key=key).scalar()
