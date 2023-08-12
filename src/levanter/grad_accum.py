@@ -12,6 +12,7 @@ from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
+from levanter.models.mpt import MptLmHeadModel
 from levanter.utils.jax_utils import reduce
 
 
@@ -106,6 +107,10 @@ def accumulate_gradients_sharded(
             if key is not None:
                 kwargs["key"] = key
             this_loss, this_grad = f(model, *microbatch, **kwargs)
+            this_grad: MptLmHeadModel
+            jax.debug.inspect_array_sharding(
+                this_grad.transformer.blocks.stacked.attn.Wqkv.weight.array, callback=print
+            )
             this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
         with jax.named_scope("accum"):
