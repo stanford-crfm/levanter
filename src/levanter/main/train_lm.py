@@ -206,7 +206,11 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @named_jit(in_axis_resources=parameter_axis_mapping, axis_resources=compute_axis_mapping)
+        @named_jit(
+            in_axis_resources=parameter_axis_mapping,
+            axis_resources=compute_axis_mapping,
+            out_axis_resources=compute_axis_mapping,
+        )
         def compute_log_probs(model, example: LmExample):
             model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
@@ -214,12 +218,12 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        engine.add_hook(
-            callbacks.compute_and_visualize_log_probs(
-                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-            ),
-            every=config.trainer.steps_per_eval,
-        )
+        # engine.add_hook(
+        #     callbacks.compute_and_visualize_log_probs(
+        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
+        #     ),
+        #     every=config.trainer.steps_per_eval,
+        # )
 
         # train step
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
