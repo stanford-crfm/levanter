@@ -173,6 +173,7 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                model = mp.cast_to_param(model)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
@@ -220,7 +221,7 @@ def main(config: TrainLmConfig):
         )
 
         # train step
-        @named_jit(in_axis_resources=parameter_axis_mapping, out_axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping)
         def train_step(model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(compute_loss)
 
