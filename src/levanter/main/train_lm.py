@@ -64,7 +64,9 @@ def main(config: TrainLmConfig):
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf)
+            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
+        else:
+            converter = converter.replaced(tokenizer=tokenizer)
 
         if config.use_hf_model_config:
             # TODO: log diff of old and new config
@@ -171,9 +173,6 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                if Vocab.size != model.vocab_size:
-                    logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
-                    model = named_jit(lambda m: m.resize_vocab(Vocab.size), parameter_axis_mapping)(model)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:

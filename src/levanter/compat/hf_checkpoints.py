@@ -431,7 +431,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
         lm_model_cls: Union[Type[LmWithHfSerializationMixin], LevConfig],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
-        override_vocab: Optional[Axis] = None,
     ) -> LmWithHfSerializationMixin:
         """
         Loads a levanter model from a huggingface checkpoint.
@@ -452,7 +451,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.Vocab.resize(hf_config.vocab_size)
+        # Vocab: first we have to resize the vocab as loaded from the checkpoint
+        tokenizer_Vocab = self.Vocab
+        Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
             for k in state_dict.keys():
@@ -460,10 +462,17 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     ignore_prefix = self.ignore_prefix
                     break
 
-        # TODO: i still think this isn't the best way to do this
+        # TODO: i still think this isn't the best way to do this. We should be able to do this with array from callback
         with jax.default_device(jax.devices("cpu")[0]):
             lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+
+            # Vocab: next, we resize the desired actual size
+            if Vocab.size != tokenizer_Vocab.size:
+                logger.info(
+                    f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                )
+                lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
 
         if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
