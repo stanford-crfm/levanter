@@ -218,12 +218,12 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
+        engine.add_hook(
+            callbacks.compute_and_visualize_log_probs(
+                eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
+            ),
+            every=config.trainer.steps_per_eval,
+        )
 
         # train step
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
