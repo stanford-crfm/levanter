@@ -221,7 +221,7 @@ def main(config: TrainLmConfig):
         )
 
         # train step
-        @named_jit(axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(compute_loss)
 
