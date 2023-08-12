@@ -1,11 +1,10 @@
 import itertools
-from typing import Sequence, Union
+from typing import Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh
-from jaxtyping import PyTree
 
 import haliax as hax
 from haliax import Axis
@@ -13,7 +12,6 @@ from haliax.partitioning import ResourceAxis
 
 import levanter.data
 from levanter.data.loader import ShardedBatchLoader, check_sharded_consistency
-from levanter.shapes import NamedShapeSpec, ShapeSpec
 from test_utils import skip_if_not_enough_devices
 
 
@@ -30,10 +28,6 @@ def _small_dataset(seq_len=128, num_sequences=200) -> levanter.data.ShardableDat
 
         def __iter__(self):
             yield from self.sequences
-
-        @property
-        def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-            return ShapeSpec((seq_len,), dtype=np.int32)
 
     # sequences = [list(range(i * 1000, i * 1000 + seq_len)) for i in range(num_sequences)]
     sequences = [np.arange(seq_len) + 1000 * i for i in range(num_sequences)]
@@ -58,7 +52,6 @@ def test_sharded_data_loading_model_axis_2():
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
@@ -78,7 +71,6 @@ def test_sharded_data_loading_model_axis_1():
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
-            assert batch.shape == loader.item_shape.shape
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
@@ -96,17 +88,6 @@ class StructuredDataset(levanter.data.ShardableDataset):
             "extra": {
                 "input_ids": np.arange(self.seq_len, dtype=np.int32) + item * 1000,
                 "mask": np.arange(self.seq_len * 2, dtype=np.int32).reshape(-1, 2) + item * 1000,
-            },
-        }
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return {
-            "input_ids": ShapeSpec((self.seq_len,), jnp.int32),
-            "labels": ShapeSpec((self.seq_len,), jnp.int32),
-            "extra": {
-                "input_ids": ShapeSpec((self.seq_len,), jnp.int32),
-                "mask": ShapeSpec((self.seq_len, 2), jnp.int32),
             },
         }
 
@@ -145,10 +126,6 @@ class ScalarDataset(levanter.data.ShardableDataset[hax.NamedArray]):
 
     def __getitem__(self, item):
         return hax.named(jnp.array(item), ())
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return NamedShapeSpec((), jnp.int32)
 
     def __iter__(self):
         for i in range(self.begin, self.end, self.stride):
@@ -219,18 +196,6 @@ class StructuredDatasetWithNames(levanter.data.ShardableDataset):
                 "mask": hax.arange(self.Height) + item * 1000,
             },
             "id": hax.named(jnp.array(item), ()),
-        }
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return {
-            "input_ids": NamedShapeSpec((self.Height, self.Width), jnp.int32),
-            "labels": NamedShapeSpec((self.Height, self.Width), jnp.int32),
-            "extra": {
-                "input_ids": NamedShapeSpec((self.Height, self.Width), jnp.int32),
-                "mask": NamedShapeSpec((self.Height,), jnp.int32),
-            },
-            "id": NamedShapeSpec((), jnp.int32),
         }
 
     def __iter__(self):

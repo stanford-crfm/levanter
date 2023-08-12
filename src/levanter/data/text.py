@@ -18,7 +18,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
-from jaxtyping import PyTree
 from pyarrow._parquet import FileMetaData
 
 import haliax as hax
@@ -113,15 +112,6 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return LmExample(
-            tokens=NamedShapeSpec((self.QPos,), jnp.int32),
-            targets=NamedShapeSpec((self.QPos,), jnp.int32),
-            attn_mask=NamedShapeSpec((self.QPos, self.KPos), jnp.bool_),
-            loss_mask=NamedShapeSpec((self.QPos,), jnp.bool_),
-        )
-
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
@@ -160,10 +150,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                     ids = encoded_slice["input_ids"]
                     # yield hax.named(ids, self.Pos)
                     yield ids
-
-    @property
-    def item_shape(self) -> PyTree:
-        return ShapeSpec((self.seq_len,), np.int32)
 
     @staticmethod
     def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
@@ -308,12 +294,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             shard_chunk_offset=combined_offset,
             shard_chunk_stride=combined_stride,
         )
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return {  # type: ignore
-            "input_ids": ShapeSpec((None,), dtype=np.int32),
-        }
 
 
 def _open_arrow_table(path) -> FileMetaData:
