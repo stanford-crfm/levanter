@@ -173,7 +173,7 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model = mp.cast_to_param(model)
+                model = named_jit(mp.cast_to_param, parameter_axis_mapping)(model)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
