@@ -124,10 +124,10 @@ def main(config: TrainLmConfig):
         # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
 
-        @named_jit(axis_resources=compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            model = mp.cast_to_compute(model)
-            return model.compute_loss(example, inference=inference, key=key).scalar()
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+                return model.compute_loss(example, inference=inference, key=key).scalar()
 
         # eval loss needs to specify the parameter sharding
         eval_loss = functools.partial(
