@@ -3,6 +3,8 @@ import torch
 from jax import random
 
 # The latter 2 classes are only available in HuggingFace's transformers 4.30.0 or later
+from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
+from transformers.models.llama.configuration_llama import LlamaConfig as HFLlamaConfig
 from transformers.models.llama.modeling_llama import (
     LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
 )
@@ -16,6 +18,7 @@ from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_ha
 import haliax as hax
 
 from levanter.models.llama import (
+    LlamaAttention,
     LlamaConfig,
     LlamaDynamicNTKScalingRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -112,6 +115,38 @@ def test_apply_rotary_pos_emb():
     _assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
 
 
+def test_llama_attention():
+    config = _get_llama_config()
+    Embed = config.Embed
+    Pos = config.Pos
+    Heads = config.Heads
+    HeadSize = config.HeadSize
+    Batch = hax.Axis("batch", 2)
+    x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
+    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    position_ids = random.randint(random.PRNGKey(2), (Batch.size, Pos.size), 0, Pos.size)
+    # generate a random key that can be splitted into 4
+    key = random.PRNGKey(4)
+
+    levanter_attention = LlamaAttention.init(config=config, key=key)
+    levanter_out = levanter_attention(x, mask, position_ids)
+
+    hf_config = _levanter_config_to_hf_config(config)
+    hf_attention = HFLlamaAttention(config=hf_config)  # (seq_len, kv_seq_len)
+    # convert attention_mask's shape from (seq_len, kv_seq_len) to (batch, 1, seq_len, kv_seq_len)
+    attention_mask = _hax_to_tensor(mask)
+    attention_mask = attention_mask.reshape(1, 1, config.Pos.size, config.KeyPos.size).repeat(Batch.size, 1, 1, 1)
+
+    hf_out, _, _ = hf_attention(
+        hidden_states=_hax_to_tensor(x),
+        attention_mask=attention_mask,
+        position_ids=torch.from_numpy(np.array(position_ids)),
+    )
+
+    # assert the same shape
+    assert levanter_out.array.shape == hf_out.shape, f"{levanter_out.shape} != {hf_out.shape}"
+
+
 def _assert_equal_out(hax_out, torch_out: torch.Tensor):
     assert np.isclose(
         torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
@@ -119,18 +154,36 @@ def _assert_equal_out(hax_out, torch_out: torch.Tensor):
 
 
 def _get_llama_config() -> LlamaConfig:
-    vocab_size = 32000
-    hidden_dim = 48
-    num_heads = 8
-    num_kv_heads = 8
+    vocab_size = 1000
+    seq_len = 128
+    hidden_dim = 16
+    num_heads = 4
+    num_kv_heads = 4
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
     }
     return LlamaConfig(
+        seq_len=seq_len,
         vocab_size=vocab_size,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
         rope_scaling=rope_scaling,
+        max_position_embeddings=seq_len,
     )
+
+
+def _levanter_config_to_hf_config(levanter_config: LlamaConfig) -> HFLlamaConfig:
+    return HFLlamaConfig(
+        vocab_size=levanter_config.vocab_size,
+        max_position_embeddings=levanter_config.seq_len,
+        hidden_size=levanter_config.hidden_dim,
+        num_attention_heads=levanter_config.num_heads,
+        num_key_value_heads=levanter_config.num_kv_heads,
+        rope_scaling=levanter_config.rope_scaling,
+    )
+
+
+def _hax_to_tensor(x: hax.NamedArray) -> torch.Tensor:
+    return torch.from_numpy(np.array(x.array))

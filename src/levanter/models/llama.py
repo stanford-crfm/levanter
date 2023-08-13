@@ -200,8 +200,9 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_q, use_bias=use_bias)
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
+        # TODO: double check if we should use Heads or KV_HEADS here
+        k_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_k, use_bias=use_bias)
+        v_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
         rotary_emb = _get_rotary_emb(config)
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
@@ -217,14 +218,23 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         q, k = _apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
         scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
+ 
+        # do this first to help keep FP values small
+        q = q * scale
 
-        attn_weights = hax.dot("head_size", q, k) * scale
-        attn_weights = attn_weights + mask
+        q = q.astype(jnp.float32)
+        k = k.astype(jnp.float32)
+        k = k.rename({"position": "key_position"})
 
-        # upcast attention to fp32. This is default for Llama Attention
-        attn_weights = attn_weights.astype(jnp.float32)
+        attn_scores = hax.dot("head_size", q, k)
 
-        attn_weights = hnn.softmax(attn_weights, axis="key_position").astype(q.dtype)
+        if mask is not None:
+            attn_scores = attn_scores + (1.0 - mask) * -1e9
+
+        attn_scores = attn_scores.astype(jnp.float32)
+        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
+        # There's no dropout in llama attention, compared with Gpt2 attention
+
         attn_output = hax.dot("key_position", attn_weights, v)
 
         attn_output = self.o_proj(attn_output)
@@ -232,7 +242,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
 
 def _get_rotary_emb(config: LlamaConfig) -> LlamaRotaryEmbedding:
-    Embed = config.Embed
+    # Note that the embedding here is HeadSize, not the full Embed
+    Embed = config.HeadSize
     Pos = config.Pos
     if config.rope_scaling is None:
         return LlamaRotaryEmbedding(Embed, Pos)
