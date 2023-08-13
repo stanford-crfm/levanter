@@ -105,20 +105,20 @@ class LlamaLMHeadModel(eqx.Module):
 
 
 class LlamaRotaryEmbedding(eqx.Module):
-    dim: int
-    max_position_embeddings: int = 2048
+    Embed: Axis
+    Pos: Axis
     base: float = 10000
     inv_freq: jnp.ndarray = eqx.static_field()
     cos_cached: jnp.ndarray = eqx.static_field()
     sin_cached: jnp.ndarray = eqx.static_field()
     max_seq_len_cached: int = eqx.static_field()
 
-    def __init__(self, dim, max_position_embeddings=2048, base=10000):
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
+    def __init__(self, Embed: Axis, Pos: Axis, base: int = 10000):
+        self.Embed = Embed
+        self.Pos = Pos
         self.base = base
-        self.inv_freq = 1.0 / (self.base ** (jnp.arange(0, self.dim, 2) / self.dim))
-        self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=self.max_position_embeddings)
+        self.inv_freq = 1.0 / (self.base ** (hax.arange(Embed.resize(Embed.size // 2), step=2) / Embed.size)).array
+        self.cos_cached, self.sin_cached = self._set_cos_sin_cache(Pos.size)
 
     def _get_positional_ids(self):
         """A helper function for the convenience of extending to two sub-classes
@@ -155,9 +155,9 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 
     scaling_factor: float = 1.0
 
-    def __init__(self, dim, max_position_embeddings=2048, base=10000, scaling_factor=1.0):
+    def __init__(self, Embed: Axis, Pos: Axis, base=10000, scaling_factor=1.0):
         self.scaling_factor = scaling_factor
-        super().__init__(dim, max_position_embeddings, base)
+        super().__init__(Embed, Pos, base)
 
     def _get_positional_ids(self):
         """Here we overwrite the function in the base class to implement linear scaling."""
@@ -169,17 +169,17 @@ class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
 
     scaling_factor: float = 1.0
 
-    def __init__(self, dim, max_position_embeddings=2048, base=10000, scaling_factor=1.0):
+    def __init__(self, Embed, Pos, base=10000, scaling_factor=1.0):
         self.scaling_factor = scaling_factor
-        super().__init__(dim, max_position_embeddings, base)
+        super().__init__(Embed, Pos, base)
 
     def _get_positional_ids(self):
         """Here we overwrite the function in the base class.
         Here it adjusts the frequency base dynamically according to the sequence length.
         """
-        if self.max_seq_len_cached > self.max_position_embeddings:
+        if self.max_seq_len_cached > self.Pos.size:
             base = self.base * (
-                (self.scaling_factor * seq_len / self.max_position_embeddings) - (self.scaling_factor - 1)
+                (self.scaling_factor * self.max_seq_len_cached / self.Pos.size) - (self.scaling_factor - 1)
             ) ** (self.dim / (self.dim - 2))
             self.inv_freq = 1.0 / (base ** (jnp.arange(0, self.dim, 2) / self.dim))
 
@@ -198,14 +198,12 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaAttention":
         use_bias = config.use_bias
         Embed = config.Embed
-        head_dim = config.HeadSize.size
-        max_position_embeddings = config.max_position_embeddings
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_q, use_bias=use_bias)
         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
-        rotary_emb = _get_rotary_emb(config, head_dim, max_position_embeddings)
+        rotary_emb = _get_rotary_emb(config)
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
@@ -233,31 +231,29 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return attn_output
 
 
-def _get_rotary_emb(config: LlamaConfig, head_dim: int, max_position_embeddings: int) -> LlamaRotaryEmbedding:
+def _get_rotary_emb(config: LlamaConfig) -> LlamaRotaryEmbedding:
+    Embed = config.Embed
+    Pos = config.Pos
     if config.rope_scaling is None:
-        return LlamaRotaryEmbedding(head_dim, max_position_embeddings)
+        return LlamaRotaryEmbedding(Embed, Pos)
     else:
         scaling_type = config.rope_scaling["type"]
         scaling_factor = config.rope_scaling["factor"]
         if scaling_type == "linear":
-            return LlamaLinearScalingRotaryEmbedding(head_dim, max_position_embeddings, scaling_factor=scaling_factor)
+            return LlamaLinearScalingRotaryEmbedding(Embed, Pos, scaling_factor=scaling_factor)
         elif scaling_type == "dynamic":
-            return LlamaDynamicNTKScalingRotaryEmbedding(
-                head_dim, max_position_embeddings, scaling_factor=scaling_factor
-            )
+            return LlamaDynamicNTKScalingRotaryEmbedding(Embed, Pos, scaling_factor=scaling_factor)
         else:
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
 
 
 def _rotate_half(x: NamedArray) -> NamedArray:
-    """Rotates half of the hidden dims of the input and concatenates them.
-    This is difficult to Haliax, so we do it in regular array ops.
-    """
-    x_array = x.array
-    x1 = x_array[..., : x_array.shape[-1] // 2]
-    x2 = x_array[..., x_array.shape[-1] // 2 :]
-    output = jnp.concatenate((-x2, x1), axis=-1)
-    return hax.named(output, x.axes)
+    """Rotates half of the hidden dims of the input and concatenates them."""
+    HeadSize = x.axes[-1]
+    x1 = x[HeadSize, : HeadSize.size // 2]
+    x2 = x[HeadSize, HeadSize.size // 2 :]
+    out = hax.concatenate(HeadSize, (-x2, x1))
+    return out
 
 
 def _apply_rotary_pos_emb(

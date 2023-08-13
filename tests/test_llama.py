@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from jax import random
 
@@ -26,8 +27,10 @@ from levanter.models.llama import _rotate_half as levanter_rotate_half
 
 def test_llama_rotary_embedding():
     llama_config = _get_llama_config()
-    hidden_dim = llama_config.hidden_dim
-    seq_len = llama_config.seq_len
+    Embed = llama_config.Embed
+    Pos = llama_config.Pos
+    hidden_dim = Embed.size
+    seq_len = Pos.size
     scaling_factor = llama_config.rope_scaling["factor"]
     key = random.PRNGKey(0)
     device = "cpu"
@@ -45,20 +48,24 @@ def test_llama_rotary_embedding():
 
     # test LlamaRotaryEmbedding
     test_levanter_against_hf(
-        levanter_class=LlamaRotaryEmbedding(dim=hidden_dim),
-        hf_class=HFLlamaRotaryEmbedding(dim=hidden_dim, device=device),
+        levanter_class=LlamaRotaryEmbedding(Embed=Embed, Pos=Pos),
+        hf_class=HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device),
     )
 
     # test LlamaLinearScalingRotaryEmbedding
     test_levanter_against_hf(
-        levanter_class=LlamaLinearScalingRotaryEmbedding(dim=hidden_dim, scaling_factor=scaling_factor),
-        hf_class=HFLlamaLinearScalingRotaryEmbedding(dim=hidden_dim, scaling_factor=scaling_factor, device=device),
+        levanter_class=LlamaLinearScalingRotaryEmbedding(Embed=Embed, Pos=Pos, scaling_factor=scaling_factor),
+        hf_class=HFLlamaLinearScalingRotaryEmbedding(
+            dim=hidden_dim, max_position_embeddings=seq_len, scaling_factor=scaling_factor, device=device
+        ),
     )
 
     # test LlamaDynamicNTKScalingRotaryEmbedding
     test_levanter_against_hf(
-        levanter_class=LlamaDynamicNTKScalingRotaryEmbedding(dim=hidden_dim, scaling_factor=scaling_factor),
-        hf_class=HFLlamaDynamicNTKScalingRotaryEmbedding(dim=hidden_dim, scaling_factor=scaling_factor, device=device),
+        levanter_class=LlamaDynamicNTKScalingRotaryEmbedding(Embed=Embed, Pos=Pos, scaling_factor=scaling_factor),
+        hf_class=HFLlamaDynamicNTKScalingRotaryEmbedding(
+            dim=hidden_dim, max_position_embeddings=seq_len, scaling_factor=scaling_factor, device=device
+        ),
     )
 
 
