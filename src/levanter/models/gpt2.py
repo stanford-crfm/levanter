@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Dict, Optional, Type
@@ -6,6 +7,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from jax._src.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 from transformers import GPT2Config as HfGpt2Config
 from transformers import PretrainedConfig as HfConfig
 
@@ -333,6 +336,10 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
+    def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
+        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+
 
 class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     transformer: Gpt2Transformer
@@ -341,10 +348,6 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     @property
     def config(self):
         return self.transformer.config
-
-    @property
-    def vocab_size(self) -> int:
-        return self.Vocab.size
 
     @property
     def Vocab(self) -> Axis:
@@ -374,6 +377,10 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         lm_logits = self.embeddings.unembed(x)
 
         return lm_logits
+
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "Gpt2LMHeadModel":
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
+        return dataclasses.replace(self, embeddings=new_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": None, "embeddings": None}

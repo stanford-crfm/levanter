@@ -64,7 +64,9 @@ def main(config: TrainLmConfig):
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf)
+            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
+        else:
+            converter = converter.replaced(tokenizer=tokenizer)
 
         if config.use_hf_model_config:
             # TODO: log diff of old and new config
@@ -122,10 +124,10 @@ def main(config: TrainLmConfig):
         # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
 
-        @named_jit(axis_resources=compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            model = mp.cast_to_compute(model)
-            return model.compute_loss(example, inference=inference, key=key).scalar()
+            with hax.axis_mapping(compute_axis_mapping):
+                model = mp.cast_to_compute(model)
+                return model.compute_loss(example, inference=inference, key=key).scalar()
 
         # eval loss needs to specify the parameter sharding
         eval_loss = functools.partial(
@@ -171,9 +173,7 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                if Vocab.size != model.vocab_size:
-                    logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
-                    model = hax.tree_util.resize_axis(model, Vocab, model_key)
+                model = named_jit(mp.cast_to_param, parameter_axis_mapping)(model)
 
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
@@ -205,7 +205,11 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @named_jit(in_axis_resources=parameter_axis_mapping, axis_resources=compute_axis_mapping)
+        @named_jit(
+            in_axis_resources=parameter_axis_mapping,
+            axis_resources=compute_axis_mapping,
+            out_axis_resources=compute_axis_mapping,
+        )
         def compute_log_probs(model, example: LmExample):
             model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
@@ -221,7 +225,7 @@ def main(config: TrainLmConfig):
         )
 
         # train step
-        @named_jit(in_axis_resources=parameter_axis_mapping, out_axis_resources=parameter_axis_mapping)
+        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, examples: LmExample, key):
             grad_loss = eqx.filter_value_and_grad(compute_loss)
 
