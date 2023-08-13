@@ -1,16 +1,23 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, Union, cast, overload
 
 import equinox as eqx
-import jax.numpy as jnp
+import jax
 import numpy
+import numpy as np
+import safetensors.numpy
+from jax import numpy as jnp
+from jax.experimental import multihost_utils
+from jax.experimental.multihost_utils import sync_global_devices
 from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
 from haliax import NamedArray
 from haliax.util import ensure_tuple
+
+from levanter.utils.jax_utils import leaf_key_paths
 
 
 StateDict = Dict[str, Any]
@@ -155,79 +162,117 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
-def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = layer.weight
-    bias = layer.bias
+def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in_dict: Optional[bool]) -> StateDict:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    flattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
+
+    :param prefix: prefix to apply to the keys in the state dict
+    :param tree:
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be left as-is.
+    This is the default in PyTorch, but not in Haliax.
+    """
 
     ret_dict: StateDict = {}
 
-    weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
-    if bias is not None:
-        bias = bias.flatten_axes(layer.Out, "__OUT__")
+    def _flatten_linear(layer, prefix):
+        if not isinstance(layer, hnn.Linear):
+            return layer
 
-    if out_dims_first_in_dict:
-        weight = weight.rearrange((..., "__OUT__", "__IN__"))
-    else:
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+        weight = layer.weight
+        bias = layer.bias
 
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        if weight.array is not None:
+            weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+            if bias is not None:
+                bias = bias.flatten_axes(layer.Out, "__OUT__")
 
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+            if out_dims_first_in_dict is True:
+                weight = weight.rearrange((..., "__OUT__", "__IN__"))
+            elif out_dims_first_in_dict is False:
+                weight = weight.rearrange((..., "__IN__", "__OUT__"))
+            else:
+                pass
 
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(tree, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True)
+    jax.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 
-def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = statedict[apply_prefix(prefix, "weight")]
-    bias = statedict.get(apply_prefix(prefix, "bias"), None)
-
-    Out = ensure_tuple(layer.Out)
-    In = ensure_tuple(layer.In)
-    InOut = In + Out
-    extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
-
-    if out_dims_first_in_dict:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
-    else:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
-
-    # now unflatten
-    weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
-
-    if bias is not None:
-        bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
-        bias = bias.unflatten_axis("__OUT__", layer.Out)
-
-    # tree_structure = jax.tree_structure(layer)
-    # return jax.tree_unflatten(tree_structure, (weight, bias))
-
-    ret_dict: StateDict = {}
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
-
-    return ret_dict
-
-
-def reshape_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
+def unflatten_linear_layers(
+    prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: Optional[bool]
 ) -> StateDict:
-    """Reshape the weights and bias for a linear layer in a torch dict to a new shape."""
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape((-1,) + in_shape + out_shape)
-    bias = bias.reshape((-1,) + out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    unflattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
 
-    return new_dict
+    :param prefix: prefix to apply to the keys in the state dict
+    :param statedict: the state dict to source the flattened weights from
+    :param layer: the exemplar layer to use for unflattening
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be inferred from the linear
+    :return:
+    """
+    ret_dict: StateDict = {}
+
+    def _unflatten_linear(layer, prefix):
+        nonlocal out_dims_first_in_dict
+
+        if not isinstance(layer, hnn.Linear):
+            return layer
+
+        weight = statedict[apply_prefix(prefix, "weight")]
+        bias = statedict.get(apply_prefix(prefix, "bias"), None)
+
+        Out = ensure_tuple(layer.Out)
+        In = ensure_tuple(layer.In)
+        InOut = In + Out
+        extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+
+        if out_dims_first_in_dict is None:
+            out_dims_first_in_dict = layer.out_first
+
+        if out_dims_first_in_dict:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
+        else:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+        if layer.out_first:
+            weight = weight.rearrange((..., "__OUT__", "__IN__"))
+        else:
+            weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+        # now unflatten
+        weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
+
+        if bias is not None:
+            bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
+            bias = bias.unflatten_axis("__OUT__", layer.Out)
+
+        # tree_structure = jax.tree_structure(layer)
+        # return jax.tree_unflatten(tree_structure, (weight, bias))
+
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(
+        layer, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True
+    )
+    jax.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
+    return ret_dict
 
 
 def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
@@ -246,7 +291,7 @@ def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> S
     assert prefix is not None
 
     for k, v in state_dict.items():
-        if k.startswith(prefix):
+        if k.startswith(prefix) and v is not None:
             for i, v_i in enumerate(v):
                 new_dict[f"{prefix}{i}.{k[len(prefix):]}"] = v_i
         else:
@@ -292,22 +337,45 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
     return vectorized_dict
 
 
-def reshape_mlp_linear_layer(
-    in_dict: StateDict, prefix: Optional[str], in_shape: Tuple[int, ...], out_shape: Tuple[int, ...]
-) -> StateDict:
+def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
     """
-    Reshape the weights and bias for a linear layer in a torch dict to a new shape.
-    This is different from reshape_linear_layer as we removed (-1,) from the shape
-    of the weights and bias.
-    """
-    new_dict: StateDict = {}
-    weight_key = cast(str, apply_prefix(prefix, "weight"))
-    bias_key = cast(str, apply_prefix(prefix, "bias"))
-    weight = in_dict[weight_key]
-    bias = in_dict[bias_key]
-    weight = weight.reshape(in_shape + out_shape)
-    bias = bias.reshape(out_shape)
-    new_dict[weight_key] = weight
-    new_dict[bias_key] = bias
+    Convert a model to a state dict by first creating desharded copies of all parameters that reside in CPU
+    memory.
 
-    return new_dict
+    This method is especially useful for saving models distributed across multiple hosts.
+    """
+
+    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
+        if isinstance(arr, np.ndarray):
+            return arr
+        elif "cpu" in arr.device().device_kind:
+            return np.array(arr)
+        elif arr.is_fully_addressable:
+            r = np.array(arr)
+            return r
+        else:
+            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+
+    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+    model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
+    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+    state_dict = model.to_state_dict(prefix=prefix)
+    return state_dict
+
+
+_GLOBAL_SAVE_COUNT = 0
+
+
+def save_state_dict(state_dict: StateDict, path):
+    """
+    Save a model's state dict to a file, bringing all tensors to the CPU first and then converting to numpy.
+    This will save using safetensors format
+    """
+    state_dict = {k: v for k, v in state_dict.items() if v is not None}
+    # now that we've moved the model to the CPU, we don't need to do this on all processes
+    if jax.process_index() == 0:
+        # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+        safetensors.numpy.save_file(state_dict, path, metadata={"format": "pt"})
+    global _GLOBAL_SAVE_COUNT
+    sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
+    _GLOBAL_SAVE_COUNT += 1

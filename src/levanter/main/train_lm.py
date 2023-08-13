@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 from dataclasses import dataclass, field
@@ -9,21 +10,18 @@ import jmp
 import wandb
 
 import haliax as hax
-import haliax.random
 from haliax import Axis
-from haliax.jax_utils import filter_eval_shape
-from haliax.nn import cross_entropy_loss
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -66,9 +64,7 @@ def main(config: TrainLmConfig):
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
-        else:
-            converter = converter.replaced(tokenizer=tokenizer)
+            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf)
 
         if config.use_hf_model_config:
             # TODO: log diff of old and new config
@@ -123,55 +119,21 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # Mixed Precision: We use the "jmp" library to handle mixed precision training. It basically has three dtypes:
-        # 1) compute (typically bfloat16)
-        # 2) parameter (typically float32)
-        # 3) output (sometimes float32)
-        # I like to think of these as "semantic" dtypes: compute is the dtype we do most of our math in, parameter is
-        # the dtype we store our parameters in, and output is the dtype we use for loss calculations.
+        # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
         mp: jmp.Policy = config.trainer.mp
+
+        @named_jit(axis_resources=compute_axis_mapping)
+        def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
+            model = mp.cast_to_compute(model)
+            return model.compute_loss(example, inference=inference, key=key).scalar()
+
+        # eval loss needs to specify the parameter sharding
+        eval_loss = functools.partial(
+            named_jit(compute_loss, in_axis_resources=parameter_axis_mapping), inference=True
+        )
 
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
-                pred_y = mp.cast_to_output(pred_y)
-
-                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                return cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
-
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def train_loss(model, example, key):
-            return hax.mean(compute_loss(model, example, key, False)).scalar()
-
-        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(train_loss)
-
-            loss, grads = accumulate_gradients_sharded(
-                grad_loss,
-                Batch,
-                model,
-                examples,
-                key=key,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )
-
-            # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
-
-            return loss, model, opt_state
-
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def eval_loss(model, example):
-            return hax.mean(compute_loss(model, example, None, True)).scalar()
 
         # initialize the model
         # There are a few ways we might initialize the model
@@ -188,7 +150,7 @@ def main(config: TrainLmConfig):
             return model, opt_state
 
         # first get the shape of the model and optimizer state
-        model, opt_state = filter_eval_shape(init_model_and_opt_state, model_key)
+        model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
         wandb.summary["parameter_count"] = parameter_count(model)
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
@@ -209,6 +171,10 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                if Vocab.size != model.vocab_size:
+                    logger.info(f"Resizing model from {model.vocab_size} to {Vocab.size} to match dataset vocab size")
+                    model = hax.tree_util.resize_axis(model, Vocab, model_key)
+
                 opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
@@ -239,20 +205,13 @@ def main(config: TrainLmConfig):
             )
 
         # visualize log probs
-        @named_jit(axis_resources=parameter_axis_mapping)
+        @named_jit(in_axis_resources=parameter_axis_mapping, axis_resources=compute_axis_mapping)
         def compute_log_probs(model, example: LmExample):
-            """This method differs from eval_loss in that it skips the mean call, so we get a loss for each token"""
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, inference=True, key=None)
-                pred_y = mp.cast_to_output(pred_y)
-                targets = hax.nn.one_hot(example.tokens, Vocab, dtype=pred_y.dtype)
-                loss = cross_entropy_loss(pred_y, Vocab, targets, where=example.loss_mask, reduction=None)
-                logprobs = -loss
-                # roll forward to get the loss for each predicted token
-                logprobs = haliax.roll(logprobs, 1, Pos)
-                return logprobs.rearrange((EvalBatch, Pos)).array
+            model = mp.cast_to_compute(model)
+            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+            # roll forward to get the loss for each predicted token
+            logprobs = hax.roll(logprobs, 1, Pos)
+            return logprobs.rearrange((EvalBatch, Pos)).array
 
         engine.add_hook(
             callbacks.compute_and_visualize_log_probs(
@@ -260,6 +219,28 @@ def main(config: TrainLmConfig):
             ),
             every=config.trainer.steps_per_eval,
         )
+
+        # train step
+        @named_jit(in_axis_resources=parameter_axis_mapping, out_axis_resources=parameter_axis_mapping)
+        def train_step(model, opt_state, examples: LmExample, key):
+            grad_loss = eqx.filter_value_and_grad(compute_loss)
+
+            loss, grads = accumulate_gradients_sharded(
+                grad_loss,
+                Batch,
+                model,
+                examples,
+                inference=False,
+                key=key,
+                per_device_parallelism=config.trainer.per_device_parallelism,
+                parameter_axis_mapping=parameter_axis_mapping,
+            )
+
+            # distribute gradients across the mesh and apply them
+            updates, opt_state = optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
 
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
