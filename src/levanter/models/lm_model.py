@@ -75,6 +75,14 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     ) -> NamedArray:
         pass
 
+    @abc.abstractmethod
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":
+        """
+        Resizes the vocabulary of the model. Key may be provided to use random initialization, otherwise, there
+        should be some deterministic initialization of any new parameters.
+        """
+        pass
+
     def compute_loss(
         self,
         example: LmExample,
@@ -94,3 +102,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
+
+    @property
+    def vocab_size(self) -> int:
+        return self.Vocab.size
