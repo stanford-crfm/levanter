@@ -148,7 +148,9 @@ def _flash_attention_forward(
             # TODO: block causal
 
             if dropout > 0 and not inference:
-                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
+                attn_ij = hax.nn.dropout(
+                    attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc.size + j)
+                )
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
             # ...    l_i^j = exp(m_i^{j-1} - m_i^j) + rowsum(P_i^j)
@@ -250,7 +252,9 @@ def _flash_attention_backward(
             attn_ij = hax.dot(Key, q_i, k_j)
 
             if dropout > 0 and not inference:
-                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
+                attn_ij = hax.nn.dropout(
+                    attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc.size + j)
+                )
 
             if mask is not None:
                 if isinstance(mask, hax.NamedArray):

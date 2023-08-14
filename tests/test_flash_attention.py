@@ -73,3 +73,26 @@ def test_grad_attention():
     assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-4, rtol=1e-4)
     assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-4, rtol=1e-4)
     assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-4, rtol=1e-4)
+
+
+def test_fa_dropout_does_something():
+    Key = hax.Axis("Key", 8)
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+
+    mask = hax.nn.attention.causal_mask(QPos, KPos)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+
+    p_drop = 0.5
+
+    fa_with_dropout = functools.partial(flash_attention, inference=False, dropout=p_drop, key=jrandom.PRNGKey(3))
+    fa_without_dropout = functools.partial(flash_attention, inference=True)
+
+    without_o = fa_without_dropout(QPos, KPos, Key, q, k, v, mask=mask)
+    with_o = fa_with_dropout(QPos, KPos, Key, q, k, v, mask=mask)
+
+    assert with_o.axes == without_o.axes
+    assert not jnp.any(jnp.isclose(with_o.array, without_o.array, atol=1e-5, rtol=1e-5))
