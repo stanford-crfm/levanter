@@ -13,8 +13,8 @@ from haliax.jax_utils import named_call
 from haliax.nn.scan import Stacked
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
-from levanter.models.lm_model import LmConfig
 from levanter.models.gpt2 import ACT2FN
+from levanter.models.lm_model import LmConfig
 
 
 @LmConfig.register_subclass("llama")
@@ -199,7 +199,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *args):
         q = self.q_proj(x)  # TODO: rearrange and possibly rename
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -250,7 +250,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *args):
         residual = x
         x = self.ln_1(x)
 
@@ -274,15 +274,16 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
         layers = Stacked.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
-            config, shaped_rng_split(key, config.num_layers),
+            config,
+            shaped_rng_split(key, config.num_layers),
         )
         ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=key)
 
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *) -> NamedArray:
-        x = self.layers.fold(x, attn_mask=attn_mask, hax.arange(self.config.Layers))
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *args) -> NamedArray:
+        x = self.layers.fold(x, attn_mask=attn_mask, position_ids=hax.arange(self.config.Layers))
         x = self.ln_f(x)
 
         return x
@@ -290,6 +291,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
 class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
     """Similar to GPT2 Embedding but without dropout"""
+
     Vocab: Axis = eqx.static_field()
     config: LlamaConfig = eqx.static_field()
 
@@ -306,7 +308,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return LlamaEmbedding(Vocab, config, token_embeddings, position_embeddings)
 
     @named_call
-    def embed(self, input_ids, *):
+    def embed(self, input_ids, *args):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
@@ -349,9 +351,7 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
         return LlamaLMHeadModel(transformer, embeddings)
 
-    def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray], position_ids, *
-    ) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], position_ids, *args) -> NamedArray:
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, position_ids=position_ids)
         lm_logits = self.embeddings.unembed(x)

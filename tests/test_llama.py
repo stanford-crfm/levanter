@@ -1,10 +1,8 @@
 import numpy as np
 import torch
 from jax import random
-
-# The latter 2 classes are only available in HuggingFace's transformers 4.30.0 or later
-from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 from transformers.models.llama.configuration_llama import LlamaConfig as HFLlamaConfig
+from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 from transformers.models.llama.modeling_llama import (
     LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
 )
@@ -119,8 +117,6 @@ def test_llama_attention():
     config = _get_llama_config()
     Embed = config.Embed
     Pos = config.Pos
-    Heads = config.Heads
-    HeadSize = config.HeadSize
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
