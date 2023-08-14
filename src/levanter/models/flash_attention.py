@@ -136,6 +136,9 @@ def _flash_attention_forward(
             # Step 8: compute Sij = QiKj^T
             attn_ij = hax.dot(Key, q_i, k_j)
 
+            if dropout > 0 and not inference:
+                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
+
             if mask is not None:
                 if isinstance(mask, hax.NamedArray):
                     mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
