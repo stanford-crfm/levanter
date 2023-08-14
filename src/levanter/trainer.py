@@ -31,6 +31,7 @@ M = TypeVar("M")
 S = TypeVar("S")
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
+    "jax_softmax_custom_jvp": True,
 }
 
 
