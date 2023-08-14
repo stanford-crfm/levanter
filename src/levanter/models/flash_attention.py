@@ -79,8 +79,8 @@ def _flash_attention(
 @named_call
 def _flash_attention_forward(
     qkv,
-    QPos: hax.AxisSelector,
-    KPos: hax.AxisSelector,
+    QPos: hax.Axis,
+    KPos: hax.Axis,
     Key: hax.AxisSelector,
     mask: Optional[AttnMask] = None,
     dropout: float = 0.0,
@@ -104,24 +104,31 @@ def _flash_attention_forward(
 
     q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
 
+    # output variables: O is the attention output, ell is the per-position log normalizer
+    o_shape = _infer_attention_output_block_shape(QPos, KPos, Key, q, k, v)
+    o = hax.zeros(o_shape, q.dtype)
+    o = hax.auto_sharded(o)
+    ell = hax.zeros((*q_batch_axes, QPos), jnp.float32)
+    ell = hax.auto_sharded(ell)
+
     @named_call
-    def do_o_block(i):
+    def do_o_block(state):
+        i, o, ell = state
+
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
         q_i = q.slice(QPos, QPosBlock, i * block_size)
 
         # Step 2: init O_i = 0, sumexp_i = 0, max_i = -inf
-
-        # one of the things haliax's dot_product_attention does is allow v to have arbitrary batch dimensions
-        o_i_shape = _infer_attention_output_block_shape(QPosBlock, KPos, Key, q_i, k, v)
-        o_i = hax.zeros(o_i_shape, q.dtype)
+        o_i = o.slice(QPos, QPosBlock, i * block_size)
         sumexp_i = hax.zeros(q_batch_axes + (QPosBlock,), q.dtype)
         max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf, q.dtype)
 
         @named_call
-        def do_qk_block(carry, j):  # computes softmax(Q_i K_j^T) V_j
+        def do_qk_block(state):
+            """computes softmax(Q_i K_j^T) V_j"""
             # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
             #         K and V into 𝑇𝑐 = \ceil(𝑁/Bc) blocks of size Bc x d each.
-            o_i, sumexp_i, old_max_i = carry
+            i, j, o_i, q_i, sumexp_i, old_max_i = state
             k_j = k.slice(KPos, KPosBlock, j * block_size)
             v_j = v.slice(KPos, KPosBlock, j * block_size)
 
@@ -152,23 +159,29 @@ def _flash_attention_forward(
             # Step 10: Compute O_i = diag(exp(m_i^{j-1} - m_i^j) O_i + P_i^j V_j
             o_i = exp_diff * o_i + hax.dot(KPosBlock, P_ij, v_j)
 
-            return (o_i, sumexp_i, max_i)
+            return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
-        o_i, sumexp_i, max_i = hax.fold(do_qk_block, Tc)((o_i, sumexp_i, max_i), jnp.arange(Tc.size))
+        _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
+            lambda state: state[1] < Tc.size, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
+        )
 
         # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
         o_i = o_i / sumexp_i
         # Step 13: compute L_i = m_i^{Tc} + log(\ell_i^{Tc})
-        L_i = max_i + hax.log(sumexp_i)
+        ell_i = max_i + hax.log(sumexp_i)
 
-        return o_i, L_i
+        o = o.updated_slice({QPos: i * block_size}, o_i)
+        ell = ell.updated_slice({QPos: i * block_size}, ell_i)
 
-    o, ell = hax.map(do_o_block, Tr)(jnp.arange(Tr.size))
+        return i + 1, o, ell
 
-    # flatten_axes causes QPos to be at the beginning, but we want it at the end
-    # TODO: actually what we want is to be consistent with the input
-    o = o.rearrange((*q_batch_axes, Tr, QPosBlock, ...)).flatten_axes((Tr, QPosBlock), QPos)
-    ell = ell.rearrange((*q_batch_axes, Tr, QPosBlock)).flatten_axes((Tr, QPosBlock), QPos)
+    # o, ell = hax.map(do_o_block, Tr)(jnp.arange(Tr.size))
+    _, o, ell = jax.lax.while_loop(lambda state: state[0] < Tr.size, do_o_block, (0, o, ell))
+
+    # # flatten_axes causes QPos to be at the beginning, but we want it at the end
+    # # TODO: actually what we want is to be consistent with the input
+    # o = o.rearrange((*q_batch_axes, Tr, QPosBlock, ...)).flatten_axes((Tr, QPosBlock), QPos)
+    # ell = ell.rearrange((*q_batch_axes, Tr, QPosBlock)).flatten_axes((Tr, QPosBlock), QPos)
 
     return o, (o, ell)
 
@@ -232,7 +245,7 @@ def _flash_attention_backward(
                 else:
                     mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
                     mask_ij = mask_ij.materialize()
-                attn_ij = hax.where(mask_ij, attn_ij, -1e10)
+                # attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
 
