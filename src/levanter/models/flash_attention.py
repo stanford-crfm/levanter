@@ -227,7 +227,11 @@ def _flash_attention_backward(
             attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
-                mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
+                if isinstance(mask, hax.NamedArray):
+                    mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
+                else:
+                    mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
+                    mask_ij = mask_ij.materialize()
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
