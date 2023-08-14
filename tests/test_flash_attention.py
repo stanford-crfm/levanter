@@ -50,7 +50,7 @@ def test_grad_attention():
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    mask = None  # hax.nn.attention.causal_mask(QPos, KPos)
+    mask = hax.nn.attention.causal_mask(QPos, KPos)
 
     q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
     k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))

@@ -108,7 +108,7 @@ def _flash_attention_forward(
     o_shape = _infer_attention_output_block_shape(QPos, KPos, Key, q, k, v)
     o = hax.zeros(o_shape, q.dtype)
     o = hax.auto_sharded(o)
-    ell = hax.zeros((*q_batch_axes, QPos), jnp.float32)
+    ell = hax.zeros((*q_batch_axes, QPos))
     ell = hax.auto_sharded(ell)
 
     @named_call
@@ -245,7 +245,7 @@ def _flash_attention_backward(
                 else:
                     mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
                     mask_ij = mask_ij.materialize()
-                # attn_ij = hax.where(mask_ij, attn_ij, -1e10)
+                attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
 
