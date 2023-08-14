@@ -28,6 +28,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -234,9 +235,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         )
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
-    def __call__(
-        self, hidden_states: NamedArray, mask: Optional[NamedArray] = None, bias: Optional[NamedArray] = None
-    ):
+    def __call__(self, hidden_states: NamedArray, mask: Optional[AttnMask] = None, bias: Optional[NamedArray] = None):
         qkv_out = self.Wqkv(hidden_states)
         q, k, v = qkv_out.unbind("qkv")
 
@@ -255,6 +254,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
             attn_scores = attn_scores + bias
 
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
@@ -311,9 +311,7 @@ class MptBlock(eqx.Module):
         return MptBlock(norm_1, norm_2, attn, ffn)
 
     @named_call
-    def __call__(
-        self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[NamedArray]
-    ):
+    def __call__(self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask]):
         a = self.norm_1(hidden_states)
         b = self.attn(a, bias=attn_bias, mask=attention_mask)
         hidden_states = hidden_states + b
@@ -342,7 +340,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return MptTransformer(config, blocks, norm_f)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
+    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask]) -> NamedArray:
         if self.config.attn_config.alibi:
             bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
@@ -404,7 +402,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
         # TODO: add back in dropout
         del key
         del inference

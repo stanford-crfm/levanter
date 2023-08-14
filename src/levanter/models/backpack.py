@@ -23,6 +23,7 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
+from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -178,7 +179,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
@@ -199,6 +200,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         attn_scores = hax.dot("head_dim", q, k)
 
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
@@ -398,7 +400,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
     @named_call
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
     ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")
