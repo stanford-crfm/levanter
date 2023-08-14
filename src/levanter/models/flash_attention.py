@@ -135,8 +135,8 @@ def _flash_attention_forward(
                 else:
                     mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
                     mask_ij = mask_ij.materialize()
-                # attn_ij = hax.where(mask_ij, attn_ij, -1e10)
-                attn_ij = attn_ij + (1.0 - mask_ij) * -1e9
+                attn_ij = hax.where(mask_ij, attn_ij, -1e10)
+                # attn_ij = attn_ij + (1.0 - mask_ij) * -1e9
 
             # TODO: block causal
             # TODO: dropout
