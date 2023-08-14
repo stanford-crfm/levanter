@@ -215,18 +215,26 @@ def _flash_attention_backward(
     QPosBlock = QPos.resize(block_size)
 
     # Compute D = rowsum(dO * O), write D to HBM and divide it into Tr blocks of size Br each.
-    # in the FA2 paper D is said to be \in R^{d}, but that doesn't maske sense.
+    # in the FA2 paper D is said to be \in R^{d}, but that doesn't make sense.
     # Triton impl has it as R^{QPos}, which makes more sense.
     D = hax.sum(dO * O, axis=Key)
 
+    dQ = (q * 0.0).astype(q.dtype)
+    dK = (k * 0.0).astype(k.dtype)
+    dV = (v * 0.0).astype(v.dtype)
+
     @named_call
-    def do_kv_block(dQ, j):
+    def do_kv_block(state):
+        j, dQ, dK, dV = state
         k_j = k.slice(KPos, KPosBlock, j * block_size)
         v_j = v.slice(KPos, KPosBlock, j * block_size)
 
+        dK_j = dK.slice(KPos, KPosBlock, j * block_size)
+        dV_j = dV.slice(KPos, KPosBlock, j * block_size)
+
         @named_call
-        def do_inner_block(accum, i):
-            dQ, dK_j, dV_j = accum
+        def do_inner_block(state):
+            i, j, dQ, dK_j, dV_j = state
             q_i = q.slice(QPos, QPosBlock, i * block_size)
             # the FA2 paper says to read in this o_i, but it's not used anywhere. I think it's copypasta from FA1.
             # o_i = O.slice(QPos, QPosBlock, i * block_size)
@@ -260,22 +268,20 @@ def _flash_attention_backward(
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)
 
-            return dQ, dK_j, dV_j
+            return i + 1, j, dQ, dK_j, dV_j
 
-        dK_j = (k_j * 0.0).astype(k.dtype)
-        dV_j = (v_j * 0.0).astype(v.dtype)
+        # dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
+        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(
+            lambda state: state[0] < Tr.size, do_inner_block, (0, j, dQ, dK_j, dV_j)
+        )
 
-        dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
+        dK = dK.updated_slice({KPos: j * block_size}, dK_j)
+        dV = dV.updated_slice({KPos: j * block_size}, dV_j)
 
-        return dQ, (dK_j, dV_j)
+        return j + 1, dQ, dK, dV
 
-    dQ = (q * 0.0).astype(q.dtype)
-    dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
-
-    # dQ is already the right shape because it's folded over rather than scanned over
-    dK = dK.flatten_axes((Tc, KPosBlock), KPos)
-    dV = dV.flatten_axes((Tc, KPosBlock), KPos)
-
+    # dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
+    j, dQ, dK, dV = jax.lax.while_loop(lambda state: state[0] < Tc.size, do_kv_block, (0, dQ, dK, dV))
     return dQ.rearrange(q.axes), dK.rearrange(k.axes), dV.rearrange(v.axes)
 
 
