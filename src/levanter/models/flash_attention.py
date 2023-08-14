@@ -136,9 +136,6 @@ def _flash_attention_forward(
             # Step 8: compute Sij = QiKj^T
             attn_ij = hax.dot(Key, q_i, k_j)
 
-            if dropout > 0 and not inference:
-                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
-
             if mask is not None:
                 if isinstance(mask, hax.NamedArray):
                     mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
@@ -149,7 +146,9 @@ def _flash_attention_forward(
                 # attn_ij = attn_ij + (1.0 - mask_ij) * -1e9
 
             # TODO: block causal
-            # TODO: dropout
+
+            if dropout > 0 and not inference:
+                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
             # ...    l_i^j = exp(m_i^{j-1} - m_i^j) + rowsum(P_i^j)
@@ -175,7 +174,6 @@ def _flash_attention_forward(
 
         o = o.updated_slice({QPos: i * block_size}, o_i)
         ell = ell.updated_slice({QPos: i * block_size}, ell_i.astype(ell.dtype))
-        jax.debug.print("i fwd {}", i)
 
         return i + 1, o, ell
 
@@ -251,6 +249,9 @@ def _flash_attention_backward(
             # TODO: precision
             attn_ij = hax.dot(Key, q_i, k_j)
 
+            if dropout > 0 and not inference:
+                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
+
             if mask is not None:
                 if isinstance(mask, hax.NamedArray):
                     mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
@@ -260,6 +261,9 @@ def _flash_attention_backward(
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
+
+            if dropout > 0 and not inference:
+                p_ij = hax.nn.dropout(p_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
             dP_ij = hax.dot(Key, dO_i, v_j)
             dAttn_ij = p_ij * (dP_ij - D_i)
@@ -281,7 +285,6 @@ def _flash_attention_backward(
 
         dK = dK.updated_slice({KPos: j * block_size}, dK_j)
         dV = dV.updated_slice({KPos: j * block_size}, dV_j)
-        jax.debug.print("j bwd {}", j)
 
         return j + 1, dQ, dK, dV
 
