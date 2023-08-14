@@ -10,6 +10,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call
+from haliax.nn.scan import Stacked
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig
@@ -43,6 +44,11 @@ class LlamaConfig:
     activation_function: str = "silu"
     max_position_embeddings: int = 2048
     initializer_range: float = 0.02
+    layer_norm_epsilon: float = 1e-5
+
+    gradient_checkpointing: bool = True
+    gradient_checkpointing_block_size: int = 5
+
     use_bias: bool = True
     rope_scaling: Optional[dict] = None
 
@@ -86,22 +92,6 @@ class LlamaMlp(eqx.Module):
         hidden_states = hidden_states * self.up_proj(x)
         outputs = self.down_proj(hidden_states)
         return outputs
-
-
-class LlamaBlock(StateDictSerializationMixin, eqx.Module):
-    pass
-
-
-class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
-    pass
-
-
-class LlamaEmbeddings(StateDictSerializationMixin, eqx.Module):
-    pass
-
-
-class LlamaLMHeadModel(eqx.Module):
-    pass
 
 
 class LlamaRotaryEmbedding(eqx.Module):
@@ -208,7 +198,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *):
         q = self.q_proj(x)  # TODO: rearrange and possibly rename
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -239,6 +229,133 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         attn_output = self.o_proj(attn_output)
         return attn_output
+
+
+class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
+    config: LlamaConfig = eqx.static_field()
+    attn: LlamaAttention
+    mlp: LlamaMLP
+    ln_1: hnn.LayerNorm  # input layernorm
+    ln_2: hnn.LayerNorm  # post attention layernorm
+
+    @staticmethod
+    def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
+        k_attn, k_mlp = jrandom.split(key, 2)
+        attn = LlamaAttention.init(config, key=k_attn)
+        mlp = LlamaMLP.init(config, key=key)
+        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
+        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
+
+        return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
+
+    @named_call
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *):
+        residual = x
+        x = self.ln_1(x)
+
+        # self attention and skip connection
+        attn_output = self.attn(x=x, mask=mask, position_ids=position_ids)
+        x = residual + attn_output
+
+        # MLP and skip connection
+        residual = x
+        x = self.ln_2(x)
+        mlp_output = self.mlp(x)
+        output = residual + mlp_output
+        return output
+
+
+class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
+    config: LlamaConfig = eqx.static_field()
+    layers: Stacked[LlamaDecoderLayer]
+    ln_f: hnn.LayerNorm
+
+    @staticmethod
+    def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
+        layers = Stacked.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
+            config, shaped_rng_split(key, config.num_layers),
+        )
+        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=key)
+
+        return LlamaTransformer(config, layers, ln_f)
+
+    @named_call
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *) -> NamedArray:
+        x = self.layers.fold(x, attn_mask=attn_mask, hax.arange(self.config.Layers))
+        x = self.ln_f(x)
+
+        return x
+
+
+class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
+    """Similar to GPT2 Embedding but without dropout"""
+    Vocab: Axis = eqx.static_field()
+    config: LlamaConfig = eqx.static_field()
+
+    token_embeddings: NamedArray
+    position_embeddings: NamedArray
+
+    @staticmethod
+    def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
+        k_wte, k_wpe = jrandom.split(key, 2)
+
+        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
+        position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
+
+        return LlamaEmbedding(Vocab, config, token_embeddings, position_embeddings)
+
+    @named_call
+    def embed(self, input_ids, *):
+        input_embeds = self.token_embeddings.take("vocab", input_ids)
+        position_embeds = self.position_embeddings
+
+        x = input_embeds + position_embeds
+
+        return x
+
+    def unembed(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_embeddings)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+
+
+class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
+    transformer: LlamaTransformer
+    embeddings: LlamaEmbedding
+
+    @property
+    def config(self):
+        return self.transformer.config
+
+    @property
+    def vocab_size(self) -> int:
+        return self.Vocab.size
+
+    @property
+    def Vocab(self) -> Axis:
+        return self.embeddings.Vocab
+
+    @property
+    def Pos(self) -> Axis:
+        return self.config.Pos
+
+    @classmethod
+    def init(cls, Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2LMHeadModel":
+        k_t, k_embeddings = jrandom.split(key, 2)
+        transformer = LlamaTransformer.init(config, key=k_t)
+        embeddings = LlamaEmbedding.init(Vocab, config, key=k_embeddings)
+
+        return LlamaLMHeadModel(transformer, embeddings)
+
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[NamedArray], position_ids, *
+    ) -> NamedArray:
+        x = self.embeddings.embed(input_ids)
+        x = self.transformer(x, attn_mask=attn_mask, position_ids=position_ids)
+        lm_logits = self.embeddings.unembed(x)
+
+        return lm_logits
 
 
 def _get_rotary_emb(config: LlamaConfig) -> LlamaRotaryEmbedding:
