@@ -195,7 +195,7 @@ def _flash_attention_backward(
     Tr = hax.Axis("Tr", QPos.size // block_size)
     Tc = hax.Axis("Tc", KPos.size // block_size)
 
-    if mask is not None:
+    if isinstance(mask, hax.NamedArray):
         mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
 
     KPosBlock = KPos.resize(block_size)
