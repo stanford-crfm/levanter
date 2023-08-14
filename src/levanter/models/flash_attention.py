@@ -172,6 +172,7 @@ def _flash_attention_forward(
 
         o = o.updated_slice({QPos: i * block_size}, o_i)
         ell = ell.updated_slice({QPos: i * block_size}, ell_i.astype(ell.dtype))
+        jax.debug.print("i fwd {}", i)
 
         return i + 1, o, ell
 
@@ -277,6 +278,7 @@ def _flash_attention_backward(
 
         dK = dK.updated_slice({KPos: j * block_size}, dK_j)
         dV = dV.updated_slice({KPos: j * block_size}, dV_j)
+        jax.debug.print("j bwd {}", j)
 
         return j + 1, dQ, dK, dV
 
