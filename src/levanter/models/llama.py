@@ -14,6 +14,7 @@ from haliax.nn.scan import Stacked
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.models.lm_model import LmConfig
+from levanter.models.gpt2 import ACT2FN
 
 
 @LmConfig.register_subclass("llama")
@@ -208,7 +209,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         q, k = _apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
         scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
- 
+
         # do this first to help keep FP values small
         q = q * scale
 
