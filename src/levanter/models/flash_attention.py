@@ -171,7 +171,7 @@ def _flash_attention_forward(
         ell_i = max_i + hax.log(sumexp_i)
 
         o = o.updated_slice({QPos: i * block_size}, o_i)
-        ell = ell.updated_slice({QPos: i * block_size}, ell_i)
+        ell = ell.updated_slice({QPos: i * block_size}, ell_i.astype(ell.dtype))
 
         return i + 1, o, ell
 
