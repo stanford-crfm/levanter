@@ -102,6 +102,7 @@ def main(config: TrainLmConfig):
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
+        max_capacity=None,
     )
 
     train_loader = ShardedBatchLoader(
@@ -187,10 +188,11 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
-        engine.add_hook(
-            callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
-            every=config.trainer.steps_per_eval,
-        )
+        if (config.trainer.max_eval_batches or 0) > 0:
+            engine.add_hook(
+                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
+                every=config.trainer.steps_per_eval,
+            )
         engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
