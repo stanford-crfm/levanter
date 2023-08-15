@@ -102,7 +102,6 @@ def main(config: TrainLmConfig):
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
-        # max_capacity=None,
     )
 
     train_loader = ShardedBatchLoader(

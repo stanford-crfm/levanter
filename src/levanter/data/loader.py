@@ -39,6 +39,10 @@ class BatchLoader(Iterable[Ex], abc.ABC):
     axis_resources: Optional[ResourceMapping]
 
     def __init__(self, max_capacity: Optional[int], axis_resources: Optional[ResourceMapping]):
+        """
+        :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
+        :param axis_resources:
+        """
         self.max_capacity = max_capacity
         self.axis_resources = axis_resources
 
@@ -52,7 +56,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
                 for batch in self._produce_batches():
                     yield batch
 
-        if self.max_capacity is None:
+        if self.max_capacity is not None and self.max_capacity < 0:
             yield from produce_batches()
         else:
             bg_iter = BackgroundIterable(produce_batches, max_capacity=self.max_capacity)
@@ -151,6 +155,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     :arg local_dataset: a dataset that is shardable and can be iterated over
     :arg mesh: the device mesh
     :arg Batch: the batch size
+    :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
 
     def __init__(
@@ -222,6 +227,12 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
     sharded. This is useful if you have a small dataset and want to make a single pass over it.
 
     Note: this class discards the final batch if it is smaller than the batch size.
+
+    :arg item_dataset: a dataset that is shardable and can be iterated over
+    :arg mesh: the device mesh
+    :arg Batch: the batch size
+    :arg axis_resources: the resources for the batch axis
+    :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
 
     def __init__(
