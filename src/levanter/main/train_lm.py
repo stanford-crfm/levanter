@@ -60,13 +60,6 @@ class TrainLmConfig:
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
 
-    if config.log_to_tensorboard is not None and jax.process_index() == 0:
-        from levanter.utils.jaxboard import SummaryWriter
-
-        tb_writer = SummaryWriter(os.path.join(config.log_to_tensorboard, config.trainer.run_id))
-    else:
-        tb_writer = None
-
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
     # I recommend skipping it for now
     if config.initialize_from_hf:
@@ -92,6 +85,14 @@ def main(config: TrainLmConfig):
 
     # initialize training config *after* we've done the hf stuff b/c we might have changed the model config
     config.trainer.initialize(config)
+
+    if config.log_to_tensorboard is not None:
+        from levanter.utils.jaxboard import SummaryWriter
+
+        tb_logdir = os.path.join(config.log_to_tensorboard, config.trainer.run_id)
+        tb_writer = SummaryWriter(tb_logdir, enable=jax.process_index() == 0)
+    else:
+        tb_writer = None
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
     # this makes deterministic training pretty easy
@@ -311,6 +312,7 @@ def main(config: TrainLmConfig):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
             if tb_writer is not None:
                 tb_writer.scalar("throughput/hook_time", hook_time(), step=step)
+                tb_writer.flush()
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
