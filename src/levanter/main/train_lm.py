@@ -187,7 +187,7 @@ def main(config: TrainLmConfig):
         engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
         engine.add_hook(callbacks.log_to_wandb, every=1)
         engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
-        if (config.trainer.max_eval_batches or 0) > 0:
+        if config.trainer.max_eval_batches is None or config.trainer.max_eval_batches > 0:
             engine.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
                 every=config.trainer.steps_per_eval,
