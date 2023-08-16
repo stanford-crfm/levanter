@@ -63,7 +63,7 @@ def main(config: TrainLmConfig):
     if config.log_to_tensorboard is not None and jax.process_index() == 0:
         from levanter.utils.jaxboard import SummaryWriter
 
-        tb_writer = SummaryWriter(config.log_to_tensorboard)
+        tb_writer = SummaryWriter(os.path.join(config.log_to_tensorboard, config.trainer.run_id))
     else:
         tb_writer = None
 
