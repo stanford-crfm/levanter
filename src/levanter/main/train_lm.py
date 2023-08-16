@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import equinox as eqx
+import jax
 import jax.random as jrandom
 import jmp
 import wandb
@@ -59,7 +60,7 @@ class TrainLmConfig:
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
 
-    if config.log_to_tensorboard is not None:
+    if config.log_to_tensorboard is not None and jax.process_index() == 0:
         from levanter.utils.jaxboard import SummaryWriter
 
         tb_writer = SummaryWriter(config.log_to_tensorboard)
