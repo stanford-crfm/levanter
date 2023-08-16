@@ -105,7 +105,6 @@ def accumulate_gradients_sharded(
             microbatch_kwargs = microbatch_kwargs.copy()
             if key is not None:
                 microbatch_kwargs["key"] = key
-            print(parameter_axis_mapping)
             this_loss, this_grad = f(model, *microbatch, **microbatch_kwargs)
             this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
