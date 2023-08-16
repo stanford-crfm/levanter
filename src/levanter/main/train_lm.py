@@ -87,7 +87,7 @@ def main(config: TrainLmConfig):
     config.trainer.initialize(config)
 
     if config.log_to_tensorboard is not None:
-        from levanter.utils.jaxboard import SummaryWriter
+        from tensorboardX import SummaryWriter
 
         tb_logdir = os.path.join(config.log_to_tensorboard, config.trainer.run_id)
         tb_writer = SummaryWriter(tb_logdir, enable=jax.process_index() == 0)
@@ -169,7 +169,7 @@ def main(config: TrainLmConfig):
         model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
         wandb.summary["parameter_count"] = parameter_count(model)
         if tb_writer:
-            tb_writer.scalar("parameter_count", parameter_count(model), 0)
+            tb_writer.add_scalar("parameter_count", parameter_count(model), 0)
 
         # second, try to load the model and opt state from a checkpoint. This may throw if we required a
         # checkpoint but it wasn't found.
@@ -206,15 +206,12 @@ def main(config: TrainLmConfig):
 
             def log_to_tb(stepinfo: StepInfo):
                 print("log to tb")
-                tb_writer.scalar("train/loss", stepinfo.loss, stepinfo.step)
-
-                def wrap_key(key):
-                    return f"optim/{key}"
+                tb_writer.add_scalar("train/loss", stepinfo.loss, stepinfo.step)
 
                 if hasattr(opt_state, "hyperparams"):
-                    params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
+                    params = {k: jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
                     # wandb.log(params, step=step)
-                    tb_writer.scalars(params, step=stepinfo.step)
+                    tb_writer.add_scalars("optim", params, global_step=stepinfo.step)
 
             engine.add_hook(log_to_tb, every=1)
 
@@ -304,7 +301,7 @@ def main(config: TrainLmConfig):
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
                 if tb_writer is not None:
-                    tb_writer.scalar("throughput/loading_time", loading_time(), step=step)
+                    tb_writer.add_scalar("throughput/loading_time", loading_time(), global_step=step)
 
                 jax_step_loss, model, opt_state = train_step(model, opt_state, example, my_key)
                 step_loss = jax_step_loss.item()
@@ -312,7 +309,7 @@ def main(config: TrainLmConfig):
             with log_time_to_wandb("throughput/hook_time", step=step) as hook_time:
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
             if tb_writer is not None:
-                tb_writer.scalar("throughput/hook_time", hook_time(), step=step)
+                tb_writer.add_scalar("throughput/hook_time", hook_time(), global_step=step)
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
