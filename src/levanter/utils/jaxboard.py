@@ -61,7 +61,10 @@ class SummaryWriter:
         # if not tf.io.gfile.isdir(log_dir):
         #   tf.io.gfile.makedirs(log_dir)
 
-        self._event_writer = EventFileWriter(log_dir, 10, 120)
+        if enable:
+            self._event_writer = EventFileWriter(log_dir, 10, 120)
+        else:
+            self._event_writer = None
         self._step = 0
         self._closed = False
         self._enabled = enable
@@ -73,12 +76,14 @@ class SummaryWriter:
         event.wall_time = time.time()
         if step is not None:
             event.step = int(step)
+        assert self._event_writer is not None
         self._event_writer.add_event(event)
 
     def close(self):
         """Close SummaryWriter. Final!"""
         if not self._closed:
-            self._event_writer.close()
+            if self._event_writer is not None:
+                self._event_writer.close()
             self._closed = True
             del self._event_writer
 
@@ -93,7 +98,8 @@ class SummaryWriter:
     def flush(self):
         if not self._enabled:
             return
-        self._event_writer.flush()
+        if self._event_writer is not None:
+            self._event_writer.flush()
 
     def scalar(self, tag, value, step=None):
         """Saves scalar value.

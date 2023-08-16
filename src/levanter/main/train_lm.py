@@ -205,6 +205,7 @@ def main(config: TrainLmConfig):
         if tb_writer:
 
             def log_to_tb(stepinfo: StepInfo):
+                print("log to tb")
                 tb_writer.scalar("train/loss", stepinfo.loss, stepinfo.step)
 
                 def wrap_key(key):
