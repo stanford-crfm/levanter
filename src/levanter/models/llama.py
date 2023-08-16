@@ -58,7 +58,7 @@ class LlamaConfig:
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
-    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim * self.mlp_scale))
+    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim))  # TODO: shall we multiply with mlp_scale?
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
 
@@ -240,10 +240,11 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
+
         attn = LlamaAttention.init(config, key=k_attn)
-        mlp = LlamaMlp.init(config, key=key)
-        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
-        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
+        mlp = LlamaMlp.init(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
+        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -271,17 +272,19 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
+        # TODO: here it reports an error that is related to _get_rotary_emb() in LlamaAttention
+        # TypeError: Output from batched function Axis(name='head_size', size=4) with type <class 'haliax.axis.Axis'> is not a valid JAX type
         layers = Stacked.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
-            shaped_rng_split(key, config.num_layers),
+            key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=key)
+        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *args) -> NamedArray:
-        x = self.layers.fold(x, attn_mask=attn_mask, position_ids=hax.arange(self.config.Layers))
+        x = self.layers.fold(x, mask=attn_mask, position_ids=hax.arange(self.config.Layers))
         x = self.ln_f(x)
 
         return x

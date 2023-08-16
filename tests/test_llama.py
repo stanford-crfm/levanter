@@ -18,8 +18,10 @@ import haliax as hax
 from levanter.models.llama import (
     LlamaAttention,
     LlamaConfig,
+    LlamaDecoderLayer,
     LlamaDynamicNTKScalingRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    LlamaLMHeadModel,
     LlamaRotaryEmbedding,
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
@@ -115,12 +117,7 @@ def test_apply_rotary_pos_emb():
 
 def test_llama_attention():
     config = _get_llama_config()
-    Embed = config.Embed
-    Pos = config.Pos
-    Batch = hax.Axis("batch", 2)
-    x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
-    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
-    position_ids = random.randint(random.PRNGKey(2), (Batch.size, Pos.size), 0, Pos.size)
+    x, mask, position_ids = _get_random_inputs(config)
     # generate a random key that can be splitted into 4
     key = random.PRNGKey(4)
 
@@ -131,7 +128,7 @@ def test_llama_attention():
     hf_attention = HFLlamaAttention(config=hf_config)  # (seq_len, kv_seq_len)
     # convert attention_mask's shape from (seq_len, kv_seq_len) to (batch, 1, seq_len, kv_seq_len)
     attention_mask = _hax_to_tensor(mask)
-    attention_mask = attention_mask.reshape(1, 1, config.Pos.size, config.KeyPos.size).repeat(Batch.size, 1, 1, 1)
+    attention_mask = attention_mask.reshape(1, 1, config.Pos.size, config.KeyPos.size).repeat(x.axes[0].size, 1, 1, 1)
 
     hf_out, _, _ = hf_attention(
         hidden_states=_hax_to_tensor(x),
@@ -141,6 +138,27 @@ def test_llama_attention():
 
     # assert the same shape
     assert levanter_out.array.shape == hf_out.shape, f"{levanter_out.shape} != {hf_out.shape}"
+
+
+def test_llama_decoder_layer():
+    llama_config = _get_llama_config()
+    key = random.PRNGKey(0)
+    llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
+    x, mask, position_ids = _get_random_inputs(llama_config)
+    levanter_out = llama_decoder_layer(x, mask, position_ids)
+    assert levanter_out.array.shape == (x.axes[0].size, llama_config.seq_len, llama_config.hidden_dim)
+
+
+def test_llama_lm_head_model():
+    llama_config = _get_llama_config()
+    Vocab = hax.Axis("vocab", llama_config.vocab_size)
+    # generate a key that can be splitted into 2
+    llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
+    # generate a random input
+    x, mask, position_ids = _get_random_inputs(llama_config)
+
+    levanter_out = llama_model(x, mask, position_ids)
+    assert levanter_out.array.shape == (Batch.size, Pos.size, llama_config.Vocab.size)
 
 
 def _assert_equal_out(hax_out, torch_out: torch.Tensor):
@@ -166,8 +184,17 @@ def _get_llama_config() -> LlamaConfig:
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
         rope_scaling=rope_scaling,
-        max_position_embeddings=seq_len,
     )
+
+
+def _get_random_inputs(config: LlamaConfig):
+    Embed = config.Embed
+    Pos = config.Pos
+    Batch = hax.Axis("batch", 2)
+    x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
+    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    position_ids = random.randint(random.PRNGKey(2), (Batch.size, Pos.size), 0, Pos.size)
+    return x, mask, position_ids
 
 
 def _levanter_config_to_hf_config(levanter_config: LlamaConfig) -> HFLlamaConfig:
