@@ -313,7 +313,6 @@ def main(config: TrainLmConfig):
                 engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
             if tb_writer is not None:
                 tb_writer.scalar("throughput/hook_time", hook_time(), step=step)
-                tb_writer.flush()
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
