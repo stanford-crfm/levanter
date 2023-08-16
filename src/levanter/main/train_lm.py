@@ -90,7 +90,7 @@ def main(config: TrainLmConfig):
         from tensorboardX import SummaryWriter
 
         tb_logdir = os.path.join(config.log_to_tensorboard, config.trainer.run_id)
-        tb_writer = SummaryWriter(tb_logdir, enable=jax.process_index() == 0)
+        tb_writer = SummaryWriter(tb_logdir, write_to_disk=jax.process_index() == 0)
     else:
         tb_writer = None
 
