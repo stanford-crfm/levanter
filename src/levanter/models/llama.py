@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -9,7 +9,7 @@ import jax.random as jrandom
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import named_call
+from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin
@@ -31,7 +31,6 @@ class LlamaConfig:
         num_heads (int, optional): number of attention heads for each attention layer. Defaults to 32.
         num_kv_heads (int, optional): number of key/value heads needed for Grouped Query Attention. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
-        max_position_embeddings (int, optional): maximum length of the position embedding. Defaults to 2048.
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
@@ -43,7 +42,6 @@ class LlamaConfig:
     num_heads: int = 32
     num_kv_heads: int = 32
     activation_function: str = "silu"
-    max_position_embeddings: int = 2048
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
 
@@ -235,7 +233,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     attn: LlamaAttention
-    mlp: LlamaMLP
+    mlp: LlamaMlp
     ln_1: hnn.LayerNorm  # input layernorm
     ln_2: hnn.LayerNorm  # post attention layernorm
 
@@ -243,7 +241,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
         attn = LlamaAttention.init(config, key=k_attn)
-        mlp = LlamaMLP.init(config, key=key)
+        mlp = LlamaMlp.init(config, key=key)
         ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
         ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias, key=k_attn)
 
@@ -344,7 +342,7 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return self.config.Pos
 
     @classmethod
-    def init(cls, Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2LMHeadModel":
+    def init(cls, Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaLMHeadModel":
         k_t, k_embeddings = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_embeddings)
