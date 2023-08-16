@@ -20,7 +20,7 @@ X = TypeVar("X", contravariant=True)  # Input
 
 
 class GradAndValFn(Protocol[M, X]):
-    def __call__(self, model: M, *inputs: X) -> Tuple[float, M]:
+    def __call__(self, model: M, *inputs: X, **kwargs) -> Tuple[float, M]:
         ...
 
 
@@ -102,10 +102,10 @@ def accumulate_gradients_sharded(
         loss, grad = acc
         microbatch, microbatch_kwargs, key = microbatch_key
         with jax.named_scope("grad"):
-            kwargs = microbatch_kwargs.copy()
+            microbatch_kwargs = microbatch_kwargs.copy()
             if key is not None:
-                kwargs["key"] = key
-            this_loss, this_grad = f(model, *microbatch, **kwargs)
+                microbatch_kwargs["key"] = key
+            this_loss, this_grad = f(model, *microbatch, **microbatch_kwargs)
             this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
         with jax.named_scope("accum"):
@@ -123,6 +123,8 @@ def accumulate_gradients_sharded(
 def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs, axis_mapping):
     def _reshape(x):
         if isinstance(x, hax.NamedArray):
+            if not x.has_axis(Batch.name):
+                return x
             x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
             return hax.shard_with_axis_mapping(x, axis_mapping)
         elif isinstance(x, jnp.ndarray):

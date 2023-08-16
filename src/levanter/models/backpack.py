@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
@@ -19,10 +20,11 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
-    unflatten_linear_layer,
+    flatten_linear_layers,
+    unflatten_linear_layers,
 )
-from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Transformer
+from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -129,12 +131,12 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         d = {}
         d.update(
-            unflatten_linear_layer(
+            unflatten_linear_layers(
                 apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, out_dims_first_in_dict=False
             )
         )
         d.update(
-            unflatten_linear_layer(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
+            unflatten_linear_layers(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
         )
         return super().from_state_dict(d, prefix)
 
@@ -142,8 +144,10 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False))
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False)
+        )
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
 
         state_dict.update(my_dict)
         return state_dict
@@ -175,7 +179,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
@@ -196,6 +200,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         attn_scores = hax.dot("head_dim", q, k)
 
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
@@ -203,7 +208,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        d = unflatten_linear_layer(
+        d = unflatten_linear_layers(
             apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
         )
         return super().from_state_dict(d, prefix)
@@ -214,7 +219,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
 
         state_dict.update(my_dict)
         return state_dict
@@ -306,10 +311,13 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         return senses
 
 
-class BackpackGpt2Embeddings(Gpt2Embeddings):
-    """
-    We want to re-use the Gpt2Embeddings class, but we need to add a new method to only embed the input_ids.
-    """
+class BackpackGpt2Embeddings(eqx.Module):
+    Vocab: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
+
+    token_embeddings: NamedArray
+    position_embeddings: NamedArray
+    dropout: hnn.Dropout
 
     @staticmethod
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "BackpackGpt2Embeddings":
@@ -325,6 +333,25 @@ class BackpackGpt2Embeddings(Gpt2Embeddings):
     def embed_input_ids(self, input_ids: NamedArray) -> NamedArray:
         return self.token_embeddings.take("vocab", input_ids)
 
+    @named_call
+    def embed(self, input_ids, inference, *, key):
+        input_embeds = self.token_embeddings.take("vocab", input_ids)
+        position_embeds = self.position_embeddings
+        x = input_embeds + position_embeds
+        x = self.dropout(x, inference=inference, key=key)
+
+        return x
+
+    def unembed(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_embeddings)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+
+    def resize_embeddings(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+
 
 class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     transformer: Gpt2Transformer
@@ -335,10 +362,6 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     @property
     def config(self):
         return self.transformer.config
-
-    @property
-    def vocab_size(self) -> int:
-        return self.embeddings.Vocab.size
 
     @property
     def Vocab(self) -> Axis:
@@ -377,7 +400,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
     @named_call
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
     ) -> NamedArray:
         if not inference and key is None:
             raise ValueError("key must be provided for training")
@@ -409,6 +432,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
+
+    def resize_vocab(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
+        return dataclasses.replace(self, embeddings=new_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {

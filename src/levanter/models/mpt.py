@@ -23,11 +23,12 @@ from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
+    flatten_linear_layers,
     stack_state_dict,
-    unflatten_linear_layer,
+    unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -234,9 +235,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         )
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
-    def __call__(
-        self, hidden_states: NamedArray, mask: Optional[NamedArray] = None, bias: Optional[NamedArray] = None
-    ):
+    def __call__(self, hidden_states: NamedArray, mask: Optional[AttnMask] = None, bias: Optional[NamedArray] = None):
         qkv_out = self.Wqkv(hidden_states)
         q, k, v = qkv_out.unbind("qkv")
 
@@ -244,10 +243,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({self.config.Pos: self.config.KeyPos})
         v = v.rename({self.config.Pos: self.config.KeyPos})
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
         scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
-        # if self.scale_by_inverse_layer_idx:
-        #     scale /= layer_idx + 1.0
 
         # do this first to help keep FP values small
         q = q * scale
@@ -258,6 +254,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
             attn_scores = attn_scores + bias
 
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
@@ -274,9 +271,9 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         # so we need to reshape the one in the dict before forwarding to the linear
         # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
 
-        d = unflatten_linear_layer(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
+        d = unflatten_linear_layers(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
         d.update(
-            unflatten_linear_layer(
+            unflatten_linear_layers(
                 apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, out_dims_first_in_dict=True
             )
         )
@@ -286,9 +283,9 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         # need to undo the reshape we did in from_state_dict
         # reminder that everything is vectorized
-        state_dict.update(flatten_linear_layer(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
+        state_dict.update(flatten_linear_layers(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
         state_dict.update(
-            flatten_linear_layer(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
+            flatten_linear_layers(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
         )
         return state_dict
 
@@ -314,9 +311,7 @@ class MptBlock(eqx.Module):
         return MptBlock(norm_1, norm_2, attn, ffn)
 
     @named_call
-    def __call__(
-        self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[NamedArray]
-    ):
+    def __call__(self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask]):
         a = self.norm_1(hidden_states)
         b = self.attn(a, bias=attn_bias, mask=attention_mask)
         hidden_states = hidden_states + b
@@ -345,7 +340,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return MptTransformer(config, blocks, norm_f)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[NamedArray]) -> NamedArray:
+    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask]) -> NamedArray:
         if self.config.attn_config.alibi:
             bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
@@ -387,6 +382,10 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return self.wte.Vocab
 
     @property
+    def Pos(self) -> Axis:
+        return self.config.Pos
+
+    @property
     def config(self) -> MptConfig:
         return self._config
 
@@ -403,7 +402,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], *, inference, key=None) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
         # TODO: add back in dropout
         del key
         del inference
@@ -412,6 +411,12 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         output_logits = self.wte.unembed(hidden_states)
 
         return output_logits
+
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "MptLmHeadModel":
+        if new_size == self.vocab_size:
+            return self
+
+        return dataclasses.replace(self, wte=self.wte.resize_embeddings(new_size, key=key))
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"wte": "transformer.wte"}
