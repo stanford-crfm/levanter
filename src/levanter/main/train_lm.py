@@ -205,7 +205,6 @@ def main(config: TrainLmConfig):
         if tb_writer:
 
             def log_to_tb(stepinfo: StepInfo):
-                print("log to tb")
                 tb_writer.add_scalar("train/loss", stepinfo.loss, stepinfo.step)
 
                 if hasattr(opt_state, "hyperparams"):
