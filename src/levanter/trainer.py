@@ -5,14 +5,15 @@ import sys
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, List, Mapping, Optional, Tuple, TypeVar, Union
 
+import equinox as eqx
 import jax
 import jmp
 import numpy as np
 import optax
 from draccus import field
-from jax._src.interpreters.pxla import Mesh
+from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.partitioning import ResourceAxis, ResourceMapping
@@ -22,10 +23,13 @@ from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.logging import WandbConfig
+from levanter.types import ValAndGradFn, ValFn
 from levanter.utils import cloud_utils
 
 
 logger = pylogging.getLogger(__name__)
+
+X = TypeVar("X")  # Input
 
 M = TypeVar("M")
 S = TypeVar("S")
@@ -69,6 +73,36 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
+
+
+class Trainer(Generic[M, X]):
+    config: "TrainerConfig"
+    optimizer: optax.GradientTransformation
+    hooks: TrainerHooks
+    loss_fn: ValFn[M, X]
+
+    def __init__(self, config: "TrainerConfig", optimizer, loss_fn: ValFn[M, X]):
+        self.hooks = TrainerHooks()
+        self.config = config
+        self.loss_fn = loss_fn
+        self.optimizer = optimizer
+
+    @cached_property
+    def grad_fn(self) -> ValAndGradFn[M, X]:
+        return eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
+
+    @property
+    def mp(self) -> jmp.Policy:
+        return self.config.mp
+
+    def initial_state(self, model_init: Callable[[], M]) -> S:
+        raise NotImplementedError
+
+    def _init_model_and_opt_state(self, model_init):
+        model = model_init()
+        model = self.mp.cast_to_param(model)
+        opt_state = self.optimizer.init(model)
+        return model, opt_state
 
 
 @dataclass

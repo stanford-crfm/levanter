@@ -1,5 +1,5 @@
 import functools
-from typing import Protocol, Tuple, TypeVar
+from typing import Tuple
 
 import equinox as eqx
 import jax
@@ -13,25 +13,12 @@ from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
+from levanter.types import M, ValAndGradFn, ValFn, X
 from levanter.utils.jax_utils import reduce
 
 
-M = TypeVar("M")  # Model
-X = TypeVar("X", contravariant=True)  # Input
-
-
-class GradAndValFn(Protocol[M, X]):
-    def __call__(self, model: M, *inputs: X, **input_kwargs) -> Tuple[float, M]:
-        ...
-
-
-class ValFn(Protocol[M, X]):
-    def __call__(self, model: M, *inputs: X, **input_kwargs) -> Tuple[float, M]:
-        ...
-
-
 @named_call
-def accumulate_gradients(f: GradAndValFn, model: M, *inputs: X) -> Tuple[float, M]:
+def accumulate_gradients(f: ValAndGradFn, model: M, *inputs: X) -> Tuple[float, M]:
     """Simple gradient accumulation that just loops over the inputs."""
     zero = (jnp.zeros(()), jax.tree_util.tree_map(lambda m: jnp.zeros_like(m), model), 0)
 
@@ -53,7 +40,7 @@ def accumulate_gradients_sharded(
     *,
     per_device_parallelism: int,
     parameter_axis_mapping,
-) -> GradAndValFn[M, X]:
+) -> ValAndGradFn[M, X]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
      parallel axis. (If the model is not sharded, then a copy of the gradient is on each individual device.)
