@@ -151,18 +151,12 @@ def main(config: LoraLmConfig):
 
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=(False, True, True, False, False))
         def train_step(base_model, adapter_model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(train_loss)
-
             loss, grads = accumulate_gradients_sharded(
-                grad_loss,
+                train_loss,
                 Batch,
-                adapter_model,
-                base_model,  # base_model is an "input" b/c we don't want to compute its gradient
-                examples,
-                key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
-            )
+            )(adapter_model, base_model, examples, key=key, inference=False)
 
             # distribute gradients across the mesh and apply them
             updates, opt_state = optimizer.update(grads, opt_state, params=adapter_model)

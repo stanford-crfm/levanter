@@ -229,18 +229,12 @@ def main(config: TrainLmConfig):
         # train step
         @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
         def train_step(model, opt_state, examples: LmExample, key):
-            grad_loss = eqx.filter_value_and_grad(compute_loss)
-
             loss, grads = accumulate_gradients_sharded(
-                grad_loss,
+                compute_loss,
                 Batch,
-                model,
-                examples,
-                inference=False,
-                key=key,
                 per_device_parallelism=config.trainer.per_device_parallelism,
                 parameter_axis_mapping=parameter_axis_mapping,
-            )
+            )(model, examples, key=key, inference=False)
 
             # distribute gradients across the mesh and apply them
             updates, opt_state = optimizer.update(grads, opt_state, params=model)
