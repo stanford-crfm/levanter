@@ -51,7 +51,10 @@ class _Hook:
 
 
 class TrainerHooks:
-    hooks: List[_Hook] = []
+    hooks: List[_Hook]
+
+    def __init__(self):
+        self.hooks = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
