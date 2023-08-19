@@ -36,7 +36,7 @@ from levanter.utils.py_utils import cached_classproperty
 
 
 @LmConfig.register_subclass("gpt2")
-@dataclass(frozen=True)
+@dataclass
 class Gpt2Config(HFCompatConfig):
     seq_len: int = 512
     hidden_dim: int = 768

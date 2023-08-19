@@ -30,7 +30,7 @@ from levanter.utils.py_utils import cached_classproperty
 
 
 @LmConfig.register_subclass("backpack")
-@dataclass(frozen=True)
+@dataclass()
 class BackpackConfig(Gpt2Config):
     # Backpack-specific terms
     num_senses: int = 16
