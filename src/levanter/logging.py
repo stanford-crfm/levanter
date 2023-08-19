@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import dataclasses
 import logging as pylogging
@@ -11,6 +12,7 @@ from typing import List, Optional, Union
 import draccus
 import jax
 import wandb
+import yaml
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
@@ -52,6 +54,9 @@ def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
 
     # Create Root Logger w/ Base Formatting
     pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
+
+    if isinstance(path, str):
+        logger.warning(f"Log file {path} already exists, appending to it")
 
     # Silence Transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
     silence_transformer_nag()
@@ -124,6 +129,35 @@ def silence_transformer_nag():
     logger.propagate = False
 
 
+def _receive_wandb_sweep_config(project: Optional[str], entity: [str], sweep_id: str):
+    # NOTE!!! this is very hacky and relies on wandb internals, but wandb wants to control the launching process
+    # which doesn't work for us
+
+    from wandb.apis import InternalApi
+    api = InternalApi()
+
+    # this is the nonsense they do to get the sweep config
+    sweep_obj = api.sweep(sweep_id, "{}", project=project, entity=entity)
+    if sweep_obj:
+        sweep_yaml = sweep_obj.get("config")
+        if sweep_yaml:
+            sweep_config = yaml.safe_load(sweep_yaml)
+            if sweep_config:
+                logger.info(f"Received sweep config from wandb: {sweep_config}")
+
+    import socket
+    agent = api.register_agent(socket.gethostname(), sweep_id=sweep_id)
+    agent_id = agent["id"]
+
+    commands = api.agent_heartbeat(agent_id, {}, {})
+
+    assert len(commands) == 1
+
+    
+
+
+
+
 @dataclass
 class WandbConfig:
     """
@@ -145,6 +179,8 @@ class WandbConfig:
     document for more details.
     """
 
+    sweep: Optional[str] = None  # The ID of the sweep for this run. If set, configs will be overwritten by sweep.
+
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
     typically don't run from the root of the repo)."""
@@ -153,6 +189,7 @@ class WandbConfig:
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
     def init(self, hparams=None, **extra_hparams):
+        # GROSS MUTABILITY ALERT: if sweep is set, it will override the config from the command line and the config file
         import wandb
 
         if hparams is None:
@@ -191,6 +228,13 @@ class WandbConfig:
             except (NoSuchPathError, InvalidGitRepositoryError):
                 logger.warning(f"Could not find git repo at {code_dir}")
                 pass
+
+        if self.sweep is not None:
+            logger.warning(f"Setting wandb sweep to {self.sweep}. THIS WILL OVERRIDE CONFIG FROM THE COMMAND LINE AND THE CONFIG FILE!!!!")
+
+            if jax.process_index() == 0:
+                run_id, sweep_config = _receive_wandb_sweep_config(self.project, self.entity, self.sweep)
+
 
         r = wandb.init(
             entity=self.entity,
@@ -276,3 +320,5 @@ def _generate_pip_freeze():
 
     dists = distributions()
     return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
+
+
