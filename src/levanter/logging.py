@@ -142,9 +142,6 @@ def _receive_wandb_sweep_config(project: Optional[str], entity: Optional[str], s
     entity = entity or pub_api.settings["entity"] or pub_api.default_entity
     project = project or pub_api.settings["project"]
 
-    print("entity", entity)
-    print("project", project)
-
     # this is what they do to get the sweep config
     sweep_obj = api.sweep(sweep_id, "{}", project=project, entity=entity)
     if sweep_obj:
@@ -165,9 +162,6 @@ def _receive_wandb_sweep_config(project: Optional[str], entity: Optional[str], s
     command = commands[0]
     run_id = command["run_id"]
     sweep_run_config = command["args"]
-
-    print("run_id", run_id)
-    print("sweep_run_config", sweep_run_config)
 
     # config comes in like this:
     # {'model': {'value': {'hidden_dim': 128...}}}
@@ -313,8 +307,6 @@ class WandbConfig:
             config=hparams_to_save,
             settings=other_settings,
         )
-
-        print(wandb.run.config)
 
         if jax.process_count() > 1:
             # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
