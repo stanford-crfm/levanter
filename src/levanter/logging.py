@@ -202,6 +202,7 @@ class WandbConfig:
     Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
     document for more details.
     """
+    reinit: bool = False  # If True, allow reinitializing a run in the same process. useful for sweeps
 
     sweep: Optional[
         str
@@ -306,6 +307,7 @@ class WandbConfig:
             mode=mode,
             config=hparams_to_save,
             settings=other_settings,
+            reinit=self.reinit,
         )
 
         if jax.process_count() > 1:
