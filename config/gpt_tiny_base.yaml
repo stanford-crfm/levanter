@@ -1,0 +1,36 @@
+data:
+  cache_dir: "gs://levanter-data/tokenized/pile-old/"
+  tokenizer: "EleutherAI/gpt-neox-20b"
+model:
+  type: gpt2
+  hidden_dim: 32
+  num_heads: 4
+  num_layers: 4
+  mlp_scale: 4
+  seq_len: 512
+trainer:
+  wandb:
+    project: 'ezekiel'
+    tags: ["tinylm", "v1"]
+  ray:
+    auto_start_cluster: false
+  mp: p=f32,c=bf16
+  num_train_steps: 10
+  max_eval_batches: 50
+
+  checkpointer:
+    keep:
+      - every: 5
+    save_interval: 5m
+
+  per_device_eval_parallelism: 32
+  per_device_parallelism: -1
+  train_batch_size: 128
+
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  min_lr_ratio: 0.1
+  learning_rate: 0.001
+  weight_decay: 0.1
