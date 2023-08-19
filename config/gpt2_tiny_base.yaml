@@ -20,7 +20,7 @@ trainer:
 
   checkpointer:
     keep:
-      - every: 5
+      - every: 100000
     save_interval: 5m
 
   per_device_eval_parallelism: 32
