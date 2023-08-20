@@ -105,7 +105,7 @@ class LlamaRotaryEmbedding(eqx.Module):
     @staticmethod
     def _get_cos_sin_cache(HeadSize: NamedArray, Pos: NamedArray, base: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
+        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
         position_ids: NamedArray = hax.arange(Pos)
 
