@@ -81,11 +81,11 @@ def test_apply_rotary_pos_emb():
     # Check the output of _apply_rotary_pos_emb() from levanter and hf
     cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
     sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
-    position_ids = hax.arange(Pos).broadcast_axis(Batch)
 
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(Pos, q, k, cos, sin, position_ids)
+    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
     cos_tensor = named_array_to_tensor(cos)
     sin_tensor = named_array_to_tensor(sin)
+    position_ids = hax.arange(Pos).broadcast_axis(Batch)
     position_ids_tensor = named_array_to_tensor(position_ids)
 
     hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(
@@ -99,12 +99,12 @@ def test_apply_rotary_pos_emb():
 
 def test_llama_attention():
     config = _get_llama_config()
-    x, mask, position_ids = _get_random_inputs(config)
+    x, mask = _get_random_inputs(config)
     # generate a random key that can be splitted into 4
     key = random.PRNGKey(4)
 
     attention = LlamaAttention.init(config=config, key=key)
-    out = attention(x, mask, position_ids)
+    out = attention(x, mask)
 
     # assert the same shape
     assert out.array.shape == (x.axes[0].size, config.seq_len, config.hidden_dim)
@@ -114,8 +114,8 @@ def test_llama_decoder_layer():
     llama_config = _get_llama_config()
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
-    x, mask, position_ids = _get_random_inputs(llama_config)
-    out = llama_decoder_layer(x, mask, position_ids)
+    x, mask = _get_random_inputs(llama_config)
+    out = llama_decoder_layer(x, mask)
     assert out.array.shape == (x.axes[0].size, llama_config.seq_len, llama_config.hidden_dim)
 
 
@@ -158,5 +158,4 @@ def _get_random_inputs(config: LlamaConfig):
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
-    position_ids = hax.arange(Pos).broadcast_axis(Batch)
-    return x, mask, position_ids
+    return x, mask

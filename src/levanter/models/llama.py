@@ -147,14 +147,14 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids: NamedArray, *args):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray]):
         q = self.q_proj(x)  # TODO: rearrange and possibly rename
         k = self.k_proj(x)
         v = self.v_proj(x)
 
         cos, sin = self.rotary_emb(seq_len=self.config.seq_len)
 
-        q, k = _apply_rotary_pos_emb(self.config.Pos, q, k, cos, sin, position_ids)
+        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
 
@@ -199,12 +199,12 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids: NamedArray, *args):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray]):
         residual = x
         x = self.ln_1(x)
 
         # self attention and skip connection
-        attn_output = self.attn(x=x, mask=mask, position_ids=position_ids)
+        attn_output = self.attn(x=x, mask=mask)
         x = residual + attn_output
 
         # MLP and skip connection
@@ -233,8 +233,8 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], position_ids: NamedArray, *args) -> NamedArray:
-        x = self.layers.fold(x, mask=attn_mask, position_ids=position_ids)
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray]) -> NamedArray:
+        x = self.layers.fold(x, mask=attn_mask)
         x = self.ln_f(x)
 
         return x
@@ -306,7 +306,6 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         self,
         input_ids: NamedArray,
         attn_mask: Optional[NamedArray] = None,
-        position_ids: Optional[NamedArray] = None,
         *args,
     ) -> NamedArray:
         """
@@ -315,13 +314,9 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
                 Indices of input sequence tokens in the vocabulary.
             attn_mask (NamedArray, optional): [batch, position, seq_len]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
-            position_ids (NamedArray, optional): [batch, position]
-                Indices of positions of each input sequence tokens in the position embeddings.
         """
-        if position_ids is None:
-            position_ids = hax.arange(self.Pos).broadcast_axis(input_ids.axes[0])
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, position_ids=position_ids)
+        x = self.transformer(x, attn_mask=attn_mask)
         lm_logits = self.embeddings.unembed(x)
 
         return lm_logits
@@ -337,16 +332,12 @@ def _rotate_half(x: NamedArray) -> NamedArray:
 
 
 def _apply_rotary_pos_emb(
-    Pos: Axis,
     q: NamedArray,  # [batch, position, heads, head_size]
     k: NamedArray,  # [batch, position, kv_heads, head_size]
     cos: NamedArray,  # [position, head_size]
     sin: NamedArray,  # [position, head_size]
-    position_ids: NamedArray,  # [bs, position]
 ) -> Tuple[NamedArray, NamedArray]:
     """Applies rotary position embedding to q and k."""
-    cos = cos[Pos, position_ids]  # [batch, position, head_size]
-    sin = sin[Pos, position_ids]  # [batch, position, head_size]
     q_embed = q * cos + _rotate_half(q) * sin
     k_embed = k * cos + _rotate_half(k) * sin
     return q_embed, k_embed
