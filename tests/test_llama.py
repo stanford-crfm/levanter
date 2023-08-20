@@ -7,8 +7,6 @@ from levanter.models.llama import (
     LlamaAttention,
     LlamaConfig,
     LlamaDecoderLayer,
-    LlamaDynamicNTKScalingRotaryEmbedding,
-    LlamaLinearScalingRotaryEmbedding,
     LlamaLMHeadModel,
     LlamaRotaryEmbedding,
 )
@@ -20,55 +18,27 @@ from test_utils import skip_if_no_torch
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch
-    from transformers.models.llama.modeling_llama import (
-        LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
-    )
-    from transformers.models.llama.modeling_llama import (
-        LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
-    )
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config()
-    Embed = llama_config.Embed
+    HeadSize = llama_config.HeadSize
     Pos = llama_config.Pos
-    hidden_dim = Embed.size
+    hidden_dim = HeadSize.size
     seq_len = Pos.size
-    scaling_factor = llama_config.rope_scaling["factor"]
     key = random.PRNGKey(0)
     device = "cpu"
 
-    def test_levanter_against_hf(levanter_class, hf_class):
-        x = random.normal(key, (1, seq_len))
-        x_torch = torch.from_numpy(np.array(x))
+    x = random.normal(key, (1, seq_len))
+    x_torch = torch.from_numpy(np.array(x))
 
-        levanter_output = levanter_class(x, seq_len=seq_len)
-        hf_output = hf_class(x_torch, seq_len=seq_len)
+    levanter_rope = LlamaRotaryEmbedding(HeadSize=HeadSize, Pos=Pos)
+    levanter_output = levanter_rope(seq_len=seq_len)
+    hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
+    hf_output = hf_rope(x_torch, seq_len=seq_len)
 
-        for jax_out, torch_out in zip(levanter_output, hf_output):
-            torch_out = torch_out.numpy()
-            assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
-
-    # test LlamaRotaryEmbedding
-    test_levanter_against_hf(
-        levanter_class=LlamaRotaryEmbedding(Embed=Embed, Pos=Pos),
-        hf_class=HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device),
-    )
-
-    # test LlamaLinearScalingRotaryEmbedding
-    test_levanter_against_hf(
-        levanter_class=LlamaLinearScalingRotaryEmbedding(Embed=Embed, Pos=Pos, scaling_factor=scaling_factor),
-        hf_class=HFLlamaLinearScalingRotaryEmbedding(
-            dim=hidden_dim, max_position_embeddings=seq_len, scaling_factor=scaling_factor, device=device
-        ),
-    )
-
-    # test LlamaDynamicNTKScalingRotaryEmbedding
-    test_levanter_against_hf(
-        levanter_class=LlamaDynamicNTKScalingRotaryEmbedding(Embed=Embed, Pos=Pos, scaling_factor=scaling_factor),
-        hf_class=HFLlamaDynamicNTKScalingRotaryEmbedding(
-            dim=hidden_dim, max_position_embeddings=seq_len, scaling_factor=scaling_factor, device=device
-        ),
-    )
+    for jax_out, torch_out in zip(levanter_output, hf_output):
+        torch_out = torch_out.numpy()
+        assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
 
 @skip_if_no_torch
@@ -81,6 +51,9 @@ def test_apply_rotary_pos_emb():
         assert np.isclose(
             torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
         ).all(), f"{torch_out} != {hax_out}"
+
+    def named_array_to_tensor(named_array):
+        return torch.from_numpy(np.array(named_array.array))
 
     llama_config = _get_llama_config()
 
@@ -97,8 +70,8 @@ def test_apply_rotary_pos_emb():
     levanter_out_rf_q = levanter_rotate_half(q)
     levanter_out_rf_k = levanter_rotate_half(k)
 
-    q_tensor = torch.from_numpy(np.array(q.array)).transpose(1, 2)  # needed for HF
-    k_tensor = torch.from_numpy(np.array(k.array)).transpose(1, 2)
+    q_tensor = named_array_to_tensor(q).transpose(1, 2)  # needed for HF
+    k_tensor = named_array_to_tensor(k).transpose(1, 2)
     hf_out_rf_q = hf_rotate_half(q_tensor).transpose(1, 2)  # re-transpose to match levanter
     hf_out_rf_k = hf_rotate_half(k_tensor).transpose(1, 2)
 
@@ -106,14 +79,14 @@ def test_apply_rotary_pos_emb():
     assert_equal_out(levanter_out_rf_k, hf_out_rf_k)
 
     # Check the output of _apply_rotary_pos_emb() from levanter and hf
-    cos = random.normal(random.PRNGKey(2), (1, 1, Pos.size, HeadSize.size))
-    sin = random.normal(random.PRNGKey(3), (1, 1, Pos.size, HeadSize.size))
+    cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
+    sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
     position_ids = hax.arange(Pos).broadcast_axis(Batch)
 
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin, position_ids)
-    cos_tensor = torch.from_numpy(np.array(cos))
-    sin_tensor = torch.from_numpy(np.array(sin))
-    position_ids_tensor = torch.from_numpy(np.array(position_ids.array))
+    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(Pos, q, k, cos, sin, position_ids)
+    cos_tensor = named_array_to_tensor(cos)
+    sin_tensor = named_array_to_tensor(sin)
+    position_ids_tensor = named_array_to_tensor(position_ids)
 
     hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(
         q_tensor, k_tensor, cos_tensor, sin_tensor, position_ids_tensor

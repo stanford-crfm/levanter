@@ -94,85 +94,35 @@ class LlamaMlp(eqx.Module):
 
 
 class LlamaRotaryEmbedding(eqx.Module):
-    Embed: Axis = eqx.static_field()
     Pos: Axis = eqx.static_field()
-    base: float = 10000
-    inv_freq: jnp.ndarray = eqx.static_field()
     cos_cached: jnp.ndarray = eqx.static_field()
     sin_cached: jnp.ndarray = eqx.static_field()
-    max_seq_len_cached: int = eqx.static_field()
 
-    def __init__(self, Embed: Axis, Pos: Axis, base: int = 10000):
-        self.Embed = Embed
+    def __init__(self, HeadSize: Axis, Pos: Axis, base: int = 10000):
         self.Pos = Pos
-        self.base = base
-        self.inv_freq = 1.0 / (self.base ** (hax.arange(Embed.resize(Embed.size // 2), step=2) / Embed.size)).array
-        self.cos_cached, self.sin_cached = self._set_cos_sin_cache(Pos.size)
+        self.cos_cached, self.sin_cached = self._get_cos_sin_cache(Pos=Pos, HeadSize=HeadSize, base=base)
 
-    def _get_positional_ids(self):
-        """A helper function for the convenience of extending to two sub-classes
-        Here we use a standard positional encoding function, which was described in `Attention is all you need`.
-        """
-        return jnp.arange(self.max_seq_len_cached)
+    @staticmethod
+    def _get_cos_sin_cache(HeadSize: NamedArray, Pos: NamedArray, base: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
+        inv_freq = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
-    def _set_cos_sin_cache(self, seq_len):
-        self.max_seq_len_cached = seq_len
-        t = self._get_positional_ids()
+        position_ids: NamedArray = hax.arange(Pos)
 
         # Evaluates the Einstein summation convention on the operands.
-        freqs = jnp.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper but following HF implementation
+        freqs = position_ids * inv_freq.broadcast_axis(Pos)
+        # This is different from the paper but alignes with HF implementation:
         # It uses a different permutation in order to obtain the same calculation
-        emb = jnp.concatenate((freqs, freqs), axis=-1)
-        cos_cached = jnp.cos(emb)[None, None, :, :]
-        sin_cached = jnp.sin(emb)[None, None, :, :]
+        emb = hax.concatenate(HeadSize, (freqs, freqs))
+        cos_cached = hax.cos(emb)
+        sin_cached = hax.sin(emb)
         return cos_cached, sin_cached
 
-    def __call__(self, x, seq_len: int):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
-            self.cos_cached, self.sin_cached = self._set_cos_sin_cache(seq_len=seq_len)
-
+    def __call__(self, seq_len: int) -> Tuple[NamedArray, NamedArray]:
         return (
-            self.cos_cached[:, :, :seq_len, ...],
-            self.sin_cached[:, :, :seq_len, ...],
+            self.cos_cached[self.Pos, :seq_len],
+            self.sin_cached[self.Pos, :seq_len],
         )
-
-
-class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
-    """LlamaRotaryEmbedding extended with linear scaling"""
-
-    scaling_factor: float = 1.0
-
-    def __init__(self, Embed: Axis, Pos: Axis, base=10000, scaling_factor=1.0):
-        self.scaling_factor = scaling_factor
-        super().__init__(Embed, Pos, base)
-
-    def _get_positional_ids(self):
-        """Here we overwrite the function in the base class to implement linear scaling."""
-        return jnp.arange(self.max_seq_len_cached) / self.scaling_factor
-
-
-class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
-    """LlamaRotaryEmbedding extended with Dynamic NTK scaling."""
-
-    scaling_factor: float = 1.0
-
-    def __init__(self, Embed, Pos, base=10000, scaling_factor=1.0):
-        self.scaling_factor = scaling_factor
-        super().__init__(Embed, Pos, base)
-
-    def _get_positional_ids(self):
-        """Here we overwrite the function in the base class.
-        Here it adjusts the frequency base dynamically according to the sequence length.
-        """
-        if self.max_seq_len_cached > self.Pos.size:
-            base = self.base * (
-                (self.scaling_factor * self.max_seq_len_cached / self.Pos.size) - (self.scaling_factor - 1)
-            ) ** (self.dim / (self.dim - 2))
-            self.inv_freq = 1.0 / (base ** (jnp.arange(0, self.dim, 2) / self.dim))
-
-        return jnp.arange(self.max_seq_len_cached)
 
 
 class LlamaAttention(StateDictSerializationMixin, eqx.Module):
@@ -193,7 +143,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
-        rotary_emb = _get_rotary_emb(config)
+        rotary_emb = LlamaRotaryEmbedding(config.HeadSize, config.Pos)
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
@@ -202,9 +152,9 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x)
         v = self.v_proj(x)
 
-        cos, sin = self.rotary_emb(v, seq_len=self.config.seq_len)
+        cos, sin = self.rotary_emb(seq_len=self.config.seq_len)
 
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+        q, k = _apply_rotary_pos_emb(self.config.Pos, q, k, cos, sin, position_ids)
 
         scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
 
@@ -377,23 +327,6 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         return lm_logits
 
 
-def _get_rotary_emb(config: LlamaConfig) -> LlamaRotaryEmbedding:
-    # Note that the embedding here is HeadSize, not the full Embed
-    Embed = config.HeadSize
-    Pos = config.Pos
-    if config.rope_scaling is None:
-        return LlamaRotaryEmbedding(Embed, Pos)
-    else:
-        scaling_type = config.rope_scaling["type"]
-        scaling_factor = config.rope_scaling["factor"]
-        if scaling_type == "linear":
-            return LlamaLinearScalingRotaryEmbedding(Embed, Pos, scaling_factor=scaling_factor)
-        elif scaling_type == "dynamic":
-            return LlamaDynamicNTKScalingRotaryEmbedding(Embed, Pos, scaling_factor=scaling_factor)
-        else:
-            raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-
-
 def _rotate_half(x: NamedArray) -> NamedArray:
     """Rotates half of the hidden dims of the input and concatenates them."""
     HeadSize = x.axes[-1]
@@ -404,21 +337,16 @@ def _rotate_half(x: NamedArray) -> NamedArray:
 
 
 def _apply_rotary_pos_emb(
+    Pos: Axis,
     q: NamedArray,  # [batch, position, heads, head_size]
     k: NamedArray,  # [batch, position, kv_heads, head_size]
-    cos: jnp.ndarray,  # [1, 1, position, head_size]
-    sin: jnp.ndarray,  # [1, 1, position, head_size]
+    cos: NamedArray,  # [position, head_size]
+    sin: NamedArray,  # [position, head_size]
     position_ids: NamedArray,  # [bs, position]
 ) -> Tuple[NamedArray, NamedArray]:
     """Applies rotary position embedding to q and k."""
-    cos = jnp.squeeze(jnp.squeeze(cos, axis=1), axis=0)  # from [1, 1, position, dim] to [position, dim]
-    sin = jnp.squeeze(jnp.squeeze(sin, axis=1), axis=0)
-    # TODO: use NamedArray instead of array
-    position_ids = position_ids.array  # [batch, position]
-    cos = cos[position_ids]  # [batch, position, head_size]
-    sin = sin[position_ids]  # [batch, position, head_size]
-    cos = hax.named(cos, ("batch", "position", "head_size"))
-    sin = hax.named(sin, ("batch", "position", "head_size"))
-    q_embed = hax.multiply(q, cos) + hax.multiply(_rotate_half(q), sin)
-    k_embed = hax.multiply(k, cos) + hax.multiply(_rotate_half(k), sin)
+    cos = cos[Pos, position_ids]  # [batch, position, head_size]
+    sin = sin[Pos, position_ids]  # [batch, position, head_size]
+    q_embed = (q * cos + _rotate_half(q) * sin)
+    k_embed = (k * cos + _rotate_half(k) * sin)
     return q_embed, k_embed
