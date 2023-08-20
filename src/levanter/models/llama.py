@@ -94,8 +94,8 @@ class LlamaMlp(eqx.Module):
 
 
 class LlamaRotaryEmbedding(eqx.Module):
-    Embed: Axis
-    Pos: Axis
+    Embed: Axis = eqx.static_field()
+    Pos: Axis = eqx.static_field()
     base: float = 10000
     inv_freq: jnp.ndarray = eqx.static_field()
     cos_cached: jnp.ndarray = eqx.static_field()
@@ -197,7 +197,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *args):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids: NamedArray, *args):
         q = self.q_proj(x)  # TODO: rearrange and possibly rename
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -249,7 +249,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids, *args):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], position_ids: NamedArray, *args):
         residual = x
         x = self.ln_1(x)
 
@@ -283,8 +283,8 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *args) -> NamedArray:
-        x = self.layers.fold(x, mask=attn_mask, position_ids=hax.arange(self.config.Layers))
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], position_ids: NamedArray, *args) -> NamedArray:
+        x = self.layers.fold(x, mask=attn_mask, position_ids=position_ids)
         x = self.ln_f(x)
 
         return x
@@ -352,7 +352,24 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
         return LlamaLMHeadModel(transformer, embeddings)
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray], position_ids, *args) -> NamedArray:
+    def __call__(
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[NamedArray] = None,
+        position_ids: Optional[NamedArray] = None,
+        *args,
+    ) -> NamedArray:
+        """
+        Args:
+            input_ids (NamedArray): [batch, position]
+                Indices of input sequence tokens in the vocabulary.
+            attn_mask (NamedArray, optional): [batch, position, seq_len]
+                Mask to avoid performing attention on the padding token indices of the encoder input.
+            position_ids (NamedArray, optional): [batch, position]
+                Indices of positions of each input sequence tokens in the position embeddings.
+        """
+        if position_ids is None:
+            position_ids = hax.arange(self.Pos).broadcast_axis(input_ids.axes[0])
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, position_ids=position_ids)
         lm_logits = self.embeddings.unembed(x)
@@ -387,17 +404,19 @@ def _rotate_half(x: NamedArray) -> NamedArray:
 
 
 def _apply_rotary_pos_emb(
-    q: NamedArray,  # [batch, seq_len, heads, head_size]
-    k: NamedArray,  # [batch, seq_len, kv_heads, head_size]
-    cos: jnp.ndarray,  # [1, 1, seq_len, head_size]
-    sin: jnp.ndarray,  # [1, 1, seq_len, head_size]
-    position_ids: jnp.ndarray,  # [bs, seq_len]
+    q: NamedArray,  # [batch, position, heads, head_size]
+    k: NamedArray,  # [batch, position, kv_heads, head_size]
+    cos: jnp.ndarray,  # [1, 1, position, head_size]
+    sin: jnp.ndarray,  # [1, 1, position, head_size]
+    position_ids: NamedArray,  # [bs, position]
 ) -> Tuple[NamedArray, NamedArray]:
     """Applies rotary position embedding to q and k."""
-    cos = jnp.squeeze(jnp.squeeze(cos, axis=1), axis=0)  # from [1, 1, seq_len, dim] to [seq_len, dim]
+    cos = jnp.squeeze(jnp.squeeze(cos, axis=1), axis=0)  # from [1, 1, position, dim] to [position, dim]
     sin = jnp.squeeze(jnp.squeeze(sin, axis=1), axis=0)
-    cos = cos[position_ids]  # [batch, seq_len, head_size]
-    sin = sin[position_ids]  # [batch, seq_len, head_size]
+    # TODO: use NamedArray instead of array
+    position_ids = position_ids.array  # [batch, position]
+    cos = cos[position_ids]  # [batch, position, head_size]
+    sin = sin[position_ids]  # [batch, position, head_size]
     cos = hax.named(cos, ("batch", "position", "head_size"))
     sin = hax.named(sin, ("batch", "position", "head_size"))
     q_embed = hax.multiply(q, cos) + hax.multiply(_rotate_half(q), sin)

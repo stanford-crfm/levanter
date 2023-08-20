@@ -1,8 +1,6 @@
 import numpy as np
-import torch
 from jax import random
 from transformers.models.llama.configuration_llama import LlamaConfig as HFLlamaConfig
-from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 from transformers.models.llama.modeling_llama import (
     LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
 )
@@ -26,9 +24,13 @@ from levanter.models.llama import (
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
+from test_utils import skip_if_no_torch
 
 
+@skip_if_no_torch
 def test_llama_rotary_embedding():
+    import torch
+
     llama_config = _get_llama_config()
     Embed = llama_config.Embed
     Pos = llama_config.Pos
@@ -72,7 +74,15 @@ def test_llama_rotary_embedding():
     )
 
 
+@skip_if_no_torch
 def test_apply_rotary_pos_emb():
+    import torch
+
+    def assert_equal_out(hax_out, torch_out: torch.Tensor):
+        assert np.isclose(
+            torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
+        ).all(), f"{torch_out} != {hax_out}"
+
     llama_config = _get_llama_config()
 
     Pos = llama_config.Pos
@@ -93,26 +103,26 @@ def test_apply_rotary_pos_emb():
     hf_out_rf_q = hf_rotate_half(q_tensor).transpose(1, 2)  # re-transpose to match levanter
     hf_out_rf_k = hf_rotate_half(k_tensor).transpose(1, 2)
 
-    _assert_equal_out(levanter_out_rf_q, hf_out_rf_q)
-    _assert_equal_out(levanter_out_rf_k, hf_out_rf_k)
+    assert_equal_out(levanter_out_rf_q, hf_out_rf_q)
+    assert_equal_out(levanter_out_rf_k, hf_out_rf_k)
 
     # Check the output of _apply_rotary_pos_emb() from levanter and hf
     cos = random.normal(random.PRNGKey(2), (1, 1, Pos.size, HeadSize.size))
     sin = random.normal(random.PRNGKey(3), (1, 1, Pos.size, HeadSize.size))
-    position_ids = random.randint(random.PRNGKey(4), (Batch.size, Pos.size), 0, Pos.size)
+    position_ids = hax.arange(Pos).broadcast_axis(Batch)
 
     levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin, position_ids)
     cos_tensor = torch.from_numpy(np.array(cos))
     sin_tensor = torch.from_numpy(np.array(sin))
-    position_ids_tensor = torch.from_numpy(np.array(position_ids))
+    position_ids_tensor = torch.from_numpy(np.array(position_ids.array))
 
     hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(
         q_tensor, k_tensor, cos_tensor, sin_tensor, position_ids_tensor
     )
     hf_out_rope_q = hf_out_rope_q.transpose(1, 2)  # re-transpose to match levanter
     hf_out_rope_k = hf_out_rope_k.transpose(1, 2)
-    _assert_equal_out(levanter_out_rope_q, hf_out_rope_q)
-    _assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
+    assert_equal_out(levanter_out_rope_q, hf_out_rope_q)
+    assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
 
 
 def test_llama_attention():
@@ -121,23 +131,11 @@ def test_llama_attention():
     # generate a random key that can be splitted into 4
     key = random.PRNGKey(4)
 
-    levanter_attention = LlamaAttention.init(config=config, key=key)
-    levanter_out = levanter_attention(x, mask, position_ids)
-
-    hf_config = _levanter_config_to_hf_config(config)
-    hf_attention = HFLlamaAttention(config=hf_config)  # (seq_len, kv_seq_len)
-    # convert attention_mask's shape from (seq_len, kv_seq_len) to (batch, 1, seq_len, kv_seq_len)
-    attention_mask = _hax_to_tensor(mask)
-    attention_mask = attention_mask.reshape(1, 1, config.Pos.size, config.KeyPos.size).repeat(x.axes[0].size, 1, 1, 1)
-
-    hf_out, _, _ = hf_attention(
-        hidden_states=_hax_to_tensor(x),
-        attention_mask=attention_mask,
-        position_ids=torch.from_numpy(np.array(position_ids)),
-    )
+    attention = LlamaAttention.init(config=config, key=key)
+    out = attention(x, mask, position_ids)
 
     # assert the same shape
-    assert levanter_out.array.shape == hf_out.shape, f"{levanter_out.shape} != {hf_out.shape}"
+    assert out.array.shape == (x.axes[0].size, config.seq_len, config.hidden_dim)
 
 
 def test_llama_decoder_layer():
@@ -145,26 +143,21 @@ def test_llama_decoder_layer():
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
     x, mask, position_ids = _get_random_inputs(llama_config)
-    levanter_out = llama_decoder_layer(x, mask, position_ids)
-    assert levanter_out.array.shape == (x.axes[0].size, llama_config.seq_len, llama_config.hidden_dim)
+    out = llama_decoder_layer(x, mask, position_ids)
+    assert out.array.shape == (x.axes[0].size, llama_config.seq_len, llama_config.hidden_dim)
 
 
 def test_llama_lm_head_model():
     llama_config = _get_llama_config()
+    Batch = hax.Axis("batch", 2)
     Vocab = hax.Axis("vocab", llama_config.vocab_size)
-    # generate a key that can be splitted into 2
+    Pos = llama_config.Pos
+    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, llama_config.vocab_size)
+    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
-    # generate a random input
-    x, mask, position_ids = _get_random_inputs(llama_config)
-
-    levanter_out = llama_model(x, mask, position_ids)
-    assert levanter_out.array.shape == (Batch.size, Pos.size, llama_config.Vocab.size)
-
-
-def _assert_equal_out(hax_out, torch_out: torch.Tensor):
-    assert np.isclose(
-        torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
-    ).all(), f"{torch_out} != {hax_out}"
+    out = llama_model(input_ids, mask)
+    assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
 def _get_llama_config() -> LlamaConfig:
@@ -193,7 +186,7 @@ def _get_random_inputs(config: LlamaConfig):
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
-    position_ids = random.randint(random.PRNGKey(2), (Batch.size, Pos.size), 0, Pos.size)
+    position_ids = hax.arange(Pos).broadcast_axis(Batch)
     return x, mask, position_ids
 
 
@@ -206,7 +199,3 @@ def _levanter_config_to_hf_config(levanter_config: LlamaConfig) -> HFLlamaConfig
         num_key_value_heads=levanter_config.num_kv_heads,
         rope_scaling=levanter_config.rope_scaling,
     )
-
-
-def _hax_to_tensor(x: hax.NamedArray) -> torch.Tensor:
-    return torch.from_numpy(np.array(x.array))
