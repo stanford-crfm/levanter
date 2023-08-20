@@ -1,15 +1,5 @@
 import numpy as np
 from jax import random
-from transformers.models.llama.configuration_llama import LlamaConfig as HFLlamaConfig
-from transformers.models.llama.modeling_llama import (
-    LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
-)
-from transformers.models.llama.modeling_llama import (
-    LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
-)
-from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
-from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_half
 
 import haliax as hax
 
@@ -30,6 +20,13 @@ from test_utils import skip_if_no_torch
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch
+    from transformers.models.llama.modeling_llama import (
+        LlamaDynamicNTKScalingRotaryEmbedding as HFLlamaDynamicNTKScalingRotaryEmbedding,
+    )
+    from transformers.models.llama.modeling_llama import (
+        LlamaLinearScalingRotaryEmbedding as HFLlamaLinearScalingRotaryEmbedding,
+    )
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config()
     Embed = llama_config.Embed
@@ -77,6 +74,8 @@ def test_llama_rotary_embedding():
 @skip_if_no_torch
 def test_apply_rotary_pos_emb():
     import torch
+    from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
+    from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_half
 
     def assert_equal_out(hax_out, torch_out: torch.Tensor):
         assert np.isclose(
@@ -188,14 +187,3 @@ def _get_random_inputs(config: LlamaConfig):
     mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
     position_ids = hax.arange(Pos).broadcast_axis(Batch)
     return x, mask, position_ids
-
-
-def _levanter_config_to_hf_config(levanter_config: LlamaConfig) -> HFLlamaConfig:
-    return HFLlamaConfig(
-        vocab_size=levanter_config.vocab_size,
-        max_position_embeddings=levanter_config.seq_len,
-        hidden_size=levanter_config.hidden_dim,
-        num_attention_heads=levanter_config.num_heads,
-        num_key_value_heads=levanter_config.num_kv_heads,
-        rope_scaling=levanter_config.rope_scaling,
-    )
