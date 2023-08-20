@@ -1,4 +1,5 @@
 import numpy as np
+import transformers
 from jax import random
 
 import haliax as hax
@@ -13,6 +14,32 @@ from levanter.models.llama import (
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
 from test_utils import skip_if_no_torch
+
+
+@skip_if_no_torch
+def test_llama_config():
+    # load HF config and convert to levanter config
+    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+
+    # convert back to HF config
+    config_overrides = {
+        "_name_or_path": hf_config._name_or_path,
+        "architectures": hf_config.architectures,
+        "torch_dtype": hf_config.torch_dtype,
+    }
+    new_hf_config = llama_config.to_hf_config(
+        vocab_size=hf_config.vocab_size,
+        config_overrides=config_overrides,
+    )
+
+    # assert the content in new_hf_config is the same as hf_config
+    for k in new_hf_config.__dict__.keys():
+        if k in ["_commit_hash", "transformers_version"]:
+            continue
+        assert getattr(new_hf_config, k) == getattr(
+            hf_config, k
+        ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
 
 
 @skip_if_no_torch
@@ -122,9 +149,9 @@ def test_llama_decoder_layer():
 def test_llama_lm_head_model():
     llama_config = _get_llama_config()
     Batch = hax.Axis("batch", 2)
-    Vocab = hax.Axis("vocab", llama_config.vocab_size)
+    Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
-    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, llama_config.vocab_size)
+    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
     mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
@@ -133,21 +160,17 @@ def test_llama_lm_head_model():
 
 
 def _get_llama_config() -> LlamaConfig:
-    vocab_size = 1000
     seq_len = 128
     hidden_dim = 16
     num_heads = 4
-    num_kv_heads = 4
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
     }
     return LlamaConfig(
         seq_len=seq_len,
-        vocab_size=vocab_size,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
         rope_scaling=rope_scaling,
     )
 

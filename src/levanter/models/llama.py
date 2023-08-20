@@ -5,6 +5,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from transformers import LlamaConfig as HfLlamaConfig
+from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.nn as hnn
@@ -24,23 +26,19 @@ class LlamaConfig:
 
     Args:
         seq_len (int, optional): maximum length of the input sequence. Defaults to 2048.
-        vocab_size (int, optional): vocabulary size of the Llama model. Defaults to 32000.
         hidden_dim (int, optional): dimension of the hidden state. Defaults to 4096.
         intermediate_dim (int, optional): dimension of the intermediate state. Defaults to 11008.
         num_layers (int, optional): number of hidden layers in the Transformer encoder. Defaults to 32.
         num_heads (int, optional): number of attention heads for each attention layer. Defaults to 32.
-        num_kv_heads (int, optional): number of key/value heads needed for Grouped Query Attention. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
     seq_len: int = 2048
-    vocab_size: int = 32000
     hidden_dim: int = 4096
     intermediate_dim: int = 11008
     num_layers: int = 32
     num_heads: int = 32
-    num_kv_heads: int = 32
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
@@ -56,10 +54,41 @@ class LlamaConfig:
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
-    KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim))  # TODO: shall we multiply with mlp_scale?
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+
+    @classmethod
+    def from_hf_config(cls, hf_config: HfConfig):
+        return LlamaConfig(
+            seq_len=hf_config.max_position_embeddings,
+            hidden_dim=hf_config.hidden_size,
+            intermediate_dim=hf_config.intermediate_size,
+            num_layers=hf_config.num_hidden_layers,
+            num_heads=hf_config.num_attention_heads,
+            activation_function=hf_config.hidden_act,
+            initializer_range=hf_config.initializer_range,
+            layer_norm_epsilon=hf_config.rms_norm_eps,
+            rope_scaling=hf_config.rope_scaling,
+        )
+
+    def to_hf_config(self, vocab_size: int = 32000, config_overrides=None) -> HfLlamaConfig:
+        if config_overrides is None:
+            config_overrides = {}
+
+        return HfLlamaConfig(
+            max_position_embeddings=self.seq_len,
+            hidden_size=self.hidden_dim,
+            intermediate_size=self.intermediate_dim,
+            num_hidden_layers=self.num_layers,
+            num_attention_heads=self.num_heads,
+            hidden_act=self.activation_function,
+            initializer_range=self.initializer_range,
+            rms_norm_eps=self.layer_norm_epsilon,
+            rope_scaling=self.rope_scaling,
+            vocab_size=vocab_size,
+            **config_overrides,
+        )
 
 
 class LlamaMlp(eqx.Module):
