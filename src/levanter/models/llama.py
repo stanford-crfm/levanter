@@ -347,6 +347,6 @@ def _apply_rotary_pos_emb(
     """Applies rotary position embedding to q and k."""
     cos = cos[Pos, position_ids]  # [batch, position, head_size]
     sin = sin[Pos, position_ids]  # [batch, position, head_size]
-    q_embed = (q * cos + _rotate_half(q) * sin)
-    k_embed = (k * cos + _rotate_half(k) * sin)
+    q_embed = q * cos + _rotate_half(q) * sin
+    k_embed = k * cos + _rotate_half(k) * sin
     return q_embed, k_embed
