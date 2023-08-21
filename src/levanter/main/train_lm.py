@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
-import equinox as eqx
 import jax.random as jrandom
 import jmp
 import wandb
@@ -18,11 +17,10 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
-from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time, log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, StepInfo, TrainerConfig, TrainerHooks
+from levanter.trainer import OptimizerConfig, StepInfo, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
@@ -87,8 +85,8 @@ def main(config: TrainLmConfig):
     data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
     # some axes we need
-    Batch = Axis("batch", config.trainer.train_batch_size)
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+    Batch = config.trainer.TrainBatch
+    EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
@@ -113,7 +111,7 @@ def main(config: TrainLmConfig):
         compute_axis_mapping,
     )
 
-    with config.trainer.device_mesh as mesh:
+    with config.trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -138,31 +136,12 @@ def main(config: TrainLmConfig):
         # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        # initialize the model
-        # There are a few ways we might initialize the model
-        # * from a checkpoint during training
-        # * from scratch
-        # * from an hf pretrained model
-        def init_model_and_opt_state(model_key):
-            # This function
-            # 1) initializes model weights and opt_state
-            # 2) ensures all model weights are the right dtype
-            model = config.model.build(Vocab, key=model_key)
-            model = mp.cast_to_param(model)
-            opt_state = optimizer.init(model)
-            return model, opt_state
+        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
+        trainer: Trainer[LmHeadModel, LmExample] = Trainer(config.trainer, optimizer, compute_loss)
 
-        # first get the shape of the model and optimizer state
-        model, opt_state = eqx.filter_eval_shape(init_model_and_opt_state, model_key)
-        wandb.summary["parameter_count"] = parameter_count(model)
-
-        # second, try to load the model and opt state from a checkpoint. This may throw if we required a
-        # checkpoint but it wasn't found.
-        model, (opt_state, training_key), resume_step = config.trainer.maybe_load_checkpoint(
-            model,
-            (opt_state, training_key),
-            axis_mapping=parameter_axis_mapping,
-            mesh=mesh,
+        model, opt_state, training_key, resume_step = trainer.initial_state(
+            lambda model_key: config.model.build(Vocab, key=model_key),
+            training_key,
         )
 
         if resume_step is None:
@@ -173,35 +152,33 @@ def main(config: TrainLmConfig):
                     "No training checkpoint found. Initializing model from HF checkpoint"
                     f" '{converter.reference_checkpoint}'"
                 )
+                # TODO: I don't love that we init the model twice, but it's not a big deal i think?
+                del model
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(mp.cast_to_param, parameter_axis_mapping)(model)
-
-                opt_state = named_jit(optimizer.init, axis_resources=parameter_axis_mapping)(model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
-                model, opt_state = named_jit(init_model_and_opt_state, axis_resources=parameter_axis_mapping)(
-                    model_key
-                )
+
+        wandb.summary["parameter_count"] = parameter_count(model)
 
         # boilerplate hooks and such
-        engine = TrainerHooks()
-        engine.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
-        engine.add_hook(callbacks.log_to_wandb, every=1)
-        engine.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
+        trainer.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
+        trainer.add_hook(callbacks.log_to_wandb, every=1)
+        trainer.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         if config.trainer.max_eval_batches is None or config.trainer.max_eval_batches > 0:
-            engine.add_hook(
+            trainer.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
                 every=config.trainer.steps_per_eval,
             )
-        engine.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
+        trainer.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
-        engine.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        trainer.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, config.trainer.run_id)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
-            engine.add_hook(
+            trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter),
                 every=config.hf_save_steps,
             )
@@ -226,22 +203,6 @@ def main(config: TrainLmConfig):
         #     every=config.trainer.steps_per_eval,
         # )
         #
-        # train step
-        @named_jit(axis_resources=parameter_axis_mapping, donate_args=True)
-        def train_step(model, opt_state, examples: LmExample, key):
-            loss, grads = accumulate_gradients_sharded(
-                compute_loss,
-                Batch,
-                per_device_parallelism=config.trainer.per_device_parallelism,
-                parameter_axis_mapping=parameter_axis_mapping,
-            )(model, examples, key=key, inference=False)
-
-            # distribute gradients across the mesh and apply them
-            updates, opt_state = optimizer.update(grads, opt_state, params=model)
-            model = eqx.apply_updates(model, updates)
-
-            return loss, model, opt_state
-
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
 
@@ -267,11 +228,13 @@ def main(config: TrainLmConfig):
                     example = next(iter_data)
                     my_key, training_key = jrandom.split(training_key, 2)
 
-                jax_step_loss, model, opt_state = train_step(model, opt_state, example, my_key)
-                step_loss = jax_step_loss.item()
+                jax_step_loss, model, opt_state = trainer.train_step(
+                    model, opt_state, example, key=my_key, inference=False
+                )
+                step_loss = jax_step_loss.item()  # type: ignore
 
             with log_time_to_wandb("throughput/hook_time", step=step):
-                engine.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
+                trainer.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
 
         last_step = StepInfo(
             config.trainer.num_train_steps,
@@ -282,7 +245,7 @@ def main(config: TrainLmConfig):
             step_duration=step_time(),
         )
 
-        engine.run_hooks(last_step, force=True)
+        trainer.run_hooks(last_step, force=True)
         checkpointer.on_step(last_step, force=True)
 
 

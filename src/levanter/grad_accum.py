@@ -37,7 +37,6 @@ def accumulate_gradients(f: ValAndGradFn, model: M, *inputs: X) -> Tuple[float, 
 def accumulate_gradients_sharded(
     f: ValFn[M, X],
     Batch: Axis,
-    *,
     per_device_parallelism: int,
     parameter_axis_mapping,
 ) -> ValAndGradFn[M, X]:

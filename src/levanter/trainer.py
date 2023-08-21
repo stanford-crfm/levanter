@@ -2,6 +2,7 @@ import atexit
 import copy
 import logging as pylogging
 import sys
+import typing
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -15,15 +16,17 @@ import optax
 from draccus import field
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
+from optax import OptState
 
-from haliax.partitioning import ResourceAxis, ResourceMapping
+from haliax import Axis
+from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.distributed import DistributedConfig, RayConfig
+from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig
-from levanter.types import ValAndGradFn, ValFn
 from levanter.utils import cloud_utils
 
 
@@ -31,17 +34,17 @@ logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
 
-M = TypeVar("M")
-S = TypeVar("S")
+M = TypeVar("M", bound=PyTree)
+S = TypeVar("S", bound=PyTree)
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
 }
 
 
 @dataclass
-class StepInfo:
+class StepInfo(Generic[M]):
     step: int
-    model: PyTree
+    model: M
     opt_state: Any
     loss: float
     next_key: PRNGKeyArray
@@ -79,27 +82,101 @@ class Trainer(Generic[M, X]):
     config: "TrainerConfig"
     optimizer: optax.GradientTransformation
     hooks: TrainerHooks
-    loss_fn: ValFn[M, X]
+    loss_fn: Callable
 
-    def __init__(self, config: "TrainerConfig", optimizer, loss_fn: ValFn[M, X]):
+    def __init__(self, config: "TrainerConfig", optimizer, loss_fn):
         self.hooks = TrainerHooks()
         self.config = config
         self.loss_fn = loss_fn
         self.optimizer = optimizer
 
-    @cached_property
-    def grad_fn(self) -> ValAndGradFn[M, X]:
-        return eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
-
     @property
     def mp(self) -> jmp.Policy:
         return self.config.mp
 
-    def initial_state(self, model_init: Callable[[], M]) -> S:
-        raise NotImplementedError
+    @typing.overload
+    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
+        ...
 
-    def _init_model_and_opt_state(self, model_init):
-        model = model_init()
+    @typing.overload
+    def add_hook(self, *, every: int = 1):
+        ...
+
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
+        return self.hooks.add_hook(fn, every=every)
+
+    def run_hooks(self, info: StepInfo, force: bool = False):
+        self.hooks.run_hooks(info, force=force)
+
+    @property
+    def parameter_axis_mapping(self) -> ResourceMapping:
+        return self.config.parameter_axis_mapping
+
+    @property
+    def compute_axis_mapping(self) -> ResourceMapping:
+        return self.config.compute_axis_mapping
+
+    @property
+    def device_mesh(self) -> Mesh:
+        return self.config.device_mesh
+
+    @property
+    def TrainBatch(self):
+        return self.config.TrainBatch
+
+    @property
+    def EvalBatch(self):
+        return self.config.EvalBatch
+
+    def initial_state(
+        self, model_init: Callable[[PRNGKeyArray], M], key: PRNGKeyArray
+    ) -> Tuple[M, OptState, PRNGKeyArray, Optional[int]]:
+        """
+        Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+
+        Returns:
+            model, opt_state, key, resume_step
+            If resume_step is None, we're starting from scratch. Otherwise, we're resuming from a checkpoint.
+        """
+        model_key, training_key = jax.random.split(key)
+        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init, model_key)
+        model, (opt_state, training_key), resume_step = self.config.maybe_load_checkpoint(
+            model_shape,
+            (opt_state_shape, training_key),
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
+        )
+
+        if resume_step is None:
+            model, opt_state = named_jit(self._init_model_and_opt_state, axis_resources=self.parameter_axis_mapping)(
+                model_init, model_key
+            )
+
+        return model, opt_state, training_key, resume_step
+
+    def train_step(self, model: M, opt_state: OptState, *batch: X, **batch_kwargs) -> Tuple[float, M, OptState]:
+        """
+        Performs a single training step.
+        """
+        return self._train_step_fn(model, opt_state, *batch, **batch_kwargs)
+
+    @cached_property
+    def _train_step_fn(self):
+        @named_jit(axis_resources=self.parameter_axis_mapping, donate_args=(True, True))
+        def fn(model, opt_state, *batch, **batch_kwargs):
+            loss, grads = accumulate_gradients_sharded(
+                self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+            )(model, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
+
+        return fn
+
+    def _init_model_and_opt_state(self, model_init, key):
+        model = model_init(key)
         model = self.mp.cast_to_param(model)
         opt_state = self.optimizer.init(model)
         return model, opt_state
@@ -175,6 +252,14 @@ class TrainerConfig:
     @property
     def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
+
+    @property
+    def TrainBatch(self):
+        return Axis("batch", self.train_batch_size)
+
+    @property
+    def EvalBatch(self):
+        return Axis("batch", self.eval_batch_size)
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
