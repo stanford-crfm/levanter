@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
-import jmp
 import wandb
 
 import haliax as hax
@@ -100,16 +99,24 @@ def main(config: TrainLmConfig):
         config.trainer.device_mesh,
         EvalBatch,
         compute_axis_mapping,
-        # max_capacity=None,
     )
 
     train_loader = ShardedBatchLoader(
         CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos),
-        # TokenSeqDataset(config.data.build_or_load_cache("train"), Pos),
         config.trainer.device_mesh,
         Batch,
         compute_axis_mapping,
     )
+
+    # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
+
+    # TODO: we need to make the eval loss function use trainer's loss function since it wraps with mixed precision etc
+    def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
+        return model.compute_loss(example, inference=inference, key=key).scalar()
+
+    # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
+    trainer = Trainer(config.trainer, optimizer, compute_loss)
 
     with config.trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -119,25 +126,6 @@ def main(config: TrainLmConfig):
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
-
-        # Mixed Precision. See our tutorial at https://colab.research.google.com/drive/1_4cikwt-UhSH7yRzNRK8ze9msM9r2mEl
-        mp: jmp.Policy = config.trainer.mp
-
-        def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-                return model.compute_loss(example, inference=inference, key=key).scalar()
-
-        # eval loss needs to specify the parameter sharding
-        eval_loss = functools.partial(
-            named_jit(compute_loss, in_axis_resources=parameter_axis_mapping), inference=True
-        )
-
-        # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, compute_loss)
 
         model, opt_state, training_key, resume_step = trainer.initial_state(
             lambda: config.model.build(Vocab, key=model_key),
@@ -155,7 +143,7 @@ def main(config: TrainLmConfig):
                 # TODO: I don't love that we init the model twice, but it's not a big deal i think?
                 del model
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model = named_jit(mp.cast_to_param, parameter_axis_mapping)(model)
+                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
@@ -166,6 +154,7 @@ def main(config: TrainLmConfig):
         trainer.add_hook(callbacks.log_to_wandb, every=1)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
         if config.trainer.max_eval_batches is None or config.trainer.max_eval_batches > 0:
+            eval_loss = functools.partial(trainer.loss_fn, inference=True, key=None)
             trainer.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
                 every=config.trainer.steps_per_eval,
@@ -190,7 +179,7 @@ def main(config: TrainLmConfig):
             out_axis_resources=compute_axis_mapping,
         )
         def compute_log_probs(model, example: LmExample):
-            model = mp.cast_to_compute(model)
+            model = trainer.mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = hax.roll(logprobs, 1, Pos)

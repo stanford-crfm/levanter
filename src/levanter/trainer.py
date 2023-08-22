@@ -1,5 +1,6 @@
 import atexit
 import copy
+import functools
 import logging as pylogging
 import sys
 import typing
@@ -18,6 +19,7 @@ from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import OptState
 
+import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
@@ -82,13 +84,28 @@ class Trainer:
     config: "TrainerConfig"
     optimizer: optax.GradientTransformation
     hooks: TrainerHooks
-    loss_fn: Callable
+    _raw_loss_function: Callable
 
     def __init__(self, config: "TrainerConfig", optimizer, loss_fn):
         self.hooks = TrainerHooks()
         self.config = config
-        self.loss_fn = loss_fn
+        self._raw_loss_function = loss_fn
         self.optimizer = optimizer
+
+    @cached_property
+    def loss_fn(self):
+        """
+        Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
+        """
+
+        @functools.wraps(self._raw_loss_function)
+        @named_jit(in_axis_resources=self.parameter_axis_mapping, axis_resources=self.compute_axis_mapping)
+        def fn(model, *batch, **batch_kwargs):
+            with hax.axis_mapping(self.compute_axis_mapping):
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs)
+
+        return fn
 
     @property
     def mp(self) -> jmp.Policy:
@@ -161,7 +178,11 @@ class Trainer:
 
     @cached_property
     def _train_step_fn(self):
-        @named_jit(axis_resources=self.parameter_axis_mapping, donate_args=(True, True))
+        @named_jit(
+            axis_resources=self.parameter_axis_mapping,
+            out_axis_resources=self.parameter_axis_mapping,
+            donate_args=(True, True),
+        )
         def fn(model, opt_state, *batch, **batch_kwargs):
             loss, grads = accumulate_gradients_sharded(
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
