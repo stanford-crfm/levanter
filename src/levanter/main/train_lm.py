@@ -137,10 +137,10 @@ def main(config: TrainLmConfig):
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer: Trainer[LmHeadModel, LmExample] = Trainer(config.trainer, optimizer, compute_loss)
+        trainer = Trainer(config.trainer, optimizer, compute_loss)
 
         model, opt_state, training_key, resume_step = trainer.initial_state(
-            lambda model_key: config.model.build(Vocab, key=model_key),
+            lambda: config.model.build(Vocab, key=model_key),
             training_key,
         )
 

@@ -78,7 +78,7 @@ class TrainerHooks:
             return decorator(fn)
 
 
-class Trainer(Generic[M, X]):
+class Trainer:
     config: "TrainerConfig"
     optimizer: optax.GradientTransformation
     hooks: TrainerHooks
@@ -129,7 +129,7 @@ class Trainer(Generic[M, X]):
         return self.config.EvalBatch
 
     def initial_state(
-        self, model_init: Callable[[PRNGKeyArray], M], key: PRNGKeyArray
+        self, model_init: Callable[[], M], training_key: PRNGKeyArray
     ) -> Tuple[M, OptState, PRNGKeyArray, Optional[int]]:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
@@ -138,8 +138,7 @@ class Trainer(Generic[M, X]):
             model, opt_state, key, resume_step
             If resume_step is None, we're starting from scratch. Otherwise, we're resuming from a checkpoint.
         """
-        model_key, training_key = jax.random.split(key)
-        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init, model_key)
+        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
         model, (opt_state, training_key), resume_step = self.config.maybe_load_checkpoint(
             model_shape,
             (opt_state_shape, training_key),
@@ -149,7 +148,7 @@ class Trainer(Generic[M, X]):
 
         if resume_step is None:
             model, opt_state = named_jit(self._init_model_and_opt_state, axis_resources=self.parameter_axis_mapping)(
-                model_init, model_key
+                model_init
             )
 
         return model, opt_state, training_key, resume_step
@@ -175,8 +174,8 @@ class Trainer(Generic[M, X]):
 
         return fn
 
-    def _init_model_and_opt_state(self, model_init, key):
-        model = model_init(key)
+    def _init_model_and_opt_state(self, model_init):
+        model = model_init()
         model = self.mp.cast_to_param(model)
         opt_state = self.optimizer.init(model)
         return model, opt_state
