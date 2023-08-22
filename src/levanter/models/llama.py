@@ -245,9 +245,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         state_dict.update(my_dict)
         return state_dict
 
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"attn": "self_attn"}
-
 
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
@@ -291,7 +288,11 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return output
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"ln_1": "input_layernorm", "ln_2": "post_attention_layernorm"}
+        return {
+            "attn": "self_attn",
+            "ln_1": "input_layernorm",
+            "ln_2": "post_attention_layernorm",
+        }
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
@@ -367,7 +368,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return hax.dot("embed", x, self.token_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens.weight", "position_embeddings": "wpe.weight"}
+        return {"token_embeddings": "model.embed_tokens.weight"}
 
 
 class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
