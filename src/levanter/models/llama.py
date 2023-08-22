@@ -14,9 +14,19 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.compat.torch_serialization import (
+    StateDict,
+    StateDictSerializationMixin,
+    apply_prefix,
+    flatten_linear_layers,
+    stack_state_dict,
+    unflatten_linear_layers,
+    unstack_state_dict,
+)
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig
+from levanter.utils.py_utils import cached_classproperty
 
 
 @LmConfig.register_subclass("llama")
@@ -46,7 +56,7 @@ class LlamaConfig:
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
 
-    use_bias: bool = True
+    use_bias: bool = False
     rope_scaling: Optional[dict] = None
 
     # Axis
@@ -57,6 +67,11 @@ class LlamaConfig:
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim))  # TODO: shall we multiply with mlp_scale?
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+    Intermediate = property(lambda self: Axis(name="intermediate", size=self.intermediate_dim))
+
+    @cached_classproperty
+    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+        return HFCheckpointConverter(cls, "meta-llama/Llama-2-7b-hf", trust_remote_code=True)
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
@@ -103,11 +118,11 @@ class LlamaMlp(eqx.Module):
     act: Callable = eqx.static_field()
 
     @staticmethod
-    def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = False) -> "LlamaMlp":
+    def init(Embed: Axis, Intermediate: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = False) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
+        gate_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
+        up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_up_proj, use_bias=use_bias)
+        down_proj = hnn.Linear.init(Out=Embed, In=Intermediate, key=k_down_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -168,7 +183,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_q, use_bias=use_bias)
-        # TODO: double check if we should use Heads or KV_HEADS here
         k_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.Heads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
@@ -208,6 +222,32 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         attn_output = self.o_proj(attn_output)
         return attn_output
 
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
+        d = {}
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, None))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, None))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, None))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, None))
+
+        return super().from_state_dict(d, prefix)
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        # flatten the linear layers of LlamaAttention to match the shape of HF state_dict
+        my_dict: StateDict = {}
+        super().update_state_dict(my_dict, prefix)
+
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, None))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, None))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, None))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, None))
+
+        state_dict.update(my_dict)
+        return state_dict
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"attn": "self_attn"}
+
 
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
@@ -221,7 +261,14 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         k_attn, k_mlp = jrandom.split(key, 2)
 
         attn = LlamaAttention.init(config, key=k_attn)
-        mlp = LlamaMlp.init(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
+        mlp = LlamaMlp.init(
+            config.Embed,
+            config.Intermediate,
+            config.Mlp,
+            config.activation_function,
+            key=k_mlp,
+            use_bias=config.use_bias,
+        )
         ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
@@ -242,6 +289,9 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         mlp_output = self.mlp(x)
         output = residual + mlp_output
         return output
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"ln_1": "input_layernorm", "ln_2": "post_attention_layernorm"}
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
@@ -267,6 +317,23 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         x = self.ln_f(x)
 
         return x
+
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "h"))
+        out = super().from_state_dict(stacked, prefix=prefix)
+        return out
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        my_state_dict: StateDict = {}
+        super().update_state_dict(my_state_dict, prefix=prefix)
+
+        stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
+        state_dict.update(stacked_dict)
+
+        return state_dict
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"ln_f": "norm"}
 
 
 class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
@@ -300,7 +367,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return hax.dot("embed", x, self.token_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+        return {"token_embeddings": "model.embed_tokens.weight", "position_embeddings": "wpe.weight"}
 
 
 class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
@@ -349,6 +416,9 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         lm_logits = self.embeddings.unembed(x)
 
         return lm_logits
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"transformer": "model", "embeddings": None}
 
 
 def _rotate_half(x: NamedArray) -> NamedArray:
