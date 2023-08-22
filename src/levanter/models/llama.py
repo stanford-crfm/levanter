@@ -71,7 +71,7 @@ class LlamaConfig:
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
-        return HFCheckpointConverter(cls, "meta-llama/Llama-2-7b-hf", trust_remote_code=True)
+        return HFCheckpointConverter(cls, "meta-llama/Llama-2-7b-hf", trust_remote_code=True)  # type: ignore
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
