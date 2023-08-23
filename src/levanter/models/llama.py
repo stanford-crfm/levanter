@@ -338,30 +338,26 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
 
 class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
-    """Similar to GPT2 Embedding but without dropout"""
+    """Similar to GPT2 Embedding, except that:
+    - Llama doesn't have position embedding in the Embedding layer.
+    - Llama doesn't use dropout.
+    """
 
     Vocab: Axis = eqx.static_field()
     config: LlamaConfig = eqx.static_field()
-
     token_embeddings: NamedArray
-    position_embeddings: NamedArray
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
         k_wte, k_wpe = jrandom.split(key, 2)
 
         token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
-        position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
-
-        return LlamaEmbedding(Vocab, config, token_embeddings, position_embeddings)
+        return LlamaEmbedding(Vocab, config, token_embeddings)
 
     @named_call
     def embed(self, input_ids, *args):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
-        position_embeds = self.position_embeddings
-
-        x = input_embeds + position_embeds
-
+        x = input_embeds
         return x
 
     def unembed(self, x: NamedArray):
@@ -393,10 +389,9 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
     @classmethod
     def init(cls, Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaLMHeadModel":
-        k_t, k_embeddings = jrandom.split(key, 2)
+        k_t, k_emb = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
-        embeddings = LlamaEmbedding.init(Vocab, config, key=k_embeddings)
-
+        embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
         return LlamaLMHeadModel(transformer, embeddings)
 
     def __call__(
