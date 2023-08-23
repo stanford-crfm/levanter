@@ -1,3 +1,6 @@
+import tempfile
+
+import jax
 import numpy as np
 import transformers
 from jax import random
@@ -157,6 +160,48 @@ def test_llama_lm_head_model():
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
     out = llama_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
+
+
+@skip_if_no_torch
+def test_llama_roundtrip():
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    converter = LlamaConfig.default_hf_checkpoint_converter
+
+    config = _get_llama_config()
+    Vocab = hax.Axis("vocab", 1000)
+
+    # TODO: load the first torch model with model_id from HF
+
+    # randomly initialize a levanter model
+    # TODO: use converter.load_pretrained
+    model = LlamaLMHeadModel.init(
+        Vocab=Vocab,
+        config=config,
+        key=random.PRNGKey(0),
+    )
+
+    input = hax.random.randint(random.PRNGKey(0), model.Pos, 0, model.Vocab.size)
+    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+
+    def compute(input):
+        model_output = model(input, attn_mask=attn_mask)
+        return hax.nn.softmax(model_output, axis=model.Vocab)
+
+    compute = jax.jit(compute)
+    jax_out = compute(input).array
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        converter.save_pretrained(model, tmpdir)
+        torch_model2 = AutoModelForCausalLM.from_pretrained(tmpdir)
+        torch_model2.eval()
+
+        torch_out2 = torch_model2(torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0))
+        torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
+        assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+        # assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
 def _get_llama_config() -> LlamaConfig:
