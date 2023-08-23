@@ -106,7 +106,7 @@ class LlamaConfig:
         )
 
 
-class LlamaMlp(eqx.Module):
+class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
     before down-proj.
@@ -135,6 +135,44 @@ class LlamaMlp(eqx.Module):
         hidden_states = hidden_states * self.up_proj(x)
         outputs = self.down_proj(hidden_states)
         return outputs
+
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
+        d = {}
+        d.update(
+            unflatten_linear_layers(
+                apply_prefix(prefix, "gate_proj"), state_dict, self.gate_proj, out_dims_first_in_dict=True
+            )
+        )
+        d.update(
+            unflatten_linear_layers(
+                apply_prefix(prefix, "up_proj"), state_dict, self.up_proj, out_dims_first_in_dict=True
+            )
+        )
+        d.update(
+            unflatten_linear_layers(
+                apply_prefix(prefix, "down_proj"), state_dict, self.down_proj, out_dims_first_in_dict=True
+            )
+        )
+
+        return super().from_state_dict(d, prefix)
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        my_dict: StateDict = {}
+        super().update_state_dict(my_dict, prefix=prefix)
+
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "gate_proj"), self.gate_proj, out_dims_first_in_dict=True)
+        )
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "up_proj"), self.up_proj, out_dims_first_in_dict=True)
+        )
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "down_proj"), self.down_proj, out_dims_first_in_dict=True)
+        )
+
+        state_dict.update(my_dict)
+        return state_dict
 
 
 class LlamaRotaryEmbedding(eqx.Module):
@@ -398,7 +436,6 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         self,
         input_ids: NamedArray,
         attn_mask: Optional[NamedArray] = None,
-        *args,
     ) -> NamedArray:
         """
         Args:
