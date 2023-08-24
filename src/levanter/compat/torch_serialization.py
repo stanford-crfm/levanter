@@ -168,6 +168,10 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
     linear layers can have arbitrary dimensions, grouped into input and output axes. This function
     flattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
 
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
+
     :param prefix: prefix to apply to the keys in the state dict
     :param tree:
     :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
@@ -215,6 +219,10 @@ def unflatten_linear_layers(
     In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
     linear layers can have arbitrary dimensions, grouped into input and output axes. This function
     unflattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
+
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
 
     :param prefix: prefix to apply to the keys in the state dict
     :param statedict: the state dict to source the flattened weights from
