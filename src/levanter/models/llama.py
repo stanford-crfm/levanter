@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import equinox as eqx
 import jax
@@ -118,7 +118,9 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     act: Callable = eqx.static_field()
 
     @staticmethod
-    def init(Embed: Axis, Intermediate: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = False) -> "LlamaMlp":
+    def init(
+        Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
+    ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
         up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_up_proj, use_bias=use_bias)
@@ -299,7 +301,6 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         mlp = LlamaMlp.init(
             config.Embed,
             config.Intermediate,
-            config.Mlp,
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
