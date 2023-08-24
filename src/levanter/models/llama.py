@@ -247,6 +247,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         q = q.astype(jnp.float32)
         k = k.astype(jnp.float32)
         k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
 
         attn_scores = hax.dot("head_size", q, k)
 
