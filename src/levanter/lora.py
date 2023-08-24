@@ -48,7 +48,7 @@ M = TypeVar("M", bound=PyTree)
 LORA_R = "LORA_R"
 
 
-@dataclass
+@dataclass(frozen=True)
 class LoraConfig:
     target_modules: Union[List[str], str]
     r: int = 8  # rank of LoRA transform

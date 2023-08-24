@@ -318,11 +318,10 @@ class TrainerConfig:
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
-        # distributed must come before wandb.init b/c it needs process_index
-        self.wandb.init(all_config)
-        self._initialize_logging()
         self.ray.initialize()
         self._initialize_jax_config()
+        self.wandb.init(all_config)
+        self._initialize_logging()
         self._validate_and_set_defaults()
 
         if self.require_accelerator is None:
@@ -390,8 +389,7 @@ class TrainerConfig:
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        path = self.log_dir / f"{self.run_name}.log"
-        levanter.logging.init_logger(path)
+        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
     def maybe_load_checkpoint(
         self, model: M, training_state: S, *, axis_mapping=None, mesh=None

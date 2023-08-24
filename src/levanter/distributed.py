@@ -233,12 +233,6 @@ class DistributedConfig:
 
     def initialize(self):
         if self._is_distributed():
-            import jax._src.distributed as jax_distributed
-
-            if jax_distributed.global_state is not None:
-                logger.warning("jax.distributed has already been initialized. Ignoring subsequent calls.")
-                return
-
             device_ids = self.local_device_ids
             coordinator_address = self.coordinator_address
 

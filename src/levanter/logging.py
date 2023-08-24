@@ -11,7 +11,7 @@ from typing import List, Optional, Union
 import draccus
 import jax
 import wandb
-import yaml
+from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
 
@@ -52,9 +52,6 @@ def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
 
     # Create Root Logger w/ Base Formatting
     pylogging.basicConfig(level=level, format=log_format, datefmt=date_format, handlers=handlers, force=True)
-
-    if isinstance(path, str):
-        logger.warning(f"Log file {path} already exists, appending to it")
 
     # Silence Transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
     silence_transformer_nag()
@@ -127,61 +124,6 @@ def silence_transformer_nag():
     logger.propagate = False
 
 
-def _receive_wandb_sweep_config(project: Optional[str], entity: Optional[str], sweep_id: str):
-    # NOTE!!! this is very hacky and relies on wandb internals, but wandb wants to control the launching process
-    # which doesn't work for us
-    from wandb.sdk import wandb_login
-
-    wandb_login._login(_silent=True, _entity=entity)
-
-    from wandb.apis import InternalApi, PublicApi
-
-    pub_api = PublicApi()
-    api = InternalApi()
-
-    entity = entity or pub_api.settings["entity"] or pub_api.default_entity
-    project = project or pub_api.settings["project"]
-
-    # this is what they do to get the sweep config
-    sweep_obj = api.sweep(sweep_id, "{}", project=project, entity=entity)
-    if sweep_obj:
-        sweep_yaml = sweep_obj.get("config")
-        if sweep_yaml:
-            sweep_config = yaml.safe_load(sweep_yaml)
-            if sweep_config:
-                logger.info(f"Received sweep config from wandb: {sweep_config}")
-
-    import socket
-
-    agent = api.register_agent(socket.gethostname(), sweep_id=sweep_id, project_name=project, entity=entity)
-    agent_id = agent["id"]
-
-    commands = api.agent_heartbeat(agent_id, {}, {})
-
-    assert len(commands) == 1
-    command = commands[0]
-    run_id = command["run_id"]
-    sweep_run_config = command["args"]
-
-    # config comes in like this:
-    # {'model': {'value': {'hidden_dim': 128...}}}
-    # and we want:
-    # {'model': {'hidden_dim': 128...}}
-
-    def _flatten_config(config):
-        if isinstance(config, dict):
-            if "value" in config:
-                return _flatten_config(config["value"])
-            else:
-                return {k: _flatten_config(v) for k, v in config.items()}
-        else:
-            return config
-
-    sweep_run_config = _flatten_config(sweep_run_config)
-
-    return run_id, sweep_run_config
-
-
 @dataclass
 class WandbConfig:
     """
@@ -189,9 +131,9 @@ class WandbConfig:
     """
 
     entity: Optional[str] = None  # An entity is a username or team name where you send runs
-    project: Optional[str] = None  # The name of the project where you are sending the new run.
+    project: Optional[str] = None  # The name of the project where you are sending the enw run.
     name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
-    tags: List[str] = draccus.field(default_factory=list)  # Will populate the list of tags on this run in the UI.
+    tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
     group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
     mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be online.
@@ -202,11 +144,6 @@ class WandbConfig:
     Please refer to [init](https://docs.wandb.ai/ref/python/init) and [resume](https://docs.wandb.ai/guides/runs/resuming)
     document for more details.
     """
-    reinit: bool = False  # If True, allow reinitializing a run in the same process. useful for sweeps
-
-    sweep: Optional[
-        str
-    ] = None  # The ID of the sweep for this run. If set, configs will be overwritten by sweep config
 
     save_code: Union[bool, str] = True
     """If string, will save code from that directory. If True, will attempt to sniff out the main directory (since we
@@ -216,7 +153,6 @@ class WandbConfig:
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
     def init(self, hparams=None, **extra_hparams):
-        # GROSS MUTABILITY ALERT: if sweep is set, it will override the config from the command line and the config file
         import wandb
 
         if hparams is None:
@@ -256,58 +192,17 @@ class WandbConfig:
                 logger.warning(f"Could not find git repo at {code_dir}")
                 pass
 
-        run_id = self.id
-        sweep_config = None
-
-        if self.sweep is not None:
-            logger.warning(
-                f"Setting wandb sweep to {self.sweep}. THIS WILL OVERRIDE CONFIG FROM THE COMMAND LINE AND THE CONFIG"
-                " FILE!!!!"
-            )
-
-            if jax.process_index() == 0:
-                run_id, sweep_config = _receive_wandb_sweep_config(self.project, self.entity, self.sweep)
-                # NOTE: MUTATION
-            else:
-                run_id, sweep_config = None, None
-
-            if jax.process_count() > 1:
-                # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
-                run_id, sweep_config = jax_utils.multihost_broadcast_sync(
-                    (run_id, sweep_config), is_source=jax.process_index() == 0
-                )
-
-            # now we need to merge the sweep config with the hparams
-            # we need to merge this and also the dataclass metadata(!)
-            if sweep_config is not None:
-                import mergedeep
-
-                mergedeep.merge(hparams_to_save, sweep_config)
-
-                def override_dataclass_with_dict(dataclass, d):
-                    for field in dataclasses.fields(dataclass):
-                        if field.name in d:
-                            if dataclasses.is_dataclass(field.type) or dataclasses.is_dataclass(
-                                getattr(dataclass, field.name)
-                            ):
-                                override_dataclass_with_dict(getattr(dataclass, field.name), d[field.name])
-                            else:
-                                setattr(dataclass, field.name, d[field.name])
-
-                override_dataclass_with_dict(hparams, sweep_config)
-
         r = wandb.init(
             entity=self.entity,
             project=self.project,
             name=self.name,
             tags=self.tags,
-            id=run_id,
+            id=self.id,
             group=self.group,
             resume=self.resume,
             mode=mode,
             config=hparams_to_save,
             settings=other_settings,
-            reinit=self.reinit,
         )
 
         if jax.process_count() > 1:
