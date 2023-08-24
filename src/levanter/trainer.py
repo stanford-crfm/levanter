@@ -40,6 +40,7 @@ M = TypeVar("M", bound=PyTree)
 S = TypeVar("S", bound=PyTree)
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
+    "jax_softmax_custom_jvp": True,
 }
 
 
