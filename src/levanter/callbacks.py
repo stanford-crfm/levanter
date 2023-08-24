@@ -22,6 +22,7 @@ from tqdm import tqdm
 import levanter.visualization as viz
 from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
 from levanter.trainer import StepInfo
+from levanter.utils.jax_utils import jnp_to_python
 
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
 
     def update_pbar(step: StepInfo):
         pbar.update(step.step - pbar.n)
-        pbar.set_postfix(loss=step.loss)
+        pbar.set_postfix(loss=jnp_to_python(step.loss))
 
     return update_pbar
 

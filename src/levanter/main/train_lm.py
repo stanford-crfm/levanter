@@ -1,4 +1,4 @@
-import functools
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
@@ -16,10 +16,10 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
-from levanter.logging import capture_time, log_time_to_wandb
+from levanter.logging import log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, StepInfo, Trainer, TrainerConfig
+from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
@@ -127,12 +127,12 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        model, opt_state, training_key, resume_step = trainer.initial_state(
+        state = trainer.initial_state(
             lambda: config.model.build(Vocab, key=model_key),
             training_key,
         )
 
-        if resume_step is None:
+        if state.step == 0:
             # no checkpoint was found, so we need to initialize the model and opt state
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
@@ -141,30 +141,21 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 # TODO: I don't love that we init the model twice, but it's not a big deal i think?
-                del model
+                # this is a bit gross, but we want to free up the memory from the model we just built
+                state.model = None
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
+                state = dataclasses.replace(state, model=model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
         wandb.summary["parameter_count"] = parameter_count(model)
 
         # boilerplate hooks and such
-        trainer.add_hook(callbacks.pbar_logger(total=config.trainer.num_train_steps), every=1)
-        trainer.add_hook(callbacks.log_to_wandb, every=1)
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, config.trainer.train_batch_size), every=1)
-        if config.trainer.max_eval_batches is None or config.trainer.max_eval_batches > 0:
-            eval_loss = functools.partial(trainer.loss_fn, inference=True, key=None)
-            trainer.add_hook(
-                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=config.trainer.max_eval_batches),
-                every=config.trainer.steps_per_eval,
-            )
-        trainer.add_hook(callbacks.wandb_xla_logger(config.trainer.wandb), every=config.trainer.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = config.trainer.checkpointer.create(config.trainer.run_id)
-        trainer.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        trainer.add_default_hooks(eval_loader)
+        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, config.trainer.run_id)
+            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
             from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
             trainer.add_hook(
@@ -195,47 +186,31 @@ def main(config: TrainLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
 
-        if resume_step is not None:
+        if state.step > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(resume_step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
                 next(iter_data)
-            initial_step = resume_step + 1
+            initial_step = state.step + 1
         else:
             initial_step = 0
 
-        # assign these here in case num_train_steps == 0
-        step_loss = 0.0
-        step_time = lambda: 0.0  # noqa: E731
-
         # finally, run the training loop
         for step in range(initial_step, config.trainer.num_train_steps):
-            with capture_time() as step_time:
-                with log_time_to_wandb("throughput/loading_time", step=step):
-                    example = next(iter_data)
-                    my_key, training_key = jrandom.split(training_key, 2)
+            with log_time_to_wandb("throughput/loading_time", step=step):
+                example = next(iter_data)
 
-                jax_step_loss, model, opt_state = trainer.train_step(
-                    model, opt_state, example, key=my_key, inference=False
-                )
-                step_loss = jax_step_loss.item()  # type: ignore
+            info = trainer.train_step(state, example, inference=False)
+            state = info.state
 
             with log_time_to_wandb("throughput/hook_time", step=step):
-                trainer.run_hooks(StepInfo(step, model, opt_state, step_loss, training_key, step_duration=step_time()))
+                trainer.run_hooks(info)
 
-        last_step = StepInfo(
-            config.trainer.num_train_steps,
-            model,
-            opt_state,
-            step_loss,
-            training_key,
-            step_duration=step_time(),
-        )
-
+        last_step = info
         trainer.run_hooks(last_step, force=True)
-        checkpointer.on_step(last_step, force=True)
+        # checkpointer.on_step(last_step, force=True)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import typing
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -16,7 +16,7 @@ import numpy as np
 import optax
 from draccus import field
 from jax.sharding import Mesh
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from optax import OptState
 
 import haliax as hax
@@ -24,11 +24,12 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
+from levanter import callbacks
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.logging import WandbConfig
+from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
 
 
@@ -45,13 +46,23 @@ DEFAULT_JAX_CONFIG = {
 
 
 @dataclass
-class StepInfo(Generic[M]):
+class TrainerState(Generic[M]):
     step: int
     model: M
-    opt_state: Any
-    loss: float
-    next_key: PRNGKeyArray
+    opt_state: OptState
+    training_key: PRNGKeyArray
+
+
+@dataclass
+class StepInfo(Generic[M]):
+    state: TrainerState[M]
+    loss: Scalar
     step_duration: float
+
+    model = property(lambda self: self.state.model)
+    opt_state = property(lambda self: self.state.opt_state)
+    next_key = property(lambda self: self.state.training_key)
+    step = property(lambda self: self.state.step)
 
 
 @dataclass
@@ -79,14 +90,6 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
-
-
-@dataclass
-class TrainerState(Generic[M]):
-    step: int
-    model: M
-    opt_state: OptState
-    training_key: PRNGKeyArray
 
 
 class Trainer:
@@ -177,17 +180,35 @@ class Trainer:
 
         return TrainerState(step, model, opt_state, training_key)
 
-    def train_step(self, state: TrainerState, model: M, *batch: X, **batch_kwargs) -> TrainerState:
+    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
-        key, new_key = jax.random.split(state.training_key)
-        loss, new_model, new_optstate = self._train_step_fn(model, state.opt_state, *batch, **batch_kwargs, key=key)
+        with capture_time() as step_time:
+            key, new_key = jax.random.split(state.training_key)
+            loss, new_model, new_optstate = self._train_step_fn(
+                state.model, state.opt_state, *batch, **batch_kwargs, key=key
+            )
 
-        return TrainerState(state.step + 1, new_model, new_optstate, new_key)
+        return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
 
     def training_steps(self, state, model: M, train_loader) -> typing.Iterator[StepInfo]:
         raise NotImplementedError
+
+    def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
+        self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
+        self.add_hook(callbacks.log_to_wandb, every=1)
+        if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
+            eval_loss = functools.partial(self.loss_fn, inference=True, key=None)
+            self.add_hook(
+                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
+                every=self.config.steps_per_eval,
+            )
+        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        checkpointer = self.config.checkpointer.create(self.config.run_id)
+        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        return checkpointer
 
     @cached_property
     def _train_step_fn(self):
