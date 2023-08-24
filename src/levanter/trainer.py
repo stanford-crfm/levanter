@@ -80,8 +80,9 @@ class TrainerHooks:
         else:
             return decorator(fn)
 
+
 @dataclass
-class TrainerState:
+class TrainerState(Generic[M]):
     step: int
     model: M
     opt_state: OptState
@@ -153,9 +154,7 @@ class Trainer:
     def EvalBatch(self):
         return self.config.EvalBatch
 
-    def initial_state(
-        self, model_init: Callable[[], M], training_key: PRNGKeyArray
-    ) -> TrainerState:
+    def initial_state(self, model_init: Callable[[], M], training_key: PRNGKeyArray) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
 
