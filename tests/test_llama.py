@@ -130,14 +130,42 @@ def test_apply_rotary_pos_emb():
 def test_llama_attention():
     config = _get_llama_config()
     x, mask = _get_random_inputs(config)
-    # generate a random key that can be splitted into 4
-    key = random.PRNGKey(4)
+    key = random.PRNGKey(0)
 
     attention = LlamaAttention.init(config=config, key=key)
     out = attention(x, mask)
 
     # assert the same shape
     assert out.array.shape == (x.axes[0].size, config.seq_len, config.hidden_dim)
+
+
+@skip_if_no_torch
+def test_llama_attention_vs_hf():
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
+
+    config = _get_llama_config()
+
+    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
+
+    state = attention.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_attention = HFLlamaAttention(config.to_hf_config())
+    hf_attention.load_state_dict(state, strict=False)
+
+    x, mask = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((2, 1, config.seq_len, config.seq_len))
+
+    # the torch mask is really a bias, so we need to invert it and make it a big negative number
+    mask_torch = (mask_torch == 0).float() * -1e9
+
+    out = attention(x, mask)
+    hf_out = hf_attention(x_torch, mask_torch)
+
+    assert np.isclose(
+        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-2, atol=1e-2
+    ).all(), f"{hf_out[0]} != {out}"
 
 
 def test_llama_decoder_layer():
@@ -201,7 +229,7 @@ def test_llama_roundtrip():
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        # assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
 def _get_llama_config() -> LlamaConfig:

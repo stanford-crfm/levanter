@@ -266,10 +266,10 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
         d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, None))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, None))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, None))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, None))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
 
         return super().from_state_dict(d, prefix)
 
@@ -278,10 +278,10 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, None))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, None))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, None))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, None))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
 
         state_dict.update(my_dict)
         return state_dict
