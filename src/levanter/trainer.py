@@ -79,6 +79,13 @@ class TrainerHooks:
         else:
             return decorator(fn)
 
+@dataclass
+class TrainerState:
+    step: int
+    model: M
+    opt_state: OptState
+    training_key: PRNGKeyArray
+
 
 class Trainer:
     config: "TrainerConfig"
@@ -147,34 +154,40 @@ class Trainer:
 
     def initial_state(
         self, model_init: Callable[[], M], training_key: PRNGKeyArray
-    ) -> Tuple[M, OptState, PRNGKeyArray, Optional[int]]:
+    ) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
 
         Returns:
             model, opt_state, key, resume_step
-            If resume_step is None, we're starting from scratch. Otherwise, we're resuming from a checkpoint.
         """
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
-        model, (opt_state, training_key), resume_step = self.config.maybe_load_checkpoint(
+        ckpt = self.config.maybe_load_checkpoint(
             model_shape,
             (opt_state_shape, training_key),
             axis_mapping=self.parameter_axis_mapping,
             mesh=self.device_mesh,
         )
 
-        if resume_step is None:
-            model, opt_state = named_jit(self._init_model_and_opt_state, axis_resources=self.parameter_axis_mapping)(
-                model_init
-            )
+        if ckpt is not None:
+            model, (opt_state, training_key), step = ckpt
+        else:
+            model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
+            step = 0
 
-        return model, opt_state, training_key, resume_step
+        return TrainerState(step, model, opt_state, training_key)
 
-    def train_step(self, model: M, opt_state: OptState, *batch: X, **batch_kwargs) -> Tuple[float, M, OptState]:
+    def train_step(self, state: TrainerState, model: M, *batch: X, **batch_kwargs) -> TrainerState:
         """
         Performs a single training step.
         """
-        return self._train_step_fn(model, opt_state, *batch, **batch_kwargs)
+        key, new_key = jax.random.split(state.training_key)
+        loss, new_model, new_optstate = self._train_step_fn(model, state.opt_state, *batch, **batch_kwargs, key=key)
+
+        return TrainerState(state.step + 1, new_model, new_optstate, new_key)
+
+    def training_steps(self, state, model: M, train_loader) -> typing.Iterator[StepInfo]:
+        raise NotImplementedError
 
     @cached_property
     def _train_step_fn(self):
@@ -361,7 +374,7 @@ class TrainerConfig:
 
     def maybe_load_checkpoint(
         self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Tuple[M, S, Optional[int]]:
+    ) -> Optional[Tuple[M, S, int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
@@ -373,15 +386,12 @@ class TrainerConfig:
                 model, training_state, self.load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
             )
 
-            if ckpt is None:
-                if self.load_checkpoint is True:
-                    raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
-                return (model, training_state, None)
-            else:
-                model, training_state, step = ckpt
-                return (model, training_state, step)
+            if ckpt is None and self.load_checkpoint is True:
+                raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
+
+            return ckpt
         else:
-            return (model, training_state, None)
+            return None
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
