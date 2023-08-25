@@ -14,6 +14,7 @@ import jax
 import jmp
 import numpy as np
 import optax
+import wandb
 from draccus import field
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
@@ -157,14 +158,27 @@ class Trainer:
     def EvalBatch(self):
         return self.config.EvalBatch
 
-    def initial_state(self, model_init: Callable[[], M], training_key: PRNGKeyArray) -> TrainerState:
+    def initial_state(
+        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
+    ) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
 
         Returns:
             model, opt_state, key, resume_step
         """
+
+        if model is not None and model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+        elif model is None and model_init is None:
+            raise ValueError("one of model and model_init must be specified")
+
+        if model is not None:
+            m = model
+            model_init = lambda: m  # noqa: E731
+
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+
         ckpt = self.config.maybe_load_checkpoint(
             model_shape,
             (opt_state_shape, training_key),
@@ -192,8 +206,26 @@ class Trainer:
 
         return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
 
-    def training_steps(self, state, model: M, train_loader) -> typing.Iterator[StepInfo]:
-        raise NotImplementedError
+    def training_steps(self, state, train_loader) -> typing.Iterator[StepInfo]:
+        """
+        Generator that yields training steps and runs hooks.
+        """
+        iter_data = iter(train_loader)
+
+        while state.step < self.config.num_train_steps:
+            with capture_time() as loading_time:
+                example = next(iter_data)
+
+            info = self.train_step(state, example, inference=False)
+            state = info.state
+
+            with capture_time() as hook_time:
+                self.run_hooks(info)
+
+            # TODO: refactor logging
+            wandb.log({"throughput/loading_time": loading_time(), "throughput/hook_time": hook_time()})
+
+            yield info
 
     def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
@@ -456,7 +488,7 @@ class OptimizerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    def build(self, num_train_steps):
+    def build(self, num_train_steps: int):
         """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):

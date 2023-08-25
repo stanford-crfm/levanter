@@ -108,12 +108,10 @@ def main(config: TrainLmConfig):
         compute_axis_mapping,
     )
 
-    # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-    optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-    # TODO: we need to make the eval loss function use trainer's loss function since it wraps with mixed precision etc
     def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
         return model.compute_loss(example, inference=inference, key=key).scalar()
+
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     trainer = Trainer(config.trainer, optimizer, compute_loss)
@@ -127,20 +125,16 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(
-            lambda: config.model.build(Vocab, key=model_key),
-            training_key,
-        )
+        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
         if state.step == 0:
-            # no checkpoint was found, so we need to initialize the model and opt state
+            # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
                 logger.info(
                     "No training checkpoint found. Initializing model from HF checkpoint"
                     f" '{converter.reference_checkpoint}'"
                 )
-                # TODO: I don't love that we init the model twice, but it's not a big deal i think?
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state.model = None
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
