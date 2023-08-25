@@ -17,7 +17,13 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
-from levanter.lora import LoraConfig, combine_lora_params, loraize, partition_lora_params
+from levanter.lora import (
+    LoraConfig,
+    combine_lora_params,
+    loraize,
+    partition_lora_params,
+    save_peft_checkpoint_callback,
+)
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -145,10 +151,10 @@ def main(config: LoraLmConfig):
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
-            from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
-
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter),
+                save_peft_checkpoint_callback(
+                    full_save_path, config.lora, config.initialize_from_hf, config.hf_upload
+                ),
                 every=config.hf_save_steps,
             )
 
