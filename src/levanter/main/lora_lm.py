@@ -2,15 +2,12 @@ import functools
 import logging
 import os
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Optional
 
 import jax.random as jrandom
 import wandb
 
-import haliax as hax
 import haliax.random
-from haliax.partitioning import named_jit
 
 import levanter
 from levanter import callbacks
@@ -157,30 +154,6 @@ def main(config: LoraLmConfig):
                 ),
                 every=config.hf_save_steps,
             )
-
-        # visualize log probs
-        @named_jit(
-            in_axis_resources=parameter_axis_mapping,
-            axis_resources=compute_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-        def compute_log_probs(model, example: LmExample):
-            model = trainer.mp.cast_to_compute(model)
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = hax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
-
-        trainer.add_hook(
-            callbacks.compute_and_visualize_log_probs(
-                eval_loader,
-                tokenizer,
-                partial(compute_log_probs, base_model),
-                os.path.join(config.trainer.run_dir, "log_probs"),
-                max_docs=EvalBatch.size,
-            ),
-            every=config.trainer.steps_per_eval,
-        )
 
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)

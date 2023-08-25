@@ -63,7 +63,13 @@ class StepInfo(Generic[M]):
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
     next_key = property(lambda self: self.state.training_key)
-    step = property(lambda self: self.state.step)
+
+    step = property(lambda self: self.state.step - 1)
+    """
+    The step for this info. This is the step that was just completed. If you want the next step, use `next_step`.
+    """
+
+    next_step = property(lambda self: self.state.step)
 
 
 @dataclass
