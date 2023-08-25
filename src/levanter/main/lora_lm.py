@@ -17,7 +17,6 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
-from levanter.logging import log_time_to_wandb
 from levanter.lora import LoraConfig, combine_lora_params, loraize, partition_lora_params
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -100,9 +99,9 @@ def main(config: LoraLmConfig):
         # Structurally, Equinox works best if we keep these two sets of parameters separate. As an example,
         # consider a simple model with two parameters, attention and mlp. That might look like:
         # model = Model(attention=Attention(proj_qkv=Linear), mlp=Mlp())
-        # with LoRA, our model might look more like:
+        # With LoRA, our model might look more like:
         # model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=LoraLinear(...)), mlp=Mlp())
-        # we keep this partitioned as two trees:
+        # We keep this partitioned as two trees:
         # base_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=None), mlp=Mlp())
         # adapter_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=None, lora=LoraLinear(...)), mlp=None)
         # and then we combine them at runtime:
@@ -111,16 +110,15 @@ def main(config: LoraLmConfig):
 
         # We unfortunately need to pass these two trees around more or less together, only really distinguishing
         # them for gradients, optimizer state, and storing checkpoints.
-        # Additionally, the gradient api assumes we compute gradients with respect to the first argument,
-        # so adapter_model has to be the first argument to train_loss.
-        @haliax.named_jit(axis_resources=parameter_axis_mapping)
+        @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
             return loraize(model, config.lora, key=lora_key)
 
         combined_model = loraize_hf_model(hf_model)
-
         # next, split model into base and adapter and create initial optimizer state
         base_model, adapter_model = partition_lora_params(combined_model)
+        # keep the base model in low precision
+        base_model = config.trainer.mp.cast_to_compute(base_model)
 
         del hf_model
         del combined_model
@@ -129,18 +127,14 @@ def main(config: LoraLmConfig):
             model = combine_lora_params(base_model, lora_params=adapter_model)
             return model.compute_loss(example, inference=inference, key=key).scalar()
 
-        base_model = config.trainer.mp.cast_to_compute(base_model)
-
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
         trainer = Trainer(config.trainer, optimizer, functools.partial(compute_loss, base_model))
-        state = trainer.initial_state(
-            training_key,
-            model=adapter_model,
-        )
+        state = trainer.initial_state(training_key, model=adapter_model)
 
         all_param_count = parameter_count(combine_lora_params(base_model, adapter_model))
-        wandb.summary["parameter_count"] = all_param_count
         just_lora_params = parameter_count(adapter_model)
+
+        wandb.summary["parameter_count"] = all_param_count
         wandb.summary["trainable_parameter_count"] = just_lora_params
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
@@ -193,23 +187,8 @@ def main(config: LoraLmConfig):
             for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
                 next(iter_data)
 
-            # TODO: this new initial step logic is not right
-            initial_step = state.step + 1
-        else:
-            initial_step = 0
-
-        # finally, run the training loop
-        for step in range(initial_step, config.trainer.num_train_steps):
-            with log_time_to_wandb("throughput/loading_time", step=step):
-                example = next(iter_data)
-
-            info = trainer.train_step(state, example, inference=False)
-            state = info.state
-
-            with log_time_to_wandb("throughput/hook_time", step=step):
-                trainer.run_hooks(info)
-
-        last_step = info
+        ## OK, actually run training!
+        last_step = trainer.train(state, iter_data)
         trainer.run_hooks(last_step, force=True)
         # checkpointer.on_step(last_step, force=True)
 

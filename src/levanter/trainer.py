@@ -206,7 +206,9 @@ class Trainer:
 
         return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
 
-    def training_steps(self, state, train_loader) -> typing.Iterator[StepInfo]:
+    def training_steps(
+        self, state: TrainerState[M], train_loader, run_hooks: bool = True
+    ) -> typing.Iterator[StepInfo]:
         """
         Generator that yields training steps and runs hooks.
         """
@@ -216,31 +218,46 @@ class Trainer:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
+            # TODO: refactor logging
+            wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
+
             info = self.train_step(state, example, inference=False)
             state = info.state
 
-            with capture_time() as hook_time:
-                self.run_hooks(info)
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
 
-            # TODO: refactor logging
-            wandb.log({"throughput/loading_time": loading_time(), "throughput/hook_time": hook_time()})
+                wandb.log({"throughput/hook_time": hook_time()}, step=state.step)
 
             yield info
+
+    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+        """
+        Performs training until the number of steps is reached.
+        """
+        for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
+            pass
+
+        return info
 
     def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_to_wandb, every=1)
+        self.add_eval_hook(eval_loader)
+        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        checkpointer = self.config.checkpointer.create(self.config.run_id)
+        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        return checkpointer
+
+    def add_eval_hook(self, eval_loader):
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
             eval_loss = functools.partial(self.loss_fn, inference=True, key=None)
             self.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
                 every=self.config.steps_per_eval,
             )
-        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.config.run_id)
-        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
-        return checkpointer
 
     @cached_property
     def _train_step_fn(self):

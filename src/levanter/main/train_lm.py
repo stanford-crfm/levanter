@@ -16,7 +16,6 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
-from levanter.logging import log_time_to_wandb
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
@@ -143,7 +142,7 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        wandb.summary["parameter_count"] = parameter_count(model)
+        wandb.summary["parameter_count"] = parameter_count(state.model)
 
         # boilerplate hooks and such
         trainer.add_default_hooks(eval_loader)
@@ -187,22 +186,9 @@ def main(config: TrainLmConfig):
 
             for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
                 next(iter_data)
-            initial_step = state.step + 1
-        else:
-            initial_step = 0
 
-        # finally, run the training loop
-        for step in range(initial_step, config.trainer.num_train_steps):
-            with log_time_to_wandb("throughput/loading_time", step=step):
-                example = next(iter_data)
-
-            info = trainer.train_step(state, example, inference=False)
-            state = info.state
-
-            with log_time_to_wandb("throughput/hook_time", step=step):
-                trainer.run_hooks(info)
-
-        last_step = info
+        ## OK, actually run training!
+        last_step = trainer.train(state, iter_data)
         trainer.run_hooks(last_step, force=True)
         # checkpointer.on_step(last_step, force=True)
 
