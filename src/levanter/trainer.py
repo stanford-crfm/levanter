@@ -28,6 +28,7 @@ import levanter.logging
 from levanter import callbacks
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
+from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
@@ -264,6 +265,32 @@ class Trainer:
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
                 every=self.config.steps_per_eval,
             )
+
+    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
+        """Creates a replicated batch loader for the given dataset. Generally you should use this
+        if you either be able to make a single pass over the dataset.
+
+        Args:
+            dataset (Dataset): the dataset to load
+            batch_axis (Axis): the batch axis
+
+        Returns:
+            ReplicatedBatchLoader: the batch loader
+        """
+        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+
+    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
+        """Creates a sharded batch loader for the given dataset. Generally you should use this
+        for training and you don't care about epoch boundaries.
+
+        Args:
+            dataset (Dataset): the dataset to load
+            batch_axis (Axis): the batch axis
+
+        Returns:
+            ShardedBatchLoader: the batch loader
+        """
+        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
 
     @cached_property
     def _train_step_fn(self):

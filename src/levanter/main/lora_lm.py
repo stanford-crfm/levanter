@@ -12,7 +12,6 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.lora import (
     LoraConfig,
@@ -67,29 +66,13 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
-    # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
-    # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
-    compute_axis_mapping = config.trainer.compute_axis_mapping
-    parameter_axis_mapping = config.trainer.parameter_axis_mapping
-
-    eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
-        config.trainer.device_mesh,
-        EvalBatch,
-        compute_axis_mapping,
-    )
-
-    train_loader = ShardedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos),
-        config.trainer.device_mesh,
-        Batch,
-        compute_axis_mapping,
-    )
-
     # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     with config.trainer.device_mesh:
+        # how we shard parameters across devices
+        parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
@@ -142,6 +125,13 @@ def main(config: LoraLmConfig):
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+
+        # data loaders
+        eval_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+        eval_loader = trainer.replicated_loader(eval_dataset, EvalBatch)
+
+        train_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+        train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
         trainer.add_default_hooks(eval_loader)

@@ -13,8 +13,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.compat.hf_checkpoints import HFCompatConfig
-from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
+from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
@@ -93,20 +92,6 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
-        config.trainer.device_mesh,
-        EvalBatch,
-        compute_axis_mapping,
-    )
-
-    train_loader = ShardedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos),
-        config.trainer.device_mesh,
-        Batch,
-        compute_axis_mapping,
-    )
-
     def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
         return model.compute_loss(example, inference=inference, key=key).scalar()
 
@@ -115,7 +100,13 @@ def main(config: TrainLmConfig):
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
-    with config.trainer.device_mesh:
+    eval_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+    eval_loader = trainer.replicated_loader(eval_dataset, EvalBatch)
+
+    train_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+    train_loader = trainer.sharded_loader(train_dataset, Batch)
+
+    with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -149,7 +140,6 @@ def main(config: TrainLmConfig):
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
-            from levanter.compat.hf_checkpoints import save_hf_checkpoint_callback
 
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter),
