@@ -25,7 +25,6 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
-from levanter import callbacks
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
@@ -249,6 +248,8 @@ class Trainer:
         return info
 
     def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
+        from levanter import callbacks
+
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_to_wandb, every=1)
         self.add_eval_hook(eval_loader)
@@ -259,6 +260,8 @@ class Trainer:
         return checkpointer
 
     def add_eval_hook(self, eval_loader):
+        from levanter import callbacks
+
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
             eval_loss = functools.partial(self.loss_fn, inference=True, key=None)
             self.add_hook(
