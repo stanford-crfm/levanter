@@ -89,7 +89,7 @@ def compute_and_visualize_log_probs(path: str, model, tokenizer, log_prob_fn, te
     visualize_log_probs(tokens, log_probs, path)
 
 
-@partial(jax.pjit, out_shardings=None)
+@partial(jax.jit, out_shardings=None)
 def _concatenate(x):
     return jnp.concatenate(x, axis=0)
 
