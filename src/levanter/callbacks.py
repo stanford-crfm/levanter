@@ -7,14 +7,11 @@ import tempfile
 import threading
 import time
 import warnings
-from functools import partial
 from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
-import jax.numpy as jnp
 import wandb
-from jax.experimental.pjit import pjit
 from tqdm import tqdm
 
 from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
@@ -256,14 +253,3 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs
-
-
-@partial(pjit, out_shardings=None)
-def _concatenate(x):
-    return jnp.concatenate(x, axis=0)
-
-
-def _decode_tokens_pretty(tok, ids):
-    return [
-        tok.convert_tokens_to_string([x]) if x is not None else tok.unk_token for x in tok.convert_ids_to_tokens(ids)
-    ]

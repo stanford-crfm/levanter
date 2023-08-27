@@ -1,11 +1,12 @@
 import html
+from functools import partial
 from typing import List
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
 from matplotlib import cm
-
-from levanter.callbacks import _concatenate, _decode_tokens_pretty
 
 
 def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_path: str):
@@ -86,3 +87,14 @@ def compute_and_visualize_log_probs(path: str, model, tokenizer, log_prob_fn, te
     tokens = [_decode_tokens_pretty(tokenizer, t) for t in targets]
     log_probs = np.array(log_probs)
     visualize_log_probs(tokens, log_probs, path)
+
+
+@partial(jax.pjit, out_shardings=None)
+def _concatenate(x):
+    return jnp.concatenate(x, axis=0)
+
+
+def _decode_tokens_pretty(tok, ids):
+    return [
+        tok.convert_tokens_to_string([x]) if x is not None else tok.unk_token for x in tok.convert_ids_to_tokens(ids)
+    ]
