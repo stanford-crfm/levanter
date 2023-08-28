@@ -209,6 +209,8 @@ class Trainer:
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
             )
+            # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
+            loss = loss.item()  # type: ignore
 
         return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
 
