@@ -78,6 +78,8 @@ class LlamaConfig:
             "meta-llama/Llama-2-7b-hf",
             trust_remote_code=True,
             config_overrides={"tie_word_embeddings": True},
+            tokenizer="hf-internal-testing/llama-tokenizer",
+            HfConfigClass=HfLlamaConfig,
         )
 
     @classmethod

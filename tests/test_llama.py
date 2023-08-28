@@ -247,11 +247,11 @@ def test_llama_roundtrip():
         model_output = model(input, attn_mask=attn_mask)
         return hax.nn.softmax(model_output, axis=model.Vocab)
 
-    # compute = jax.jit(compute)
+    compute = jax.jit(compute)
     jax_out = compute(input).array
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_pretrained(model, tmpdir)
+        converter.save_pretrained(model, tmpdir, save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
 

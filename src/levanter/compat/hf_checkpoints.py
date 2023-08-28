@@ -20,7 +20,7 @@ import jax
 import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
-from huggingface_hub.utils import EntryNotFoundError, HFValidationError
+from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
@@ -302,8 +302,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return self.config_from_hf_config(self.default_hf_config)
 
     def HFAutoModelClass(self, auto_class: Type[AutoModel] = AutoModelForCausalLM) -> Type[AutoModel]:
-        # figure out the
-        config = self.hf_config_from_hf_checkpoint()
+        # first, see if it's a built-in model
+        try:
+            return auto_class._model_mapping[self.HfConfigClass]
+        except KeyError:
+            pass
+
+        config = self.default_hf_config
         cls_name = auto_class.__name__
         if hasattr(config, "auto_map") and cls_name in config.auto_map:
             class_ref = config.auto_map[cls_name]
@@ -503,10 +508,26 @@ class HFCheckpointConverter(Generic[LevConfig]):
         dict_config = config.to_dict()
 
         # copy over the default keys
-        for k in KEYS_TO_COPY_FROM_BASE_CONFIG:
-            attr = getattr(self.default_hf_config, k, None)
-            if attr is not None:
-                dict_config[k] = attr
+        try:
+            for k in KEYS_TO_COPY_FROM_BASE_CONFIG:
+                attr = getattr(self.default_hf_config, k, None)
+                if attr is not None:
+                    dict_config[k] = attr
+        # except GatedRepoError:
+        #     warnings.warn("Could not copy keys from base config because the repo is gated. Making assumptions.")
+        except Exception as e:  # noqa
+            if isinstance(e, GatedRepoError) or isinstance(e.__cause__, GatedRepoError):
+                warnings.warn("Could not copy keys from base config because the repo is gated. Making assumptions.")
+
+                # this is probably llama, but in general we just need to set the auto_map and architectures
+                dict_config["auto_map"] = {
+                    "AutoModelForCausalLM": self.HFAutoModelClass(AutoModelForCausalLM).__qualname__,
+                    "AutoConfig": self.HfConfigClass.__qualname__,
+                }
+
+                dict_config["architectures"] = [self.HFAutoModelClass(AutoModelForCausalLM).__name__]
+            else:
+                raise
 
         if self.config_overrides:
             dict_config.update(self.config_overrides)
@@ -584,6 +605,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             try:
                 attributes_path = hf_hub_download(repo_id=repo, filename=".gitattributes", revision=revision)
             except EntryNotFoundError:
+                attributes_path = None
+            except GatedRepoError:
                 attributes_path = None
 
         if attributes_path is None:
