@@ -44,6 +44,8 @@ class LlamaConfig:
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
+    # TODO(ivan): add tying of embeddings, default it to false to match the original model
+
     seq_len: int = 2048
     hidden_dim: int = 4096
     intermediate_dim: int = 11008
