@@ -493,6 +493,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     logger.info(
                         f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
                     )
+                    # run in jit b/c we're manipulating sharded tensors
+                    lev_model = haliax.named_jit(lambda m: m.resize_vocab(tokenizer_Vocab.size), axis_mapping)(
+                        lev_model
+                    )
                     lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
                 else:
                     logger.warning(
@@ -500,6 +504,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     )
 
         if axis_mapping is not None:
+            print(
+                "current devices, pre-shard",
+                set(d for a in jax.tree_util.tree_leaves(lev_model) for d in a.devices()),
+                flush=True,
+            )
+            print("memory", jax.lib.xla_bridge.get_backend(None).live_arrays(), flush=True)
+            print("buffers", jax.lib.xla_bridge.get_backend(None).live_buffers(), flush=True)
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
         else:
             lev_model = haliax.auto_sharded(lev_model)

@@ -63,6 +63,10 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     def Pos(self) -> Axis:
         return self.config.Pos
 
+    @property
+    def KeyPos(self) -> Axis:
+        return self.config.KeyPos
+
     @classmethod
     @abc.abstractmethod
     def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKey) -> "LmHeadModel[LmConfigT]":
