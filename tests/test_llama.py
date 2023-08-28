@@ -12,8 +12,8 @@ from levanter.models.llama import (
     LlamaConfig,
     LlamaDecoderLayer,
     LlamaLMHeadModel,
-    LlamaRotaryEmbedding,
     LlamaRMSNorm,
+    LlamaRotaryEmbedding,
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
