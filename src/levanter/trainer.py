@@ -17,7 +17,7 @@ import optax
 import wandb
 from draccus import field
 from jax.sharding import Mesh
-from jaxtyping import PRNGKeyArray, PyTree, Scalar
+from jaxtyping import PRNGKeyArray, PyTree
 from optax import OptState
 
 import haliax as hax
@@ -57,7 +57,7 @@ class TrainerState(Generic[M]):
 @dataclass
 class StepInfo(Generic[M]):
     state: TrainerState[M]
-    loss: Scalar
+    loss: float
     step_duration: float
 
     model = property(lambda self: self.state.model)
