@@ -157,7 +157,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
 
-    tokenizer: PreTrainedTokenizerBase
+    tokenizer: PreTrainedTokenizerFast | PreTrainedTokenizer
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
@@ -489,7 +489,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         model: LmWithHfSerializationMixin,
         path: str,
         save_tokenizer: bool = True,
-        save_reference_code: bool = True,
+        save_reference_code: Optional[bool] = None,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -501,6 +501,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         """
         logger.info(f"Saving HF-compatible checkpoint to {path}")
         os.makedirs(path, exist_ok=True)
+
+        # if save_reference_code is None, we save code for models that aren't in the HF repo.
+        if save_reference_code is None:
+            save_reference_code = hasattr(self.default_hf_config, "auto_map")
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:
@@ -537,7 +541,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         model: LmWithHfSerializationMixin,
         path,
         upload_to_hf: Union[bool, str, RepoRef] = False,
-        save_reference_code: bool = True,
+        save_reference_code: Optional[bool] = None,
         save_tokenizer: bool = True,
         **hf_upload_kwargs,
     ):
@@ -555,8 +559,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         :param hf_upload_kwargs: any additional kwargs to pass to huggingface_hub.upload_folder
         :param save_reference_code: if True, will save the reference code (from reference_checkpoint) to the checkpoint.
         This is useful when using custom architectures, as it will allow the model to be loaded without the custom
-        architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS
-        :return:
+        architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS.
+        If None, will save code for models that aren't in the HF repo.
         """
         with temp_dir_before_upload(path) as local_path:
             if path != local_path:
