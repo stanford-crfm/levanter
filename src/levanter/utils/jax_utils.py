@@ -15,7 +15,9 @@ from haliax.jax_utils import is_jax_array_like
 
 
 def jnp_to_python(a: jnp.ndarray):
-    if a.shape == () or a.shape == (1,):
+    if isinstance(a, (float, int)):
+        return float(a)
+    elif a.shape == () or a.shape == (1,):
         return a.item()
     else:
         return a.tolist()

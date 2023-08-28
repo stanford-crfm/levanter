@@ -18,17 +18,20 @@ from levanter.checkpoint import (
     load_metadata,
     save_checkpoint,
 )
-from levanter.trainer import StepInfo
+from levanter.trainer import StepInfo, TrainerState
 from test_utils import MLP, arrays_only, assert_trees_not_close
 
 
 def _dummy_step_info(step):
     return StepInfo(
+        state=TrainerState(
+            # + 1 b/c step here is next step
+            step=step + 1,
+            model=None,
+            opt_state=(),
+            training_key=(),
+        ),
         loss=0.0,
-        step=step,
-        model=None,
-        opt_state=(),
-        next_key=(),
         step_duration=0.0,
     )
 
