@@ -29,9 +29,6 @@ from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
 
-jax.config.update("jax_disable_jit", True)
-
-
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
 class LlamaConfig:
@@ -74,7 +71,12 @@ class LlamaConfig:
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
-        return HFCheckpointConverter(cls, "meta-llama/Llama-2-7b-hf", trust_remote_code=True)  # type: ignore
+        return HFCheckpointConverter(
+            cls,  # type: ignore
+            "meta-llama/Llama-2-7b-hf",
+            trust_remote_code=True,
+            config_overrides={"tie_word_embeddings": True},
+        )
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):

@@ -247,7 +247,7 @@ def test_llama_roundtrip():
         model_output = model(input, attn_mask=attn_mask)
         return hax.nn.softmax(model_output, axis=model.Vocab)
 
-    compute = jax.jit(compute)
+    # compute = jax.jit(compute)
     jax_out = compute(input).array
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -275,6 +275,8 @@ def _get_llama_config() -> LlamaConfig:
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         rope_scaling=rope_scaling,
+        # disable for tests so debugging is easier
+        gradient_checkpointing=False,
     )
 
 
