@@ -46,6 +46,11 @@ DEFAULT_JAX_CONFIG = {
 }
 
 
+# A note on the semantics of "step" vs "next_step":
+# The "step" of a TrainerState is the state after `step` steps have been taken.
+# A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
+
+
 @dataclass
 class TrainerState(Generic[M]):
     step: int
@@ -66,9 +71,8 @@ class StepInfo(Generic[M]):
 
     step = property(lambda self: self.state.step - 1)
     """
-    The step for this info. This is the step that was just completed. If you want the next step, use `next_step`.
+    The step that was just completed. If you want the next step, use `next_step`.
     """
-
     next_step = property(lambda self: self.state.step)
 
 
@@ -193,7 +197,8 @@ class Trainer:
         )
 
         if ckpt is not None:
-            model, (opt_state, training_key), step = ckpt
+            model, (opt_state, training_key), completed_step = ckpt
+            step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
             step = 0

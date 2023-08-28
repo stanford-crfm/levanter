@@ -25,7 +25,8 @@ from test_utils import MLP, arrays_only, assert_trees_not_close
 def _dummy_step_info(step):
     return StepInfo(
         state=TrainerState(
-            step=step,
+            # + 1 b/c step here is next step
+            step=step + 1,
             model=None,
             opt_state=(),
             training_key=(),
