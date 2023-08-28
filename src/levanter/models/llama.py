@@ -10,7 +10,7 @@ from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, NamedArray
+from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
@@ -27,6 +27,8 @@ from levanter.compat.torch_serialization import (
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
+
+jax.config.update("jax_disable_jit", True)
 
 
 @LmConfig.register_subclass("llama")
@@ -287,12 +289,48 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
+class LlamaRMSNorm(hnn.LayerNorm):
+    """It is a modified version of LayerNorm.
+    The main changes are:
+    1. The variance is defined as the average of square, versus the original
+    definition as the average of the squared deviations from the mean.
+    2. The output is defined as x * inv, without minusing the mean.
+    3. The default value of eps is set to 1e-6 and use_bias to False.
+    """
+
+    @staticmethod
+    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
+        if use_weight:
+            weight = hax.ones(axis)
+        else:
+            weight = None
+        if use_bias:
+            bias = hax.zeros(axis)
+        else:
+            bias = None
+
+        return LlamaRMSNorm(axis, weight, bias, eps)
+
+    def __call__(self, x: NamedArray) -> NamedArray:
+        # This gives a different result than jnp.var(), which is
+        # defined as the average of the squared deviations from the mean
+        var = hax.mean(hax.square(x), axis=self.axis)
+        inv = hax.rsqrt(var + self.eps)
+        out = x * inv
+
+        if self.weight is not None:
+            out = self.weight * out
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     attn: LlamaAttention
     mlp: LlamaMlp
-    ln_1: hnn.LayerNorm  # input layernorm
-    ln_2: hnn.LayerNorm  # post attention layernorm
+    ln_1: LlamaRMSNorm  # input layernorm
+    ln_2: LlamaRMSNorm  # post attention layernorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
@@ -306,8 +344,8 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_2 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -338,7 +376,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     layers: Stacked[LlamaDecoderLayer]
-    ln_f: hnn.LayerNorm
+    ln_f: LlamaRMSNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
@@ -348,7 +386,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_f = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return LlamaTransformer(config, layers, ln_f)
 
@@ -360,7 +398,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return x
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "h"))
+        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
         out = super().from_state_dict(stacked, prefix=prefix)
         return out
 
@@ -389,7 +427,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        k_wte, k_wpe = jrandom.split(key, 2)
+        k_wte = jrandom.split(key, 1)
 
         token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
         return LlamaEmbedding(Vocab, config, token_embeddings)
@@ -449,7 +487,6 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask)
         lm_logits = self.embeddings.unembed(x)
-
         return lm_logits
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:

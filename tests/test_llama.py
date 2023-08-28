@@ -13,6 +13,7 @@ from levanter.models.llama import (
     LlamaDecoderLayer,
     LlamaLMHeadModel,
     LlamaRotaryEmbedding,
+    LlamaRMSNorm,
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
@@ -127,20 +128,8 @@ def test_apply_rotary_pos_emb():
     assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
 
 
-def test_llama_attention():
-    config = _get_llama_config()
-    x, mask = _get_random_inputs(config)
-    key = random.PRNGKey(0)
-
-    attention = LlamaAttention.init(config=config, key=key)
-    out = attention(x, mask)
-
-    # assert the same shape
-    assert out.array.shape == (x.axes[0].size, config.seq_len, config.hidden_dim)
-
-
 @skip_if_no_torch
-def test_llama_attention_vs_hf():
+def test_llama_attention():
     import torch
     from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 
@@ -151,11 +140,12 @@ def test_llama_attention_vs_hf():
     state = attention.to_state_dict()
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_attention = HFLlamaAttention(config.to_hf_config())
-    hf_attention.load_state_dict(state, strict=False)
+    hf_attention.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((2, 1, config.seq_len, config.seq_len))
+    batch_size = x_torch.shape[0]
+    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
 
     # the torch mask is really a bias, so we need to invert it and make it a big negative number
     mask_torch = (mask_torch == 0).float() * -1e9
@@ -164,17 +154,56 @@ def test_llama_attention_vs_hf():
     hf_out = hf_attention(x_torch, mask_torch)
 
     assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-2, atol=1e-2
+        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
     ).all(), f"{hf_out[0]} != {out}"
 
 
+@skip_if_no_torch
+def test_llama_rms_norm():
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaRMSNorm as HFLlamaRMSNorm
+
+    config = _get_llama_config()
+    ln = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+    hf_ln = HFLlamaRMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
+
+    x, _ = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+
+    out = ln(x)
+    hf_out = hf_ln(x_torch)
+
+    assert np.isclose(
+        hf_out.detach().cpu().numpy(), np.array(out.array), rtol=1e-6, atol=1e-6
+    ).all(), f"{hf_out} != {out}"
+
+
+@skip_if_no_torch
 def test_llama_decoder_layer():
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer
+
     llama_config = _get_llama_config()
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
+
+    state = llama_decoder_layer.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config())
+    hf_decoder_layer.load_state_dict(state, strict=True)
+
     x, mask = _get_random_inputs(llama_config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    mask_torch = (mask_torch == 0).float() * -1e9
+
     out = llama_decoder_layer(x, mask)
-    assert out.array.shape == (x.axes[0].size, llama_config.seq_len, llama_config.hidden_dim)
+    hf_out = hf_decoder_layer(x_torch, mask_torch)
+
+    assert np.isclose(
+        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
+    ).all(), f"{hf_out[0]} != {out}"
 
 
 def test_llama_lm_head_model():
@@ -212,6 +241,7 @@ def test_llama_roundtrip():
 
     input = hax.random.randint(random.PRNGKey(0), model.Pos, 0, model.Vocab.size)
     attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
     def compute(input):
         model_output = model(input, attn_mask=attn_mask)
@@ -225,7 +255,7 @@ def test_llama_roundtrip():
         torch_model2 = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
 
-        torch_out2 = torch_model2(torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0))
+        torch_out2 = torch_model2(input_torch)
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
