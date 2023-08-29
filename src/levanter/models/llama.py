@@ -43,6 +43,7 @@ class LlamaConfig:
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
+
     seq_len: int = 2048
     hidden_dim: int = 4096
     intermediate_dim: int = 11008
@@ -203,6 +204,7 @@ class LlamaRotaryEmbedding(eqx.Module):
         # It uses a different permutation in order to obtain the same calculation
         emb = hax.concatenate(HeadSize, (freqs, freqs))
         cos_cached = hax.cos(emb)
+        sin_cached = hax.sin(emb)
         # This is different from the paper but aligns with HF implementation:
         return cos_cached, sin_cached
 
