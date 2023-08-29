@@ -171,8 +171,7 @@ def main(config: LoraLmConfig):
                 next(iter_data)
 
         ## OK, actually run training!
-        last_step = trainer.train(state, iter_data)
-        trainer.run_hooks(last_step, force=True)
+        trainer.train(state, iter_data)
         # checkpointer.on_step(last_step, force=True)
 
 
