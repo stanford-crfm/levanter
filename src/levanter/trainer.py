@@ -253,6 +253,10 @@ class Trainer:
         for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
             pass
 
+        if run_hooks:
+            # force hooks to run at the end
+            self.run_hooks(info, force=True)
+
         return info
 
     def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
