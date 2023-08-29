@@ -198,7 +198,6 @@ class LlamaRotaryEmbedding(eqx.Module):
 
         position_ids: NamedArray = hax.arange(Pos)
 
-        # Evaluates the Einstein summation convention on the operands.
         freqs = position_ids * inv_freq.broadcast_axis(Pos)
         # This is different from the paper but alignes with HF implementation:
         # It uses a different permutation in order to obtain the same calculation
