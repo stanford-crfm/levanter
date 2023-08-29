@@ -381,8 +381,6 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
-        # TODO: here it reports an error that is related to _get_rotary_emb() in LlamaAttention
-        # TypeError: Output from batched function Axis(name='head_size', size=4) with type <class 'haliax.axis.Axis'> is not a valid JAX type
         layers = Stacked.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_layers),
