@@ -203,7 +203,7 @@ class LlamaRotaryEmbedding(eqx.Module):
         # It uses a different permutation in order to obtain the same calculation
         emb = hax.concatenate(HeadSize, (freqs, freqs))
         cos_cached = hax.cos(emb)
-        sin_cached = hax.sin(emb)
+        # This is different from the paper but aligns with HF implementation:
         return cos_cached, sin_cached
 
     def __call__(self, seq_len: int) -> Tuple[NamedArray, NamedArray]:
