@@ -353,10 +353,9 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray]):
+        # self attention and skip connection
         residual = x
         x = self.ln_1(x)
-
-        # self attention and skip connection
         attn_output = self.attn(x=x, mask=mask)
         x = residual + attn_output
 
