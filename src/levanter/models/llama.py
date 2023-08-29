@@ -43,9 +43,6 @@ class LlamaConfig:
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
-
-    # TODO(ivan): add tying of embeddings, default it to false to match the original model
-
     seq_len: int = 2048
     hidden_dim: int = 4096
     intermediate_dim: int = 11008
@@ -67,9 +64,8 @@ class LlamaConfig:
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
-    Mlp = property(lambda self: Axis(name="mlp", size=self.hidden_dim))  # TODO: shall we multiply with mlp_scale?
+    Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
-    Intermediate = property(lambda self: Axis(name="intermediate", size=self.intermediate_dim))
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
@@ -121,19 +117,19 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     before down-proj.
     """
 
-    gate_proj: hnn.Linear  # projection from Embed to Intermediate
-    up_proj: hnn.Linear  # projection from Embed to Intermediate
-    down_proj: hnn.Linear  # projection from Intermediate to Embed
+    gate_proj: hnn.Linear  # projection from Embed to Mlp
+    up_proj: hnn.Linear  # projection from Embed to Mlp
+    down_proj: hnn.Linear  # projection from Mlp to Embed
     act: Callable = eqx.static_field()
 
     @staticmethod
     def init(
-        Embed: Axis, Intermediate: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
+        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_fc, use_bias=use_bias)
-        up_proj = hnn.Linear.init(Out=Intermediate, In=Embed, key=k_up_proj, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Intermediate, key=k_down_proj, use_bias=use_bias)
+        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
+        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -346,7 +342,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         attn = LlamaAttention.init(config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
-            config.Intermediate,
+            config.Mlp,
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
