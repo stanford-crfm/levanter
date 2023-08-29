@@ -7,6 +7,7 @@ from jax import random
 
 import haliax as hax
 
+from levanter.compat.hf_checkpoints import RepoRef
 from levanter.models.llama import (
     LlamaAttention,
     LlamaConfig,
@@ -224,25 +225,30 @@ def test_llama_roundtrip():
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
+    model_id = "stanford-crfm/levanter-llama-test"
     converter = LlamaConfig.default_hf_checkpoint_converter
 
-    config = LlamaConfig()
-    Vocab = hax.Axis("vocab", 32000)
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        gradient_checkpointing=False,
+    )
+    Vocab = hax.Axis("vocab", 1000)
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
     attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
-    torch_config = config.to_hf_config(vocab_size=Vocab.size)
-    torch_model = LlamaForCausalLM(torch_config)
+    torch_model = LlamaForCausalLM.from_pretrained(model_id)
     torch_model.eval()
 
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    model = converter.load_pretrained(LlamaLMHeadModel)
+    model = converter.load_pretrained(LlamaLMHeadModel, RepoRef(model_id))
 
     def compute(input):
         model_output = model(input, attn_mask=attn_mask)
