@@ -222,26 +222,27 @@ def test_llama_lm_head_model():
 @skip_if_no_torch
 def test_llama_roundtrip():
     import torch
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
     converter = LlamaConfig.default_hf_checkpoint_converter
 
-    config = _get_llama_config()
-    Vocab = hax.Axis("vocab", 1000)
+    config = LlamaConfig()
+    Vocab = hax.Axis("vocab", 32000)
 
-    # TODO: load the first torch model with model_id from HF
-
-    # randomly initialize a levanter model
-    # TODO: use converter.load_pretrained
-    model = LlamaLMHeadModel.init(
-        Vocab=Vocab,
-        config=config,
-        key=random.PRNGKey(0),
-    )
-
-    input = hax.random.randint(random.PRNGKey(0), model.Pos, 0, model.Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    # Make input and attn_mask
+    input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
+
+    torch_config = config.to_hf_config(vocab_size=Vocab.size)
+    torch_model = LlamaForCausalLM(torch_config)
+    torch_model.eval()
+
+    torch_out = torch_model(input_torch)
+    torch_out = torch_out.logits[0].detach().cpu().numpy()
+    torch_out = jax.nn.softmax(torch_out, axis=-1)
+
+    model = converter.load_pretrained(LlamaLMHeadModel)
 
     def compute(input):
         model_output = model(input, attn_mask=attn_mask)
@@ -249,6 +250,9 @@ def test_llama_roundtrip():
 
     compute = jax.jit(compute)
     jax_out = compute(input).array
+
+    assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+    assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(model, tmpdir, save_reference_code=False)
@@ -263,20 +267,16 @@ def test_llama_roundtrip():
 
 
 def _get_llama_config() -> LlamaConfig:
-    seq_len = 128
-    hidden_dim = 16
-    num_heads = 4
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
     }
     return LlamaConfig(
-        seq_len=seq_len,
-        hidden_dim=hidden_dim,
-        num_heads=num_heads,
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
         rope_scaling=rope_scaling,
-        # disable for tests so debugging is easier
-        gradient_checkpointing=False,
+        gradient_checkpointing=False,  # disable for tests so debugging is easier
     )
 
 

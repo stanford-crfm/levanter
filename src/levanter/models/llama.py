@@ -93,7 +93,19 @@ class LlamaConfig:
             rope_scaling=hf_config.rope_scaling,
         )
 
-    def to_hf_config(self, vocab_size: int = 32000, config_overrides=None) -> HfLlamaConfig:
+    def to_hf_config(
+        self, vocab_size: int = 32000, tie_word_embeddings: bool = False, config_overrides: Optional[Dict] = None
+    ) -> HfLlamaConfig:
+        """Convert to HuggingFace's LlamaConfig
+
+        Args:
+            vocab_size (int, optional): Vocabulary size of the tokenizer. Defaults to 32000.
+            tie_word_embeddings (bool, optional): Whether to tie weight embeddings. HuggingFace's default value is False
+            config_overrides (dict, optional): Overrides for the config. Defaults to None.
+
+        Returns:
+            HfLlamaConfig: HuggingFace's LlamaConfig
+        """
         if config_overrides is None:
             config_overrides = {}
 
@@ -108,6 +120,7 @@ class LlamaConfig:
             rms_norm_eps=self.layer_norm_epsilon,
             rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
+            tie_word_embeddings=tie_word_embeddings,
             **config_overrides,
         )
 
