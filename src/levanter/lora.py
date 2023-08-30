@@ -57,7 +57,7 @@ import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
 
-from levanter.compat.hf_checkpoints import RepoRef, upload_to_hub
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -351,6 +351,57 @@ def save_peft_checkpoint_callback(
         logger.info("Saved checkpoint.")
 
     return cb
+
+
+def save_merged_hf_checkpoint_callback(
+    base_path,
+    converter: HFCheckpointConverter,
+    base_model,
+    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    **hf_upload_kwargs,
+):
+    """
+    Saves a merged
+
+    If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing any additional kwargs to the huggingface_hub.upload_folder function.
+    Args:
+        base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
+            may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
+        converter: the converter to use to convert the base model to HF
+        base_model: the base model to save
+        upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
+        **hf_upload_kwargs:
+    Returns:
+        callback
+    """
+
+    def save_merged_hf_model(step: StepInfo):
+        nonlocal hf_upload_kwargs, upload_to_hf
+
+        if step.step == 0:
+            return
+        if upload_to_hf is not None and "commit_message" not in hf_upload_kwargs:
+            my_upload_kwargs = hf_upload_kwargs.copy()
+            my_upload_kwargs["commit_message"] = f"Upload for step {step.step} from Levanter"
+        else:
+            my_upload_kwargs = hf_upload_kwargs
+
+        logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
+
+        combined_model = combine_lora_params(base_model, lora_params=step.model)
+        merged_model = merge_lora_modules(combined_model)
+        if upload_to_hf is None:
+            upload_to_hf = False  # type: ignore
+        converter.save_pretrained(
+            merged_model,
+            os.path.join(base_path, f"step-{step.step}"),
+            upload_to_hf=upload_to_hf,  # type: ignore
+            **my_upload_kwargs,
+        )
+
+        logger.info("Saved merged checkpoint.")
+
+    return save_merged_hf_model
 
 
 def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:
