@@ -345,10 +345,10 @@ class LlamaRMSNorm(hnn.LayerNorm):
 
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
-    attn: LlamaAttention
+    self_attn: LlamaAttention
     mlp: LlamaMlp
-    ln_1: LlamaRMSNorm  # input layernorm
-    ln_2: LlamaRMSNorm  # post attention layernorm
+    input_layernorm: LlamaRMSNorm
+    post_attention_layernorm: LlamaRMSNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
@@ -371,29 +371,22 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, mask: Optional[NamedArray]):
         # self attention and skip connection
         residual = x
-        x = self.ln_1(x)
-        attn_output = self.attn(x=x, mask=mask)
+        x = self.input_layernorm(x)
+        attn_output = self.self_attn(x=x, mask=mask)
         x = residual + attn_output
 
         # MLP and skip connection
         residual = x
-        x = self.ln_2(x)
+        x = self.post_attention_layernorm(x)
         mlp_output = self.mlp(x)
         output = residual + mlp_output
         return output
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {
-            "attn": "self_attn",
-            "ln_1": "input_layernorm",
-            "ln_2": "post_attention_layernorm",
-        }
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     layers: Stacked[LlamaDecoderLayer]
-    ln_f: LlamaRMSNorm
+    norm: LlamaRMSNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
@@ -408,7 +401,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray]) -> NamedArray:
         x = self.layers.fold(x, mask=attn_mask)
-        x = self.ln_f(x)
+        x = self.norm(x)
 
         return x
 
@@ -425,9 +418,6 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         state_dict.update(stacked_dict)
 
         return state_dict
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"ln_f": "norm"}
 
 
 class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
