@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple, Type, Union
 
@@ -5,13 +6,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from jaxtyping import PRNGKeyArray
 from transformers import LlamaConfig as HfLlamaConfig
 from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
-from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
@@ -436,6 +438,10 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "model.embed_tokens.weight"}
 
+    def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
+        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+
 
 class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
     transformer: LlamaTransformer
@@ -481,6 +487,15 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         x = self.transformer(x, attn_mask=attn_mask)
         lm_logits = self.lm_head(x)
         return lm_logits
+
+    def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
+        new_Vocab = self.Vocab.resize(new_size)
+        k1, k2 = maybe_rng_split(key, 2)
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
+        new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+        new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+
+        return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}

@@ -252,7 +252,9 @@ def test_llama_roundtrip():
     with tempfile.TemporaryDirectory() as tmpdir:
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
-        model = converter.load_pretrained(LlamaLMHeadModel, f"{tmpdir}/torch_model")
+        model = converter.load_pretrained(
+            LlamaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+        )
 
         def compute(input):
             model_output = model(input, attn_mask=attn_mask)

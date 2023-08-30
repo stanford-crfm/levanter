@@ -439,6 +439,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         lm_model_cls: Union[Type[LmWithHfSerializationMixin], LevConfig],
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
+        resize_vocab_to_match_tokenizer: bool = True,
     ) -> LmWithHfSerializationMixin:
         """
         Loads a levanter model from a huggingface checkpoint.
@@ -477,10 +478,15 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
             # Vocab: next, we resize the desired actual size
             if Vocab.size != tokenizer_Vocab.size:
-                logger.info(
-                    f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
-                )
-                lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                if resize_vocab_to_match_tokenizer:
+                    logger.info(
+                        f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                    )
+                    lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                else:
+                    logger.warning(
+                        f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size ({tokenizer_Vocab.size})"
+                    )
 
         if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
