@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LoraLmConfig:
     initialize_from_hf: str
-    lora: LoraConfig
+    lora: LoraConfig = field(default_factory=LoraConfig)
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
