@@ -259,26 +259,13 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
-
-        # do this first to help keep FP values small
-        q = q * scale
-
         q = q.astype(jnp.float32)
-        k = k.astype(jnp.float32)
-        k = k.rename({"position": "key_position"})
+        k = k.astype(jnp.float32).rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
-        attn_scores = hax.dot("head_size", q, k)
-
-        if mask is not None:
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
-
-        attn_scores = attn_scores.astype(jnp.float32)
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        # There's no dropout in llama attention, compared with Gpt2 attention
-
-        attn_output = hax.dot("key_position", attn_weights, v)
+        c = self.config
+        attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
+        attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output)
         return attn_output
