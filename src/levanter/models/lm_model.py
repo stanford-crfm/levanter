@@ -58,9 +58,8 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @property
-    @abc.abstractmethod
     def Pos(self) -> Axis:
-        pass
+        return self.config.Pos
 
     @classmethod
     @abc.abstractmethod

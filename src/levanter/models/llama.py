@@ -25,7 +25,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.models.gpt2 import ACT2FN
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -450,7 +450,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return {"token_embeddings": "model.embed_tokens.weight"}
 
 
-class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
+class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear
@@ -467,10 +467,6 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 
-    @property
-    def Pos(self) -> Axis:
-        return self.config.Pos
-
     @classmethod
     def init(cls, Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
@@ -483,6 +479,9 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         self,
         input_ids: NamedArray,
         attn_mask: Optional[NamedArray] = None,
+        *,
+        inference: bool = False,
+        key=None,
     ) -> NamedArray:
         """
         Args:
