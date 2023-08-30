@@ -1,47 +1,79 @@
 import atexit
 import copy
+import functools
 import logging as pylogging
 import sys
+import typing
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Tuple, TypeVar, Union
 
+import equinox as eqx
 import jax
 import jmp
 import numpy as np
 import optax
+import wandb
 from draccus import field
-from jax._src.interpreters.pxla import Mesh
+from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
+from optax import OptState
 
-from haliax.partitioning import ResourceAxis, ResourceMapping
+import haliax as hax
+from haliax import Axis
+from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
+from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.logging import WandbConfig
+from levanter.grad_accum import accumulate_gradients_sharded
+from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
 
 
 logger = pylogging.getLogger(__name__)
 
-M = TypeVar("M")
-S = TypeVar("S")
+X = TypeVar("X")  # Input
+
+M = TypeVar("M", bound=PyTree)
+S = TypeVar("S", bound=PyTree)
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
+    "jax_softmax_custom_jvp": True,
 }
 
 
+# A note on the semantics of "step" vs "next_step":
+# The "step" of a TrainerState is the state after `step` steps have been taken.
+# A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
+
+
 @dataclass
-class StepInfo:
+class TrainerState(Generic[M]):
     step: int
-    model: PyTree
-    opt_state: Any
+    model: M
+    opt_state: OptState
+    training_key: PRNGKeyArray
+
+
+@dataclass
+class StepInfo(Generic[M]):
+    state: TrainerState[M]
     loss: float
-    next_key: PRNGKeyArray
     step_duration: float
+
+    model = property(lambda self: self.state.model)
+    opt_state = property(lambda self: self.state.opt_state)
+    next_key = property(lambda self: self.state.training_key)
+
+    step = property(lambda self: self.state.step - 1)
+    """
+    The step that was just completed. If you want the next step, use `next_step`.
+    """
+    next_step = property(lambda self: self.state.step)
 
 
 @dataclass
@@ -51,7 +83,10 @@ class _Hook:
 
 
 class TrainerHooks:
-    hooks: List[_Hook] = []
+    hooks: List[_Hook]
+
+    def __init__(self):
+        self.hooks = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
@@ -66,6 +101,231 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
+
+
+class Trainer:
+    config: "TrainerConfig"
+    optimizer: optax.GradientTransformation
+    hooks: TrainerHooks
+    _raw_loss_function: Callable
+
+    def __init__(self, config: "TrainerConfig", optimizer, loss_fn):
+        self.hooks = TrainerHooks()
+        self.config = config
+        self._raw_loss_function = loss_fn
+        self.optimizer = optimizer
+
+    @cached_property
+    def loss_fn(self):
+        """
+        Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
+        """
+
+        @functools.wraps(self._raw_loss_function)
+        @named_jit(in_axis_resources=self.parameter_axis_mapping, axis_resources=self.compute_axis_mapping)
+        def fn(model, *batch, **batch_kwargs):
+            with hax.axis_mapping(self.compute_axis_mapping):
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs)
+
+        return fn
+
+    @property
+    def mp(self) -> jmp.Policy:
+        return self.config.mp
+
+    @typing.overload
+    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
+        ...
+
+    @typing.overload
+    def add_hook(self, *, every: int = 1):
+        ...
+
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
+        return self.hooks.add_hook(fn, every=every)
+
+    def run_hooks(self, info: StepInfo, force: bool = False):
+        self.hooks.run_hooks(info, force=force)
+
+    @property
+    def parameter_axis_mapping(self) -> ResourceMapping:
+        return self.config.parameter_axis_mapping
+
+    @property
+    def compute_axis_mapping(self) -> ResourceMapping:
+        return self.config.compute_axis_mapping
+
+    @property
+    def device_mesh(self) -> Mesh:
+        return self.config.device_mesh
+
+    @property
+    def TrainBatch(self):
+        return self.config.TrainBatch
+
+    @property
+    def EvalBatch(self):
+        return self.config.EvalBatch
+
+    def initial_state(
+        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
+    ) -> TrainerState:
+        """
+        Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+
+        Returns:
+            model, opt_state, key, resume_step
+        """
+
+        if model is not None and model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+        elif model is None and model_init is None:
+            raise ValueError("one of model and model_init must be specified")
+
+        if model is not None:
+            m = model
+            model_init = lambda: m  # noqa: E731
+
+        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+
+        ckpt = self.config.maybe_load_checkpoint(
+            model_shape,
+            (opt_state_shape, training_key),
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
+        )
+
+        if ckpt is not None:
+            model, (opt_state, training_key), completed_step = ckpt
+            step = completed_step + 1
+        else:
+            model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
+            step = 0
+
+        return TrainerState(step, model, opt_state, training_key)
+
+    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
+        """
+        Performs a single training step.
+        """
+        with capture_time() as step_time:
+            key, new_key = jax.random.split(state.training_key)
+            loss, new_model, new_optstate = self._train_step_fn(
+                state.model, state.opt_state, *batch, **batch_kwargs, key=key
+            )
+            # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
+            loss = loss.item()  # type: ignore
+
+        return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
+
+    def training_steps(
+        self, state: TrainerState[M], train_loader, run_hooks: bool = True
+    ) -> typing.Iterator[StepInfo]:
+        """
+        Generator that yields training steps and runs hooks.
+        """
+        iter_data = iter(train_loader)
+
+        while state.step < self.config.num_train_steps:
+            with capture_time() as loading_time:
+                example = next(iter_data)
+
+            # TODO: refactor logging
+            wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
+
+            info = self.train_step(state, example, inference=False)
+            state = info.state
+
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
+
+                wandb.log({"throughput/hook_time": hook_time()}, step=state.step)
+
+            yield info
+
+    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+        """
+        Performs training until the number of steps is reached.
+        """
+        for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
+            pass
+
+        return info
+
+    def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
+        from levanter import callbacks
+
+        self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
+        self.add_hook(callbacks.log_to_wandb, every=1)
+        self.add_eval_hook(eval_loader)
+        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        checkpointer = self.config.checkpointer.create(self.config.run_id)
+        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        return checkpointer
+
+    def add_eval_hook(self, eval_loader):
+        from levanter import callbacks
+
+        if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
+            eval_loss = functools.partial(self.loss_fn, inference=True, key=None)
+            self.add_hook(
+                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
+                every=self.config.steps_per_eval,
+            )
+
+    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
+        """Creates a replicated batch loader for the given dataset. Generally you should use this
+        if you either be able to make a single pass over the dataset.
+
+        Args:
+            dataset (Dataset): the dataset to load
+            batch_axis (Axis): the batch axis
+
+        Returns:
+            ReplicatedBatchLoader: the batch loader
+        """
+        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+
+    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
+        """Creates a sharded batch loader for the given dataset. Generally you should use this
+        for training and you don't care about epoch boundaries.
+
+        Args:
+            dataset (Dataset): the dataset to load
+            batch_axis (Axis): the batch axis
+
+        Returns:
+            ShardedBatchLoader: the batch loader
+        """
+        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+
+    @cached_property
+    def _train_step_fn(self):
+        @named_jit(
+            axis_resources=self.parameter_axis_mapping,
+            out_axis_resources=self.parameter_axis_mapping,
+            donate_args=(True, True),
+        )
+        def fn(model, opt_state, *batch, **batch_kwargs):
+            loss, grads = accumulate_gradients_sharded(
+                self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+            )(model, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=model)
+            model = eqx.apply_updates(model, updates)
+
+            return loss, model, opt_state
+
+        return fn
+
+    def _init_model_and_opt_state(self, model_init):
+        model = model_init()
+        model = self.mp.cast_to_param(model)
+        opt_state = self.optimizer.init(model)
+        return model, opt_state
 
 
 @dataclass
@@ -138,6 +398,14 @@ class TrainerConfig:
     @property
     def run_dir(self) -> Path:
         return self.run_base_dir / self.run_name
+
+    @property
+    def TrainBatch(self):
+        return Axis("batch", self.train_batch_size)
+
+    @property
+    def EvalBatch(self):
+        return Axis("batch", self.eval_batch_size)
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
@@ -217,7 +485,7 @@ class TrainerConfig:
 
     def maybe_load_checkpoint(
         self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Tuple[M, S, Optional[int]]:
+    ) -> Optional[Tuple[M, S, int]]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
         if self.load_checkpoint is not False:
@@ -229,15 +497,12 @@ class TrainerConfig:
                 model, training_state, self.load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
             )
 
-            if ckpt is None:
-                if self.load_checkpoint is True:
-                    raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
-                return (model, training_state, None)
-            else:
-                model, training_state, step = ckpt
-                return (model, training_state, step)
+            if ckpt is None and self.load_checkpoint is True:
+                raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
+
+            return ckpt
         else:
-            return (model, training_state, None)
+            return None
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -283,7 +548,7 @@ class OptimizerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    def build(self, num_train_steps):
+    def build(self, num_train_steps: int):
         """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):

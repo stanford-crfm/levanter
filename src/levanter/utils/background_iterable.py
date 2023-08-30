@@ -60,11 +60,13 @@ class BackgroundIterable(Iterable[Ex]):
                 if self._stop_event.is_set():
                     break
 
-            try:
-                q.put(_SENTINEL, block=True, timeout=1)
-            except queue.Full:
-                # don't hold up the thread if we can't put the sentinel
-                pass
+            while not self._stop_event.is_set():
+                try:
+                    q.put(_SENTINEL, block=True, timeout=1)
+                    break
+                except queue.Full:
+                    # don't hold up the thread if we can't put the sentinel
+                    pass
         except Exception:  # flake8: noqa
             q.put(_ExceptionWrapper(sys.exc_info()))
 

@@ -157,7 +157,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"
 
-    tokenizer: PreTrainedTokenizerBase
+    tokenizer: PreTrainedTokenizerFast | PreTrainedTokenizer
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
     config_overrides: Optional[dict] = None
@@ -330,13 +330,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def Vocab(self) -> Axis:
         return Axis("vocab", len(self.tokenizer))
 
-    def config_from_hf_config(self, hf_config) -> LevConfig:
-        return self.LevConfigClass.from_hf_config(hf_config)
+    def config_from_hf_config(self, hf_config, overrides: Optional[dict] = None) -> LevConfig:
+        config = self.LevConfigClass.from_hf_config(hf_config)
+        if overrides is not None:
+            config = dataclasses.replace(config, **overrides)  # type: ignore
+        return config
 
     def hf_config_from_config(self, config: LevConfig, vocab_size: Optional[int] = None) -> HfConfig:
         if vocab_size is None:
             vocab_size = self.Vocab.size
-        return config.to_hf_config(vocab_size=vocab_size, config_overrides=self.config_overrides)
+        return config.to_hf_config(vocab_size=vocab_size)
 
     def config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> LevConfig:
         config = self.hf_config_from_hf_checkpoint(ref)
@@ -456,7 +459,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         else:
             config = self.config_from_hf_config(hf_config)
 
-        Vocab = self.Vocab.resize(hf_config.vocab_size)
+        # Vocab: first we have to resize the vocab as loaded from the checkpoint
+        tokenizer_Vocab = self.Vocab
+        Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+
         ignore_prefix: Optional[str] = None
         if self.ignore_prefix:
             for k in state_dict.keys():
@@ -464,10 +470,17 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     ignore_prefix = self.ignore_prefix
                     break
 
-        # TODO: i still think this isn't the best way to do this
+        # TODO: i still think this isn't the best way to do this. We should be able to do this with array from callback
         with jax.default_device(jax.devices("cpu")[0]):
             lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+
+            # Vocab: next, we resize the desired actual size
+            if Vocab.size != tokenizer_Vocab.size:
+                logger.info(
+                    f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                )
+                lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
 
         if axis_mapping is not None:
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
@@ -481,7 +494,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         model: LmWithHfSerializationMixin,
         path: str,
         save_tokenizer: bool = True,
-        save_reference_code: bool = True,
+        save_reference_code: Optional[bool] = None,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -493,6 +506,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         """
         logger.info(f"Saving HF-compatible checkpoint to {path}")
         os.makedirs(path, exist_ok=True)
+
+        # if save_reference_code is None, we save code for models that aren't in the HF repo.
+        if save_reference_code is None:
+            save_reference_code = hasattr(self.default_hf_config, "auto_map")
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:
@@ -545,7 +562,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         model: LmWithHfSerializationMixin,
         path,
         upload_to_hf: Union[bool, str, RepoRef] = False,
-        save_reference_code: bool = True,
+        save_reference_code: Optional[bool] = None,
         save_tokenizer: bool = True,
         **hf_upload_kwargs,
     ):
@@ -563,8 +580,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         :param hf_upload_kwargs: any additional kwargs to pass to huggingface_hub.upload_folder
         :param save_reference_code: if True, will save the reference code (from reference_checkpoint) to the checkpoint.
         This is useful when using custom architectures, as it will allow the model to be loaded without the custom
-        architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS
-        :return:
+        architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS.
+        If None, will save code for models that aren't in the HF repo.
         """
         with temp_dir_before_upload(path) as local_path:
             if path != local_path:
