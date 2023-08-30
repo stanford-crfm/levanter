@@ -258,7 +258,7 @@ def test_llama_roundtrip():
             model_output = model(input, attn_mask=attn_mask)
             return hax.nn.softmax(model_output, axis=model.Vocab)
 
-        # compute = jax.jit(compute)
+        compute = jax.jit(compute)
         jax_out = compute(input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
