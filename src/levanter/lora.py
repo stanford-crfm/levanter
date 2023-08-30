@@ -1,5 +1,43 @@
 """
-Implements LoRA https://arxiv.org/abs/2106.09685 transforms on Levanter models
+Implements LoRA https://arxiv.org/abs/2106.09685 transforms on Levanter models.
+
+LoRA is a parameter-efficient fine-tuning method that uses a low-rank factorization to reduce the number of parameters
+in a model. We support LoRA using a similar approach to the one in [PEFT](https://github.com/huggingface/peft), and implement
+routines to export LoRA models in a format compatible with PEFT.
+
+To use LoRA, you need either to specify a rank, a scale (which is typically the same as rank), and a spec for the
+target modules. The spec can be specified as:
+
+- None (default), which means all linear modules
+- a regex, e.g. `r".*(q_proj|k_proj|v_proj|o_proj).*"`
+- a list of strings, e.g. `["q_proj", "k_proj", "v_proj", "o_proj"]`
+
+We recommend using None, which was found to be better than the other options: https://twitter.com/Tim_Dettmers/status/1689375417189412864,
+https://arxiv.org/pdf/2305.14314.pdf Section 4.
+
+LoRA is implemented by doing "tree surgery" on the model, replacing [haliax.nn.Linear][] layers with a
+[levanter.lora.LoraLinear][] layer that wraps the original linear layer.
+
+Consider a simple model with two parameters, attention and mlp. That might look like:
+   ```python
+   model = Model(attention=Attention(proj_qkv=Linear), mlp=Mlp(...))
+   ```
+ With LoRA, our model might look more like:
+   ```python
+   model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=LoraLinear(...)), mlp=Mlp(...))
+   ```
+
+ During training, you'll want to keep the base and adapter parameters separate, so that it looks like this:
+   ```python
+   base_model, adapter_model = partition_lora_params(model)
+   base_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=None), mlp=Mlp(...))
+   adapter_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=None, lora=LoraLinear(...)), mlp=(...))
+   ```
+ and then we combine them at runtime:
+   ```python
+   model = combine_lora_params(base_model, lora_params=adapter_model)
+   ```
+ which just grounds out into a call to [equinox.combine][]
 """
 import dataclasses
 import functools
@@ -39,7 +77,6 @@ M = TypeVar("M", bound=PyTree)
 # Tasks
 # - bias
 # - dropout
-# - registry of targets for different models
 # - better filtering of parameters (make our own old-style filter_grad)
 # - replicate alpaca-lora functionality
 # - document alpaca-lora functionality
@@ -50,11 +87,21 @@ LORA_R = "LORA_R"
 
 @dataclass(frozen=True)
 class LoraConfig:
-    target_modules: Union[List[str], str]
+    target_modules: Optional[Union[List[str], str]] = None
+    """modules to loraize. can either be a regex or a list of strings of module names, or None, meaning all linear modules"""
     r: int = 8  # rank of LoRA transform
     alpha: float = 8.0  # scaling factor for LoRA transform
     # TODO: bias
     # TODO: dropout
+
+    def matches_target(self, key_path):
+        if isinstance(self.target_modules, str):
+            compiled = re.compile(self.target_modules)
+            return compiled.match(key_path) is not None
+        elif self.target_modules is None:
+            return True
+        else:
+            return any(key_path.endswith(target) for target in self.target_modules)
 
 
 def loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey) -> M:
@@ -140,6 +187,9 @@ def filter_lora_params(params: M) -> M:
 def partition_lora_params(params: M) -> Tuple[M, M]:
     """
     Partitions the given parameter tree into base/non-LoRA parameters and non-LoRA parameters.
+
+    Returns:
+        (base_params, lora_params)
     """
     partitioned = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
     return partitioned[1], partitioned[0]
@@ -158,7 +208,6 @@ def is_lora_param(node):
 
 def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str, batch_dims: Tuple[Axis, ...]) -> M:
     """
-
     This implementation is mostly straightforward, with one major wrinkle: scan layers like Stacked, which
     add an extra batch dimension and thus require vmap, and thus require a vmap'ed LoRA transform.
 
@@ -175,12 +224,6 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
     def _is_special_module(module):
         return _is_lora_compatible_module(module) or isinstance(module, hnn.Stacked)
 
-    if isinstance(config.target_modules, str):
-        compiled = re.compile(config.target_modules)
-        matches_target = lambda key_path: compiled.match(key_path) is not None  # noqa
-    else:
-        matches_target = lambda key_path: any(key_path.endswith(target) for target in config.target_modules)  # noqa
-
     def _batchify_ctor(ctor):
         # this is gross but it basically just vmaps the ctor over each batch dimension
         return functools.reduce(lambda ctor, batch_axis: hax.vmap(ctor, batch_axis), reversed(batch_dims), ctor)
@@ -196,7 +239,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
                 batch_dims=batch_dims + (module.Block,),
             )
             return dataclasses.replace(module, stacked=new_inner)
-        elif matches_target(key_path) and _is_lora_compatible_module(module):
+        elif config.matches_target(key_path) and _is_lora_compatible_module(module):
             my_key = next(key_iter)
             batched_key = shaped_rng_split(my_key, [axis.size for axis in batch_dims])
             return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, key=batched_key)
