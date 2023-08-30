@@ -214,7 +214,7 @@ class LlamaRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
         position_ids: NamedArray = hax.arange(Pos)
 
         freqs = position_ids * inv_freq.broadcast_axis(Pos)
-        # This is different from the paper but alignes with HF implementation:
+        # This is different from the paper but aligns with HF implementation:
         # It uses a different permutation in order to obtain the same calculation
         emb = hax.concatenate(HeadSize, (freqs, freqs))
         cos_cached = hax.cos(emb)
