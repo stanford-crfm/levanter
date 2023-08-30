@@ -74,7 +74,6 @@ class LlamaConfig:
             cls,  # type: ignore
             "meta-llama/Llama-2-7b-hf",
             trust_remote_code=True,
-            config_overrides={"tie_word_embeddings": True},
             tokenizer="hf-internal-testing/llama-tokenizer",
             HfConfigClass=HfLlamaConfig,
         )
@@ -93,14 +92,11 @@ class LlamaConfig:
             rope_scaling=hf_config.rope_scaling,
         )
 
-    def to_hf_config(
-        self, vocab_size: int = 32000, tie_word_embeddings: bool = False, config_overrides: Optional[Dict] = None
-    ) -> HfLlamaConfig:
+    def to_hf_config(self, vocab_size: int = 32000, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
         """Convert to HuggingFace's LlamaConfig
 
         Args:
             vocab_size (int, optional): Vocabulary size of the tokenizer. Defaults to 32000.
-            tie_word_embeddings (bool, optional): Whether to tie weight embeddings. HuggingFace's default value is False
             config_overrides (dict, optional): Overrides for the config. Defaults to None.
 
         Returns:
@@ -120,7 +116,6 @@ class LlamaConfig:
             rms_norm_eps=self.layer_norm_epsilon,
             rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
-            tie_word_embeddings=tie_word_embeddings,
             **config_overrides,
         )
 
@@ -462,6 +457,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
+    lm_head: hnn.Linear
 
     @property
     def config(self):
@@ -484,7 +480,8 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         k_t, k_emb = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
-        return LlamaLMHeadModel(transformer, embeddings)
+        lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=config.use_bias)
+        return LlamaLMHeadModel(transformer, embeddings, lm_head)
 
     def __call__(
         self,
@@ -500,11 +497,32 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         """
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask)
-        lm_logits = self.embeddings.unembed(x)
+        lm_logits = self.lm_head(x)
         return lm_logits
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
+
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
+        d = {}
+        d.update(
+            unflatten_linear_layers(
+                apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
+            )
+        )
+        return super().from_state_dict(d, prefix)
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        my_dict: StateDict = {}
+        super().update_state_dict(my_dict, prefix=prefix)
+
+        my_dict.update(
+            flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
+        )
+
+        state_dict.update(my_dict)
+        return state_dict
 
 
 def _rotate_half(x: NamedArray) -> NamedArray:
