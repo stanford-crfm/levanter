@@ -7,7 +7,6 @@ from jax import random
 
 import haliax as hax
 
-from levanter.compat.hf_checkpoints import RepoRef
 from levanter.models.llama import (
     LlamaAttention,
     LlamaConfig,
@@ -140,7 +139,7 @@ def test_llama_attention():
 
     state = attention.to_state_dict()
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_attention = HFLlamaAttention(config.to_hf_config())
+    hf_attention = HFLlamaAttention(config.to_hf_config(32000))
     hf_attention.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(config)
@@ -190,7 +189,7 @@ def test_llama_decoder_layer():
 
     state = llama_decoder_layer.to_state_dict()
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config())
+    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000))
     hf_decoder_layer.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(llama_config)
@@ -225,7 +224,6 @@ def test_llama_roundtrip():
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-    model_id = "stanford-crfm/levanter-llama-test"
     converter = LlamaConfig.default_hf_checkpoint_converter
 
     config = LlamaConfig(
@@ -235,34 +233,39 @@ def test_llama_roundtrip():
         gradient_checkpointing=False,
     )
     Vocab = hax.Axis("vocab", 1000)
+    hf_config = config.to_hf_config(Vocab.size)
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
     attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
-    torch_model = LlamaForCausalLM.from_pretrained(model_id)
+    torch.random.manual_seed(0)
+
+    torch_model = LlamaForCausalLM(hf_config)
     torch_model.eval()
 
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    model = converter.load_pretrained(LlamaLMHeadModel, RepoRef(model_id))
-
-    def compute(input):
-        model_output = model(input, attn_mask=attn_mask)
-        return hax.nn.softmax(model_output, axis=model.Vocab)
-
-    compute = jax.jit(compute)
-    jax_out = compute(input).array
-
-    assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-    assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_pretrained(model, tmpdir, save_reference_code=False)
-        torch_model2 = AutoModelForCausalLM.from_pretrained(tmpdir)
+        torch_model.save_pretrained(f"{tmpdir}/torch_model")
+
+        model = converter.load_pretrained(LlamaLMHeadModel, f"{tmpdir}/torch_model")
+
+        def compute(input):
+            model_output = model(input, attn_mask=attn_mask)
+            return hax.nn.softmax(model_output, axis=model.Vocab)
+
+        # compute = jax.jit(compute)
+        jax_out = compute(input).array
+
+        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+
+        converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+        torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
         torch_model2.eval()
 
         torch_out2 = torch_model2(input_torch)

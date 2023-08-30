@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Type, Union
 
 import equinox as eqx
 import jax
@@ -14,7 +14,7 @@ from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
@@ -31,7 +31,7 @@ from levanter.utils.py_utils import cached_classproperty
 
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
-class LlamaConfig:
+class LlamaConfig(HFCompatConfig):
     """Config for LlamaModel
 
     Args:
@@ -92,7 +92,7 @@ class LlamaConfig:
             rope_scaling=hf_config.rope_scaling,
         )
 
-    def to_hf_config(self, vocab_size: int = 32000, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
+    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
         """Convert to HuggingFace's LlamaConfig
 
         Args:
@@ -118,6 +118,10 @@ class LlamaConfig:
             vocab_size=vocab_size,
             **config_overrides,
         )
+
+    @property
+    def model_type(cls) -> Type["LlamaLMHeadModel"]:
+        return LlamaLMHeadModel
 
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
@@ -191,17 +195,19 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class LlamaRotaryEmbedding(eqx.Module):
-    Pos: Axis = eqx.static_field()
-    cos_cached: jnp.ndarray = eqx.static_field()
-    sin_cached: jnp.ndarray = eqx.static_field()
+class LlamaRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
+    Pos: Axis = eqx.field(static=True)
+    cos_cached: NamedArray = eqx.field(static=True)
+    sin_cached: NamedArray = eqx.field(static=True)
 
     def __init__(self, HeadSize: Axis, Pos: Axis, base: int = 10000):
         self.Pos = Pos
-        self.cos_cached, self.sin_cached = self._get_cos_sin_cache(Pos=Pos, HeadSize=HeadSize, base=base)
+        # this must be compile-time b/c we want to store them in a static field
+        with jax.ensure_compile_time_eval():
+            self.cos_cached, self.sin_cached = self._get_cos_sin_cache(Pos=Pos, HeadSize=HeadSize, base=base)
 
     @staticmethod
-    def _get_cos_sin_cache(HeadSize: NamedArray, Pos: NamedArray, base: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def _get_cos_sin_cache(HeadSize: hax.Axis, Pos: hax.Axis, base: float) -> Tuple[NamedArray, NamedArray]:
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
         inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
@@ -480,7 +486,7 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
         k_t, k_emb = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
-        lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=config.use_bias)
+        lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return LlamaLMHeadModel(transformer, embeddings, lm_head)
 
     def __call__(
@@ -505,7 +511,7 @@ class LlamaLMHeadModel(StateDictSerializationMixin, eqx.Module):
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
-        d = {}
+        d = state_dict.copy()
         d.update(
             unflatten_linear_layers(
                 apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
