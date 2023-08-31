@@ -79,6 +79,7 @@ def test_hf_gpt2_consistency():
 
 def _compare_models_output(model_1, model_2):
     import torch
+
     model_1 = equinox.tree_inference(model_1, True)
     model_2 = equinox.tree_inference(model_2, True)
 

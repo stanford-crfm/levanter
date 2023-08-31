@@ -1,6 +1,5 @@
 import dataclasses
 
-import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 

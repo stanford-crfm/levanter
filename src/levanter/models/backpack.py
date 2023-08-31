@@ -399,9 +399,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         )
 
     @named_call
-    def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None
-    ) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
 
         # Compute contextualization weights
@@ -413,9 +411,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         ## Compute sense vectors
         sense_input_embeds = self.embeddings.embed_input_ids(input_ids)  # (seq, embed
-        sense_vectors = self.sense_net.sense_embed(
-            sense_input_embeds, key=k_senses
-        )  # (seq, senses, embed)
+        sense_vectors = self.sense_net.sense_embed(sense_input_embeds, key=k_senses)  # (seq, senses, embed)
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum

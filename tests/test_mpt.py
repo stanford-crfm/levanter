@@ -1,7 +1,7 @@
 import tempfile
 
-import jax
 import equinox as eqx
+import jax
 import numpy as np
 import pytest
 from jax.random import PRNGKey

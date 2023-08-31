@@ -270,10 +270,12 @@ class Trainer:
         from levanter import callbacks
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
+
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = eqx.tree_inference(model, True)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
+
             self.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
                 every=self.config.steps_per_eval,
