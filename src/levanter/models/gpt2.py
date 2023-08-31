@@ -167,7 +167,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         return Gpt2Attention(config, c_attn, c_proj, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
         qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
@@ -196,9 +196,10 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 q,
                 k,
                 v,
-                inference=True,
                 block_size=self.config.flash_attention_block_size,
                 mask=mask,
+                inference=self.dropout.inference,
+                key=key,
             )
             attn_output = self.c_proj(attn_output)
         else:
@@ -215,7 +216,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 attn_scores = attn_scores + (1.0 - mask) * -1e9
 
             attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-            attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+            attn_weights = self.dropout(attn_weights, key=key)
 
             attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
             attn_output = self.c_proj(attn_output)
@@ -269,15 +270,15 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         return Gpt2Block(ln_1, attn, ln_2, mlp, resid_dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        attn_output = self.attn(self.ln_1(x), mask=mask, inference=inference, layer_idx=layer_idx, key=k1)
-        attn_output = self.resid_dropout(attn_output, key=k2, inference=inference)
+        attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2)
         x = x + attn_output
 
         ff_output = self.mlp(self.ln_2(x))
-        ff_output = self.resid_dropout(ff_output, key=k3, inference=inference)
+        ff_output = self.resid_dropout(ff_output, key=k3)
         x = x + ff_output
 
         return x
@@ -300,9 +301,9 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return Gpt2Transformer(config, blocks, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[AttnMask], *, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), inference, key=keys)
+        x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
         x = self.ln_f(x)
 
         return x
@@ -350,12 +351,12 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
 
     @named_call
-    def embed(self, input_ids, inference, *, key):
+    def embed(self, input_ids, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
         x = input_embeds + position_embeds
-        x = self.dropout(x, inference=inference, key=key)
+        x = self.dropout(x, key=key)
 
         return x
 
@@ -394,15 +395,10 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
-    ) -> NamedArray:
-        if not inference and key is None:
-            raise ValueError("key must be provided for training")
-
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        x = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        x = self.transformer(x, attn_mask, inference=inference, key=k_transformer)
+        x = self.embeddings.embed(input_ids, key=k_embed)
+        x = self.transformer(x, attn_mask, key=k_transformer)
         lm_logits = self.embeddings.unembed(x)
 
         return lm_logits

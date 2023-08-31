@@ -34,10 +34,8 @@ def test_gradient_checkpointing():
 
         causal_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
 
-        a1 = model(input_ids, inference=False, key=key, attn_mask=causal_mask)
-        if num_blocks == 4:
-            print(jax.make_jaxpr(lambda ids: model(ids, inference=True, key=key, attn_mask=causal_mask))(input_ids))
-        a2 = model_checkpoint(input_ids, inference=False, key=key, attn_mask=causal_mask)
+        a1 = model(input_ids, key=key, attn_mask=causal_mask)
+        a2 = model_checkpoint(input_ids, key=key, attn_mask=causal_mask)
 
         assert hax.all(hax.isclose(a1, a2, rtol=1e-4, atol=1e-5)), f"failed with num_blocks={num_blocks}"
 

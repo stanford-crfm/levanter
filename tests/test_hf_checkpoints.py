@@ -1,5 +1,6 @@
 import tempfile
 
+import equinox
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing
@@ -61,8 +62,8 @@ def test_save_model_with_code():
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
         causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
         np.testing.assert_equal(
-            np.array(lev_model(input, causal_mask, inference=True).array),
-            np.array(loaded_model(input, causal_mask, inference=True).array),
+            np.array(lev_model(input, causal_mask).array),
+            np.array(loaded_model(input, causal_mask).array),
         )
 
         # now double check that the pytorch model is the same
@@ -105,6 +106,7 @@ def test_save_backpack_model_with_code():
     Vocab = converter.Vocab
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    lev_model = equinox.tree_inference(lev_model, True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         converter._save_pretrained_local(lev_model, tmpdir)
@@ -113,6 +115,7 @@ def test_save_backpack_model_with_code():
 
         assert new_converter.config_from_hf_config(config) == lev_config
         loaded_model = new_converter.load_pretrained(BackpackLMHeadModel)
+        loaded_model = equinox.tree_inference(loaded_model, True)
 
         assert loaded_model.config == lev_model.config
         assert loaded_model.Vocab == lev_model.Vocab
@@ -120,8 +123,8 @@ def test_save_backpack_model_with_code():
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
         causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
         np.testing.assert_equal(
-            np.array(lev_model(input, causal_mask, inference=True, key=None).array),
-            np.array(loaded_model(input, causal_mask, inference=True, key=None).array),
+            np.array(lev_model(input, causal_mask, key=None).array),
+            np.array(loaded_model(input, causal_mask, key=None).array),
         )
 
         # now double check that the pytorch model is the same

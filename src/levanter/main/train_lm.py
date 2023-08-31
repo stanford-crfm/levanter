@@ -92,8 +92,8 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    def compute_loss(model: LmHeadModel, example: LmExample, inference, key=None):
-        return model.compute_loss(example, inference=inference, key=key).scalar()
+    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
+        return model.compute_loss(example, key=key).scalar()
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -154,7 +154,7 @@ def main(config: TrainLmConfig):
         )
         def compute_log_probs(model, example: LmExample):
             model = trainer.mp.cast_to_compute(model)
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+            logprobs = model.compute_loss(example, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array

@@ -1,3 +1,4 @@
+import equinox
 import numpy as onp
 import transformers
 from jax.random import PRNGKey
@@ -78,6 +79,8 @@ def test_hf_gpt2_consistency():
 
 def _compare_models_output(model_1, model_2):
     import torch
+    model_1 = equinox.tree_inference(model_1, True)
+    model_2 = equinox.tree_inference(model_2, True)
 
     input = hax.random.randint(PRNGKey(0), model_1.Pos, 0, model_1.Vocab.size)
     out_1, out_2 = None, None
@@ -87,7 +90,7 @@ def _compare_models_output(model_1, model_2):
 
         def compute(input):
             return hax.nn.softmax(
-                model_1(input, inference=True, key=None, attn_mask=attn_mask),
+                model_1(input, key=None, attn_mask=attn_mask),
                 axis=model_1.Vocab,
             )
 

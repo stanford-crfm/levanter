@@ -67,8 +67,9 @@ def main(config: EvalLmConfig):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample):
+            model = eqx.tree_inference(model, True)
             model = mp.cast_to_compute(model)
-            return model.compute_loss(example, key=None, inference=True)
+            return model.compute_loss(example, key=None)
 
         total = config.trainer.max_eval_batches
 

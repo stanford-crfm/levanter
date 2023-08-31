@@ -147,6 +147,7 @@ def test_lora_load_in_peft():
     Vocab = converter.Vocab
 
     model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
+    model = eqx.tree_inference(model, True)
 
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
@@ -168,14 +169,14 @@ def test_lora_load_in_peft():
         hf_out = hf_model(torch_input)
         hf_out = hf_out.logits.detach().numpy()
 
-        lev_out = model(input, attn_mask=causal_mask, inference=True)
+        lev_out = model(input, attn_mask=causal_mask)
         lev_out = np.array(lev_out.array)
         assert np.allclose(lev_out, hf_out, atol=1e-4)
 
         # load with peft
         hf_lora_model = PeftModel.from_pretrained(hf_model, f"{tmpdir}/loraized").cpu()
 
-        lev_lora_out = loraized(input, attn_mask=causal_mask, inference=True)
+        lev_lora_out = loraized(input, attn_mask=causal_mask)
         lev_lora_out = np.array(lev_lora_out.array)
 
         hf_lora_model.eval()

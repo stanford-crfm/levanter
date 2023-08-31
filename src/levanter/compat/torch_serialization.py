@@ -1,6 +1,6 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, TypeVar, Union, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
 import jax
@@ -15,6 +15,7 @@ from jaxtyping import PyTree
 import haliax as hax
 import haliax.nn as hnn
 from haliax import NamedArray
+from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
 
 from levanter.utils.jax_utils import leaf_key_paths
@@ -86,15 +87,15 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
         return NamedArray(jnp.array(state_dict[prefix]), axes=tree.axes)
-    elif tree is None:
-        if prefix is None:
-            return None
-        return state_dict.get(prefix, None)
-    else:
+    elif is_jax_array_like(tree):
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a state dict without a prefix")
         # TODO: add "strict" flag so we can return None in cases where it's just missing
         return jnp.array(state_dict[prefix])
+    else:
+        if prefix is None:
+            return tree
+        return state_dict.get(prefix, tree)
 
 
 def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> None:
@@ -113,12 +114,14 @@ def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix:
         # TODO: where's the best place to put this logic for NamedArrays
         assert prefix is not None
         state_dict[prefix] = tree.array
-    else:
+    elif is_jax_array_like(tree):
         if prefix is not None:
             if tree is not None:
                 state_dict[prefix] = tree  # type: ignore
         else:
             raise ValueError("Cannot update torch dict with a leaf value.")
+    else:
+        pass
 
 
 def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateDict:
@@ -353,8 +356,10 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
     This method is especially useful for saving models distributed across multiple hosts.
     """
 
-    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
-        if isinstance(arr, np.ndarray):
+    def get_to_cpu(arr):
+        if not is_jax_array_like(arr):
+            return arr
+        elif isinstance(arr, np.ndarray):
             return arr
         elif "cpu" in arr.device().device_kind:
             return np.array(arr)

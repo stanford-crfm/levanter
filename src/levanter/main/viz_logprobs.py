@@ -70,8 +70,9 @@ def main(config: VizGpt2Config):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_log_probs(model: LmHeadModel, example: LmExample):
+            model = eqx.tree_inference(model, True)
             model = mp.cast_to_compute(model)
-            logprobs = model.compute_loss(example, inference=True, key=None, reduction=None)
+            logprobs = model.compute_loss(example, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
