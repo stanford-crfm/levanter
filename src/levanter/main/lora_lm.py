@@ -18,6 +18,7 @@ from levanter.lora import (
     combine_lora_params,
     loraize,
     partition_lora_params,
+    save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
@@ -36,9 +37,12 @@ class LoraLmConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
-    hf_save_path: Optional[str] = None
-    hf_upload: Optional[str] = None
+    peft_save_path: Optional[str] = None  # path to save peft-compatible checkpoints
+    peft_hf_upload: Optional[str] = None
     hf_save_steps: int = 1000
+
+    merged_hf_save_path: Optional[str] = None  # path to save merged hf checkpoints
+    merged_hf_upload: Optional[str] = None
 
     trust_remote_code: bool = False
 
@@ -136,12 +140,19 @@ def main(config: LoraLmConfig):
         # boilerplate hooks and such
         trainer.add_default_hooks(eval_loader)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
-        if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
+        if config.peft_save_path is not None:
+            full_save_path = os.path.join(config.peft_save_path, trainer.config.run_id)
             trainer.add_hook(
                 save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.initialize_from_hf, config.hf_upload
+                    full_save_path, config.lora, config.initialize_from_hf, config.peft_hf_upload
                 ),
+                every=config.hf_save_steps,
+            )
+
+        if config.merged_hf_save_path is not None:
+            full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
+            trainer.add_hook(
+                save_merged_hf_checkpoint_callback(full_save_path, converter, base_model, config.merged_hf_upload),
                 every=config.hf_save_steps,
             )
 
