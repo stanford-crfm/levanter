@@ -91,8 +91,8 @@ class LoraConfig:
     """modules to loraize. can either be a regex or a list of strings of module names, or None, meaning all linear modules"""
     r: int = 8  # rank of LoRA transform
     alpha: float = 8.0  # scaling factor for LoRA transform
+    dropout: float = 0.0  # dropout probability for LoRA layers
     # TODO: bias
-    # TODO: dropout
 
     def matches_target(self, key_path):
         if isinstance(self.target_modules, str):
@@ -151,21 +151,30 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
 
     wrapped: hnn.Linear
     lora: LowRankLinear
+    dropout: hnn.Dropout
 
-    def __call__(self, x):
-        return self.lora(x) + self.wrapped(x)
+    def __call__(self, x, key=None):
+        if key is not None:
+
+            k1, k2 = jax.random.split(key)
+            return self.lora(self.dropout(x, key=k2)) + self.wrapped(x, key=k1)
+        else:
+            if self.dropout.pdrop != 0 and self.dropout.inference is False:
+                raise ValueError("Cannot call LoraLinear without a key if dropout is enabled")
+            return self.lora(x) + self.wrapped(x)
+
 
     def merge(self):
         weight = self.lora.merge() + self.wrapped.weight
         return dataclasses.replace(self.wrapped, weight=weight)
 
     @staticmethod
-    def init(wrapped: hnn.Linear, r: int, alpha: float, *, key):
+    def init(wrapped: hnn.Linear, r: int, alpha: float, dropout: float = 0.0, *, key):
         """
         Initializes a LoraLinear module.
         """
         lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, key=key)
-        return LoraLinear(wrapped, lora)
+        return LoraLinear(wrapped, lora, hnn.Dropout(dropout))
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"wrapped": None, "lora": None}
@@ -242,7 +251,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         elif config.matches_target(key_path) and _is_lora_compatible_module(module):
             my_key = next(key_iter)
             batched_key = shaped_rng_split(my_key, [axis.size for axis in batch_dims])
-            return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, key=batched_key)
+            return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, config.dropout, key=batched_key)
         else:
             return module
 
