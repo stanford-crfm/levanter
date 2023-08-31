@@ -109,9 +109,9 @@ def main(config: LoraLmConfig):
         del hf_model
         del combined_model
 
-        def compute_loss(base_model, adapter_model, example: LmExample, inference, key=None):
+        def compute_loss(base_model, adapter_model, example: LmExample, key=None):
             model = combine_lora_params(base_model, lora_params=adapter_model)
-            return model.compute_loss(example, inference=inference, key=key).scalar()
+            return model.compute_loss(example, key=key).scalar()
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
         trainer = Trainer(config.trainer, optimizer, functools.partial(compute_loss, base_model))

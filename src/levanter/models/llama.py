@@ -473,7 +473,6 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         input_ids: NamedArray,
         attn_mask: Optional[NamedArray] = None,
         *,
-        inference: bool = False,
         key=None,
     ) -> NamedArray:
         """

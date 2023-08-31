@@ -234,7 +234,7 @@ class Trainer:
             # TODO: refactor logging
             wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
 
-            info = self.train_step(state, example, inference=False)
+            info = self.train_step(state, example)
             state = info.state
 
             if run_hooks:
@@ -270,7 +270,12 @@ class Trainer:
         from levanter import callbacks
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
-            eval_loss = functools.partial(self.loss_fn, inference=True, key=None)
+
+            @eqx.filter_jit
+            def eval_loss(model, *batch, **batch_kwargs):
+                model = eqx.tree_inference(model, True)
+                return self.loss_fn(model, *batch, **batch_kwargs, key=None)
+
             self.add_hook(
                 callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
                 every=self.config.steps_per_eval,
@@ -310,6 +315,7 @@ class Trainer:
             donate_args=(True, True),
         )
         def fn(model, opt_state, *batch, **batch_kwargs):
+            model = eqx.tree_inference(model, False)
             loss, grads = accumulate_gradients_sharded(
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(model, *batch, **batch_kwargs)

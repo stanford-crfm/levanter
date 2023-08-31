@@ -402,10 +402,9 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, key=None) -> NamedArray:
         # TODO: add back in dropout
         del key
-        del inference
         hidden_states = self.wte.embed(input_ids)
         hidden_states = self.transformer(hidden_states, attention_mask=attn_mask)
         output_logits = self.wte.unembed(hidden_states)

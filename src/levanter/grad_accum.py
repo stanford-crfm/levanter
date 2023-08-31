@@ -102,7 +102,7 @@ def accumulate_gradients_sharded(
 
             with jax.named_scope("accum"):
                 loss += this_loss
-                grad = jax.tree_map(jnp.add, grad, this_grad)
+                grad = eqx.apply_updates(grad, this_grad)
                 grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
             return loss, grad
