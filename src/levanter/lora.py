@@ -361,9 +361,13 @@ def save_merged_hf_checkpoint_callback(
     **hf_upload_kwargs,
 ):
     """
-    Saves a merged
+    Saves a merged HF checkpoint for the given model. This method essentially combines the base model with the LoRA
+    model using [levanter.lora.combine_lora_params][], and then saves the combined model as a HuggingFace checkpoint
+    using the given converter.
 
-    If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing any additional kwargs to the huggingface_hub.upload_folder function.
+    If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing any additional kwargs to the
+    huggingface_hub.upload_folder function.
+
     Args:
         base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
             may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
