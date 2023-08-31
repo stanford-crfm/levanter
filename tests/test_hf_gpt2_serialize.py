@@ -50,6 +50,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     model: Gpt2LMHeadModel = cast(
         Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
     )
+    model = equinox.tree_inference(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -61,7 +62,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
     def compute(input):
-        return hax.nn.softmax(model(input, inference=True, key=None, attn_mask=attn_mask), axis=model.Vocab)
+        return hax.nn.softmax(model(input, key=None, attn_mask=attn_mask), axis=model.Vocab)
 
     compute = jax.jit(compute)
     jax_out = compute(input).array
@@ -105,6 +106,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_model.eval()
 
     model = cast(Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision)))
+    model = equinox.tree_inference(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -115,11 +117,11 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     causal_mask = hax.nn.attention.causal_mask(model.config.Pos, model.config.KeyPos)
 
     def compute_loss(model, input_ids):
-        pred_y = model(input_ids, key=None, inference=True, attn_mask=causal_mask)
+        pred_y = model(input_ids, key=None, attn_mask=causal_mask)
 
         return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
 
-    jax_compute_grad = jax.value_and_grad(compute_loss)
+    jax_compute_grad = equinox.filter_value_and_grad(compute_loss, has_aux=False)
     jax_grad: Gpt2LMHeadModel
     jax_loss, jax_grad = jax_compute_grad(model, input)
 

@@ -69,9 +69,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @abc.abstractmethod
-    def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
-    ) -> NamedArray:
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, key=None) -> NamedArray:
         pass
 
     @abc.abstractmethod
@@ -86,7 +84,6 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         self,
         example: LmExample,
         *,
-        inference: bool,
         key=None,
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
@@ -96,7 +93,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
-        logits = self(example.tokens, example.attn_mask, inference=inference, key=key)
+        logits = self(example.tokens, example.attn_mask, key=key)
         target_y = hax.nn.one_hot(example.targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
