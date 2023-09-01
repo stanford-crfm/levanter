@@ -393,7 +393,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
-        keys = maybe_rng_split(key, self.config.num_layers)
+        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.layers.fold(x, mask=attn_mask, key=keys)
         x = self.norm(x)
 

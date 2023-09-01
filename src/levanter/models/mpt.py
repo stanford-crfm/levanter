@@ -353,7 +353,7 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         else:
             bias = None
 
-        key = maybe_rng_split(key, self.Layers.size)
+        key = maybe_rng_split(key, self.Layers.size) if key is not None else None
 
         hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask, key=key)
         hidden_states = self.norm_f(hidden_states)
