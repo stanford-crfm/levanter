@@ -1,0 +1,22 @@
+data: !include data/pile_source_old.yaml
+model:
+  type: llama
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+use_hf_model_config: true
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["pile", "llama"]
+
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: -1
+  per_device_eval_parallelism: -1
+
+  train_batch_size: 1024
+  num_train_steps: 1000
+  steps_per_eval: 50
+optimizer:
+  learning_rate: 1.2E-5  # set low for fine-tuning
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
