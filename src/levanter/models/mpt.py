@@ -15,7 +15,7 @@ import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
@@ -204,10 +204,11 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
         return MptMlp(up_proj=up_proj, down_proj=down_proj)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray):
-        hidden_states = self.up_proj(hidden_states)
+    def __call__(self, hidden_states: NamedArray, *, key):
+        k_up, k_down = maybe_rng_split(key, 2)
+        hidden_states = self.up_proj(hidden_states, key=k_up)
         hidden_states = hnn.gelu(hidden_states, approximate=False)
-        hidden_states = self.down_proj(hidden_states)
+        hidden_states = self.down_proj(hidden_states, key=k_down)
         return hidden_states
 
 
@@ -235,8 +236,11 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         )
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
-    def __call__(self, hidden_states: NamedArray, mask: Optional[AttnMask] = None, bias: Optional[NamedArray] = None):
-        qkv_out = self.Wqkv(hidden_states)
+    def __call__(
+        self, hidden_states: NamedArray, mask: Optional[AttnMask], bias: Optional[NamedArray], key: Optional[PRNGKey]
+    ) -> NamedArray:
+        k_qkv, k_out = maybe_rng_split(key, 2)
+        qkv_out = self.Wqkv(hidden_states, key=k_qkv)
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
@@ -262,7 +266,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
 
         attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
 
-        attn_output = self.out_proj(attn_output)
+        attn_output = self.out_proj(attn_output, key=k_out)
         return attn_output
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
@@ -311,12 +315,15 @@ class MptBlock(eqx.Module):
         return MptBlock(norm_1, norm_2, attn, ffn)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask]):
+    def __call__(
+        self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask], *, key
+    ):
+        k_attn, k_ffn = maybe_rng_split(key, 2)
         a = self.norm_1(hidden_states)
-        b = self.attn(a, bias=attn_bias, mask=attention_mask)
+        b = self.attn(a, bias=attn_bias, mask=attention_mask, key=k_attn)
         hidden_states = hidden_states + b
         m = self.norm_2(hidden_states)
-        n = self.ffn(m)
+        n = self.ffn(m, key=k_ffn)
         hidden_states = hidden_states + n
         return hidden_states
 
@@ -340,13 +347,15 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return MptTransformer(config, blocks, norm_f)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask]) -> NamedArray:
+    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask], *, key) -> NamedArray:
         if self.config.attn_config.alibi:
             bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
             bias = None
 
-        hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask)
+        key = maybe_rng_split(key, self.Layers.size)
+
+        hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask, key=key)
         hidden_states = self.norm_f(hidden_states)
 
         return hidden_states
@@ -403,10 +412,8 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
     @named_call
     def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, key=None) -> NamedArray:
-        # TODO: add back in dropout
-        del key
         hidden_states = self.wte.embed(input_ids)
-        hidden_states = self.transformer(hidden_states, attention_mask=attn_mask)
+        hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
         output_logits = self.wte.unembed(hidden_states)
 
         return output_logits
