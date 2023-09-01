@@ -124,6 +124,11 @@ class LowRankLinear(eqx.Module):
     scale: float = eqx.field(static=True)
 
     def __call__(self, x, key=None):
+        if key is None and self.dropout.is_active:
+            raise RuntimeError(
+                "Cannot call LoraLinear with dropout and without a key if dropout is enabled."
+                " The base model needs to be retrofitted to pass keys to the Linear layers."
+            )
         x = self.dropout(x, key=key)
         z = self.lora_A(x)
         z = self.lora_B(z)
@@ -158,12 +163,9 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
     def __call__(self, x, key=None):
         if key is not None:
             k1, k2 = jax.random.split(key)
-            return self.lora(self.dropout(x, key=k2)) + self.wrapped(x, key=k1)
+            return self.lora(x, key=k2) + self.wrapped(x, key=k1)
         else:
-            assert not self.lora.dropout.is_active, (
-                "Cannot call LoraLinear with dropout and without a key if dropout is enabled. The base model must be "
-                " modified to pass keys to linear layers in order to use dropout with LoRA."
-            )
+
             return self.lora(x) + self.wrapped(x)
 
     def merge(self):
