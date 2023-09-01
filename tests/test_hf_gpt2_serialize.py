@@ -18,6 +18,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer import OptimizerConfig
+from levanter.utils.jax_utils import inference_mode
 from test_utils import skip_if_no_torch
 
 
@@ -50,7 +51,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     model: Gpt2LMHeadModel = cast(
         Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision=revision))
     )
-    model = equinox.tree_inference(model, True)
+    model = inference_mode(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 
@@ -106,7 +107,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_model.eval()
 
     model = cast(Gpt2LMHeadModel, converter.load_pretrained(config or Gpt2LMHeadModel, RepoRef(model_id, revision)))
-    model = equinox.tree_inference(model, True)
+    model = inference_mode(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
 

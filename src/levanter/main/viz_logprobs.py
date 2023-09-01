@@ -13,6 +13,7 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.jax_utils import inference_mode
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
@@ -70,7 +71,7 @@ def main(config: VizGpt2Config):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_log_probs(model: LmHeadModel, example: LmExample):
-            model = eqx.tree_inference(model, True)
+            model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, reduction=None)
             # roll forward to get the loss for each predicted token

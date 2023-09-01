@@ -120,15 +120,17 @@ class LowRankLinear(eqx.Module):
 
     lora_A: hnn.Linear
     lora_B: hnn.Linear
+    dropout: hnn.Dropout
     scale: float = eqx.field(static=True)
 
-    def __call__(self, x):
+    def __call__(self, x, key=None):
+        x = self.dropout(x, key=key)
         z = self.lora_A(x)
         z = self.lora_B(z)
         return z * self.scale
 
     @staticmethod
-    def init(In: hax.Axis, Out: Axis, r: int, alpha: float, *, key):
+    def init(In: hax.Axis, Out: Axis, r: int, alpha: float, dropout_prob: float, *, key):
         """
         Initializes a LoraLinear module.
         """
@@ -137,8 +139,9 @@ class LowRankLinear(eqx.Module):
         # Peft always uses out_first=True (i.e. normal Torch convention) for linear, even for gpt2-style Conv1d
         lora_A = hnn.Linear.init(In, _R, key=key_A, use_bias=False, out_first=True)
         lora_B = hnn.Linear.init(_R, Out, key=key_B, use_bias=False, out_first=True)
+        dropout = hnn.Dropout(dropout_prob)
 
-        return LowRankLinear(lora_A, lora_B, alpha / r)
+        return LowRankLinear(lora_A, lora_B, dropout, alpha / r)
 
     def merge(self) -> hax.NamedArray:
         return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
@@ -151,18 +154,17 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
 
     wrapped: hnn.Linear
     lora: LowRankLinear
-    dropout: hnn.Dropout
 
     def __call__(self, x, key=None):
         if key is not None:
-
             k1, k2 = jax.random.split(key)
             return self.lora(self.dropout(x, key=k2)) + self.wrapped(x, key=k1)
         else:
-            if self.dropout.pdrop != 0 and self.dropout.inference is False:
-                raise ValueError("Cannot call LoraLinear without a key if dropout is enabled")
+            assert not self.lora.dropout.is_active, (
+                "Cannot call LoraLinear with dropout and without a key if dropout is enabled. The base model must be "
+                " modified to pass keys to linear layers in order to use dropout with LoRA."
+            )
             return self.lora(x) + self.wrapped(x)
-
 
     def merge(self):
         weight = self.lora.merge() + self.wrapped.weight
@@ -173,8 +175,8 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
         """
         Initializes a LoraLinear module.
         """
-        lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, key=key)
-        return LoraLinear(wrapped, lora, hnn.Dropout(dropout))
+        lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, dropout, key=key)
+        return LoraLinear(wrapped, lora)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"wrapped": None, "lora": None}
@@ -200,8 +202,8 @@ def partition_lora_params(params: M) -> Tuple[M, M]:
     Returns:
         (base_params, lora_params)
     """
-    partitioned = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
-    return partitioned[1], partitioned[0]
+    lora_params, base_params = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
+    return base_params, lora_params
 
 
 def combine_lora_params(params: M, lora_params: M) -> M:

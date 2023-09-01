@@ -1,6 +1,5 @@
 import tempfile
 
-import equinox as eqx
 import jax
 import numpy as np
 import pytest
@@ -10,6 +9,7 @@ from transformers import AutoModelForCausalLM
 import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
+from levanter.utils.jax_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
@@ -60,7 +60,7 @@ def test_mpt_nano_compare(use_bias):
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    lev_model = eqx.tree_inference(lev_model, True)
+    lev_model = inference_mode(lev_model, True)
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
