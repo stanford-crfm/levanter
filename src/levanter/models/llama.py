@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
@@ -483,6 +484,9 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
                 Mask to avoid performing attention on the padding token indices of the encoder input.
         """
         x = self.embeddings.embed(input_ids)
+        if isinstance(attn_mask, AttentionMask):
+            # The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
+            attn_mask = attn_mask.materialize()
         x = self.transformer(x, attn_mask=attn_mask)
         lm_logits = self.lm_head(x)
         return lm_logits
