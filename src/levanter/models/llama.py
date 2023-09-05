@@ -200,8 +200,8 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
 
 class LlamaRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
     Pos: Axis = eqx.field(static=True)
-    cos_cached: NamedArray = eqx.field(static=True)
-    sin_cached: NamedArray = eqx.field(static=True)
+    cos_cached: NamedArray
+    sin_cached: NamedArray
 
     def __init__(self, HeadSize: Axis, Pos: Axis, base: int = 10000):
         self.Pos = Pos
@@ -226,10 +226,20 @@ class LlamaRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
         return cos_cached, sin_cached
 
     def __call__(self, seq_len: int) -> Tuple[NamedArray, NamedArray]:
-        return (
-            self.cos_cached[self.Pos, :seq_len],
-            self.sin_cached[self.Pos, :seq_len],
+        return jax.lax.stop_gradient(
+            (
+                self.cos_cached[self.Pos, :seq_len],
+                self.sin_cached[self.Pos, :seq_len],
+            )
         )
+
+    # TODO: maybe add a "persistent" option to eqx.field that we use for state dict serialization
+    # if we do that, consider moving the key remapping stuff there too?
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        return self
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        return state_dict
 
 
 class LlamaAttention(StateDictSerializationMixin, eqx.Module):
