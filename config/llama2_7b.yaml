@@ -12,7 +12,7 @@ use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
-    tags: ["pile", "llama"]
+    tags: ["openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
 
