@@ -11,6 +11,7 @@ import haliax.nn as hnn
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules, save_peft_pretrained
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.utils.jax_utils import inference_mode
 from test_utils import skip_if_no_torch
 
 
@@ -147,7 +148,7 @@ def test_lora_load_in_peft():
     Vocab = converter.Vocab
 
     model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
-    model = eqx.tree_inference(model, True)
+    model = inference_mode(model, True)
 
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))

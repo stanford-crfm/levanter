@@ -22,7 +22,7 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils.jax_utils import parameter_count
+from levanter.utils.jax_utils import inference_mode, parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -80,6 +80,9 @@ def main(config: LoraLmConfig):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        # put the base model in inference mode (no dropout) and (potentially) low precision
+        hf_model = inference_mode(hf_model, True)
+        hf_model = config.trainer.mp.cast_to_compute(hf_model)
 
         # A note on the difference between "adapter_model" and "base_model":
         # In LoRA and other so-called "parameter-efficient fine-tuning" methods, we have two sets of parameters:

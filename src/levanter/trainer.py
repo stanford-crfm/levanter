@@ -32,6 +32,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
+from levanter.utils.jax_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)
@@ -273,7 +274,7 @@ class Trainer:
 
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
-                model = eqx.tree_inference(model, True)
+                model = inference_mode(model, True)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
@@ -315,7 +316,7 @@ class Trainer:
             donate_args=(True, True),
         )
         def fn(model, opt_state, *batch, **batch_kwargs):
-            model = eqx.tree_inference(model, False)
+            model = inference_mode(model, False)
             loss, grads = accumulate_gradients_sharded(
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(model, *batch, **batch_kwargs)

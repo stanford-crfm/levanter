@@ -1,6 +1,5 @@
 import tempfile
 
-import equinox
 import jax
 import numpy as np
 from jax.random import PRNGKey
@@ -13,6 +12,7 @@ from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
@@ -93,7 +93,7 @@ def test_backpack_nano_compare():
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
-    lev_model = equinox.tree_inference(lev_model, True)
+    lev_model = inference_mode(lev_model, True)
 
     hax_input = haliax.named(input, lev_config.Pos)
     attn_mask = hax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
