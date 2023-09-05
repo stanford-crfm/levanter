@@ -139,10 +139,11 @@ class Gpt2Mlp(eqx.Module):
         return Gpt2Mlp(c_fc, c_proj, act)
 
     @named_call
-    def __call__(self, x: NamedArray):
-        x = self.c_fc(x)
+    def __call__(self, x: NamedArray, *, key=None):
+        k1, k2 = haliax.jax_utils.maybe_rng_split(key, 2)
+        x = self.c_fc(x, key=k1)
         x = self.act(x)
-        x = self.c_proj(x)
+        x = self.c_proj(x, key=k2)
         return x
 
 
@@ -168,7 +169,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
-        qkv_out = self.c_attn(x).rearrange((..., "qkv", "heads", "position", "head_size"))
+        k_drop, k_attn, k_out = hax.jax_utils.maybe_rng_split(key, 3)
+        qkv_out = self.c_attn(x, key=k_attn).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's Pos as haliax doesn't support unnamed axes or duplicate axes
@@ -199,9 +201,9 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 block_size=self.config.flash_attention_block_size,
                 mask=mask,
                 inference=self.dropout.inference,
-                key=key,
+                key=k_drop,
             )
-            attn_output = self.c_proj(attn_output)
+            attn_output = self.c_proj(attn_output, key=k_out)
         else:
             scale = jax.lax.rsqrt(float(self.config.HeadSize.size))
             if self.config.scale_attn_by_inverse_layer_idx:
@@ -216,10 +218,10 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
                 attn_scores = attn_scores + (1.0 - mask) * -1e9
 
             attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-            attn_weights = self.dropout(attn_weights, key=key)
+            attn_weights = self.dropout(attn_weights, key=k_drop)
 
             attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
-            attn_output = self.c_proj(attn_output)
+            attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
             attn_output = attn_output.astype(x.dtype)
@@ -271,14 +273,14 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
-        k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
+        k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
 
         attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
         attn_output = self.resid_dropout(attn_output, key=k2)
         x = x + attn_output
 
-        ff_output = self.mlp(self.ln_2(x))
-        ff_output = self.resid_dropout(ff_output, key=k3)
+        ff_output = self.mlp(self.ln_2(x), key=k3)
+        ff_output = self.resid_dropout(ff_output, key=k4)
         x = x + ff_output
 
         return x
