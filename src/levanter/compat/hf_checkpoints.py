@@ -473,8 +473,19 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # TODO: i still think this isn't the best way to do this. We should be able to do this with array from callback
         with jax.default_device(jax.devices("cpu")[0]):
+            # TODO: this could be simpler if we just started using a "persistent" or "buffer" thing
+            # TODO: the strategy is a bit too clever here.
+            # we first evaluate the shape of our model, then use from_state_dict to actually populate the model
+            # with the arrays.
             lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+
+            # However, this might miss some buffers that don't get persisted in the state dict
+            # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
+            # again, this time keeping only the (missing) buffers, and then combine the two models.
+            lev_model = _patch_missing_buffers_for_deser(
+                lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
+            )
 
             # Vocab: next, we resize the desired actual size
             if Vocab.size != tokenizer_Vocab.size:
@@ -766,3 +777,34 @@ def _convert_to_jnp(v):
         return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
     else:
         return jax.numpy.array(v.cpu().numpy())
+
+
+def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key, axis_mapping):
+    """
+    State dict serialization doesn't always save buffers, so when we initialize a model from a state dict, we might
+    need to re-initialize the buffers. We do this by rerunning the constructor, but only for the buffers.
+    """
+    dtype_structs, real_arrays = eqx.partition(lev_model, lambda x: isinstance(x, jax.ShapeDtypeStruct))
+
+    buffer_leaves = jax.tree_util.tree_leaves(dtype_structs)
+    if len(buffer_leaves) == 0:
+        return lev_model
+
+    # ok, we now want to re-initialize the buffers by running the constructor for real, getting only the missing
+    # arrays. We're relying on jit to do all the work in eliminating the unnecessary computation/memory
+    @haliax.named_jit(axis_resources=axis_mapping)
+    def _init_buffers():
+        new_model = lm_model_cls.init(Vocab, config, key=key)
+
+        def select_if_missing(missing_leaf, new_value):
+            if isinstance(missing_leaf, jax.ShapeDtypeStruct):
+                return new_value
+            else:
+                return None
+
+        return jax.tree_map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
+
+    new_buffers = _init_buffers()
+
+    result = eqx.combine(real_arrays, new_buffers)
+    return result
