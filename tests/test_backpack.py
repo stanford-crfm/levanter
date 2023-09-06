@@ -12,7 +12,7 @@ from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
