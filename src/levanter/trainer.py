@@ -326,7 +326,7 @@ class Trainer:
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=model)
+            updates, opt_state = self.optimizer.update(_params_only(grads), opt_state, params=_params_only(model))
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
@@ -336,7 +336,7 @@ class Trainer:
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
         model = self.mp.cast_to_param(model)
-        opt_state = self.optimizer.init(model)
+        opt_state = self.optimizer.init(_params_only(model))
         return model, opt_state
 
 
@@ -603,3 +603,7 @@ class OptimizerConfig:
             schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
 
         return schedule
+
+
+def _params_only(t):
+    return eqx.filter(t, eqx.is_inexact_array)

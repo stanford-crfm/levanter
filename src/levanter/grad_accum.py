@@ -83,7 +83,7 @@ def accumulate_gradients_sharded(
         # first things first, we want a copy of our gradient sharded like our model, along with a loss value
         loss = jnp.zeros(())
         with jax.named_scope("zeros"):
-            grad = jax.tree_util.tree_map(jnp.zeros_like, model)
+            grad = jax.tree_util.tree_map(jnp.zeros_like, eqx.filter(model, eqx.is_inexact_array_like))
             grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
         # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
