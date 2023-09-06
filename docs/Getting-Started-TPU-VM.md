@@ -56,10 +56,11 @@ In addition to creating the instance, it will also mount the `/files/` nfs share
 venv and a copy of the repo.
 
 **Notes**:
-- This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
+
+* This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
 path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
-- The command will spam you with a lot of output, sorry.
-- If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
+* The command will spam you with a lot of output, sorry.
+* If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
 the VM. That's explained down below in the "Running Levanter GPT-2" section.
 
 

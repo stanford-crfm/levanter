@@ -8,8 +8,8 @@
    end="<!--levanter-installation-end-->"
 %}
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md).
-If you're using CUDA, more complete documentation for setting that up is available [here](docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).
+If you're using CUDA, more complete documentation for setting that up is available [here](Getting-Started-CUDA.md).
 
 ## Setting up a development environment
 
