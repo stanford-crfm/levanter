@@ -32,7 +32,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)

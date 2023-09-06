@@ -11,7 +11,7 @@ import haliax.nn as hnn
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules, save_peft_pretrained
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
 

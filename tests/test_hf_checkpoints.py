@@ -11,7 +11,7 @@ import haliax
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, _convert_to_jnp
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
 
