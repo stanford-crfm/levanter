@@ -91,8 +91,8 @@ class LoraConfig:
     """modules to loraize. can either be a regex or a list of strings of module names, or None, meaning all linear modules"""
     r: int = 8  # rank of LoRA transform
     alpha: float = 8.0  # scaling factor for LoRA transform
+    dropout: float = 0.0  # dropout probability for LoRA layers
     # TODO: bias
-    # TODO: dropout
 
     def matches_target(self, key_path):
         if isinstance(self.target_modules, str):
@@ -120,15 +120,22 @@ class LowRankLinear(eqx.Module):
 
     lora_A: hnn.Linear
     lora_B: hnn.Linear
+    dropout: hnn.Dropout
     scale: float = eqx.field(static=True)
 
-    def __call__(self, x):
+    def __call__(self, x, key=None):
+        if key is None and self.dropout.is_active:
+            raise RuntimeError(
+                "Cannot call LoraLinear with dropout and without a key if dropout is enabled."
+                " The base model needs to be retrofitted to pass keys to the Linear layers."
+            )
+        x = self.dropout(x, key=key)
         z = self.lora_A(x)
         z = self.lora_B(z)
         return z * self.scale
 
     @staticmethod
-    def init(In: hax.Axis, Out: Axis, r: int, alpha: float, *, key):
+    def init(In: hax.Axis, Out: Axis, r: int, alpha: float, dropout_prob: float, *, key):
         """
         Initializes a LoraLinear module.
         """
@@ -137,8 +144,9 @@ class LowRankLinear(eqx.Module):
         # Peft always uses out_first=True (i.e. normal Torch convention) for linear, even for gpt2-style Conv1d
         lora_A = hnn.Linear.init(In, _R, key=key_A, use_bias=False, out_first=True)
         lora_B = hnn.Linear.init(_R, Out, key=key_B, use_bias=False, out_first=True)
+        dropout = hnn.Dropout(dropout_prob)
 
-        return LowRankLinear(lora_A, lora_B, alpha / r)
+        return LowRankLinear(lora_A, lora_B, dropout, alpha / r)
 
     def merge(self) -> hax.NamedArray:
         return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
@@ -152,19 +160,24 @@ class LoraLinear(eqx.Module, StateDictSerializationMixin):
     wrapped: hnn.Linear
     lora: LowRankLinear
 
-    def __call__(self, x):
-        return self.lora(x) + self.wrapped(x)
+    def __call__(self, x, key=None):
+        if key is not None:
+            k1, k2 = jax.random.split(key)
+            return self.lora(x, key=k2) + self.wrapped(x, key=k1)
+        else:
+
+            return self.lora(x) + self.wrapped(x)
 
     def merge(self):
         weight = self.lora.merge() + self.wrapped.weight
         return dataclasses.replace(self.wrapped, weight=weight)
 
     @staticmethod
-    def init(wrapped: hnn.Linear, r: int, alpha: float, *, key):
+    def init(wrapped: hnn.Linear, r: int, alpha: float, dropout: float = 0.0, *, key):
         """
         Initializes a LoraLinear module.
         """
-        lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, key=key)
+        lora = LowRankLinear.init(wrapped.In, wrapped.Out, r, alpha, dropout, key=key)
         return LoraLinear(wrapped, lora)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
@@ -191,8 +204,8 @@ def partition_lora_params(params: M) -> Tuple[M, M]:
     Returns:
         (base_params, lora_params)
     """
-    partitioned = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
-    return partitioned[1], partitioned[0]
+    lora_params, base_params = eqx.partition(params, is_lora_param, is_leaf=is_lora_param)
+    return base_params, lora_params
 
 
 def combine_lora_params(params: M, lora_params: M) -> M:
@@ -242,7 +255,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
         elif config.matches_target(key_path) and _is_lora_compatible_module(module):
             my_key = next(key_iter)
             batched_key = shaped_rng_split(my_key, [axis.size for axis in batch_dims])
-            return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, key=batched_key)
+            return _batchify_ctor(LoraLinear.init)(module, config.r, config.alpha, config.dropout, key=batched_key)
         else:
             return module
 

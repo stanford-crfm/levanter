@@ -21,6 +21,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ def main(config: EvalLmConfig):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample):
-            model = eqx.tree_inference(model, True)
+            model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
             return model.compute_loss(example, key=None)
 

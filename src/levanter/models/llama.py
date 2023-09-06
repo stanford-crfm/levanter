@@ -152,11 +152,12 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return LlamaMlp(gate_proj, up_proj, down_proj, act)
 
     @named_call
-    def __call__(self, x: NamedArray) -> NamedArray:
-        hidden_states = self.gate_proj(x)
+    def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
+        k_gate, k_up, k_down = maybe_rng_split(key, 3)
+        hidden_states = self.gate_proj(x, key=k_gate)
         hidden_states = self.act(hidden_states)
-        hidden_states = hidden_states * self.up_proj(x)
-        outputs = self.down_proj(hidden_states)
+        hidden_states = hidden_states * self.up_proj(x, key=k_up)
+        outputs = self.down_proj(hidden_states, key=k_down)
         return outputs
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
@@ -253,17 +254,19 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[Union[NamedArray, AttentionMask]]):
-        q = self.q_proj(x)  # TODO: rearrange and possibly rename
-        k = self.k_proj(x)
-        v = self.v_proj(x)
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
+        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+        q = self.q_proj(x, key=key_q)
+        k = self.k_proj(x, key=key_k)
+        v = self.v_proj(x, key=key_v)
 
         cos, sin = self.rotary_emb(seq_len=self.config.seq_len)
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         q = q.astype(jnp.float32)
-        k = k.astype(jnp.float32).rename({"position": "key_position"})
+        k = k.astype(jnp.float32)
+        k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
         c = self.config
@@ -272,7 +275,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
         attn_output = attn_output.astype(x.dtype)
 
-        attn_output = self.o_proj(attn_output)
+        attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
@@ -360,17 +363,18 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[Union[NamedArray, AttentionMask]]):
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
+        k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask)
+        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
         x = residual + attn_output
 
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x)
+        mlp_output = self.mlp(x, key=k_mlp)
         output = residual + mlp_output
         return output
 
@@ -391,8 +395,9 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[Union[NamedArray, AttentionMask]]) -> NamedArray:
-        x = self.layers.fold(x, mask=attn_mask)
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
+        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        x = self.layers.fold(x, mask=attn_mask, key=keys)
         x = self.norm(x)
 
         return x
@@ -486,9 +491,10 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
                 Mask to avoid performing attention on the padding token indices of the encoder input.
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
         """
+        k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask)
-        lm_logits = self.lm_head(x)
+        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        lm_logits = self.lm_head(x, key=k_head)
         return lm_logits
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
