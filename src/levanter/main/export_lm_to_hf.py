@@ -16,6 +16,7 @@ from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
+from levanter.utils.jax_utils import use_cpu_device
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def main(config: ConvertLmConfig):
 
     key = jax.random.PRNGKey(0)
 
-    with jax.default_device(jax.devices("cpu")[0]):
+    with use_cpu_device():
         model = eqx.filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
 
         with hax.enable_shape_checks(False):

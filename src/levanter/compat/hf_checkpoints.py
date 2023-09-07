@@ -1,5 +1,6 @@
 import abc
 import dataclasses
+import gc
 import json
 import logging
 import os
@@ -37,6 +38,7 @@ from levanter.compat.torch_serialization import StateDictSerializationMixin, sav
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
+from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
@@ -449,36 +451,44 @@ class HFCheckpointConverter(Generic[LevConfig]):
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
-        # TODO: we should support resizing axes to match the config, especially for vocab size
-        state_dict = self.load_state_dict(ref)
+        from contextlib import nullcontext
 
-        hf_config = self.hf_config_from_hf_checkpoint(ref)
-
-        if isinstance(lm_model_cls, type(self.default_config)):
-            config = lm_model_cls
-            lm_model_cls = config.model_type
+        if axis_mapping is None:
+            axis_mapping_cm = nullcontext()
         else:
-            config = self.config_from_hf_config(hf_config)
+            axis_mapping_cm = haliax.axis_mapping(axis_mapping)
+        with use_cpu_device(), axis_mapping_cm:
+            # TODO: in an ideal world, we would only load the part of the array we needed, but
+            # AFAICT neither torch state dicts nor safetensors support this.
+            state_dict = self.load_state_dict(ref)
 
-        # Vocab: first we have to resize the vocab as loaded from the checkpoint
-        tokenizer_Vocab = self.Vocab
-        Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+            hf_config = self.hf_config_from_hf_checkpoint(ref)
 
-        ignore_prefix: Optional[str] = None
-        if self.ignore_prefix:
-            for k in state_dict.keys():
-                if k.startswith(f"{self.ignore_prefix}."):
-                    ignore_prefix = self.ignore_prefix
-                    break
+            if isinstance(lm_model_cls, type(self.default_config)):
+                config = lm_model_cls
+                lm_model_cls = config.model_type
+            else:
+                config = self.config_from_hf_config(hf_config)
 
-        # TODO: i still think this isn't the best way to do this. We should be able to do this with array from callback
-        with jax.default_device(jax.devices("cpu")[0]):
+            # Vocab: first we have to resize the vocab as loaded from the checkpoint
+            tokenizer_Vocab = self.Vocab
+            Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+
+            ignore_prefix: Optional[str] = None
+            if self.ignore_prefix:
+                for k in state_dict.keys():
+                    if k.startswith(f"{self.ignore_prefix}."):
+                        ignore_prefix = self.ignore_prefix
+                        break
+
             # TODO: this could be simpler if we just started using a "persistent" or "buffer" thing
             # TODO: the strategy is a bit too clever here.
             # we first evaluate the shape of our model, then use from_state_dict to actually populate the model
             # with the arrays.
             lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+            del state_dict
+            gc.collect()  # sometimes takes a while to free buffers otherwise
 
             # However, this might miss some buffers that don't get persisted in the state dict
             # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
@@ -487,33 +497,27 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
             )
 
-            # Vocab: next, we resize the desired actual size
             if Vocab.size != tokenizer_Vocab.size:
                 if resize_vocab_to_match_tokenizer:
                     logger.info(
                         f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
                     )
                     # run in jit b/c we're manipulating sharded tensors
-                    lev_model = haliax.named_jit(lambda m: m.resize_vocab(tokenizer_Vocab.size), axis_mapping)(
-                        lev_model
-                    )
-                    lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                    lev_model = haliax.named_jit(
+                        lambda m: m.resize_vocab(tokenizer_Vocab.size), axis_mapping, donate_args=(True,)
+                    )(lev_model)
                 else:
                     logger.warning(
                         f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size ({tokenizer_Vocab.size})"
                     )
 
         if axis_mapping is not None:
-            print(
-                "current devices, pre-shard",
-                set(d for a in jax.tree_util.tree_leaves(lev_model) for d in a.devices()),
-                flush=True,
-            )
-            print("memory", jax.lib.xla_bridge.get_backend(None).live_arrays(), flush=True)
-            print("buffers", jax.lib.xla_bridge.get_backend(None).live_buffers(), flush=True)
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
         else:
             lev_model = haliax.auto_sharded(lev_model)
+
+        # once more for good measure
+        gc.collect()
 
         return lev_model
 
@@ -793,7 +797,8 @@ def _convert_to_jnp(v):
 def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key, axis_mapping):
     """
     State dict serialization doesn't always save buffers, so when we initialize a model from a state dict, we might
-    need to re-initialize the buffers. We do this by rerunning the constructor, but only for the buffers.
+    need to re-initialize the buffers. We do this by rerunning the constructor, but only save the buffers.
+    JAX jit will avoid actually doing the computation.
     """
     dtype_structs, real_arrays = eqx.partition(lev_model, lambda x: isinstance(x, jax.ShapeDtypeStruct))
 

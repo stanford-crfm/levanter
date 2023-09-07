@@ -32,6 +32,7 @@ from levanter.compat.torch_serialization import (
 )
 from levanter.models.attention import AttnMask, materialize_mask
 from levanter.models.lm_model import LmConfig
+from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -440,7 +441,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         lev_config = MptConfig.from_hf_config(config)  # type: ignore
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
-        with jax.default_device(jax.devices("cpu")[0]):
+        with use_cpu_device():
             lev_model = eqx.filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
