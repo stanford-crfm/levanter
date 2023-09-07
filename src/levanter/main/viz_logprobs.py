@@ -16,6 +16,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 from levanter.visualization import compute_and_visualize_log_probs
 
@@ -79,7 +80,7 @@ def main(config: VizGpt2Config):
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         # initialize the model
-        with jax.default_device(jax.devices("cpu")[0]):
+        with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
             ckpt = load_checkpoint(model, None, config.checkpoint_path)
