@@ -185,8 +185,9 @@ class Trainer:
             raise ValueError("one of model and model_init must be specified")
 
         if model is not None:
-            m = model
-            model_init = lambda: m  # noqa: E731
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
+            # We can't use plain partials because they aren't pytrees
+            model_init = jax.tree_util.Partial(lambda m: m, model)
 
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
 
