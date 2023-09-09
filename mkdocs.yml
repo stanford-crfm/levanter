@@ -41,14 +41,16 @@ plugins:
           import:
             - https://docs.python.org/3/objects.inv
             - https://jax.readthedocs.io/en/latest/objects.inv
+            - https://haliax.readthedocs.io/en/latest/objects.inv
             - https://docs.kidger.site/equinox/objects.inv
           options:
             docstring_options:
               ignore_init_summary: true
               docstring_style: google
+            show_if_no_docstring: true
             show_source: false
             docstring_section_style: list
-            heading_level: 5
+            heading_level: 4
             inherited_members: true
             merge_init_into_class: true
             load_external_modules: true
@@ -65,6 +67,7 @@ plugins:
 extra_css:
   - css/material.css
   - css/mkdocstrings.css
+  - css/custom.css
 
 
 watch:
@@ -72,7 +75,9 @@ watch:
   - docs
 nav:
   - 'Home': 'index.md'
-  - 'User Guide': 'Getting-Started-Training.md'
+  - 'User Guide':
+      - 'Getting-Started-Training.md'
+      - 'Configuration-Guide.md'
 #  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'

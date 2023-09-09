@@ -342,8 +342,8 @@ class Trainer:
 
 @dataclass
 class TrainerConfig:
-    seed: int = 0
-    mp: jmp.Policy = jmp.get_policy("f32")
+    seed: int = 0  # random seed
+    mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
 
     wandb: WandbConfig = field(default_factory=WandbConfig)
     log_dir: Path = Path("logs/")
@@ -371,7 +371,7 @@ class TrainerConfig:
     """how many examples to process in parallel on each device. -1 (default) means same as per_device_parallelism"""
 
     # Config related to duration
-    num_train_steps: int = 400_000
+    num_train_steps: int = 400_000  # number of training steps
     steps_per_eval: int = 1_000  # how often to evaluate
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 

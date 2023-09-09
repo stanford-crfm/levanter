@@ -11,6 +11,7 @@ Second, you need to follow some steps to enable Cloud TPU VM. You can follow Goo
 but the gist of it is you need to enable the TPU API and the Compute Engine API. You can do this by running:
 
 ```bash
+gcloud auth login  # if you haven't already
 gcloud components install alpha
 gcloud services enable tpu.googleapis.com
 gcloud config set account your-email-account
@@ -60,8 +61,8 @@ venv and a copy of the repo.
 * This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
 path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 * The command will spam you with a lot of output, sorry.
-* If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
-the VM. That's explained down below in the "Running Levanter GPT-2" section.
+* If you use a preemptible instance, you probably want to use the ["babysitting" script](#using-the-babysitting-script-with-a-preemptible-or-trc-tpu-vm) that automatically re-creates
+the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
 
 
 ## Useful commands
@@ -90,7 +91,7 @@ Now that you have a TPU VM instance, you can follow the [Running Levanter] steps
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
-launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
+`launch.sh` will run the command in the background and redirect stdout and stderr to a log file in the home directory
 on each worker.
 
 ### Launch a GPT-2 Small in interactive mode
