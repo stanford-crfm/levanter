@@ -20,7 +20,9 @@ python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
 This will execute the training pipeline pre-defined in the [train_lm.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/main/train_lm.py) and set model and training configuration
 set in [gpt2_small.yaml](https://github.com/stanford-crfm/levanter/tree/main/config/gpt2_small.yaml). You can find more template configurations in the [config](https://github.com/stanford-crfm/levanter/tree/main/config/) directory.
 
-Configuration files are processed using [Pyrallis](https://github.com/dlwh/draccus). Pyrallis is yet-another yaml-to-dataclass library.
+Configuration files are processed using [Draccus](https://github.com/dlwh/draccus). Draccus is yet-another yaml-to-dataclass library.
+It should mostly work like you would expect. Arguments may be passed in via the command line using arg-parse style
+flags like `--trainer.num_train_steps`, and will override the values in the config file.
 
 ## Set Custom Training Configuration
 In machine learning experiments, it is common to adjust model hyperparameters. In this section, we will provide examples of different use cases
