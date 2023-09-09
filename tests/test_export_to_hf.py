@@ -11,6 +11,7 @@ import levanter.main.export_lm_to_hf as export_lm_to_hf
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from test_utils import has_torch
 
 
 @pytest.mark.entry
@@ -44,10 +45,9 @@ def test_export_lm_to_hf():
             )
             export_lm_to_hf.main(config)
 
-            # load it back in
-            m = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
-
-            print(m)
+            if has_torch():
+                m = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
+                print(m)
 
         finally:
             try:
