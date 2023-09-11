@@ -7,18 +7,21 @@ data:
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
-initialize_from_hf: "meta-llama/Llama-2-7b-hf"
-use_hf_model_config: true
+# TODO: uncomment this once we resolve the resource exhaustion issue
+# initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+# use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
     tags: ["openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
-
   train_batch_size: 1024
   num_train_steps: 1000
   steps_per_eval: 50
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
 optimizer:
   learning_rate: 1.2E-5  # set low for fine-tuning
   weight_decay: 0.1
