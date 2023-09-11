@@ -21,7 +21,8 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def main(config: EvalLmConfig):
         # initialize the model
         if config.checkpoint_path is not None:
             # initialize the model
-            with jax.default_device(jax.devices("cpu")[0]):
+            with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 ckpt = load_checkpoint(model, None, config.checkpoint_path)

@@ -1,22 +1,18 @@
 import contextlib
-import dataclasses
 import functools as ft
 import json
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 import equinox as eqx
 import jax
 from jax import lax
 from jax import numpy as jnp
+from jax._src.array import ArrayImpl
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like
-from haliax.util import StringHolderEnum
-
-
-T = TypeVar("T", bound=PyTree)
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -41,7 +37,7 @@ def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.devices("cpu")[0]):
+    with jax.default_device(jax.local_devices(backend="cpu")[0]):
         yield
 
 
@@ -59,6 +55,37 @@ def parameter_count(model: PyTree):
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
     leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if is_jax_array_like(x)}
     return sum(x.size for x in leaves.values())
+
+
+def currently_allocated_array_memory(backend=None) -> Mapping[jax.Device, int]:
+    """Returns a mapping from device to the number of bytes currently allocated on that device"""
+    if backend is None:
+        backend = jax.lib.xla_bridge.get_backend()
+
+    result: dict[jax.Device, int] = {}
+
+    array: ArrayImpl
+    for array in backend.live_arrays():
+        for buffer in array.device_buffers:
+            result[buffer.device()] = result.get(buffer.device(), 0) + buffer.nbytes
+
+    return result
+
+
+def format_currently_allocated_array_memory(backend=None) -> str:
+    def _format_bytes(n):
+        if n < 1024:
+            return f"{n}B"
+        elif n < 1024**2:
+            return f"{n / 1024:.2f}KB"
+        elif n < 1024**3:
+            return f"{n / 1024 ** 2:.2f}MB"
+        else:
+            return f"{n / 1024 ** 3:.2f}GB"
+
+    return "\n".join(
+        f"{device}: {_format_bytes(nbytes)}" for device, nbytes in currently_allocated_array_memory(backend).items()
+    )
 
 
 def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
@@ -245,46 +272,3 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
-
-
-class NonePolicy(StringHolderEnum):
-    PRESERVE = "preserve"
-    REPLACE = "replace"
-    ERROR = "error"
-
-
-def inference_mode(tree: T, value: bool, none_policy: str = NonePolicy.PRESERVE) -> T:
-    """
-    Analogous to [equinox.nn.inference_mode][] (neé [equinox.tree_inference][]), but
-    it works in the presence of nones for the `inference` argument.
-    """
-
-    has_inference = lambda leaf: hasattr(leaf, "inference")  # noqa: E731
-
-    def replace_fn(node):
-        if not has_inference(node):
-            return node
-
-        if node.inference is None:
-            if none_policy == NonePolicy.PRESERVE:
-                return node
-            elif none_policy == NonePolicy.ERROR:
-                raise ValueError(f"None found in {tree}.inference with none_policy={none_policy}")
-            else:
-                assert none_policy == NonePolicy.REPLACE, f"Unknown none_policy {none_policy}"
-
-        if dataclasses.is_dataclass(node):
-            return dataclasses.replace(node, inference=value)
-        else:
-            return eqx.tree_at(lambda x: x.inference, node, value, is_leaf=lambda x: x is node)
-
-    def rec_set(tree):
-        if has_inference(tree):
-            tree = replace_fn(tree)
-
-        if jax.tree_leaves(tree) == [tree]:
-            return tree
-
-        return jax.tree_util.tree_map(rec_set, tree, is_leaf=lambda x: has_inference(x) and tree is not x)
-
-    return rec_set(tree)

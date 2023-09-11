@@ -14,6 +14,7 @@ from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
+import haliax.partitioning
 from haliax import NamedArray
 from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
@@ -86,7 +87,16 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         # TODO: where's the best place to put this logic for NamedArrays
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
-        return NamedArray(jnp.array(state_dict[prefix]), axes=tree.axes)
+
+        array = state_dict[prefix]
+        mesh = haliax.partitioning._get_mesh()
+        if mesh.devices.size > 1:  # this happens with the default mesh
+            pspec = haliax.partitioning.pspec_for_axis(tree.axes)
+            sharding = jax.sharding.NamedSharding(mesh, pspec)
+            array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])
+        else:
+            array = jnp.array(array)
+        return NamedArray(array, axes=tree.axes)
     elif is_jax_array_like(tree):
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a state dict without a prefix")

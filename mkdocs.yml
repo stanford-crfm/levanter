@@ -1,54 +1,87 @@
-site_name: CRFM Levanter
+site_name: Levanter
 repo_url: https://github.com/stanford-crfm/levanter/
 edit_uri: blob/main/docs/
 theme:
-  name: readthedocs
+  name: material
   highlightjs: false
+  features:
+    - content.code.copy
+markdown_extensions:
+- attr_list
+- admonition
+#- callouts
+- footnotes
+- codehilite
+- pymdownx.details  # Allowing hidden expandable regions denoted by ???
+- pymdownx.magiclink
+- pymdownx.superfences
+- pymdownx.arithmatex: # Render LaTeX via MathJax
+      generic: true
+- pymdownx.superfences  # Seems to enable syntax highlighting when used with the Material theme.
+- pymdownx.snippets: # Include one Markdown file into another
+      base_path: docs
+- pymdownx.inlinehilite
+- pymdownx.snippets:
+    check_paths: true
+- pymdownx.superfences
+- toc:
+    permalink: "¤"
+    toc_depth: "2-3"
+
 plugins:
   - search
+  - autorefs
   - mkdocstrings:
       handlers:
         python:
+          setup_commands:
+              - import pytkdocs_tweaks
+              - pytkdocs_tweaks.main()
+          paths: [src]
+          import:
+            - https://docs.python.org/3/objects.inv
+            - https://jax.readthedocs.io/en/latest/objects.inv
+            - https://haliax.readthedocs.io/en/latest/objects.inv
+            - https://docs.kidger.site/equinox/objects.inv
           options:
-            show_root_heading: true
-            show_signature_annotations: true
-            show_bases: false
-            show_source: false
-            show_root_full_path: false
-            show_if_no_docstring: true
-            members_order: source
-            merge_init_into_class: true
             docstring_options:
               ignore_init_summary: true
-
+              docstring_style: google
+            show_if_no_docstring: true
+            show_source: false
+            docstring_section_style: list
+            heading_level: 4
+            inherited_members: true
+            merge_init_into_class: true
+            load_external_modules: true
+            preload_modules: [haliax, haliax.core]
+#            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+#            show_signature_annotations: true
+            show_symbol_type_heading: false
+            show_symbol_type_toc: false
+            signature_crossrefs: true
+            line_length: 100
   - include-markdown
 extra_css:
-  - docstrings.css
-markdown_extensions:
-  - pymdownx.magiclink
-  - pymdownx.arithmatex: # Render LaTeX via MathJax
-      generic: true
-  - pymdownx.superfences  # Seems to enable syntax highlighting when used with the Material theme.
-  - pymdownx.details  # Allowing hidden expandable regions denoted by ???
-  - pymdownx.snippets: # Include one Markdown file into another
-      base_path: docs
-  - admonition
-  - toc:
-      permalink: "¤"  # Adds a clickable permalink to each section heading
-      toc_depth: 4
+  - css/material.css
+  - css/mkdocstrings.css
+  - css/custom.css
+
+
 watch:
   - src
-  - scripts
-  - infra
-  - config
+  - docs
 nav:
   - 'Home': 'index.md'
-  - 'User Guide': 'Getting-Started-Training.md'
+  - 'User Guide':
+      - 'Getting-Started-Training.md'
+      - 'Configuration-Guide.md'
 #  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
       - 'Getting-Started-CUDA.md'
-  - Technical Documentation:
-      - 'Overview.md'
-      - 'design/Data-Loader-Design.md'
+  - Other:
+      - 'Levanter-1.0-Release.md'

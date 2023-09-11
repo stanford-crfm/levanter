@@ -32,7 +32,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)
@@ -185,8 +185,9 @@ class Trainer:
             raise ValueError("one of model and model_init must be specified")
 
         if model is not None:
-            m = model
-            model_init = lambda: m  # noqa: E731
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
+            # We can't use plain partials because they aren't pytrees
+            model_init = jax.tree_util.Partial(lambda m: m, model)
 
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
 
@@ -252,6 +253,10 @@ class Trainer:
         """
         for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
             pass
+
+        if run_hooks:
+            # force hooks to run at the end
+            self.run_hooks(info, force=True)
 
         return info
 
@@ -321,7 +326,7 @@ class Trainer:
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=model)
+            updates, opt_state = self.optimizer.update(_params_only(grads), opt_state, params=_params_only(model))
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
@@ -331,14 +336,14 @@ class Trainer:
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
         model = self.mp.cast_to_param(model)
-        opt_state = self.optimizer.init(model)
+        opt_state = self.optimizer.init(_params_only(model))
         return model, opt_state
 
 
 @dataclass
 class TrainerConfig:
-    seed: int = 0
-    mp: jmp.Policy = jmp.get_policy("f32")
+    seed: int = 0  # random seed
+    mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
 
     wandb: WandbConfig = field(default_factory=WandbConfig)
     log_dir: Path = Path("logs/")
@@ -366,7 +371,7 @@ class TrainerConfig:
     """how many examples to process in parallel on each device. -1 (default) means same as per_device_parallelism"""
 
     # Config related to duration
-    num_train_steps: int = 400_000
+    num_train_steps: int = 400_000  # number of training steps
     steps_per_eval: int = 1_000  # how often to evaluate
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
@@ -598,3 +603,7 @@ class OptimizerConfig:
             schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
 
         return schedule
+
+
+def _params_only(t):
+    return eqx.filter(t, eqx.is_inexact_array)

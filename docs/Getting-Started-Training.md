@@ -17,10 +17,12 @@ To launch the training of a GPT2 model, run the following command:
 python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
 ```
 
-This will execute the training pipeline pre-defined in the [train_lm.py](../src/levanter/main/train_lm.py) and set model and training configuration
-set in [gpt2_small.yaml](../config/gpt2_small.yaml). You can find more template configurations in the [config](../config/) directory.
+This will execute the training pipeline pre-defined in the [train_lm.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/main/train_lm.py) and set model and training configuration
+set in [gpt2_small.yaml](https://github.com/stanford-crfm/levanter/tree/main/config/gpt2_small.yaml). You can find more template configurations in the [config](https://github.com/stanford-crfm/levanter/tree/main/config/) directory.
 
-Configuration files are processed using [Pyrallis](https://github.com/dlwh/draccus). Pyrallis is yet-another yaml-to-dataclass library.
+Configuration files are processed using [Draccus](https://github.com/dlwh/draccus). Draccus is yet-another yaml-to-dataclass library.
+It should mostly work like you would expect. Arguments may be passed in via the command line using arg-parse style
+flags like `--trainer.num_train_steps`, and will override the values in the config file.
 
 ## Set Custom Training Configuration
 In machine learning experiments, it is common to adjust model hyperparameters. In this section, we will provide examples of different use cases
@@ -45,8 +47,8 @@ This will overwrite the default model and training configurations and set the fo
 that the hidden dimension must be divisible by the number of heads.
 - `trainer.num_train_steps`: The number of training steps to run.
 
-You can find a complete list of parameters to change from the `TrainerConfig` in [trainer.py](src/levanter/trainer.py) and `Gpt2Config` in
-[gpt2.py](src/levanter/models/gpt2.py).
+You can find a complete list of parameters to change from the `TrainerConfig` in [trainer.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/trainer.py) and `Gpt2Config` in
+[gpt2.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models/gpt2.py).
 
 ### Change Checkpoint Settings
 To change the frequency of saving checkpoints, you can use the following command:
@@ -59,7 +61,7 @@ python src/levanter/main/train_lm.py \
     --trainer.checkpointer.save_interval 20m
 ```
 
-This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [checkpoint.py](src/levanter/checkpoint.py) to
+This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [checkpoint.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/checkpoint.py) to
 save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/${wandb_id}`
 
 Note that:
@@ -79,7 +81,7 @@ python src/levanter/main/train_lm.py \
     --trainer.steps_per_eval 500
 ```
 
-This will overwrite the default eval frequency (every 1,000) from the `TrainerConfig` in [config.py](src/levanter/config.py) to every 500 steps.
+This will overwrite the default eval frequency (every 1,000) from the `TrainerConfig` in [config.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/config.py) to every 500 steps.
 
 ### Change Parallelism Settings
 By default, Levanter will split the number of examples in `train_batch_size` equally across all available GPUs.
@@ -114,7 +116,7 @@ python src/levanter/main/train_lm.py \
     --trainer.wandb,group my_new_exp_group
 ```
 
-This will overwrite the default WandB configuration from the `TrainerConfig` in [config.py](src/levanter/config.py).
+This will overwrite the default WandB configuration from the `TrainerConfig` in [config.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/config.py).
 We pass all these arguments to the `wandb.init()` function at the same verbatim.
 For more information on the WandB configuration, please refer to the [WandB documentation](https://docs.wandb.ai/ref/python/init).
 
@@ -126,7 +128,7 @@ To do so, you can use the following command:
 python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.load_checkpoint_path checkpoints/gpt2/wandb_id  \
-    --trainer.wandb.resume True \
+    --trainer.wandb.resume true \
     --trainer.wandb.id asdf1234
 ```
 

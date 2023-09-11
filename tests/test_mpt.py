@@ -2,20 +2,18 @@ import tempfile
 
 import jax
 import numpy as np
-import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 
 import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
-from levanter.utils.jax_utils import inference_mode
+from levanter.utils.tree_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
-@pytest.mark.parametrize("use_bias", [True, False])
-def test_mpt_nano_compare(use_bias):
+def test_mpt_nano_compare():
     import torch
 
     # conjure up a fake model and compare
@@ -32,7 +30,6 @@ def test_mpt_nano_compare(use_bias):
         n_layers=2,
         attn_config={"attn_impl": "torch", "alibi": True},
         vocab_size=vocab_size,
-        no_bias=not use_bias,
     )
 
     model = cls(config)

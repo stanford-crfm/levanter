@@ -22,8 +22,9 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils.jax_utils import inference_mode, parameter_count
+from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -171,8 +172,7 @@ def main(config: LoraLmConfig):
                 next(iter_data)
 
         ## OK, actually run training!
-        last_step = trainer.train(state, iter_data)
-        trainer.run_hooks(last_step, force=True)
+        trainer.train(state, iter_data)
         # checkpointer.on_step(last_step, force=True)
 
 
