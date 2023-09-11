@@ -12,6 +12,7 @@ but the gist of it is you need to enable the TPU API and the Compute Engine API.
 
 ```bash
 gcloud auth login  # if you haven't already
+gcloud auth application-default login  # on your local machine
 gcloud components install alpha
 gcloud services enable tpu.googleapis.com
 gcloud config set account your-email-account
@@ -20,6 +21,10 @@ gcloud config set project your-project
 
 You can follow more steps there to get used to things like creating instances and such, but we'll only discuss the
 most important details here.
+
+Google recommends not running those first two commands on a VM, and instead using tokens and service accounts. You can
+find more information about that [here](https://cloud.google.com/docs/authentication/production#auth-cloud-implicit-python).
+Honestly, if you're working outside of a corp environment and not dealing with private data, I don't bother...
 
 You may also need to create an SSH key and add it to your Google Cloud account. TODO
 
@@ -113,7 +118,7 @@ for your run, which would otherwise be generated for you by WandB.
 You can run it like this:
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible]  -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
 ```
 
@@ -181,7 +186,7 @@ try again, and get stuck in a loop forever. (You can ctrl-c it at any point afte
 ## Random Tricks
 
 I (@dlwh) personally like to use pdsh instead of gcloud to run commands on all workers. It doesn't have the reboot
-issue, and seems to work better for long lived jobs and such. You can install it with `sudo apt-get install pdsh`.
+issue, and seems to work better for long-lived jobs and such. You can install it with `sudo apt-get install pdsh`.
 You can then get the ips for your machines like so:
 
 ```bash
