@@ -481,8 +481,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
                         ignore_prefix = self.ignore_prefix
                         break
 
-        # TODO: i still think this isn't the best way to do this. We should be able to do this with array from callback
-        with jax.default_device(jax.devices("cpu")[0]):
             # TODO: this could be simpler if we just started using a "persistent" or "buffer" thing
             # TODO: the strategy is a bit too clever here.
             # we first evaluate the shape of our model, then use from_state_dict to actually populate the model
