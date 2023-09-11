@@ -371,8 +371,6 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
             return arr
         elif isinstance(arr, np.ndarray):
             return arr
-        elif "cpu" in arr.device().device_kind:
-            return np.array(arr)
         elif arr.is_fully_addressable:
             r = np.array(arr)
             return r
