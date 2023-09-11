@@ -240,6 +240,9 @@ First, we assume you've gone through the setup steps in [the TPU guide](./Gettin
 
 ### Monitoring
 
+## Evaluation
+
+
 ## Huggingface Export
 
 ### Exporting during Training
@@ -254,6 +257,3 @@ After training, you can run a separate script to export your model to Huggingfac
 ```bash
 python -m levanter.main.export_to_hf --config_path my_config.yaml --output_dir gs://path/to/output
 ```
-
-
-## Evaluation
