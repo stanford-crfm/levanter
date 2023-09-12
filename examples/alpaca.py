@@ -67,8 +67,7 @@ class TrainArgs:
 
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
 
-    # TODO: replace with llama
-    model_name_or_path: str = "gpt2"  # you'll probably want to change this to a llama
+    model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
     trust_remote_code: bool = False  # Trust remote code when loading from HuggingFace checkpoints.
 
     cache_dir: Optional[str] = None
@@ -145,7 +144,6 @@ class SupervisedDataset(Dataset[LmExample]):
     def __init__(self, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer):
         super(SupervisedDataset, self).__init__()
         logging.warning("Loading data...")
-        # list_data_dict = utils.jload(data)
         list_data_dict = _load_data(data)
 
         logging.warning("Formatting inputs...")
