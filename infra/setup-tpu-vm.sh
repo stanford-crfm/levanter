@@ -1,11 +1,18 @@
-set -x
 # broadly based on https://github.com/ayaka14732/tpu-starter
 
 # parse some arguments
 # usage: ./setup-tpu-vm.sh -b|--branch <git commit or branch for levanter> -r <git repo for levanter>
 
+if [ "$DEBUG" == "1" ]; then
+  set -x
+fi
+
 REPO="https://github.com/stanford-crfm/levanter.git"
 BRANCH=main
+
+if [ "$GIT_BRANCH" != "" ]; then
+  BRANCH="$GIT_BRANCH"
+fi
 
 while [[ $# -gt 0 ]]; do
   key="$1"
@@ -78,10 +85,7 @@ if [ ! -d "$VENV" ]; then
     python3.10 -m venv $VENV
 fi
 
-# don't spam the console with venv activation
-set +x
 source $VENV/bin/activate
-set -x
 
 pip install -U pip
 pip install -U wheel
