@@ -10,12 +10,14 @@ The basic steps are:
 4. [Training](#training): Run Levanter to train your model.
 
 Checklist:
-- [ ] Configure your environment/cloud
-- [ ] Prepare your data
-- [ ] Configure your training run
-- [ ] Set up your machine(s)
-- [ ] Train your model
-- [ ] Export your model to Huggingface
+
+- [ ] [Configure your environment/cloud](#environment-setup)
+- [ ] [Prepare your data and upload to cloud](#data-preparation)
+- [ ] [Configure your training run](#configuration)
+- [ ] [Upload training configuration file](#upload-config-to-gcs)
+- [ ] [Launch Training](#launching-training)
+- [ ] [Evaluate](#evaluation)
+- [ ] [Export your model to Huggingface](#huggingface-export)
 
 
 ## Environment Setup
@@ -29,6 +31,9 @@ the installation steps in that guide before continuing. Don't spin up a TPU VM i
 
 See the [CUDA guide](./Getting-Started-CUDA.md) for instructions on setting up a CUDA machine.
 
+### WandB Setup
+
+Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a WandB account and [get an API key](https://wandb.ai/authorize).
 
 
 ## Data Preparation
@@ -198,7 +203,7 @@ If you want a different model size or architecture, you can look at the config f
 
 See also the [Checkpointing section of the Configuration Guide](./Configuration-Guide.md#checkpointing).
 
-Levanter supports checkpointing to both local and google cloud storage, backed by [Tensorstore](https://google.github.io/tensorstore/).
+Levanter supports checkpointing to both local and Google Cloud Storage, backed by [Tensorstore](https://google.github.io/tensorstore/).
 If you're using multiple machines, you should probably use cloud storage or NFS.
 
 Levanter saves two kinds of checkpoints:
@@ -226,21 +231,71 @@ So, to find your batch size, you should modify either `per_device_parallelism` o
 your job runs. Note that, due to FSDP, as you add more TPUs, you can increase the effective parallelism because
 you will use less memory per accelerator to store parameters and optimizer states.
 
+### Number of Training Steps
 
+Levanter does not support epochs or number of tokens/examples, so if you want to train for a certain number of epochs or
+tokens, you'll need to compute the number of steps yourself. You can use the following formula:
 
-## Machine Setup
+Note however that epoch boundaries aren't really respected: our implementation of sharded data loading restarts
+from the beginning as soon as any machine finishes its shards.
+
+## Launching Training
 
 ### TPU
 
-First, we assume you've gone through the setup steps in [the TPU guide](./Getting-Started-TPU-VM.md).
+First, we assume you've gone through the setup steps in [the TPU guide](./Getting-Started-TPU-VM.md), at least through setting up your gcloud account.
+We also strongly recommend setting up ssh keys and ssh-agent.
+
+#### Upload Config To GCS
+
+Once you have your config built, you should upload it to GCS. You could also `scp` it to all workers, but this is easier
+and works with the TPU babysitting script.
+
+```bash
+gsutil cp my_config.yaml gs://path/to/config.yaml
+```
+
+#### Using the Babysitting Script with a Preemptible or TRC TPU VM
+
+If you are using a preemptible TPU VM, or a TRC TPU VM, you should use the babysitting script to automatically restart
+your VM if it gets preempted. A detailed guide to babysitting is available in the
+[babysitting section of the TPU guide](./Getting-Started-TPU-VM.md#using-the-babysitting-script-with-a-preemptible-or-trc-tpu-vm).
+Here is the upshot:
+
+```bash
+infra/babysit-tpu-vm my-tpu -z us-east1-d -t v3-128 -- \
+    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml
+```
+
+#### Spin up and manual launch
+
+You should probably use the automated setup script, as described in the [relevant section of the TPU guide](./Getting-Started-TPU-VM.md#automatic-setup).
+Here's what that looks like:
+
+```bash
+bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
+```
+
+This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
+
+```bash
+gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+```
 
 
-
-## Training
-
-### Monitoring
+## Monitoring
 
 ## Evaluation
+
+Levanter will run evaluation every `trainer.steps_per_eval` steps.
+
+You can also run evaluation manually by running the `levanter/main/eval_lm.py` script:
+
+```bash
+python -m levanter.main.eval_lm --config_path gs://path/to/config.yaml --checkpoint_path gs://path/to/checkpoint
+```
+
+You can also use this script to evaluate on other datasets by modifying the config.
 
 
 ## Huggingface Export
@@ -250,9 +305,24 @@ First, we assume you've gone through the setup steps in [the TPU guide](./Gettin
 You can export to HF during training using the `hf_save_steps` and `hf_save_path` options in your config. You can
 also set `hf_upload` to an HF repo to automatically upload your model to HF. See the [config above](#tldr) for an example.
 
+Typically, you will have saved checkpoints in a directory like `gs://path/to/checkpoints/hf/my_run/step_10000/`.
+Hugging Face Transformers doesn't know how to read these. So, you'll need to copy the files to a local directory:
+
+```bash
+gsutil -m cp gs://path/to/checkpoints/hf/my_run/step_10000/* /tmp/my_exported_model
+```
+
+Then you can use the model as you would expect:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model = AutoModelForCausalLM.from_pretrained("/tmp/my_exported_model")
+tokenizer = AutoTokenizer.from_pretrained("/tmp/my_exported_model")
+```
+
 ### Exporting after Training
 
-After training, you can run a separate script to export your model to Huggingface:
+After training, you can run a separate script to export levanter checkpoints to Huggingface:
 
 ```bash
 python -m levanter.main.export_to_hf --config_path my_config.yaml --output_dir gs://path/to/output

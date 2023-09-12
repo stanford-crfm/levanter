@@ -26,7 +26,9 @@ Google recommends not running those first two commands on a VM, and instead usin
 find more information about that [here](https://cloud.google.com/docs/authentication/production#auth-cloud-implicit-python).
 Honestly, if you're working outside of a corp environment and not dealing with private data, I don't bother...
 
-You may also need to create an SSH key and add it to your Google Cloud account. TODO
+You may also need to create an SSH key and add it to your Google Cloud account. Consider using
+[GCloud's guide on ssh keys](https://cloud.google.com/compute/docs/connect/add-ssh-keys#metadata) (or OS Login if you do that)
+to set up ssh keys and [using `ssh-agent`](https://kb.iu.edu/d/aeww) to make executing the SSH commands easier.
 
 ## Creating a TPU VM Instance
 
@@ -134,10 +136,10 @@ an NFS server or similar, you should upload your config to GCS:
 gsutil cp my_config.yaml gs://my_bucket//my_config.yaml
 ```
 
-Afterwards, you can use the config directly from the TPU VM instance, e.g.:
+Afterward, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
     --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```

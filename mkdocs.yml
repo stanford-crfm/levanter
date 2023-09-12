@@ -9,7 +9,10 @@ theme:
 markdown_extensions:
 - attr_list
 - admonition
-#- callouts
+- def_list
+- pymdownx.tasklist:
+    custom_checkbox: true
+  #- callouts
 - footnotes
 - codehilite
 - pymdownx.details  # Allowing hidden expandable regions denoted by ???
