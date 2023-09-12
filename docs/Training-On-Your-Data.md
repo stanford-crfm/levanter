@@ -1,21 +1,14 @@
-# Training on Your Data
+# Training on Your Own Data
 
 This guide is meant to be a detailed walkthrough of training a model on your own data using Levanter.
 
 The basic steps are:
 
-1. [Data Preparation](#data-preparation): Format your documents as jsonl files with a "text" key.
-2. [Configuration](#configuration): Write a configuration file that describes your training run.
-3. [Machine Setup](#machine-setup): Set up your machine(s) to run Levanter.
-4. [Training](#training): Run Levanter to train your model.
-
-Checklist:
-
 - [ ] [Configure your environment/cloud](#environment-setup)
 - [ ] [Prepare your data and upload to cloud](#data-preparation)
 - [ ] [Configure your training run](#configuration)
-- [ ] [Upload training configuration file](#upload-config-to-gcs)
-- [ ] [Launch Training](#launching-training)
+- [ ] [Upload the training configuration file](#upload-config-to-gcs)
+- [ ] [Launch training](#launching-training)
 - [ ] [Evaluate](#evaluation)
 - [ ] [Export your model to Huggingface](#huggingface-export)
 
