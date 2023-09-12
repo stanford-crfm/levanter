@@ -72,7 +72,7 @@ def _flash_attention(
     block_size: int,
 ) -> hax.NamedArray:
     return _flash_attention_forward(
-        qkv, QPos, KPos, Key, mask, dropout, inference=inference, key=key, block_size=block_size
+        None, qkv, QPos, KPos, Key, mask, dropout, inference=inference, key=key, block_size=block_size
     )[0]
 
 
