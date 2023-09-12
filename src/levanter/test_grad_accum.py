@@ -71,5 +71,5 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
         assert jnp.allclose(acc_v, v)
 
-        for l1, l2 in zip(jax.tree_leaves(acc_g), jax.tree_leaves(g)):
+        for l1, l2 in zip(jax.tree_util.tree_leaves(acc_g), jax.tree_util.tree_leaves(g)):
             assert jnp.allclose(l1, l2)
