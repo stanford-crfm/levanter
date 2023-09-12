@@ -199,6 +199,22 @@ hf_upload: null # set to an hf repo if you want to upload automatically. You nee
 If you want a different model size or architecture, you can look at the config files in
 [levanter/config](https://github.com/stanford-crfm/levanter/tree/main/config).
 
+### Continued Pretraining
+
+Levanter supports starting from an HF pretrained model. To do so, you should set your config like this:
+
+```yaml
+model:
+  type: mpt
+initialize_from_hf: "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2"
+use_hf_model_config: true
+```
+
+TODO: add instructions for llama including auth.
+
+You should probably reduce the learning rate by a factor of 10 or so. TODO: figure out best practices here.
+
+
 ### Checkpointing
 
 See also the [Checkpointing section of the Configuration Guide](./Configuration-Guide.md#checkpointing).
@@ -282,8 +298,17 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
+### GPU
+
+TODO, but you can mostly follow the guide for [TPU](#tpu) above.
 
 ## Monitoring
+
+Levanter integrates with WandB for logging. You can view your run on the WandB website. Levanter will also log
+to the console, and write logs to `logs/$RUN_ID.log` on each machine. Logs can be pretty verbose.
+
+We recommend monitoring `train/loss` and `eval/loss` in log/log scale. You should be seeing roughly a linear decrease
+in loss followed by a gradual flattening. You can also monitor `throughput`.
 
 ## Evaluation
 
