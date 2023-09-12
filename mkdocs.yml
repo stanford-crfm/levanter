@@ -79,7 +79,6 @@ watch:
 nav:
   - 'Home': 'index.md'
   - 'User Guide':
-      - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
 #  - Haliax: 'Haliax.md'
@@ -87,5 +86,6 @@ nav:
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
       - 'Getting-Started-CUDA.md'
+      - 'Getting-Started-Training.md'
   - Other:
       - 'Levanter-1.0-Release.md'

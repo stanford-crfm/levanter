@@ -77,6 +77,9 @@ data:
     validation_urls: # etc.
 ```
 
+**Note**: Levanter's preprocessing pipeline works best if you split your data into at least 1 shard for every machine
+(i.e. 8 TPUs). This isn't a big deal, but it helps.
+
 ### Data Format: Huggingface Datasets
 
 If you have a Huggingface Dataset, you can use it directly in Levanter. It must
@@ -244,6 +247,10 @@ you will use less memory per accelerator to store parameters and optimizer state
 
 Levanter does not support epochs or number of tokens/examples, so if you want to train for a certain number of epochs or
 tokens, you'll need to compute the number of steps yourself. You can use the following formula:
+
+```
+num_train_steps = num_epochs * num_tokens_per_epoch / train_batch_size / seq_len
+```
 
 Note however that epoch boundaries aren't really respected: our implementation of sharded data loading restarts
 from the beginning as soon as any machine finishes its shards.
