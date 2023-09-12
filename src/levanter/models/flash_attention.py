@@ -78,17 +78,19 @@ def _flash_attention(
 
 @named_call
 def _flash_attention_forward(
+    ignore,
     qkv,
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.AxisSelector,
-    mask: Optional[AttnMask] = None,
-    dropout: float = 0.0,
+    mask: Optional[AttnMask],
+    dropout: float,
     *,
     inference: bool,
-    key: Optional[PRNGKeyArray] = None,
+    key: Optional[PRNGKeyArray],
     block_size: int,
 ):
+    del ignore
     q, k, v = qkv
     if QPos.size % block_size != 0:
         raise ValueError(f"q axis size {q.axis_size(QPos)} is not a multiple of {block_size}")
@@ -184,6 +186,7 @@ def _flash_attention_forward(
 def _flash_attention_backward(
     residuals,
     grad_in: hax.NamedArray,
+    ignore,
     qkv,
     QPos: hax.AxisSelector,
     KPos: hax.AxisSelector,
@@ -195,6 +198,7 @@ def _flash_attention_backward(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
 ):
+    del ignore
     O, L = residuals
     q, k, v = qkv
     dO = grad_in
