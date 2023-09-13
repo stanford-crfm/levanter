@@ -49,6 +49,9 @@ model_name_or_path: meta-llama/Llama-2-7b-hf
 trainer:
   num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
   train_batch_size: 128
+  per_device_parallelism: 1  # TPUS have fairly limited memory, so we can't do too much parallelism
+                             # If using Llama 1 you can probably do 4 here
+                             # or a TPU v3-64 with LLama 2 can probably do 2
 optimizer:
   learning_rate: 2e-5
   weight_decay: 0.0
@@ -57,10 +60,13 @@ optimizer:
 
 ## Launching the job
 
-Now we can launch the job:
+Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face token in the environment:
 
 ```bash
-gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all --command="HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE}
+gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all \
+--command="WANDB_API_KEY=${YOUR TOKEN HERE} \
+HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
---config_path levanter/examples/train-alpaca.yaml
+--config_path levanter/examples/train-alpaca.yaml \
+--trainer.checkpointer.base_path gs://<somewhere>"
 ```
