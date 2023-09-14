@@ -47,6 +47,8 @@ We also need a config file, which we paste here:
 #model_name_or_path: decapoda-research/llama-7b-hf
 model_name_or_path: meta-llama/Llama-2-7b-hf
 trainer:
+  wandb:
+    project: "levanter-alpaca"
   num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
   train_batch_size: 128
   per_device_parallelism: 1  # TPUS have fairly limited memory, so we can't do too much parallelism
@@ -56,7 +58,6 @@ optimizer:
   learning_rate: 2e-5
   weight_decay: 0.0
 ```
-
 
 ## Launching the job
 
