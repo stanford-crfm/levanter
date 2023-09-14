@@ -55,6 +55,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    upcast_attn: bool = True
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
@@ -274,8 +275,9 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        q = q.astype(jnp.float32)
-        k = k.astype(jnp.float32)
+        if self.config.upcast_attn:
+            q = q.astype(jnp.float32)
+            k = k.astype(jnp.float32)
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
@@ -283,7 +285,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         if isinstance(mask, AttentionMask):
             mask = mask.materialize()
         attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
-        attn_output = attn_output.astype(x.dtype)
+        if self.config.upcast_attn:
+            attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
