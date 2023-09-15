@@ -50,19 +50,6 @@ function retry {
   done
 }
 
-# tcmalloc interferes with intellij remote ide
-sudo patch -f -b /etc/environment << EOF
-2c2
-< LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
----
-> #LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
-EOF
-
-# don't complain if already applied
-retCode=$?
-[[ $retCode -le 1 ]] || exit $retCode
-
-# install python 3.10, latest git
 sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
 sudo systemctl disable unattended-upgrades
 sudo apt remove -y unattended-upgrades
@@ -71,12 +58,8 @@ if [ $(ps aux | grep unattended-upgrade | wc -l) -gt 1 ]; then
   sudo kill -9 $(ps aux | grep unattended-upgrade | awk '{print $2}')
 fi
 
-# sometimes apt-get update fails, so retry a few times
-retry sudo apt-get install -y software-properties-common
-retry sudo add-apt-repository -y ppa:deadsnakes/ppa
-retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
-retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
+retry sudo apt-get -qq install -y python3.10-venv
 
 VENV=~/venv310
 # if the venv doesn't exist, make it
@@ -85,10 +68,7 @@ if [ ! -d "$VENV" ]; then
     python3.10 -m venv $VENV
 fi
 
-source $VENV/bin/activate
-
-pip install -U pip
-pip install -U wheel
+source $VENV/bin/activate || exit 1
 
 # jax and jaxlib
 # libtpu sometimes has issues installing for clinical (probably firewall?)
