@@ -368,7 +368,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         id, rev = self._get_ref(ref)
 
-        for index_file in [PYTORCH_WEIGHTS_INDEX_NAME, SAFE_TENSORS_INDEX_NAME]:
+        for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
             try:
                 return self._load_shards(id, index_file, rev)
             except EntryNotFoundError:
