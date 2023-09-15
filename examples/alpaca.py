@@ -229,6 +229,11 @@ def train(config: TrainArgs):
         loader = non_caching_cycle(loader)
         state = trainer.initial_state(training_key, model=model)
 
+        if state.step != 0:
+            logger.info(f"Resuming training from step {state.step}")
+            for i in range(state.step):
+                next(loader)  # type: ignore
+
         # DIFFERENCE: we save HF checkpoints periodically
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
