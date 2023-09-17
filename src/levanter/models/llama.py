@@ -268,8 +268,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
-        # reordering the qkv matmul for better training throughput
-        # original: batch, position, heads, head_size
+        # reorder heads and position for better training throughput
         q = self.q_proj(x, key=key_q).rearrange((..., "heads", "position", "head_size"))
         k = self.k_proj(x, key=key_k).rearrange((..., "heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "heads", "position", "head_size"))
