@@ -7,7 +7,6 @@ data:
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
-  upcast_attn: false
 # TODO: uncomment this once we resolve the resource exhaustion issue
 # initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 # use_hf_model_config: true
