@@ -55,7 +55,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
-    upcast_attn: bool = True
+    upcast_attn: bool = False
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
