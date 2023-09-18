@@ -32,6 +32,7 @@ from typing import Dict, List, Optional, Sequence, Union
 
 import jax.random as jrandom
 import transformers
+from tqdm import tqdm
 
 import haliax as hax
 
@@ -91,7 +92,7 @@ def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedToken
             max_length=tokenizer.model_max_length,
             truncation=True,
         )
-        for text in strings
+        for text in tqdm(strings)
     ]
     input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
     input_ids_lens = labels_lens = [
@@ -117,6 +118,7 @@ def preprocess(
     examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
 
     out_examples = []
+    # DIFFERENCE: haliax-based LmExample
     for input_ids, source_len in zip(examples_tokenized["input_ids"], sources_tokenized["input_ids_lens"]):
         input_ids = hax.named(input_ids, Pos)
 
