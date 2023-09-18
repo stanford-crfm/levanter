@@ -102,6 +102,12 @@ If a streaming dataset is sharded, we will attempt to exploit the sharded struct
 Levanter supports both online and offline preprocessing. Online preprocessing is done on-the-fly
 during training. With online preprocessing, you don't need to think about preprocessing your data.
 
+Our data loading pipeline will automatically break and concatenate documents into chunks equal
+to the model's `seq_len` parameter. It will also automatically add special tokens to the
+end of documents.
+
+We don't yet handle sequence-to-sequence tasks, but we plan to.
+
 ### Online Preprocessing
 
 We have a sophisticated caching mechanism using [Ray](https://docs.ray.io/en/latest/)
