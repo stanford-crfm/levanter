@@ -195,7 +195,6 @@ def train(config: TrainArgs):
         return model.compute_loss(example, key=key).scalar()
 
     trainer = Trainer(config.trainer, optimizer, compute_loss)
-    trainer.add_default_hooks()
 
     # DIFFERENCE: we set context managers that tell JAX/Haliax which devices to use and how to shard
     with trainer.device_mesh:
@@ -227,6 +226,8 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         # loop the loader as long as we want:
         loader = non_caching_cycle(loader)
+
+        trainer.add_default_hooks()
         state = trainer.initial_state(training_key, model=model)
 
         if state.step != 0:
