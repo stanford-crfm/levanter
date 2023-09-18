@@ -75,13 +75,15 @@ watch:
   - docs
 nav:
   - 'Home': 'index.md'
-  - 'User Guide':
-      - 'Getting-Started-Training.md'
-      - 'Configuration-Guide.md'
 #  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
       - 'Getting-Started-CUDA.md'
+  - 'User Guide':
+      - 'Getting-Started-Training.md'
+      - "Replicating-Alpaca.md"
+      - 'Configuration-Guide.md'
   - Other:
       - 'Levanter-1.0-Release.md'
+      - "design/Data-Loader-Design.md"

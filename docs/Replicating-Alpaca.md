@@ -18,20 +18,25 @@ pip install -e .
 
 ### Setting up a TPU VM
 
-First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide:
+First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
+If you haven't gone through that guide before, you should do so now. If you have, you can just run, e.g.:
 
 ```bash
-bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32
+bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
 ```
+
+## Choosing a Llama
+
+### Llama 1
+
+If you want, you can use [Decapoda's repo for Llama 1](https://huggingface.co/decapoda-research/llama-7b-hf),
+you'll just need to pass in `--model_name_or_path decapoda-research/llama-7b-hf` instead of `meta-llama/Llama-2-7b-hf`.
 
 ### Getting Llama 2
 
 If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
 
-Next, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
-
-If you want, you can instead use the [Decapoda Llama 1](https://huggingface.co/decapoda-research/llama-7b-hf),
-you'll just need to pass in `--model_name_or_path decapoda-research/llama-7b-hf` instead of `meta-llama/Llama-2-7b-hf`.
+Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
 
 ## The Alpaca script
 
@@ -61,7 +66,8 @@ optimizer:
 
 ## Launching the job
 
-Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face token in the environment:
+Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
+(If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
 
 ```bash
 gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all \
@@ -69,5 +75,22 @@ gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
 --config_path levanter/examples/train-alpaca.yaml \
---trainer.checkpointer.base_path gs://<somewhere>"
+--trainer.checkpointer.base_path gs://<somewhere> \
+--hf_save_path gs://<somewhere> \
+--trainer.wandb.id <some id>"  # optional, but useful if using preemption
+```
+
+If you're using preemptible or TRC TPUs, you'll want to add `--trainer.wandb.id <some id>` to the command line,
+and probably use the [babysitting script](./Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
+vm and job if it gets preempted. That would look like this:
+
+```bash
+infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
+WANDB_API_KEY=${YOUR TOKEN HERE} \
+HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
+bash levanter/infra/run.sh python \
+--config_path levanter/examples/train-alpaca.yaml \
+--trainer.checkpointer.base_path gs://<somewhere> \
+--hf_save_path gs://<somewhere> \
+--trainer.wandb.id <some id>  # optional, but useful if using preemption
 ```

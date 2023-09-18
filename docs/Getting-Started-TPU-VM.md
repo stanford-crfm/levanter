@@ -101,7 +101,7 @@ This version writes to the terminal, you should use tmux or something for long r
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
-### Using the "babysitting" script with a preemptible (or TRC) TPU VM
+### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
 the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The baby-sitting
