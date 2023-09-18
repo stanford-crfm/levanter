@@ -6,6 +6,10 @@
 # - We produce Levanter's LmExample class instead of a dict, and loss masks are used instead of the -100 sentinel value.
 # - We use the fast tokenizers. I don't know why the original code doesn't use them.
 
+# Ways this script could be improved:
+# * If the underlying dataset is bigger, we could use Levanter's distributed preprocessing and data loading.
+# * Could tune hparams more for throughput
+
 #    Copyright 2023 Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,7 +28,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 import jax.random as jrandom
 import transformers
@@ -73,7 +77,7 @@ class TrainArgs:
     cache_dir: Optional[str] = None
 
     hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
-    hf_upload: Optional[str] = None  # Name of the HuggingFace repo to upload to (if any).
+    hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
 
@@ -199,7 +203,7 @@ def train(config: TrainArgs):
     # DIFFERENCE: we set context managers that tell JAX/Haliax which devices to use and how to shard
     with trainer.device_mesh:
         # how we shard parameters across devices
-        parameter_axis_mapping = config.trainer.parameter_axis_mapping
+        parameter_axis_mapping = trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
@@ -239,14 +243,8 @@ def train(config: TrainArgs):
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
 
-            upload_to_hf: bool | str
-            if config.hf_upload:
-                upload_to_hf = config.hf_upload
-            else:
-                upload_to_hf = False
-
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=upload_to_hf),
+                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload),
                 every=config.hf_save_steps,
             )
 
