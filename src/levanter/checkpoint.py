@@ -11,15 +11,16 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Unio
 
 import fsspec
 import jax
+import jax.numpy as jnp
 from draccus import field
 from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
+from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
 
 import haliax.partitioning
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
-from levanter.utils.jax_utils import multihost_broadcast_sync
 
 
 logger = logging.getLogger(__name__)
@@ -148,17 +149,16 @@ class Checkpointer:
             my_should_save = True
             my_save_permanent_ckpt = False
 
-        should_save, save_permanent_ckpt = multihost_broadcast_sync(
-            (my_should_save, my_save_permanent_ckpt), timeout=500
+        should_save, save_permanent_ckpt = broadcast_one_to_all(
+            jnp.array([my_should_save, my_save_permanent_ckpt], dtype=jnp.bool_)
         )
 
         # log the decision
         if should_save:
-            extra_str = f" We would have said {should_save=}/{save_permanent_ckpt=}."
             if save_permanent_ckpt:
-                logger.info(f"Saving checkpoint at step {step}.{extra_str}")
+                logger.info(f"Saving checkpoint at step {step}.")
             else:
-                logger.info(f"Saving temporary checkpoint at step {step}.{extra_str}")
+                logger.info(f"Saving temporary checkpoint at step {step}.")
 
         if should_save:
             last_checkpoint = self._last_temporary_checkpoint
@@ -244,8 +244,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
     logger.info(f"Saved checkpoint for step {step}")
 
     # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    cp_out = multihost_broadcast_sync(checkpoint_path)
-    assert cp_out == checkpoint_path, f"Checkpoint path mismatch: {cp_out} != {checkpoint_path}"
+    sync_global_devices(checkpoint_path)
 
     return checkpoint_path
 

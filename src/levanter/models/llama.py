@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
@@ -54,6 +55,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    upcast_attn: bool = False
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
@@ -265,22 +267,28 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
-        q = self.q_proj(x, key=key_q)
-        k = self.k_proj(x, key=key_k)
-        v = self.v_proj(x, key=key_v)
+
+        # reorder heads and position for better training throughput
+        q = self.q_proj(x, key=key_q).rearrange((..., "heads", "position", "head_size"))
+        k = self.k_proj(x, key=key_k).rearrange((..., "heads", "position", "head_size"))
+        v = self.v_proj(x, key=key_v).rearrange((..., "heads", "position", "head_size"))
 
         cos, sin = self.rotary_emb(seq_len=self.config.seq_len)
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        q = q.astype(jnp.float32)
-        k = k.astype(jnp.float32)
+        if self.config.upcast_attn:
+            q = q.astype(jnp.float32)
+            k = k.astype(jnp.float32)
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
         c = self.config
+        if isinstance(mask, AttentionMask):
+            mask = mask.materialize()
         attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
-        attn_output = attn_output.astype(x.dtype)
+        if self.config.upcast_attn:
+            attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
@@ -486,7 +494,7 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
     def __call__(
         self,
         input_ids: NamedArray,
-        attn_mask: Optional[NamedArray] = None,
+        attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -494,8 +502,9 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         Args:
             input_ids (NamedArray): [batch, position]
                 Indices of input sequence tokens in the vocabulary.
-            attn_mask (NamedArray, optional): [batch, position, seq_len]
+            attn_mask (Union[NamedArray, AttentionMask], optional): [batch, position]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
+                The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)

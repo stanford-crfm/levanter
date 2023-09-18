@@ -46,7 +46,7 @@ def inference_mode(tree: T, value: bool, none_policy: str = NonePolicy.PRESERVE)
         if has_inference(tree):
             tree = replace_fn(tree)
 
-        if jax.tree_leaves(tree) == [tree]:
+        if jax.tree_util.tree_leaves(tree) == [tree]:
             return tree
 
         return jax.tree_util.tree_map(rec_set, tree, is_leaf=lambda x: has_inference(x) and tree is not x)
