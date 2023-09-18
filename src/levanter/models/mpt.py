@@ -46,7 +46,7 @@ class MptAttentionConfig:
     clip_qkv: Optional[float] = None
     softmax_scale: Optional[float] = None
     qk_ln: bool = False
-    alibi: bool = False
+    alibi: bool = True
     alibi_bias_max: Optional[int] = 8
 
     def __post_init__(self):
@@ -457,7 +457,7 @@ def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
     m = m * (alibi_bias_max / _n_heads)
     slopes = 1.0 / jnp.power(2, m)
     if _n_heads != n_heads:
-        slopes = jnp.concat([slopes[1::2], slopes[::2]])[:n_heads]
+        slopes = jnp.concatenate([slopes[1::2], slopes[::2]])[:n_heads]
     return slopes
 
 
