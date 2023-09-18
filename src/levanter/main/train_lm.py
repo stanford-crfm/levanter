@@ -142,7 +142,7 @@ def main(config: TrainLmConfig):
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
 
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter),
+                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
                 every=config.hf_save_steps,
             )
 

@@ -9,7 +9,10 @@ theme:
 markdown_extensions:
 - attr_list
 - admonition
-#- callouts
+- def_list
+- pymdownx.tasklist:
+    custom_checkbox: true
+  #- callouts
 - footnotes
 - codehilite
 - pymdownx.details  # Allowing hidden expandable regions denoted by ???
@@ -82,6 +85,7 @@ nav:
       - 'Getting-Started-CUDA.md'
   - 'User Guide':
       - 'Getting-Started-Training.md'
+      - "Training-On-Your-Data.md"
       - "Replicating-Alpaca.md"
       - 'Configuration-Guide.md'
   - Other:
