@@ -57,9 +57,9 @@ trainer:
     project: "levanter-alpaca"
   num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
   train_batch_size: 128
-  per_device_parallelism: 1  # TPUS have fairly limited memory, so we can't do too much parallelism
-                             # If using Llama 1 you can probably do 4 here
-                             # or a TPU v3-64 with LLama 2 can probably do 2
+  per_device_parallelism: 2  # TPUS have fairly limited memory, so we can't do too much parallelism
+                             # If using Llama 1 you can probably do 4 or more here
+                             # or a TPU v3-64 with LLama 2 can probably do 4
   # if using model parallelism, this is useful:
   tensor_parallel_axes: ["mlp", "heads"]
 optimizer:
