@@ -131,7 +131,7 @@ To do so:
 ```bash
 python -m levanter.main.cache_dataset \
     --config_path my_config.yaml \
-    --address <coordinator-address> \
+    --address <ray-cluster-address> \
     --start_workers false \
     --auto_start_cluster false
 ```
@@ -167,7 +167,7 @@ model:
 trainer:
   wandb:
     project: "levanter" # TODO
-    tags: [ "openwebtext", "gpt2"]
+    tags: ["gpt2"]
 
   mp: p=f32,c=bfloat16
   num_train_steps: 100000  # TODO
@@ -236,7 +236,7 @@ use_hf_model_config: true
 
 See also the [Checkpointing section of the Configuration Guide](./Configuration-Guide.md#checkpointing).
 
-Levanter supports checkpointing to both local and Google Cloud Storage, backed by [Tensorstore](https://google.github.io/tensorstore/).
+Levanter supports checkpointing to both local and Google Cloud Storage, backed by [TensorStore](https://google.github.io/tensorstore/).
 If you're using multiple machines, you should probably use cloud storage or NFS.
 
 Levanter saves two kinds of checkpoints:
