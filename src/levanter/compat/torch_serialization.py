@@ -4,12 +4,11 @@ from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
 import jax
-import numpy
 import numpy as np
 import safetensors.numpy
 from jax import numpy as jnp
-from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
@@ -353,7 +352,7 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
     # now we have to vectorize the tensors
     for k, tensors in tensors_to_vectorize.items():
-        vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = np.stack(tensors, axis=0)
 
     return vectorized_dict
 
@@ -375,7 +374,36 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
             r = np.array(arr)
             return r
         else:
-            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+            # unfortunately, jax's allgather seems to replicate to every device rather than every host
+            # which doesn't work for ~7B parameter models on TPU
+            # this approach limits us to ~64B parameters, but that's good enough for now
+            # we're going to do something a bit fancy, where we shard make a (process, device) mesh,
+            # then look for some axis along which we can shard the array, and then we'll do an allgather
+            # via pjit. If we can't find one, we'll just fully replicate since it probably isn't that big.
+            # TODO: ensure that this mesh arranges devices correctly
+            process_mesh = Mesh(np.array(jax.devices()).reshape((jax.process_count(), -1)), ("process", "device"))
+            # now we need to find an axis along which we can shard the array.
+            # for this, we need to find an axis s.t. size(axis) % local_devices == 0
+
+            axis_to_shard = None
+            for axis in range(arr.ndim):
+                if arr.shape[axis] % process_mesh.devices.size == 0:
+                    axis_to_shard = axis
+                    break
+
+            if axis_to_shard is None:
+                # we can't shard this array, so just replicate it
+                return np.array(arr)
+
+            shardings: List[Optional[str]] = [None] * arr.ndim
+            shardings[axis_to_shard] = "device"
+            sharding = NamedSharding(process_mesh, PartitionSpec(*shardings))
+            out = jax.jit(_identity_fn, out_shardings=sharding)(arr)
+            return np.array(out)
+
+            # now we need to make a sharding spec for this axis
+
+            # return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
 
     # need to make sure the model is on *this machine* and *this machine's CPU* before saving
     model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
@@ -400,3 +428,7 @@ def save_state_dict(state_dict: StateDict, path):
     global _GLOBAL_SAVE_COUNT
     sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
     _GLOBAL_SAVE_COUNT += 1
+
+
+def _identity_fn(x):
+    return x
