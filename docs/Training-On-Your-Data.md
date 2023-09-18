@@ -202,14 +202,35 @@ Levanter supports starting from an HF pretrained model. To do so, you should set
 ```yaml
 model:
   type: mpt
-initialize_from_hf: "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2"
+initialize_from_hf: "mosaicml/mpt-7b" # can also reference a version, e.g. "mosaicml/mpt-7b@deadbeef"
 use_hf_model_config: true
 ```
 
-TODO: add instructions for llama including auth.
-
 You should probably reduce the learning rate by a factor of 10 or so. TODO: figure out best practices here.
 
+#### Llama 2
+
+For Llama 2 specifically (or other gated models), you'll need a few extra steps:
+
+If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
+
+Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
+Then, pass in the token as an environment variable:
+
+```bash
+HUGGING_FACE_HUB_TOKEN=hf...
+```
+
+Pass that in anywhere you're passing in a `WANDB_API_KEY`.
+
+Then, you can use the model like so:
+
+```yaml
+model:
+  type: llama
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+use_hf_model_config: true
+```
 
 ### Checkpointing
 
