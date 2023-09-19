@@ -122,8 +122,8 @@ class Trainer:
         Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
         """
 
-        @functools.wraps(self._raw_loss_function)
         @named_jit(in_axis_resources=self.parameter_axis_mapping, axis_resources=self.compute_axis_mapping)
+        @functools.wraps(self._raw_loss_function)
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
