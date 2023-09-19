@@ -77,6 +77,7 @@ gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all \
 --command="WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
+levanter/examples/alpaca.py \
 --config_path levanter/examples/train-alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
@@ -92,6 +93,7 @@ infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
 WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
+levanter/examples/alpaca.py \
 --config_path levanter/examples/train-alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
