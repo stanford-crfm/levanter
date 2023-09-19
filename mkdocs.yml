@@ -78,7 +78,6 @@ watch:
   - docs
 nav:
   - 'Home': 'index.md'
-#  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
