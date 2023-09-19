@@ -403,7 +403,7 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
 
         # need to make sure the model is on *this machine* and *this machine's CPU* before saving
         model = jax.tree_util.tree_map(lambda arr: get_to_cpu(arr), model)
-        # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+        # TODO: it would be nice if safetensors supported an iterator or something so we could do the allgather one at a time
         state_dict = model.to_state_dict(prefix=prefix)
         return state_dict
 
