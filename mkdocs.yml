@@ -9,7 +9,10 @@ theme:
 markdown_extensions:
 - attr_list
 - admonition
-#- callouts
+- def_list
+- pymdownx.tasklist:
+    custom_checkbox: true
+  #- callouts
 - footnotes
 - codehilite
 - pymdownx.details  # Allowing hidden expandable regions denoted by ???
@@ -76,12 +79,13 @@ watch:
 nav:
   - 'Home': 'index.md'
   - 'User Guide':
-      - 'Getting-Started-Training.md'
+      - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
 #  - Haliax: 'Haliax.md'
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
       - 'Getting-Started-CUDA.md'
+      - 'Getting-Started-Training.md'
   - Other:
       - 'Levanter-1.0-Release.md'
