@@ -45,7 +45,7 @@ the venv on each worker, and it will clone the repo to `~/levanter/`.
 **For Public Users**:
 
 ```bash
-bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible]
 ```
 
 Defaults are:
@@ -53,9 +53,10 @@ Defaults are:
 - `type`: `v3-32`
 - `preemptible`: `false`
 
-**For Stanford CRFM Users**:
+**For Stanford CRFM Developers**:
 
-Stanford CRFM folks can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
+Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
+
 ```bash
 bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
 ```
@@ -107,7 +108,7 @@ This version writes to the terminal, you should use tmux or something for long r
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
-### Using the "babysitting" script with a preemptible (or TRC) TPU VM
+### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
 the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The baby-sitting
