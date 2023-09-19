@@ -380,7 +380,7 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
                 # unfortunately, jax's allgather seems to replicate to every device rather than every host
                 # which doesn't work for ~7B parameter models on TPU (assuming we also have optimizer state)
                 # this approach limits us to <64B parameters, but that's good enough for now
-                # we're going to do something a bit fancy, where we shard make a (process, device) mesh,
+                # we're going to do something a bit fancy, where we shard the model into a (process, device) mesh,
                 # then look for some axis along which we can shard the array, and then we'll do an allgather
                 # via pjit. If we can't find one, we'll just fully replicate since it probably isn't that big.
                 # TODO: ensure that this mesh arranges devices correctly
