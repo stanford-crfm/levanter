@@ -69,9 +69,6 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
-    # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-    optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
     with config.trainer.device_mesh:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -79,7 +76,6 @@ def main(config: LoraLmConfig):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
-        model = config.trainer.mp.cast_to_compute(model)
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
@@ -103,6 +99,8 @@ def main(config: LoraLmConfig):
 
         def compute_loss(model, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
+
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
         trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
