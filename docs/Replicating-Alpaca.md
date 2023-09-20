@@ -29,8 +29,8 @@ bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
 
 ### Llama 1
 
-If you want, you can use [Decapoda's repo for Llama 1](https://huggingface.co/decapoda-research/llama-7b-hf),
-you'll just need to pass in `--model_name_or_path decapoda-research/llama-7b-hf` instead of `meta-llama/Llama-2-7b-hf`.
+If you want, you can use [HuggyLlama's repo for Llama 1](https://huggingface.co/huggyllama/llama-7b),
+you'll just need to pass in `--model_name_or_path huggyllama/llama-7b` instead of `meta-llama/Llama-2-7b-hf`.
 
 ### Getting Llama 2
 
@@ -49,7 +49,7 @@ We also need a config file, which we paste here:
 
 ```yaml
 # cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
-#model_name_or_path: decapoda-research/llama-7b-hf
+#model_name_or_path: huggyllama/llama-7b/llama-7b-hf
 model_name_or_path: meta-llama/Llama-2-7b-hf
 trainer:
   mp: p=f32,c=bfloat16
@@ -67,13 +67,25 @@ optimizer:
   weight_decay: 0.0
 ```
 
+### Changing the config
+
+If you make changes to the config, you'll need to get the config file to all the workers. The best way to do this
+is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
+
+```bash
+gsutil cp levanter/examples/train-alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+And then using `--config_path gs://<somewhere>/train-alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
+in the command line below.
+
 ## Launching the job
 
 Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
 (If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
 
 ```bash
-gcloud compute tpus tpu-vm ssh llama-32 -z us-east1-d --worker=all \
+gcloud compute tpus tpu-vm ssh llama-32 --zone us-east1-d --worker=all \
 --command="WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
@@ -99,3 +111,15 @@ levanter/examples/alpaca.py \
 --hf_save_path gs://<somewhere> \
 --trainer.wandb.id <some id>  # optional, but useful if using preemption
 ```
+
+
+## Waiting
+
+At some point it will spit out a Wandb link. You can click on that to see the training progress. There's
+not a ton to see here (yet), but you can see the training loss go down over time.
+
+Llama 1 should take about ~3.5 hours on a v3-32 (which is more or less in line with A100 times). Unfortunately, LLama 2
+is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
+accumulation to fit on the TPU. It should take about ~9 hours on a v3-32.
+
+(TODO: see if adding flash attention will mitigate this.)
