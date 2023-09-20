@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import equinox as eqx
+import jax
 import jax.random as jrandom
 import wandb
 
@@ -86,6 +87,24 @@ def main(config: LoraLmConfig):
         hf_model = inference_mode(hf_model, True)
         hf_model = config.trainer.mp.cast_to_compute(hf_model)
 
+        @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
+        def loraize_hf_model(model):
+            return loraize(model, config.lora, key=lora_key)
+
+        combined_model = loraize_hf_model(hf_model)
+        del hf_model
+
+        # we only want to train on the lora params. The way to do this in Equinox is generally with
+        # a filter tree (cf https://docs.kidger.site/equinox/examples/frozen_layer/),
+        # which is a tree with the same structure (or a "tree prefix" thereof) as the model, but with
+        # bools or Callable[..., bool] at the leaves. We can then pass this tree to the trainer and it
+        # will only train the parameters that are True in the tree.
+        # Levanter defines `is_lore_param` for this purpose, but we need to be careful about how we use it.
+        # Equinox's primitives don't really have a "match all tree nodes matching a predicate" function (just
+        # a "match all tree leaves matching a predicate" function), so we need to be just a bit careful.
+        # Basically, we want to halt recursion in the tree whenever we hit a node that is a lora param.
+        lora_param_filter = jax.tree_util.tree_map(is_lora_param, combined_model, is_leaf=is_lora_param)
+
         # A note on the difference between "adapter_model" and "base_model":
         # In LoRA and other so-called "parameter-efficient fine-tuning" methods, we have two sets of parameters:
         # 1) The "base" parameters, which are the parameters of the original foundation model
@@ -105,18 +124,13 @@ def main(config: LoraLmConfig):
 
         # We unfortunately need to pass these two trees around more or less together, only really distinguishing
         # them for gradients, optimizer state, and storing checkpoints.
-        @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
-        def loraize_hf_model(model):
-            return loraize(model, config.lora, key=lora_key)
 
-        combined_model = loraize_hf_model(hf_model)
         # next, split model into base and adapter and create initial optimizer state
         base_model, adapter_model = partition_lora_params(combined_model)
         # keep the base model in low precision
         base_model = config.trainer.mp.cast_to_compute(base_model)
         model = combine_lora_params(base_model, lora_params=adapter_model)
 
-        del hf_model
         del combined_model
         del base_model
         del adapter_model
@@ -126,7 +140,7 @@ def main(config: LoraLmConfig):
             return model.compute_loss(example, key=key).scalar()
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=is_lora_param)
+        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
         state = trainer.initial_state(training_key, model=model)
 
         all_param_count = parameter_count(state.model)
