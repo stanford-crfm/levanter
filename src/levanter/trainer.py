@@ -32,6 +32,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
+from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -118,9 +119,7 @@ class Trainer:
     is_trainable: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
 
-    def __init__(
-        self, config: "TrainerConfig", optimizer, loss_fn, *, is_trainable: Optional[PyTree[FilterSpec]] = None
-    ):
+    def __init__(self, config: "TrainerConfig", optimizer, loss_fn, *, is_trainable: PyTree[FilterSpec] = True):
         self.hooks = TrainerHooks()
         self.config = config
         self._raw_loss_function = loss_fn
@@ -202,15 +201,21 @@ class Trainer:
 
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
 
+        # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
+        trainable_model_shape = self.trainable_params_only(model_shape)
+
         ckpt = self.config.maybe_load_checkpoint(
-            model_shape,
+            trainable_model_shape,
             (opt_state_shape, training_key),
             axis_mapping=self.parameter_axis_mapping,
             mesh=self.device_mesh,
         )
 
         if ckpt is not None:
-            model, (opt_state, training_key), completed_step = ckpt
+            trainable_model, (opt_state, training_key), completed_step = ckpt
+            # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+            non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+            model = eqx.combine(trainable_model, non_trainable)
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -362,6 +367,13 @@ class Trainer:
         opt_state = self.optimizer.init(trainable)
         return model, opt_state
 
+    def _init_non_trainable_params(self, model_init):
+        model = model_init()
+        # only force trainable params to param precision. Other params are cast to compute precision
+        trainable, non_trainable = self.partition_trainable_params(model)
+        non_trainable = self.mp.cast_to_compute(non_trainable)
+        return non_trainable
+
     def trainable_params_only(self, model: M) -> M:
         """
         Filters out non-trainable parameters from the model. This is used internally to
@@ -381,9 +393,9 @@ class Trainer:
 
         def trainable_and_diffable(pred):
             if callable(pred):
-                return lambda x: pred(x) and eqx.is_inexact_array(x)
+                return lambda x: pred(x) and is_inexact_arrayish(x)
             elif pred is True:
-                return eqx.is_inexact_array
+                return is_inexact_arrayish
             else:
                 return pred
 
@@ -657,4 +669,4 @@ class OptimizerConfig:
 
 
 def _params_only(t):
-    return eqx.filter(t, eqx.is_inexact_array)
+    return eqx.filter(t, is_inexact_arrayish)
