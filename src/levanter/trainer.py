@@ -32,7 +32,6 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import parameter_count
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -345,7 +344,6 @@ class Trainer:
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(trainable_model, *batch, **batch_kwargs)
-            print(parameter_count(grads), parameter_count(model), parameter_count(trainable_model))
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
@@ -356,8 +354,12 @@ class Trainer:
 
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
-        model = self.mp.cast_to_param(model)
-        opt_state = self.optimizer.init(self.trainable_params_only(model))
+        # only force trainable params to param precision. Other params are cast to compute precision
+        trainable, non_trainable = self.partition_trainable_params(model)
+        trainable = self.mp.cast_to_param(trainable)
+        non_trainable = self.mp.cast_to_compute(non_trainable)
+        model = eqx.combine(trainable, non_trainable)
+        opt_state = self.optimizer.init(trainable)
         return model, opt_state
 
     def trainable_params_only(self, model: M) -> M:
@@ -366,9 +368,7 @@ class Trainer:
         for the optimizer state and to compute gradients, but you can also use it to filter out
         params for logging or something.
         """
-        model = eqx.filter(model, self.is_trainable)
-        model = _params_only(model)
-        return model
+        return self.partition_trainable_params(model)[0]
 
     def partition_trainable_params(self, model):
         """
