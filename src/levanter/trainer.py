@@ -46,6 +46,13 @@ DEFAULT_JAX_CONFIG = {
     "jax_softmax_custom_jvp": True,
 }
 
+FilterSpec = Union[bool, Callable[[Any], bool]]
+"""
+A filter specification. Typically used on a pytree to filter out certain subtrees. Boolean values are
+treated as-is, while callables are called on each element of the pytree. If the callable returns True, the element
+is kept, otherwise it is filtered out.
+"""
+
 
 # A note on the semantics of "step" vs "next_step":
 # The "step" of a TrainerState is the state after `step` steps have been taken.
@@ -110,11 +117,12 @@ class Trainer:
     hooks: TrainerHooks
     _raw_loss_function: Callable
 
-    def __init__(self, config: "TrainerConfig", optimizer, loss_fn):
+    def __init__(self, config: "TrainerConfig", optimizer, loss_fn, is_trainable: Optional[PyTree[FilterSpec]] = None):
         self.hooks = TrainerHooks()
         self.config = config
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
+        self.is_trainable = is_trainable
 
     @cached_property
     def loss_fn(self):
@@ -326,7 +334,10 @@ class Trainer:
                 self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(_params_only(grads), opt_state, params=_params_only(model))
+            trainable_grads = self.trainable_params_only(grads)
+            trainable_model = self.trainable_params_only(model)
+
+            updates, opt_state = self.optimizer.update(trainable_grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
@@ -336,8 +347,24 @@ class Trainer:
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
         model = self.mp.cast_to_param(model)
-        opt_state = self.optimizer.init(_params_only(model))
+        opt_state = self.optimizer.init(self.trainable_params_only(model))
         return model, opt_state
+
+    def trainable_params_only(self, model: M) -> M:
+        """
+        Filters out non-trainable parameters from the model. This is used internally to
+        for the optimizer state and to compute gradients, but you can also use it to filter out
+        params for logging or checkpointing.
+
+        Args:
+            model:
+
+        Returns:
+
+        """
+        model = eqx.filter(model, self.is_trainable, is_leaf=self.is_trainable)
+        model = _params_only(model)
+        return model
 
 
 @dataclass

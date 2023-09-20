@@ -1,9 +1,9 @@
-import functools
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+import equinox as eqx
 import jax.random as jrandom
 import wandb
 
@@ -16,6 +16,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.lora import (
     LoraConfig,
     combine_lora_params,
+    is_lora_param,
     loraize,
     partition_lora_params,
     save_merged_hf_checkpoint_callback,
@@ -113,20 +114,23 @@ def main(config: LoraLmConfig):
         base_model, adapter_model = partition_lora_params(combined_model)
         # keep the base model in low precision
         base_model = config.trainer.mp.cast_to_compute(base_model)
+        model = combine_lora_params(base_model, lora_params=adapter_model)
 
         del hf_model
         del combined_model
+        del base_model
+        del adapter_model
 
-        def compute_loss(base_model, adapter_model, example: LmExample, key=None):
-            model = combine_lora_params(base_model, lora_params=adapter_model)
+        def compute_loss(model, example: LmExample, key=None):
+            # model = combine_lora_params(base_model, lora_params=adapter_model)
             return model.compute_loss(example, key=key).scalar()
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, functools.partial(compute_loss, base_model))
-        state = trainer.initial_state(training_key, model=adapter_model)
+        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=is_lora_param)
+        state = trainer.initial_state(training_key, model=model)
 
-        all_param_count = parameter_count(combine_lora_params(base_model, adapter_model))
-        just_lora_params = parameter_count(adapter_model)
+        all_param_count = parameter_count(state.model)
+        just_lora_params = parameter_count(eqx.filter(state.model, is_lora_param, is_leaf=is_lora_param))
 
         wandb.summary["parameter_count"] = all_param_count
         wandb.summary["trainable_parameter_count"] = just_lora_params
@@ -156,7 +160,7 @@ def main(config: LoraLmConfig):
         if config.merged_hf_save_path is not None:
             full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
             trainer.add_hook(
-                save_merged_hf_checkpoint_callback(full_save_path, converter, base_model, config.merged_hf_upload),
+                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
                 every=config.hf_save_steps,
             )
 
