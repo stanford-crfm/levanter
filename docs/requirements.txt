@@ -7,3 +7,4 @@ mkdocs-autorefs
 mkdocs-include-markdown-plugin
 mkdocs-literate-nav
 mkdocs-macros-plugin
+haliax
