@@ -158,6 +158,7 @@ class Trainer:
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         self.hooks.run_hooks(info, force=force)
+        self._checkpointer.on_step(info, force=force)
 
     @property
     def parameter_axis_mapping(self) -> ResourceMapping:
@@ -283,10 +284,8 @@ class Trainer:
         self.add_hook(callbacks.log_to_wandb, every=1)
         self.add_eval_hook(eval_loader)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
-        # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.config.run_id)
-        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
-        return checkpointer
+        # checkpointer is special so we run it specially
+        self._checkpointer = self.config.checkpointer.create(self.config.run_id)
 
     def add_eval_hook(self, eval_loader):
         from levanter import callbacks
