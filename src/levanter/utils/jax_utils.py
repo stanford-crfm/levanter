@@ -272,3 +272,16 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def is_inexact_arrayish(x):
+    """
+    Similar to [equinox.is_inexact_array][] but works on anything that has a shape and dtype
+    and the dtype is inexact.
+
+    Specifically, we want to work with [jax.ShapeDtypeStruct][]s, which are not arrays.
+    """
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return jnp.issubdtype(x.dtype, jnp.inexact)
+    else:
+        return False
