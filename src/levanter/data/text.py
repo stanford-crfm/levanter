@@ -534,7 +534,7 @@ class LMDatasetConfig:
     def get_shard_source(self, split) -> ShardedDataSource[str]:
         if self.id is not None:
             return HFDatasetDataSource(self, split)
-        return TextDataSource(self, split)
+        return TextDataSource(self.urls_for_split(split), text_key=self.text_key)
 
 
 class HFDatasetDataSource(ShardedDataSource[str]):
@@ -587,14 +587,22 @@ class HFDatasetDataSource(ShardedDataSource[str]):
 
 class TextDataSource(ShardedDataSource[str]):
     # TODO: remove dependence on LMDatasetConfig for this class
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
+    def __init__(self, urls, *, text_key: str):
+        self.urls = urls
+        self.text_key = text_key
+        self._shard_name_to_url_mapping = TextDataSource._mk_shard_name_mapping(urls)
 
-        self._shard_name_to_url_mapping = {}
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
 
-        urls = config.urls_for_split(split)
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        return _generate_texts_from_urls([url], skip_to_doc=row, text_key=self.text_key)
 
+    @staticmethod
+    def _mk_shard_name_mapping(urls):
+        _shard_name_to_url_mapping = {}
         # remove common prefix
         if len(urls) == 1:
             common_prefix = os.path.dirname(urls[0])
@@ -612,16 +620,9 @@ class TextDataSource(ShardedDataSource[str]):
                     shard_name = shard_name[1:]
 
             shard_name = shard_name.replace(".", "_")
+            _shard_name_to_url_mapping[shard_name] = url
 
-            self._shard_name_to_url_mapping[shard_name] = url
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
-        url = self._shard_name_to_url_mapping[shard_name]
-        return _generate_texts_from_urls([url], skip_to_doc=row, text_key=self.config.text_key)
+        return _shard_name_to_url_mapping
 
 
 def _generate_texts_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0, text_key: str = "text") -> Iterator[str]:
