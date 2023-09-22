@@ -18,6 +18,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -28,6 +29,7 @@ from typing import (
 
 import fsspec.core
 import jax
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
@@ -59,17 +61,31 @@ LEDGER_FILE_NAME = "cache_ledger.json"
 
 
 class BatchProcessor(Generic[T_contra], ABC):
+    """
+    A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
+    processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
+    The number of output examples can be different from the number of input examples.
+    """
+
     @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[T_contra]) -> Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]:
+        """
+        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
+        example), or a dict of sequences (one per output field).
+
+        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
+        """
         raise NotImplementedError
 
     @property
     def resources(self) -> Dict[str, float]:
+        """Any resources that this processor needs to run. Ray uses this to schedule tasks."""
         return {}
 
     @property
     @abstractmethod
     def num_cpus(self) -> int:
+        """The number of CPUs this processor needs to run."""
         raise NotImplementedError
 
     @property
@@ -82,6 +98,11 @@ class BatchProcessor(Generic[T_contra], ABC):
 
 
 class ShardedDataSource(Generic[T_co]):
+    """
+    A ShardedDataSource is the main interface for reading data. It's basically a mapping from shard names to iterators,
+    with the extra feature that it exposes the ability to skip to a particular row in a shard.
+    """
+
     @property
     def shard_names(self) -> Sequence[str]:
         raise NotImplementedError
@@ -328,9 +349,10 @@ def _produce_chunks_for_shard(
         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
         # other shards since we want to stream them round-robin
         priority = priority_fn(shard_idx, shard_writer.num_chunks)
-        record_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        record_batch = ray.get(record_batch_future)
+        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
+        output_batch = ray.get(output_batch_future)
 
+        record_batch = _as_record_batch(output_batch)
         if writer is None:
             chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
             writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
@@ -359,6 +381,32 @@ def _produce_chunks_for_shard(
         chunk = writer.get_metadata()
         writer = None
         yield_chunk(chunk)
+
+
+def _as_record_batch(doc: Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]) -> pa.RecordBatch:
+    """Converts a document to an arrow-compatible record batch."""
+
+    if isinstance(doc, pa.RecordBatch):
+        return doc
+
+    if isinstance(doc, Mapping):
+        # structure of arrays
+        def _as_array(x):
+            # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
+            if isinstance(x, np.ndarray) and x.ndim > 1:
+                return [_as_array(y) for y in x]
+            elif isinstance(x, np.ndarray):
+                return list(x)
+            else:
+                return pa.array(x)
+
+        names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
+
+        return pa.RecordBatch.from_arrays(list(columns), names)
+    elif isinstance(doc, Sequence):
+        return pa.RecordBatch.from_pylist(doc)
+    else:
+        raise ValueError(f"Cannot convert {type(doc)} to record batch")
 
 
 def _serialize_json_and_commit(path, obj):

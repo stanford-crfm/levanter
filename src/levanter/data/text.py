@@ -302,23 +302,6 @@ def _open_arrow_table(path) -> FileMetaData:
     return pq.read_metadata(path, filesystem=fs)
 
 
-def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
-    """Converts a document to an arrow-compatible record batch."""
-
-    # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
-    def _as_array(x):
-        if isinstance(x, np.ndarray) and x.ndim > 1:
-            return [_as_array(y) for y in x]
-        elif isinstance(x, np.ndarray):
-            return list(x)
-        else:
-            return pa.array(x)
-
-    names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
-
-    return pa.RecordBatch.from_arrays(list(columns), names)
-
-
 def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
     if flatten_docs:
         # insert a newaxis to the beginning so that it appears to be bs=1
@@ -364,14 +347,14 @@ class BatchTokenizer(BatchProcessor[str]):
 
         self._need_to_add_eos = should_append_eos
 
-    def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[str]) -> BatchEncoding:
         if self._need_to_add_eos:
             encoding = self.tokenizer(
                 [d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False, verbose=False
             )
         else:
             encoding = self.tokenizer(batch, return_attention_mask=False, verbose=False)  # type: ignore
-        return _as_record_batch(encoding)
+        return encoding
 
     @property
     def num_cpus(self) -> int:
