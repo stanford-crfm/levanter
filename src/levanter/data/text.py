@@ -609,9 +609,12 @@ class TextDataSource(ShardedDataSource[str]):
         else:
             common_prefix = os.path.commonprefix(urls)
 
+        missing_urls: List[str] = []
+
         for url in urls:
             if not fsspec_utils.exists(url):
-                raise FileNotFoundError(f"Could not find {url}")
+                missing_urls.append(url)
+                continue
             # escape the url for the shard name
             shard_name = url
             if common_prefix:
@@ -621,6 +624,11 @@ class TextDataSource(ShardedDataSource[str]):
 
             shard_name = shard_name.replace(".", "_")
             _shard_name_to_url_mapping[shard_name] = url
+
+        if missing_urls:
+            # format nicely
+            missing_urls_str = "\n  - ".join(missing_urls)
+            raise FileNotFoundError(f"Could not find the following urls:\n  - {missing_urls_str}")
 
         return _shard_name_to_url_mapping
 
