@@ -344,6 +344,11 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
 
 
 class BatchTokenizer(BatchProcessor[str]):
+    """
+    A batch processor that tokenizes a batch of strings using a tokenizer.
+    By default, this will append eos to the end of the string, even if the tokenizer doesn't.
+    """
+
     def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
@@ -370,7 +375,10 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def num_cpus(self) -> int:
-        return max(1, logical_cpu_core_count() - 2)
+        if self.tokenizer.is_fast:
+            return max(1, logical_cpu_core_count() - 2)
+        else:
+            return 1
 
 
 def concatenate_and_group_texts(

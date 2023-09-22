@@ -106,6 +106,35 @@ def cache_dataset(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
 ) -> "ShardCache":
+    """
+    Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any a path
+    on any file system understood by fsspec.
+
+    This system is designed with tokenization and similar processes in mind, but it can potentially be used for any kind
+    of preprocessing that converts input batches to output batches. The main design goal is to make it easy to
+    parallelize preprocessing across multiple machines while maintaining reproducibility and fault tolerance.
+    Usually the machines in question are the ones doing the training, but they could be separate machines as well.
+
+    See the [Dataloader Design Doc](https://github.com/stanford-crfm/levanter/blob/main/docs/design/Data-Loader-Design.md)
+    for a somewhat out of date overview of the design.
+
+    Args:
+        cache_dir: The directory to write the cache to. This can be any path understood by fsspec.
+        input_shards: A ShardedDataSource that will be used to read the input data. Conceptually, it's just a mapping
+                    from shard names to iterators over the data in that shard.
+        processor: A BatchProcessor that will be used to process batches of data. This is the main place where
+                    you can customize the preprocessing pipeline.
+        batch_size:
+        rows_per_chunk: The number of rows to write to each chunk. May be smaller at the end of a shard.
+        await_finished: If True, this function will block until the cache is finished. If False, it will return
+                    immediately.
+        monitors: a list of MetricsMonitors to attach to the cache. These will be called periodically with
+            metrics about the cache build process.
+
+    Returns:
+       (ShardCache) A ShardCache object that can be used to read the cache.
+
+    """
     # first see if we need to do anything
     cache = ShardCache.build_or_load(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
 
@@ -554,7 +583,6 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     BatchProcessorQueue spins up tasks to process batches of data.
     It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
     It then waits for a task to finish before spinning up another one.
-    # TODO: implement the waiting/spin up logic
     """
 
     pqueue: PriorityQueue[_QueueItem]
