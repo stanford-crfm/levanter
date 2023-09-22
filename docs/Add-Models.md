@@ -82,6 +82,58 @@ If your module contains model weights, such consistency tests would require you 
 
 ### Serialization Tests
 
+In order to validate the implementation on Levanter matches with the reference implementation in HuggingFace, we would like to pass the same input to both implementations and compare the output.
+However, if the model are initialized with different weights, such comparison would not be meaningful. Therefore, we will need to serialize the weights from HuggingFace and load them into Levanter, or vice versa. We call such test "serialization test".
+
+For modules like Attention, Mlp, and Embeddings, you can read the weight from Levanter in memory and load into corresponding modules in HuggingFace. For example, in Llama, we can do the following:
+
+```python
+# initialize the module in Levanter
+attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
+
+# read the weights from Levanter
+state = attention.to_state_dict()
+state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+
+# load the weights into HuggingFace
+hf_attention = HFLlamaAttention(config.to_hf_config(32000))
+hf_attention.load_state_dict(state, strict=True)
+
+# ...
+
+# compare the output values
+out = attention(x, mask)
+hf_out = hf_attention(x_torch, mask_torch)
+
+assert np.isclose(
+    hf_out[0].detach().cpu().numpy(), np.array(outarray), 
+    rtol=1e-4, atol=1e-4
+).all()
+```
+
+For the end-to-end model, you can save the model weight to disk as a checkpoint and load it into the reference model. For example, in Llama, we can do the following:
+
+```python
+converter = LlamaConfig.default_hf_checkpoint_converter
+
+# initialize the model in HF...
+
+# save the model weight to disk
+with tempfile.TemporaryDirectory() as tmpdir:
+    ck_path = f"{tmpdir}/hf_model"
+    hf_model.save_pretrained(ck_path)
+
+    model = converter.load_pretrained(
+        LlamaLMHeadModel, 
+        ck_path, 
+        resize_vocab_to_match_tokenizer=False
+    )
+
+# compare the output values between Levanter and HF
+```
+
+The serialization tests are very useful for testing the correctness of your implementation and make sure you can load your pretrained HuggingFace model into Levanter.
+
 ## Training
 ### Write Training Configuration
 
