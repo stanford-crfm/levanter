@@ -511,19 +511,7 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            yield from self.generate_texts_from_urls(urls)
-
-    def generate_texts_from_urls(self, urls: Sequence[str], skip_to_doc: int = 0) -> Iterator[str]:
-        files = fsspec.open_files(urls, "r", compression="infer")
-        row = 0
-        for file in files:
-            with file as f:
-                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
-                # which is not nothing, but not ideal.
-                for line in f.readlines():
-                    if row >= skip_to_doc:
-                        yield json.loads(line)[self.text_key]
-                    row += 1
+            yield from _generate_texts_from_urls(urls, text_key=self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -633,4 +621,17 @@ class TextDataSource(ShardedDataSource[str]):
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
-        return self.config.generate_texts_from_urls([url], row)
+        return _generate_texts_from_urls([url], skip_to_doc=row, text_key=self.config.text_key)
+
+
+def _generate_texts_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0, text_key: str = "text") -> Iterator[str]:
+    files = fsspec.open_files(urls, "r", compression="infer")
+    row = 0
+    for file in files:
+        with file as f:
+            # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+            # which is not nothing, but not ideal.
+            for line in f.readlines():
+                if row >= skip_to_doc:
+                    yield json.loads(line)[text_key]
+                row += 1
