@@ -27,6 +27,7 @@ from haliax import Axis
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import CausalMask, ExplicitMask
 from levanter.models.lm_model import LmExample
+from levanter.utils import fsspec_utils
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -510,19 +511,7 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            yield from self.generate_texts_from_urls(urls)
-
-    def generate_texts_from_urls(self, urls: Sequence[str], skip_to_doc: int = 0) -> Iterator[str]:
-        files = fsspec.open_files(urls, "r", compression="infer")
-        row = 0
-        for file in files:
-            with file as f:
-                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
-                # which is not nothing, but not ideal.
-                for line in f.readlines():
-                    if row >= skip_to_doc:
-                        yield json.loads(line)[self.text_key]
-                    row += 1
+            yield from _generate_texts_from_urls(urls, text_key=self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -545,7 +534,7 @@ class LMDatasetConfig:
     def get_shard_source(self, split) -> ShardedDataSource[str]:
         if self.id is not None:
             return HFDatasetDataSource(self, split)
-        return TextDataSource(self, split)
+        return TextDataSource(self.urls_for_split(split), text_key=self.text_key)
 
 
 class HFDatasetDataSource(ShardedDataSource[str]):
@@ -597,21 +586,35 @@ class HFDatasetDataSource(ShardedDataSource[str]):
 
 
 class TextDataSource(ShardedDataSource[str]):
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
+    # TODO: remove dependence on LMDatasetConfig for this class
+    def __init__(self, urls, *, text_key: str):
+        self.urls = urls
+        self.text_key = text_key
+        self._shard_name_to_url_mapping = TextDataSource._mk_shard_name_mapping(urls)
 
-        self._shard_name_to_url_mapping = {}
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
 
-        urls = config.urls_for_split(split)
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        return _generate_texts_from_urls([url], skip_to_doc=row, text_key=self.text_key)
 
+    @staticmethod
+    def _mk_shard_name_mapping(urls):
+        _shard_name_to_url_mapping = {}
         # remove common prefix
         if len(urls) == 1:
             common_prefix = os.path.dirname(urls[0])
         else:
             common_prefix = os.path.commonprefix(urls)
 
+        missing_urls: List[str] = []
+
         for url in urls:
+            if not fsspec_utils.exists(url):
+                missing_urls.append(url)
+                continue
             # escape the url for the shard name
             shard_name = url
             if common_prefix:
@@ -620,13 +623,24 @@ class TextDataSource(ShardedDataSource[str]):
                     shard_name = shard_name[1:]
 
             shard_name = shard_name.replace(".", "_")
+            _shard_name_to_url_mapping[shard_name] = url
 
-            self._shard_name_to_url_mapping[shard_name] = url
+        if missing_urls:
+            # format nicely
+            missing_urls_str = "\n  - ".join(missing_urls)
+            raise FileNotFoundError(f"Could not find the following urls:\n  - {missing_urls_str}")
 
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
+        return _shard_name_to_url_mapping
 
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
-        url = self._shard_name_to_url_mapping[shard_name]
-        return self.config.generate_texts_from_urls([url], row)
+
+def _generate_texts_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0, text_key: str = "text") -> Iterator[str]:
+    files = fsspec.open_files(urls, "r", compression="infer")
+    row = 0
+    for file in files:
+        with file as f:
+            # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+            # which is not nothing, but not ideal.
+            for line in f.readlines():
+                if row >= skip_to_doc:
+                    yield json.loads(line)[text_key]
+                row += 1
