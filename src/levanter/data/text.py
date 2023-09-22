@@ -27,6 +27,7 @@ from haliax import Axis
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import CausalMask, ExplicitMask
 from levanter.models.lm_model import LmExample
+from levanter.utils import fsspec_utils
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -597,6 +598,7 @@ class HFDatasetDataSource(ShardedDataSource[str]):
 
 
 class TextDataSource(ShardedDataSource[str]):
+    # TODO: remove dependence on LMDatasetConfig for this class
     def __init__(self, config: LMDatasetConfig, split: str):
         self.config = config
         self.split = split
@@ -612,6 +614,8 @@ class TextDataSource(ShardedDataSource[str]):
             common_prefix = os.path.commonprefix(urls)
 
         for url in urls:
+            if not fsspec_utils.exists(url):
+                raise FileNotFoundError(f"Could not find {url}")
             # escape the url for the shard name
             shard_name = url
             if common_prefix:
