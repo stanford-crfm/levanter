@@ -18,7 +18,7 @@ import wandb
 from draccus import field
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
-from optax import OptState
+from optax import GradientTransformation, OptState
 
 import haliax as hax
 from haliax import Axis
@@ -31,6 +31,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
+from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
@@ -39,21 +40,13 @@ from levanter.utils.tree_utils import inference_mode
 logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
-
 M = TypeVar("M", bound=PyTree)
 S = TypeVar("S", bound=PyTree)
+
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
-
-FilterSpec = Union[bool, Callable[[Any], bool]]
-"""
-A filter specification. Typically used on a pytree to filter out certain subtrees. Boolean values are
-treated as-is, while callables are called on each element of the pytree. If the callable returns True, the element
-is kept, otherwise it is filtered out.
-"""
-
 
 # A note on the semantics of "step" vs "next_step":
 # The "step" of a TrainerState is the state after `step` steps have been taken.
@@ -114,17 +107,35 @@ class TrainerHooks:
 
 class Trainer:
     config: "TrainerConfig"
-    optimizer: optax.GradientTransformation
+    optimizer: GradientTransformation
     hooks: TrainerHooks
-    is_trainable: Optional[PyTree[FilterSpec]]
+    is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
 
-    def __init__(self, config: "TrainerConfig", optimizer, loss_fn, *, is_trainable: PyTree[FilterSpec] = True):
+    def __init__(
+        self,
+        config: "TrainerConfig",
+        optimizer: GradientTransformation,
+        loss_fn: Callable,
+        *,
+        is_trainable: PyTree[FilterSpec] = True,
+    ):
+        """
+
+        Args:
+            config:  the trainer config
+            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
+            loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
+                scalar loss. It should be jit-able and should not have any side effects.
+            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
+                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
+                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
+        """
         self.hooks = TrainerHooks()
         self.config = config
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
-        self.is_trainable = is_trainable
+        self.is_trainable_param = is_trainable
 
     @cached_property
     def loss_fn(self):
@@ -158,7 +169,6 @@ class Trainer:
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         self.hooks.run_hooks(info, force=force)
-        self._checkpointer.on_step(info, force=force)
 
     @property
     def parameter_axis_mapping(self) -> ResourceMapping:
@@ -284,8 +294,9 @@ class Trainer:
         self.add_hook(callbacks.log_to_wandb, every=1)
         self.add_eval_hook(eval_loader)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
-        # checkpointer is special so we run it specially
-        self._checkpointer = self.config.checkpointer.create(self.config.run_id)
+        # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        checkpointer = self.config.checkpointer.create(self.config.run_id, self.is_trainable_param)
+        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_loader):
         from levanter import callbacks
@@ -398,7 +409,7 @@ class Trainer:
             else:
                 return pred
 
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable)
+        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
         return eqx.partition(model, combined_mask)
 
 
@@ -622,7 +633,7 @@ class OptimizerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    def build(self, num_train_steps: int):
+    def build(self, num_train_steps: int) -> GradientTransformation:
         """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
