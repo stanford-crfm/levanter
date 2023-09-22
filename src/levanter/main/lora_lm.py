@@ -1,9 +1,9 @@
-import functools
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+import jax
 import jax.random as jrandom
 import wandb
 
@@ -15,16 +15,14 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.lora import (
     LoraConfig,
-    combine_lora_params,
+    is_lora_param,
     loraize,
-    partition_lora_params,
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
-from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -71,62 +69,45 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
-    # We use Optax for our optimizer. It's a pretty standard library for optimizers in JAX.
-    optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
     with config.trainer.device_mesh:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        hf_model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
-        # put the base model in inference mode (no dropout) and (potentially) low precision
-        hf_model = inference_mode(hf_model, True)
-        hf_model = config.trainer.mp.cast_to_compute(hf_model)
+        model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        # A note on the difference between "adapter_model" and "base_model":
-        # In LoRA and other so-called "parameter-efficient fine-tuning" methods, we have two sets of parameters:
-        # 1) The "base" parameters, which are the parameters of the original foundation model
-        # 2) The "adapter" parameters, which are the parameters of the "head" of the model that we're fine-tuning
-
-        # Structurally, Equinox works best if we keep these two sets of parameters separate. As an example,
-        # consider a simple model with two parameters, attention and mlp. That might look like:
-        # model = Model(attention=Attention(proj_qkv=Linear), mlp=Mlp())
-        # With LoRA, our model might look more like:
-        # model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=LoraLinear(...)), mlp=Mlp())
-        # We keep this partitioned as two trees:
-        # base_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=orig_proj_qkv, lora=None), mlp=Mlp())
-        # adapter_model = Model(attention=Attention(proj_qkv=LoraLinear(wrapped=None, lora=LoraLinear(...)), mlp=None)
-        # and then we combine them at runtime:
-        # model = combine_lora_params(base_model, lora_params=adapter_model)
-        # which just grounds out into a call to equinox.combine
-
-        # We unfortunately need to pass these two trees around more or less together, only really distinguishing
-        # them for gradients, optimizer state, and storing checkpoints.
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
             return loraize(model, config.lora, key=lora_key)
 
-        combined_model = loraize_hf_model(hf_model)
-        # next, split model into base and adapter and create initial optimizer state
-        base_model, adapter_model = partition_lora_params(combined_model)
-        # keep the base model in low precision
-        base_model = config.trainer.mp.cast_to_compute(base_model)
+        model = loraize_hf_model(model)
 
-        del hf_model
-        del combined_model
+        # we only want to train on the lora params. The way to do this in Equinox is generally with
+        # a filter tree (cf https://docs.kidger.site/equinox/examples/frozen_layer/),
+        # which is a tree with the same structure (or a "tree prefix" thereof) as the model, but with
+        # bools or Callable[..., bool] at the leaves. We can then pass this tree to the trainer and it
+        # will only train the parameters that are True in the tree.
+        # Levanter defines `is_lore_param` for this purpose, but we need to be careful about how we use it.
+        # Equinox's primitives don't really have a "match all tree nodes matching a predicate" function (just
+        # a "match all tree leaves matching a predicate" function), so we need to be just a bit careful.
+        # Basically, we want to halt recursion in the tree whenever we hit a node that is a lora param.
 
-        def compute_loss(base_model, adapter_model, example: LmExample, key=None):
-            model = combine_lora_params(base_model, lora_params=adapter_model)
+        # Functionally, this filter is the same as the model, except every lora param is replaced with True
+        # and every other leaf (really, every array) is replaced with False
+        lora_param_filter = jax.tree_util.tree_map(is_lora_param, model, is_leaf=is_lora_param)
+
+        def compute_loss(model, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
 
-        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, functools.partial(compute_loss, base_model))
-        state = trainer.initial_state(training_key, model=adapter_model)
+        optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        all_param_count = parameter_count(combine_lora_params(base_model, adapter_model))
-        just_lora_params = parameter_count(adapter_model)
+        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
+        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
+        state = trainer.initial_state(training_key, model=model)
+
+        all_param_count = parameter_count(state.model)
+        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
         wandb.summary["parameter_count"] = all_param_count
         wandb.summary["trainable_parameter_count"] = just_lora_params
@@ -156,7 +137,7 @@ def main(config: LoraLmConfig):
         if config.merged_hf_save_path is not None:
             full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
             trainer.add_hook(
-                save_merged_hf_checkpoint_callback(full_save_path, converter, base_model, config.merged_hf_upload),
+                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
                 every=config.hf_save_steps,
             )
 
@@ -173,7 +154,6 @@ def main(config: LoraLmConfig):
 
         ## OK, actually run training!
         trainer.train(state, iter_data)
-        # checkpointer.on_step(last_step, force=True)
 
 
 if __name__ == "__main__":

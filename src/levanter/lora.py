@@ -369,7 +369,6 @@ def save_peft_checkpoint_callback(
 def save_merged_hf_checkpoint_callback(
     base_path,
     converter: HFCheckpointConverter,
-    base_model,
     upload_to_hf: Optional[Union[str, RepoRef]] = None,
     **hf_upload_kwargs,
 ):
@@ -405,8 +404,7 @@ def save_merged_hf_checkpoint_callback(
 
         logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
 
-        combined_model = combine_lora_params(base_model, lora_params=step.model)
-        merged_model = merge_lora_modules(combined_model)
+        merged_model = merge_lora_modules(step.model)
         if upload_to_hf is None:
             upload_to_hf = False  # type: ignore
         converter.save_pretrained(
