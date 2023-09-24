@@ -158,22 +158,36 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
 
 
 class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
-    """A Dataset that yields HF BatchEncodings from a ShardCache"""
+    """
+    A Dataset that yields HF BatchEncodings from a ShardCache.
+    This basically yields a dict-of-arrays, just the HF BatchEncoding class version of dict.
+    """
 
-    def __init__(self, cache: ShardCache):
+    def __init__(self, cache: ShardCache, return_batches: bool = False):
         self.cache = cache
+        self.return_batches = return_batches
 
     def __iter__(self) -> Iterator[BatchEncoding]:
         for batch in self.cache:
-            yield _batch_encoding_from_record_batch(batch, flatten_docs=False)
+            encoding = _batch_encoding_from_record_batch(batch, flatten_docs=False)
+            if self.return_batches:
+                yield encoding
+            else:
+                for i in range(encoding.n_sequences):
+                    # this doesn't work for reconstituted batches, so we have to do this
+                    # I have no idea why this is the case
+                    #     yield encoding[i]
+                    yield BatchEncoding({k: v[i] for k, v in encoding.items()}, n_sequences=1)
 
     def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
         return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
 
     @staticmethod
-    def load(cache_dir: str) -> "BatchEncodingDataset":
-        cache = ShardCache.load(cache_dir, batch_size=1)
-        return BatchEncodingDataset(cache)
+    def load(cache_dir: str, return_batches: bool = False, batch_size: Optional[int] = None) -> "BatchEncodingDataset":
+        if batch_size is None:
+            batch_size = 1
+        cache = ShardCache.load(cache_dir, batch_size=batch_size)
+        return BatchEncodingDataset(cache, return_batches=return_batches)
 
 
 def _load_old_ledger(cache_dir):
@@ -321,8 +335,21 @@ def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
             n_sequences=1,
         )
     else:
+        # we follow the convention from hf batchencoding where homogeneous-lengthed arrays are turned into nd arrays
+        # while heterogeneous lists are left as lists of arrays
+        def to_hf_batched(x):
+            if len(x) == 0:
+                return list(x)
+            elif isinstance(x[0], Sequence) or isinstance(x[0], np.ndarray):
+                if all(len(y) == len(x[0]) for y in x):
+                    return np.stack(x)
+                else:
+                    return list(x)
+            else:
+                return x
+
         return BatchEncoding(
-            {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
+            {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)},
             n_sequences=b.num_rows,
         )
 
