@@ -118,7 +118,7 @@ class ShardedDataSource(Generic[T_co]):
         raise NotImplementedError
 
 
-def cache_dataset(
+def build_cache(
     cache_dir: str,
     input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T],
@@ -998,6 +998,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
         batch_size: int,
         _ledger: Optional[CacheLedger],
         _broker: Optional[ActorHandle],
+        reader_offset: int = 0,
+        num_readers: int = 1,
     ):
         self.cache_dir = cache_dir
         self._ledger = _ledger
@@ -1006,6 +1008,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         self._metrics_monitors = []
         self._monitor_thread = None
+
+        self._num_readers = num_readers
+        self._reader_offset = reader_offset
 
     @staticmethod
     def load(cache_dir: str, batch_size: int) -> "ShardCache":
@@ -1044,29 +1049,34 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     def read_chunk(self, chunk_idx: int) -> Iterator[pa.RecordBatch]:
         """Reads a chunk from the cache"""
-        chunk = self.get_chunk(chunk_idx)
+        chunk = self.get_chunk(self._map_index(chunk_idx))
         yield from self._read_chunk(chunk)
 
-    def get_chunk(self, chunk_idx: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
+    def _map_index(self, index):
+        return index * self._num_readers + self._reader_offset
+
+    def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
+        mapped_index = self._map_index(index)
         if self._ledger is not None:
-            return self._ledger.chunks[chunk_idx]
+            return self._ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
-            chunk = ray.get(self._broker.get_chunk.remote(chunk_idx), timeout=timeout)
+            chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=timeout)
             if chunk is None:
-                raise IndexError(f"Chunk index {chunk_idx} out of bounds")
+                raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
             return chunk
 
     async def get_chunk_async(self, index: int) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
+        mapped_index = self._map_index(index)
         if self._ledger is not None:
-            return self._ledger.chunks[index]
+            return self._ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
-            chunk = await self._broker.get_chunk.remote(index)
+            chunk = await self._broker.get_chunk.remote(mapped_index)
             if chunk is None:
-                raise IndexError(f"Chunk index {index} out of bounds")
+                raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
             return chunk
 
     def final_chunk_count(self) -> Optional[int]:
@@ -1077,7 +1087,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
             assert self._broker is not None
             return ray.get(self._broker.final_chunk_count.remote())
 
-    def iter_batches_from_chunks(self, shard_offset: int, num_shards: int, loop: bool = False):
+    def iter_batches_from_chunks(self, loop: bool = False):
+        shard_offset = self._reader_offset
+
         if self._ledger is not None:
             num_chunks = len(self._ledger.chunks)
 
@@ -1085,14 +1097,15 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 return
 
             while True:
-                for i in range(shard_offset, num_chunks, num_shards):
+                i = 0
+                for i in range(shard_offset, num_chunks, self._num_readers):
                     chunk = self._ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
                 if not loop:
                     break
 
-                shard_offset = i % num_shards
+                shard_offset = i % len(self._ledger.chunks)
         else:
             assert self._broker is not None
             i = shard_offset
@@ -1100,7 +1113,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 try:
                     logger.debug(f"Reading chunk {i}")
                     chunk = self.get_chunk(i)
-                    i += num_shards
+                    i += self._num_readers
                     yield from self._read_chunk(chunk)
                 except IndexError:
                     if loop:
@@ -1115,7 +1128,34 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     raise e
 
     def __iter__(self):
-        return self.iter_batches_from_chunks(0, 1)
+        return self.iter_batches_from_chunks()
+
+    def shard(self, offset, num_readers):
+        """
+        Returns a shard of this shard cache. This method shards w.r.t the current shard cache, not the base shard cache.
+
+        Args:
+            offset:
+            num_readers:
+
+        Returns:
+            (ShardCache): A shard of this shard cache.
+        """
+        if offset <= num_readers:
+            raise ValueError(f"Shard index {offset} is out of range")
+
+        if num_readers == 1:
+            return self
+
+        new_offset = self._reader_offset * num_readers + offset
+        new_num_readers = self._num_readers * num_readers
+        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
+
+    def unshard(self):
+        """
+        Gets the "base" shard cache that this shard cache is a shard of.
+        """
+        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, 0, 1)
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)

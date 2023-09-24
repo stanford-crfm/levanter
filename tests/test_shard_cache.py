@@ -8,13 +8,7 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import (
-    BatchProcessor,
-    ChunkMetadata,
-    ShardedDataSource,
-    _get_broker_actor,
-    cache_dataset,
-)
+from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, ShardedDataSource, _get_broker_actor, build_cache
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -72,7 +66,7 @@ def simple_process(processor, source):
 def test_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
-        ray_ds = cache_dataset(tmpdir, SimpleShardSource(), TestProcessor())
+        ray_ds = build_cache(tmpdir, SimpleShardSource(), TestProcessor())
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
 
@@ -82,7 +76,7 @@ def test_cache_simple():
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
-        ds1 = cache_dataset(tmpdir, SimpleShardSource(), TestProcessor())
+        ds1 = build_cache(tmpdir, SimpleShardSource(), TestProcessor())
 
         class ThrowingProcessor(BatchProcessor[Sequence[int]]):
             def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
@@ -97,7 +91,7 @@ def test_cache_remembers_its_cached():
                 return 1
 
         # testing this doesn't throw
-        ds2 = cache_dataset(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
+        ds2 = build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
         assert list(ds1) == list(ds2)
         # ensure we delete tmpdir, since something is holding onto it
@@ -128,23 +122,23 @@ def test_cache_recover_from_crash():
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            cache_dataset(tmpdir, source, TestProcessor())
+            build_cache(tmpdir, source, TestProcessor())
 
         # kill the broker actor so that we can test recovery
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
-            cache_dataset(tmpdir, source, TestProcessor())
+            build_cache(tmpdir, source, TestProcessor())
 
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        reader1 = cache_dataset(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
+        reader1 = build_cache(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
 
         # compare to the original with no crash
-        reader2 = cache_dataset(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
+        reader2 = build_cache(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
@@ -160,7 +154,7 @@ def test_no_hang_if_empty_shard_source():
             raise RuntimeError("This should not be called")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        reader = cache_dataset(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
+        reader = build_cache(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
         assert list(reader) == []
 
 
@@ -191,7 +185,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache = cache_dataset(
+        cache = build_cache(
             tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
@@ -257,7 +251,7 @@ def test_can_get_chunk_before_finished():
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache = cache_dataset(
+        cache = build_cache(
             tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 

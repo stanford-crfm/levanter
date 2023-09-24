@@ -48,7 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     ShardedDataSource,
     WandbMetricsMonitor,
     _serialize_json_and_commit,
-    cache_dataset,
+    build_cache,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
@@ -158,6 +158,25 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
+class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
+    """A Dataset that yields HF BatchEncodings from a ShardCache"""
+
+    def __init__(self, cache: ShardCache):
+        self.cache = cache
+
+    def __iter__(self) -> Iterator[BatchEncoding]:
+        for batch in self.cache:
+            yield _batch_encoding_from_record_batch(batch, flatten_docs=False)
+
+    def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
+        return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
+
+    @staticmethod
+    def load(cache_dir: str) -> "BatchEncodingDataset":
+        cache = ShardCache.load(cache_dir, batch_size=1)
+        return BatchEncodingDataset(cache)
+
+
 def _load_old_ledger(cache_dir):
     ledger_path = os.path.join(cache_dir, LEDGER_FILE)
 
@@ -194,11 +213,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
     """
 
-    def __init__(self, chunk_cache: ShardCache, flatten_docs, shard_chunk_offset=0, shard_chunk_stride=1):
+    def __init__(self, chunk_cache: ShardCache, flatten_docs):
         self.chunk_cache = chunk_cache
         self.flatten_docs = flatten_docs
-        self.shard_chunk_offset = shard_chunk_offset
-        self.shard_chunk_stride = shard_chunk_stride
 
     def __iter__(self):
         """Reads the cache files produced by cache_and_group and yields tokenized sequences.
@@ -209,7 +226,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             yield _batch_encoding_from_record_batch(batch, self.flatten_docs)
 
     def _chunks(self):
-        return self.chunk_cache.iter_batches_from_chunks(self.shard_chunk_offset, self.shard_chunk_stride)
+        return self.chunk_cache.iter_batches_from_chunks()
 
     @staticmethod
     def build_or_load(
@@ -225,7 +242,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
         monitors = monitors or []
-        cache = cache_dataset(
+        cache = build_cache(
             cache_dir,
             source,
             bt,
@@ -286,15 +303,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         if num_shards == 1:
             return self
 
-        combined_offset = self.shard_chunk_offset + shard_index * self.shard_chunk_stride
-        combined_stride = self.shard_chunk_stride * num_shards
-
-        return TokenizedDocumentCache(
-            self.chunk_cache,
-            self.flatten_docs,
-            shard_chunk_offset=combined_offset,
-            shard_chunk_stride=combined_stride,
-        )
+        return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
 
 
 def _open_arrow_table(path) -> FileMetaData:
