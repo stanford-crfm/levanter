@@ -117,6 +117,22 @@ class ShardedDataSource(Generic[T_co]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
         raise NotImplementedError
 
+    def map(self, fn: Callable[[T_co], T]) -> "ShardedDataSource[T]":
+        return MappedShardedDataSource(self, fn)
+
+
+class MappedShardedDataSource(ShardedDataSource[T]):
+    def __init__(self, source: ShardedDataSource[T_co], fn: Callable[[T_co], T]):
+        self.source = source
+        self.fn = fn
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return self.source.shard_names
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
+        return map(self.fn, self.source.open_shard_at_row(shard_name, row))
+
 
 def build_cache(
     cache_dir: str,
@@ -1141,7 +1157,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         Returns:
             (ShardCache): A shard of this shard cache.
         """
-        if offset <= num_readers:
+        if offset >= num_readers:
             raise ValueError(f"Shard index {offset} is out of range")
 
         if num_readers == 1:
