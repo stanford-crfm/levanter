@@ -24,18 +24,35 @@ Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
 
 You can find examples like `Gpt2Config` in [gpt2.py](TODO) and `LlamaConfig` in [llama.py](TODO).
 
-- Converting to HF
-- Property
+To convert your config class to and from Hugging Face config class, you can write class functions `to_hf_config()` and `from_hf_config()` in your config class.
+
+Lastly, you should register your head model's class name as a class property. 
+This step can be done later when you created your head class. 
+This class property would make it easier to call your model with the config class. For example:
+
+```python
+@property
+def model_type(cls) -> Type["LlamaLMHeadModel"]:
+    return LlamaLMHeadModel
+```
 
 ### Write Model
-- Break down into modules
-    - Mlp
-    - Attention
-    - Decoder Blocks
-    - Transformer
-    - Embeddings
-    - LM Head
-- Write in Jax and Haliax
+After you have defined your config class, you can start writing your model.
+You can follow the breakdown of the model in your Hugging Face implmentation. This would make it easier to validate the implementation through unit tests. 
+
+For example, in Gpt2, we have the following breakdown:
+- Gpt2Mlp
+- Gpt2Attention
+- Gpt2Block: a block of Gpt2Mlp and Gpt2Attention
+- Gpt2Transformer: a stack of Gpt2Block
+- Gpt2Embeddings: token and position embeddings
+- Gpt2LMHead: a complete GPT2 model with embedding, transformer, and LM head. 
+
+We follow the same breakdown in the implementation of Llama in Levanter. 
+
+#### Note on the Implementation Format
+- Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
+- Each class will inherit from `StateDictSerializationMixin` from `torch_serialization` and Equinox's `Module` class.
 
 ## Write Tests
 ### Unit Tests
@@ -117,6 +134,7 @@ For the end-to-end model, you can save the model weight to disk as a checkpoint 
 converter = LlamaConfig.default_hf_checkpoint_converter
 
 # initialize the model in HF...
+hf_model = transformer.AutoModelForCausalLM(...)
 
 # save the model weight to disk
 with tempfile.TemporaryDirectory() as tmpdir:
@@ -130,6 +148,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     )
 
 # compare the output values between Levanter and HF
+# ...
 ```
 
 The serialization tests are very useful for testing the correctness of your implementation and make sure you can load your pretrained HuggingFace model into Levanter.
