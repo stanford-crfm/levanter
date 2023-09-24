@@ -405,8 +405,8 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     try:
-        logger.info(f"Attempting to load cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
         ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
+        logger.debug(f"Attempting to load cache ledger from {ledger_path}")
         with fsspec.open(ledger_path) as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
         return cache_ledger
@@ -996,6 +996,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     @staticmethod
     def load(cache_dir: str, batch_size: int) -> "ShardCache":
         """Loads a cache from disk. Raises FileNotFoundError if the cache doesn't exist"""
+        logger.info(f"Loading cache from {cache_dir}")
         ledger = _load_cache_ledger(cache_dir)
         return ShardCache(cache_dir, batch_size, ledger, None)
 
