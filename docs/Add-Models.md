@@ -1,17 +1,18 @@
 # Add New Models to Levanter
 
-This guide outlines the process of adding new models into the Levanter. While we emphasize adding models previously implemented in Hugging Face, these steps are applicable to models from other sources.
+This guide outlines the process of adding new models into Levanter. While we emphasize adding models that are implemented in Hugging Face, these steps are applicable to models from other sources.
 
-We'll start with a detailed walkthrough on implementing and testing your model. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
+We'll start with a detailed walkthrough on implementing your model and testing it. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
 
 ## Write Your Model
-Writing a new model in Levanter is very similar to doing so in Hugging Face. You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
+Writing a new model in Levanter is very similar to Hugging Face. You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
 
 ### Write Config
-We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used in the implementation of the model. 
-Note that you don't need to write all of them at once. You can start with the key hyperparameters and axes, and add more as you implement the model.
+We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used immidately in the next step that implements your model. 
 
-Hyperparameters should be declared with their type and a default value, illustrated below:
+Note that you don't need to write all of configurations at once. You can start with the key hyperparameters and axes, and add more as you implement the model.
+
+**Hyperparameters** should be declared with their type and a default value, illustrated below:
 
 ```python
 seq_len: int = 2048
@@ -19,7 +20,7 @@ hidden_dim: int = 4096
 intermediate_dim: int = 11008
 ```
 
-Model axies are used for parallelization. An Axis is registered with its name and size. The size of an Axis is normally associated with a hyperparameter. For example:
+**Model axies** are used for parallelization. An Axis is registered with its name and size. The size of an Axis is normally associated with a hyperparameter. For example:
 
 ```python
 Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -29,7 +30,27 @@ Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
 
 For real examples and deeper understanding, check out `Gpt2Config` in [gpt2.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/gpt2.py) and `LlamaConfig` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py).
 
-To convert your config class to and from Hugging Face config class, you can write the mapping of class input parameters through class functions `to_hf_config()` and `from_hf_config()` in your config class.
+To convert your config class to and from Hugging Face config class, you can write class functions `to_hf_config()` and `from_hf_config()` that maps the input parameters to the corresponding Hugging Face parameters. For example, in Llama, we have the following:
+
+```python
+from transformers import PretrainedConfig as HfPretrainedConfig
+
+# ...
+
+@classmethod
+def from_hf_config(cls, hf_config: HfPretrainedConfig):
+    return LlamaConfig(
+        seq_len=hf_config.max_position_embeddings,
+        hidden_dim=hf_config.hidden_size,
+        intermediate_dim=hf_config.intermediate_size,
+        num_layers=hf_config.num_hidden_layers,
+        num_heads=hf_config.num_attention_heads,
+        activation_function=hf_config.hidden_act,
+        initializer_range=hf_config.initializer_range,
+        layer_norm_epsilon=hf_config.rms_norm_eps,
+        rope_scaling=hf_config.rope_scaling,
+    )
+```
 
 Lastly, you should register your head model's class name as a class property. This step can be deferred until the head class is constructed. 
 This class property would make it easier to call your model with the config class. For example:
@@ -44,13 +65,13 @@ def model_type(cls) -> Type["LlamaLMHeadModel"]:
 After you have defined your config class, you can start writing your model.
 You can follow the breakdown of the model in your Hugging Face implmentation. This would make it easier to validate the implementation through unit tests. 
 
-For example, in Gpt2, we have the following breakdown:
-- Gpt2Mlp
-- Gpt2Attention
-- Gpt2Block: a block of Gpt2Mlp and Gpt2Attention
-- Gpt2Transformer: a stack of Gpt2Block
-- Gpt2Embeddings: token and position embeddings
-- Gpt2LMHead: a complete GPT2 model with embedding, transformer, and LM head. 
+For example, in GPT2, we have the following breakdown:
+- `Gpt2Mlp`
+- `Gpt2Attention`
+- `Gpt2Block`: a block of Gpt2Mlp and Gpt2Attention
+- `Gpt2Transformer`: a stack of Gpt2Block
+- `Gpt2Embeddings`: token and position embeddings
+- `Gpt2LMHead`: a complete GPT2 model with embedding, transformer, and LM head. 
 
 We follow the same breakdown in the implementation of Llama in Levanter. 
 
@@ -91,7 +112,7 @@ There are two types of tests that you should write for your model: unit tests an
 Unit tests are very useful for testing the correctness of your model implementation. 
 It is recommended to have at least one test for each of your modules, so that you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end. 
 
-In a unit test, you should test your module in the following aspects:
+In a unit test, you test your module in the following aspects:
 1. The forward pass is successful.
 2. The output shape is correct.
 3. The output value is correct.
@@ -134,7 +155,7 @@ If your module contains model weights, such consistency tests would require you 
 In order to validate the implementation on Levanter matches with the reference implementation in HuggingFace, we would like to pass the same input to both implementations and compare the output.
 However, if the model are initialized with different weights, such comparison would not be meaningful. Therefore, we will need to serialize the weights from HuggingFace and load them into Levanter, or vice versa. We call such test "serialization test".
 
-For modules like Attention, Mlp, and Embeddings, you can read the weight from Levanter in memory and load into corresponding modules in HuggingFace. For example, in Llama, we can do the following:
+For modules like Attention, Mlp, and Embeddings, you can read the weight from Levanter in memory and load into corresponding modules in HuggingFace. For example, in Llama, we did the following:
 
 ```python
 # initialize the module in Levanter
@@ -186,12 +207,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
 The serialization tests are very useful for testing the correctness of your implementation and make sure you can load your pretrained HuggingFace model into Levanter.
 
 ## Training
+After you have implemented your model and validated it through tests, you can start training your model with Levanter.
+
 ### Write Training Configuration
-To launch a training job, you will need to write a training configuration file in yaml. It includes the dataset, model, and trainer specifications for the training job. You can find examples in `configs/`.
+To launch a training job, you will need to write a training configuration file in yaml. It includes the dataset, model, and trainer specifications for the training job. You can find many examples in [configs/](https://github.com/stanford-crfm/levanter/tree/main/config).
 
 Under the model section, you will need to specify the model name as `type` and modify the hyperparameters that you would like to change. For parameters that are not specified, the default values will be used. 
 
-For example, the following configuration specifies a Llama model with default hyperparameters, which is the Llama 7B model with context length of 2048:
+For example, the following configuration uses Llama with default hyperparameters:
 
 ```yaml
 model:
@@ -217,7 +240,7 @@ model:
   num_layers: 2
 ```
 
-For more details on the training configuration, please refer to [Configuration Guide](docs/Configuration-Guide.md).
+For more details on the training configuration, please refer to [Configuration Guide](https://github.com/stanford-crfm/levanter/blob/main/docs/Configuration-Guide.md).
 
 ### Launch Training Job
 Once you have your training configuration ready and your training environment set up, you can launch a training job with the following command:
@@ -234,7 +257,7 @@ Check out [Training-On-Your-Data](./Training-On-Your-Data.md) for more detailed 
 ### Profile Your Model
 If you are interested in profiling the training throughput of your model, good news is that it comes for free with automatic job monitoring in Levanter, powered through Weights & Biases.
 
-Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like examples_per_second and tokens_per_second across the training time. 
+Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like `examples_per_second` and `tokens_per_second` across the training time. 
 
 ## Tips for Optimization
 1. Avoid upcasting to float32. Levanter uses float16 by default, which is more memory efficient and faster for training. You should avoid upcasting to float32 unless it is necessary.
