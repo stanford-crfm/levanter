@@ -155,9 +155,53 @@ The serialization tests are very useful for testing the correctness of your impl
 
 ## Training
 ### Write Training Configuration
+To launch a training job, you will need to write a training configuration file in yaml. It includes the dataset, model, and trainer specifications for the training job. You can find examples in `configs/`.
+
+Under the model section, you will need to specify the model name as `type` and modify the hyperparameters that you would like to change. For parameters that are not specified, the default values will be used. 
+
+For example, the following configuration specifies a Llama model with default hyperparameters, which is the Llama 7B model with context length of 2048:
+
+```yaml
+model:
+    type: llama
+```
+
+To initialize with the model configuration and checkpoint from Hugging Face, you can specify the `initialize_from_hf` and `use_hf_model_config` parameters:
+
+```yaml
+model:
+    type: llama
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+use_hf_model_config: true
+```
+
+Sometimes it is helpful to start with a small model for debugging. For example, the configuration below specifies a very small Llama model with only 4M parameters. It can be run on a single chip with ease and is useful for debugging.
+
+```yaml
+model:
+  type: llama
+  hidden_dim: 32
+  num_heads: 4
+  num_layers: 2
+```
+
+For more details on the training configuration, please refer to [Configuration Guide](docs/Configuration-Guide.md).
 
 ### Launch Training Job
+Once you have your training configuration ready and your training environment set up, you can launch a training job with the following command:
+
+```bash
+# HUGGING_FACE_HUB_TOKEN is only needed if you want to load private checkpoint from Hugging Face
+WANDB_API_KEY=$WANDB_API_KEY \
+HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+python levanter/src/levanter/main/train_lm.py --config_path $CONFIG_PATH
+```
+
+Check out [Training-On-Your-Data](./Training-On-Your-Data.md) for more detailed guide on how to spin off a training cluster and launch a training job.
 
 ### Profile Your Model
+If you are interested in profiling the training throughput of your model, good news is that it comes for free with automatic job monitoring in Levanter, powered through Weights & Biases.
+
+Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like examples_per_second and tokens_per_second across the training time. 
 
 ## Tips for Optimization
