@@ -5,7 +5,7 @@ This guide outlines the process of adding new models into Levanter. While we emp
 We'll start with a detailed walkthrough on implementing your model and testing it. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
 
 ## Write Your Model
-Writing a new model in Levanter is very similar to Hugging Face. You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
+Writing a new model in Levanter is very similar to Hugging Face. You start by adding a new file in [models/](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models). You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
 
 ### Write Config
 We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used immidately in the next step that implements your model. 
