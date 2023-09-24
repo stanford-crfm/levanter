@@ -27,7 +27,6 @@ from haliax import Axis
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import CausalMask, ExplicitMask
 from levanter.models.lm_model import LmExample
-from levanter.utils import fsspec_utils
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -45,11 +44,11 @@ from levanter.data.shard_cache import (  # noqa
     LoggerMetricsMonitor,
     MetricsMonitor,
     ShardCache,
-    ShardedDataSource,
     WandbMetricsMonitor,
     _serialize_json_and_commit,
     build_cache,
 )
+from levanter.data.shard_source import HFDatasetDataSource, JsonlDataSource, ShardedDataSource  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -511,7 +510,7 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            for doc in _generate_from_urls(urls):
+            for doc in JsonlDataSource(urls).iter_data():
                 yield doc[self.text_key]
 
     def urls_for_split(self, split):
@@ -535,115 +534,8 @@ class LMDatasetConfig:
     def get_shard_source(self, split) -> ShardedDataSource[str]:
         dict_source: ShardedDataSource[dict]
         if self.id is not None:
-            dict_source = HFDatasetDataSource(self, split)
+            dict_source = HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream)
         else:
             dict_source = JsonlDataSource(self.urls_for_split(split))
 
         return dict_source.map(lambda x: x[self.text_key])
-
-
-class HFDatasetDataSource(ShardedDataSource[dict]):
-    """
-    This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
-    Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
-    for all other datasets.
-    """
-
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-        self._shard_names = self._compute_shard_names()
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return self._shard_names
-
-    def _compute_shard_names(self):
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset):
-            try:
-                return [str(i) for i in range(dataset.n_shards)]
-            except NotImplementedError:
-                return ["data"]
-        else:
-            return ["data"]
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
-            shard = dataset._ex_iterable.shard_data_sources([int(shard_name)])
-        else:
-            shard = dataset
-
-        idx = 0
-        for _, doc in shard:
-            if idx >= row:
-                yield doc
-            idx += 1
-
-    def _load_dataset(self):
-        # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing and stuff
-        # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(
-            self.config.id, split=self.split, name=self.config.name, streaming=self.config.stream
-        )
-
-
-class JsonlDataSource(ShardedDataSource[dict]):
-    def __init__(self, urls):
-        self.urls = urls
-        self._shard_name_to_url_mapping = JsonlDataSource._mk_shard_name_mapping(urls)
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
-        url = self._shard_name_to_url_mapping[shard_name]
-        return _generate_from_urls([url], skip_to_doc=row)
-
-    @staticmethod
-    def _mk_shard_name_mapping(urls):
-        _shard_name_to_url_mapping = {}
-        # remove common prefix
-        if len(urls) == 1:
-            common_prefix = os.path.dirname(urls[0])
-        else:
-            common_prefix = os.path.commonprefix(urls)
-
-        missing_urls: List[str] = []
-
-        for url in urls:
-            if not fsspec_utils.exists(url):
-                missing_urls.append(url)
-                continue
-            # escape the url for the shard name
-            shard_name = url
-            if common_prefix:
-                shard_name = url[len(common_prefix) :]
-                if shard_name.startswith("/"):
-                    shard_name = shard_name[1:]
-
-            shard_name = shard_name.replace(".", "_")
-            _shard_name_to_url_mapping[shard_name] = url
-
-        if missing_urls:
-            # format nicely
-            missing_urls_str = "\n  - ".join(missing_urls)
-            raise FileNotFoundError(f"Could not find the following urls:\n  - {missing_urls_str}")
-
-        return _shard_name_to_url_mapping
-
-
-def _generate_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0) -> Iterator[dict]:
-    files = fsspec.open_files(urls, "r", compression="infer")
-    row = 0
-    for file in files:
-        with file as f:
-            # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
-            # which is not nothing, but not ideal.
-            for line in f.readlines():
-                if row >= skip_to_doc:
-                    yield json.loads(line)
-                row += 1

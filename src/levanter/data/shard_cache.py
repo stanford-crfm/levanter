@@ -48,6 +48,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from levanter.data.shard_source import ShardedDataSource
+
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -95,43 +97,6 @@ class BatchProcessor(Generic[T_contra], ABC):
     @property
     def batch_size(self) -> int:
         return 1024
-
-
-class ShardedDataSource(Generic[T_co]):
-    """
-    A ShardedDataSource is the main interface for reading data. It's basically a mapping from shard names to iterators,
-    with the extra feature that it exposes the ability to skip to a particular row in a shard.
-    """
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        raise NotImplementedError
-
-    @property
-    def num_shards(self) -> int:
-        return len(self.shard_names)
-
-    def open_shard(self, shard_name: str) -> Iterator[T_co]:
-        return self.open_shard_at_row(shard_name, 0)
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
-        raise NotImplementedError
-
-    def map(self, fn: Callable[[T_co], T]) -> "ShardedDataSource[T]":
-        return MappedShardedDataSource(self, fn)
-
-
-class MappedShardedDataSource(ShardedDataSource[T]):
-    def __init__(self, source: ShardedDataSource[T_co], fn: Callable[[T_co], T]):
-        self.source = source
-        self.fn = fn
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return self.source.shard_names
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
-        return map(self.fn, self.source.open_shard_at_row(shard_name, row))
 
 
 def build_cache(

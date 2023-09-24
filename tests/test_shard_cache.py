@@ -8,7 +8,8 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, ShardedDataSource, _get_broker_actor, build_cache
+from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, _get_broker_actor, build_cache
+from levanter.data.shard_source import ShardedDataSource
 from levanter.utils.py_utils import logical_cpu_core_count
 
 

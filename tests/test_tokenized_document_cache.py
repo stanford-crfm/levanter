@@ -5,7 +5,8 @@ import pytest
 import ray
 from transformers import AutoTokenizer, BatchEncoding
 
-from levanter.data.shard_cache import ShardedDataSource, build_cache
+from levanter.data.shard_cache import build_cache
+from levanter.data.shard_source import ShardedDataSource
 from levanter.data.text import TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
