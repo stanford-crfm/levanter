@@ -511,7 +511,8 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            yield from _generate_texts_from_urls(urls, text_key=self.text_key)
+            for doc in _generate_from_urls(urls):
+                yield doc[self.text_key]
 
     def urls_for_split(self, split):
         if split == "train":
@@ -532,12 +533,16 @@ class LMDatasetConfig:
         return urls
 
     def get_shard_source(self, split) -> ShardedDataSource[str]:
+        dict_source: ShardedDataSource[dict]
         if self.id is not None:
-            return HFDatasetDataSource(self, split)
-        return TextDataSource(self.urls_for_split(split), text_key=self.text_key)
+            dict_source = HFDatasetDataSource(self, split)
+        else:
+            dict_source = JsonlDataSource(self.urls_for_split(split))
+
+        return dict_source.map(lambda x: x[self.text_key])
 
 
-class HFDatasetDataSource(ShardedDataSource[str]):
+class HFDatasetDataSource(ShardedDataSource[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
     Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
@@ -564,7 +569,7 @@ class HFDatasetDataSource(ShardedDataSource[str]):
         else:
             return ["data"]
 
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         dataset = self._load_dataset()
         if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
             shard = dataset._ex_iterable.shard_data_sources([int(shard_name)])
@@ -574,7 +579,7 @@ class HFDatasetDataSource(ShardedDataSource[str]):
         idx = 0
         for _, doc in shard:
             if idx >= row:
-                yield doc[self.config.text_key]
+                yield doc
             idx += 1
 
     def _load_dataset(self):
@@ -585,20 +590,18 @@ class HFDatasetDataSource(ShardedDataSource[str]):
         )
 
 
-class TextDataSource(ShardedDataSource[str]):
-    # TODO: remove dependence on LMDatasetConfig for this class
-    def __init__(self, urls, *, text_key: str):
+class JsonlDataSource(ShardedDataSource[dict]):
+    def __init__(self, urls):
         self.urls = urls
-        self.text_key = text_key
-        self._shard_name_to_url_mapping = TextDataSource._mk_shard_name_mapping(urls)
+        self._shard_name_to_url_mapping = JsonlDataSource._mk_shard_name_mapping(urls)
 
     @property
     def shard_names(self) -> Sequence[str]:
         return list(self._shard_name_to_url_mapping.keys())
 
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
-        return _generate_texts_from_urls([url], skip_to_doc=row, text_key=self.text_key)
+        return _generate_from_urls([url], skip_to_doc=row)
 
     @staticmethod
     def _mk_shard_name_mapping(urls):
@@ -633,7 +636,7 @@ class TextDataSource(ShardedDataSource[str]):
         return _shard_name_to_url_mapping
 
 
-def _generate_texts_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0, text_key: str = "text") -> Iterator[str]:
+def _generate_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0) -> Iterator[dict]:
     files = fsspec.open_files(urls, "r", compression="infer")
     row = 0
     for file in files:
@@ -642,5 +645,5 @@ def _generate_texts_from_urls(urls: Sequence[str], *, skip_to_doc: int = 0, text
             # which is not nothing, but not ideal.
             for line in f.readlines():
                 if row >= skip_to_doc:
-                    yield json.loads(line)[text_key]
+                    yield json.loads(line)
                 row += 1
