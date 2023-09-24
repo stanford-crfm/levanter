@@ -1,12 +1,17 @@
 # Add New Models to Levanter
 
+This guide outlines the process of adding new models into the Levanter. While we emphasize adding models previously implemented in Hugging Face, these steps are applicable to models from other sources.
+
+We'll start with a detailed walkthrough on implementing and testing your model. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
+
 ## Write Your Model
+Writing a new model in Levanter is very similar to doing so in Hugging Face. You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
+
 ### Write Config
-We start by writing your model config class. 
-This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used in the implementation of the model. 
+We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used in the implementation of the model. 
 Note that you don't need to write all of them at once. You can start with the key hyperparameters and axes, and add more as you implement the model.
 
-Hyperparameters are defined with the type and the default value. For example:
+Hyperparameters should be declared with their type and a default value, illustrated below:
 
 ```python
 seq_len: int = 2048
@@ -22,12 +27,11 @@ Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
 Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
 ```
 
-You can find examples like `Gpt2Config` in [gpt2.py](TODO) and `LlamaConfig` in [llama.py](TODO).
+For real examples and deeper understanding, check out `Gpt2Config` in [gpt2.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/gpt2.py) and `LlamaConfig` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py).
 
-To convert your config class to and from Hugging Face config class, you can write class functions `to_hf_config()` and `from_hf_config()` in your config class.
+To convert your config class to and from Hugging Face config class, you can write the mapping of class input parameters through class functions `to_hf_config()` and `from_hf_config()` in your config class.
 
-Lastly, you should register your head model's class name as a class property. 
-This step can be done later when you created your head class. 
+Lastly, you should register your head model's class name as a class property. This step can be deferred until the head class is constructed. 
 This class property would make it easier to call your model with the config class. For example:
 
 ```python
@@ -54,7 +58,35 @@ We follow the same breakdown in the implementation of Llama in Levanter.
 - Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
 - Each class will inherit from `StateDictSerializationMixin` from `torch_serialization` and Equinox's `Module` class.
 
+### Mapping weights from/to Hugging Face
+To load weights from Hugging Face, you will need to write a class function `from_hf_state_dict()` in each of your model class. It takes in a Hugging Face state_dict and returns a Levanter state_dict.
+
+For implementation, there are a few helper classes from `torch_serialization` that you can use:
+- To add specific prefix to the keys of Hugging Face state_dict, you can use the helper function `apply_prefix()`. The prefix comes from the name of attributes defined at the beginning of your model class.
+- To unflatten the linear layers of Hugging Face, you can use the helper function `unflatten_linear_params()`.
+- To unstack the transformer blocks of Hugging Face, you can use the helper function `unstack_transformer_blocks()`.
+
+For example, below is the implementation of `from_hf_state_dict()` in LlamaAttention:
+
+```python
+def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "LlamaAttention":
+    # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
+    d = {}
+    d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
+    d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
+    d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
+    d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
+
+    return super().from_state_dict(d, prefix)
+```
+
+Similarly, to save weights to Hugging Face, you will need to write a class function `to_hf_state_dict()` in each of your model class. 
+
+The correctness of your implementation can be validated through serialization tests, which will be discussed in the next section.
+
 ## Write Tests
+There are two types of tests that you should write for your model: unit tests and serialization tests.
+
 ### Unit Tests
 Unit tests are very useful for testing the correctness of your model implementation. 
 It is recommended to have at least one test for each of your modules, so that you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end. 
@@ -205,3 +237,11 @@ If you are interested in profiling the training throughput of your model, good n
 Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like examples_per_second and tokens_per_second across the training time. 
 
 ## Tips for Optimization
+1. Avoid upcasting to float32. Levanter uses float16 by default, which is more memory efficient and faster for training. You should avoid upcasting to float32 unless it is necessary.
+2. For attention, rearrange the heads and position axes to make the computation more efficient. For example, in Llama, we did the following:
+
+```python
+q = self.q_proj(x, key=key_q).rearrange((..., "heads", "position", "head_size"))
+k = self.k_proj(x, key=key_k).rearrange((..., "heads", "position", "head_size"))
+v = self.v_proj(x, key=key_v).rearrange((..., "heads", "position", "head_size"))
+```
