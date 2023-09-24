@@ -5,10 +5,10 @@ This guide outlines the process of adding new models into Levanter. While we emp
 We'll start with a detailed walkthrough on implementing your model and testing it. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
 
 ## Write Your Model
-Writing a new model in Levanter is very similar to Hugging Face. You start by adding a new file in [models/](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models). You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model. 
+Writing a new model in Levanter is very similar to Hugging Face. You start by adding a new file in [models/](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models). You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model.
 
 ### Write Config
-We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used immidately in the next step that implements your model. 
+We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used immidately in the next step that implements your model.
 
 Note that you don't need to write all of configurations at once. You can start with the key hyperparameters and axes, and add more as you implement the model.
 
@@ -52,7 +52,7 @@ def from_hf_config(cls, hf_config: HfPretrainedConfig):
     )
 ```
 
-Lastly, you should register your head model's class name as a class property. This step can be deferred until the head class is constructed. 
+Lastly, you should register your head model's class name as a class property. This step can be deferred until the head class is constructed.
 This class property would make it easier to call your model with the config class. For example:
 
 ```python
@@ -63,7 +63,7 @@ def model_type(cls) -> Type["LlamaLMHeadModel"]:
 
 ### Write Model
 After you have defined your config class, you can start writing your model.
-You can follow the breakdown of the model in your Hugging Face implmentation. This would make it easier to validate the implementation through unit tests. 
+You can follow the breakdown of the model in your Hugging Face implmentation. This would make it easier to validate the implementation through unit tests.
 
 For example, in GPT2, we have the following breakdown:
 - `Gpt2Mlp`
@@ -71,9 +71,9 @@ For example, in GPT2, we have the following breakdown:
 - `Gpt2Block`: a block of Gpt2Mlp and Gpt2Attention
 - `Gpt2Transformer`: a stack of Gpt2Block
 - `Gpt2Embeddings`: token and position embeddings
-- `Gpt2LMHead`: a complete GPT2 model with embedding, transformer, and LM head. 
+- `Gpt2LMHead`: a complete GPT2 model with embedding, transformer, and LM head.
 
-We follow the same breakdown in the implementation of Llama in Levanter. 
+We follow the same breakdown in the implementation of Llama in Levanter.
 
 #### Note on the Implementation Format
 - Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
@@ -101,7 +101,7 @@ def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -
     return super().from_state_dict(d, prefix)
 ```
 
-Similarly, to save weights to Hugging Face, you will need to write a class function `to_hf_state_dict()` in each of your model class. 
+Similarly, to save weights to Hugging Face, you will need to write a class function `to_hf_state_dict()` in each of your model class.
 
 The correctness of your implementation can be validated through serialization tests, which will be discussed in the next section.
 
@@ -109,8 +109,8 @@ The correctness of your implementation can be validated through serialization te
 There are two types of tests that you should write for your model: unit tests and serialization tests.
 
 ### Unit Tests
-Unit tests are very useful for testing the correctness of your model implementation. 
-It is recommended to have at least one test for each of your modules, so that you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end. 
+Unit tests are very useful for testing the correctness of your model implementation.
+It is recommended to have at least one test for each of your modules, so that you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end.
 
 In a unit test, you test your module in the following aspects:
 1. The forward pass is successful.
@@ -135,7 +135,7 @@ for jax_out, torch_out in zip(levanter_output, hf_output):
     assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 ```
 
-For input variables that are common among tests, you can create a helper function to generate them. 
+For input variables that are common among tests, you can create a helper function to generate them.
 For example, below is the helper function for unit tests in Llama:
 
 ```python
@@ -176,7 +176,7 @@ out = attention(x, mask)
 hf_out = hf_attention(x_torch, mask_torch)
 
 assert np.isclose(
-    hf_out[0].detach().cpu().numpy(), np.array(outarray), 
+    hf_out[0].detach().cpu().numpy(), np.array(outarray),
     rtol=1e-4, atol=1e-4
 ).all()
 ```
@@ -195,8 +195,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     hf_model.save_pretrained(ck_path)
 
     model = converter.load_pretrained(
-        LlamaLMHeadModel, 
-        ck_path, 
+        LlamaLMHeadModel,
+        ck_path,
         resize_vocab_to_match_tokenizer=False
     )
 
@@ -212,7 +212,7 @@ After you have implemented your model and validated it through tests, you can st
 ### Write Training Configuration
 To launch a training job, you will need to write a training configuration file in yaml. It includes the dataset, model, and trainer specifications for the training job. You can find many examples in [configs/](https://github.com/stanford-crfm/levanter/tree/main/config).
 
-Under the model section, you will need to specify the model name as `type` and modify the hyperparameters that you would like to change. For parameters that are not specified, the default values will be used. 
+Under the model section, you will need to specify the model name as `type` and modify the hyperparameters that you would like to change. For parameters that are not specified, the default values will be used.
 
 For example, the following configuration uses Llama with default hyperparameters:
 
@@ -257,7 +257,7 @@ Check out [Training-On-Your-Data](./Training-On-Your-Data.md) for more detailed 
 ### Profile Your Model
 If you are interested in profiling the training throughput of your model, good news is that it comes for free with automatic job monitoring in Levanter, powered through Weights & Biases.
 
-Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like `examples_per_second` and `tokens_per_second` across the training time. 
+Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like `examples_per_second` and `tokens_per_second` across the training time.
 
 ## Tips for Optimization
 1. Avoid upcasting to float32. Levanter uses float16 by default, which is more memory efficient and faster for training. You should avoid upcasting to float32 unless it is necessary.
