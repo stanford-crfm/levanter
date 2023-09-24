@@ -27,7 +27,7 @@ from haliax import Axis
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import CausalMask, ExplicitMask
 from levanter.models.lm_model import LmExample
-from levanter.utils.py_utils import logical_cpu_core_count
+from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
@@ -393,10 +393,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def num_cpus(self) -> int:
-        if self.tokenizer.is_fast:
-            return max(1, logical_cpu_core_count() - 2)
-        else:
-            return 1
+        return num_cpus_used_by_tokenizer(self.tokenizer)
 
 
 def concatenate_and_group_texts(
