@@ -1,13 +1,14 @@
 # levanter version of https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py
 
-# We attempt to stick fairly close the original code, but there are some differences:
+# Differences:
 # - We use the huggingface dataset version of alpaca rather than checking it in
 # - Levanter doesn't do epochs, just steps.
-# - We produce Levanter's LmExample class instead of a dict, and loss masks are used instead of the -100 sentinel value.
+# - We use Levanter's distributed preprocessing, which is a bit overkill for this dataset but is a good example.
+#   (The original's preprocessing is very slow, which is usually fine, but not good for preemptible nodes.)
 # - We use the fast tokenizers. I don't know why the original code doesn't use them.
+# - We produce Levanter's LmExample class instead of a dict, and loss masks are used instead of the -100 sentinel value.
 
 # Ways this script could be improved:
-# * If the underlying dataset is bigger, we could use Levanter's distributed preprocessing and data loading.
 # * Could tune hparams more for throughput
 
 #    Copyright 2023 Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li
@@ -24,28 +25,34 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import jax.random as jrandom
 import transformers
-from tqdm import tqdm
+from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
+from levanter.data.shard_cache import BatchProcessor
+from levanter.data.shard_source import HFDatasetDataSource, JsonDataSource
+from levanter.data.text import BatchEncodingDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.utils import fsspec_utils
+from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
+
+# copy paste from alpaca
 
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
@@ -71,138 +78,125 @@ class TrainArgs:
     trainer: TrainerConfig
 
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
+    data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
 
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
     trust_remote_code: bool = False  # Trust remote code when loading from HuggingFace checkpoints.
 
-    cache_dir: Optional[str] = None
+    model_cache_dir: Optional[str] = None  # Path to cache the model. must be local.
 
     hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
     hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
 
-def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> Dict:
-    """Tokenize a list of strings."""
-    tokenized_list = [
-        tokenizer(
-            text,
-            return_tensors="np",
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        )
-        for text in tqdm(strings)
-    ]
-    input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
-    input_ids_lens = labels_lens = [
-        (tokenized.input_ids != tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
-    ]
-    return dict(
-        input_ids=input_ids,
-        labels=labels,
-        input_ids_lens=input_ids_lens,
-        labels_lens=labels_lens,
-    )
-
-
-def preprocess(
-    Pos: hax.Axis,
-    KeyPos: hax.Axis,
-    sources: Sequence[str],
-    targets: Sequence[str],
-    tokenizer: transformers.PreTrainedTokenizer,
-) -> List[LmExample]:
-    """Preprocess the data by tokenizing."""
-    examples = [s + t for s, t in zip(sources, targets)]
-    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
-
-    out_examples = []
-    # DIFFERENCE: haliax-based LmExample
-    for input_ids, source_len in zip(examples_tokenized["input_ids"], sources_tokenized["input_ids_lens"]):
-        input_ids = hax.named(input_ids, Pos)
-
-        targets = hax.roll(input_ids, -1, Pos)
-
-        loss_mask = hax.arange(Pos) < source_len
-        loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
-        # TODO: do we want to use prefixlm?
-        attn_mask = CausalMask(Pos, KeyPos)
-
-        out_examples.append(LmExample(input_ids, targets, attn_mask, loss_mask))
-
-    return out_examples
-
-
-def _load_data(path: str) -> List[Dict[str, str]]:
-    """Load the data from a json file, or, if it's a huggingface dataset, open it that way."""
-    if os.path.exists(path):
-        return json.load(open(path, "r"))
-    else:
-        import datasets
-
-        return list(datasets.load_dataset(path, split="train"))
-
-
+# Encoder/Decoder dataset for Alpaca. This is a bit different from the original code, which uses a dict for
+# training examples. We use a class with Haliax named arrays instead.
+# We basically do string interpolation of the (input, output) pairs with the prompt, and mask out the input and padding
 class SupervisedDataset(Dataset[LmExample]):
-    """Dataset for supervised fine-tuning."""
-
-    def __init__(self, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer):
+    def __init__(
+        self, cache_dir, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer
+    ):
         super(SupervisedDataset, self).__init__()
-        logging.warning("Loading data...")
-        list_data_dict = _load_data(data)
+        self.Pos = Pos
+        self.KeyPos = KeyPos
+        self.pad_token_id = tokenizer.pad_token_id
 
-        logging.warning("Formatting inputs...")
+        # Levanter's preprocessing will automatically cache the preprocessed data. This is a bit overkill for this
+        # dataset, but it's a good example of how to use it. It's also useful if you're using preemptible nodes.
+        logging.warning(f"Checking for cached preprocessed data in {cache_dir}")
+        source = _get_data_source(data)
+        cache = levanter.data.build_cache(
+            cache_dir=cache_dir,
+            input_shards=source,
+            processor=EncoderDecoderProcessor(tokenizer),
+        )
+
+        # This converts the on-disk cache into a dataset that we can iterate over. It's functionally an iterable
+        # over dicts for each example.
+        self.batch_encoding_dataset = BatchEncodingDataset(cache)
+
+    def __iter__(self):
+        for ex in self.batch_encoding_dataset:
+            input_ids = hax.named(ex["input_ids"], self.Pos)
+            targets = hax.roll(input_ids, -1, self.Pos)
+
+            # mask out padding and anything before the start of the target
+            loss_mask = hax.arange(self.Pos) >= ex["input_ids_lens"]
+            loss_mask = loss_mask & (targets != self.pad_token_id)
+            attn_mask = CausalMask(self.Pos, self.KeyPos)
+
+            yield LmExample(input_ids, targets, attn_mask, loss_mask)
+
+
+def _get_data_source(path_or_id):
+    """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
+    dataset that's compatible with the structure of the alpaca dataset."""
+    if fsspec_utils.exists(path_or_id):
+        return JsonDataSource([path_or_id])
+    else:
+        return HFDatasetDataSource(path_or_id, split="train")
+
+
+class EncoderDecoderProcessor(BatchProcessor[dict]):
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, input_key: str = "input", output_key: str = "output"):
+        self.tokenizer = tokenizer
+        self.input_key = input_key
+        self.output_key = output_key
+
+    def __call__(self, batch: Sequence[dict]) -> dict:
         prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
             prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
-            for example in list_data_dict
+            for example in batch
         ]
-        targets = [f"{example['output']}{tokenizer.eos_token}" for example in list_data_dict]
+        targets = [f"{example['output']}{self.tokenizer.eos_token}" for example in batch]
+        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+        examples = [s + t for s, t in zip(sources, targets)]
+        sources_tokenized = self.tokenizer(sources, return_tensors="np", padding="max_length", truncation=True)
+        examples_tokenized = self.tokenizer(examples, return_tensors="np", padding="max_length", truncation=True)
 
-        logging.warning("Tokenizing inputs... This may take some time...")
-        self.examples = preprocess(Pos, KeyPos, sources, targets, tokenizer)
+        # We want to modify our examples with an extra field for the length of the input.
+        # this will turn into a loss mask later.
+        input_ids_lens = (sources_tokenized["input_ids"] != self.tokenizer.pad_token_id).sum(axis=-1)
 
-    def __len__(self):
-        return len(self.examples)
+        return {
+            "input_ids": examples_tokenized["input_ids"],
+            "input_ids_lens": input_ids_lens,
+        }
 
-    def __getitem__(self, i) -> LmExample:
-        return self.examples[i]
-
-    def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
+    @property
+    def num_cpus(self) -> int:
+        # HF tokenizers are (sometimes) multithreaded, so we tell Ray how many cpus the tokenizer will use.
+        return num_cpus_used_by_tokenizer(self.tokenizer)
 
 
 def train(config: TrainArgs):
     config.trainer.initialize(config)
 
-    # DIFFERENCE: We have to import models from HF's checkpoint
+    # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
+    # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
     converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=config.trust_remote_code)
     model_config = converter.default_config
 
+    # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
     training_key = jrandom.PRNGKey(config.trainer.seed)
 
+    # This is largely the same as in Alpaca. Only change is we use the fast tokenizer.
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         config.model_name_or_path,
-        cache_dir=config.cache_dir,
+        cache_dir=config.model_cache_dir,
         model_max_length=model_config.Pos.size,
         padding_side="right",
-        # DIFFERENCE: we use the fast tokenizer
-        # TODO: why was this necessary?
-        # use_fast=False,
     )
 
-    # DIFFERENCE: we are a bit more explicit about the optimizer
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    # DIFFERENCE: The loss function needs to be manually defined
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
-    # DIFFERENCE: we set context managers that tell JAX/Haliax which devices to use and how to shard
     with trainer.device_mesh:
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
@@ -227,10 +221,11 @@ def train(config: TrainArgs):
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
-        # DIFFERENCE: we don't need a collator but we do need to specify the data loader
-        train_dataset = SupervisedDataset(model.Pos, model.KeyPos, config.data, tokenizer)
+        train_dataset = SupervisedDataset(config.data_cache_dir, model.Pos, model.KeyPos, config.data, tokenizer)
+        # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
+        # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
+        # datasets. We use replicated here since the dataset is small.
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
-        # loop the loader as long as we want:
         loader = non_caching_cycle(loader)
 
         trainer.add_default_hooks()
@@ -241,7 +236,7 @@ def train(config: TrainArgs):
             for i in range(state.step):
                 next(loader)  # type: ignore
 
-        # DIFFERENCE: we save HF checkpoints periodically
+        # We also save HF checkpoints periodically (and at the end of training).
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
 

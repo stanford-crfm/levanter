@@ -6,7 +6,6 @@ from typing import Callable, List, Optional, Sequence, TypeVar
 import draccus
 import equinox as eqx
 import jax
-import pyarrow as pa
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
@@ -14,8 +13,9 @@ from equinox import static_field
 from transformers import BatchEncoding
 
 from levanter.checkpoint import _get_fs_and_plain_path
-from levanter.data.shard_cache import BatchProcessor, ShardedDataSource
-from levanter.data.text import _as_record_batch, _stack_batch_encodings
+from levanter.data.shard_cache import BatchProcessor
+from levanter.data.shard_source import ShardedDataSource
+from levanter.data.text import _stack_batch_encodings
 
 
 T = TypeVar("T")
@@ -153,9 +153,9 @@ def skip_if_hf_model_not_accessible(model_id: str):
 
 
 class IdentityProcessor(BatchProcessor[BatchEncoding]):
-    def __call__(self, batch: Sequence[BatchEncoding]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[BatchEncoding]) -> BatchEncoding:
         stacked = reduce(_stack_batch_encodings, batch)
-        return _as_record_batch(stacked)
+        return stacked
 
     @property
     def num_cpus(self) -> int:
