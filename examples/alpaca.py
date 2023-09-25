@@ -76,12 +76,12 @@ class TrainArgs:
     trainer: TrainerConfig
 
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
-    data_cache_dir: str = "cache/"  # Path to cache the data.
+    data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
 
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
     trust_remote_code: bool = False  # Trust remote code when loading from HuggingFace checkpoints.
 
-    cache_dir: Optional[str] = None
+    model_cache_dir: Optional[str] = None  # Path to cache the model. must be local.
 
     hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
     hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
@@ -121,7 +121,9 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
 
 
 class SupervisedDataset(Dataset[LmExample]):
-    def __init__(self, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer):
+    def __init__(
+        self, cache_dir, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer
+    ):
         super(SupervisedDataset, self).__init__()
         self.Pos = Pos
         self.KeyPos = KeyPos
@@ -130,7 +132,7 @@ class SupervisedDataset(Dataset[LmExample]):
         logging.warning("Preprocesing data...")
         source = _get_data_source(data)
         cache = levanter.data.build_cache(
-            cache_dir="cache/",
+            cache_dir=cache_dir,
             input_shards=source,
             processor=EncoderDecoderProcessor(tokenizer),
         )
@@ -168,7 +170,7 @@ def train(config: TrainArgs):
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         config.model_name_or_path,
-        cache_dir=config.cache_dir,
+        cache_dir=config.model_cache_dir,
         model_max_length=model_config.Pos.size,
         padding_side="right",
         # DIFFERENCE: we use the fast tokenizer
@@ -211,7 +213,7 @@ def train(config: TrainArgs):
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
         # DIFFERENCE: we don't need a collator but we do need to specify the data loader
-        train_dataset = SupervisedDataset(model.Pos, model.KeyPos, config.data, tokenizer)
+        train_dataset = SupervisedDataset(config.data_cache_dir, model.Pos, model.KeyPos, config.data, tokenizer)
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         # loop the loader as long as we want:
         loader = non_caching_cycle(loader)
