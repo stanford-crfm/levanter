@@ -131,7 +131,7 @@ def build_cache(
         await_finished: If True, this function will block until the cache is finished. If False, it will return
                     immediately.
         monitors: a list of MetricsMonitors to attach to the cache. These will be called periodically with
-            metrics about the cache build process.
+            metrics about the cache build process. If None, will add a LoggerMetricsMonitor.
 
     Returns:
        (ShardCache) A ShardCache object that can be used to read the cache.
@@ -144,9 +144,11 @@ def build_cache(
         logger.info("Cache already finished. Skipping.")
         return cache
 
-    if monitors is not None:
-        for monitor in monitors:
-            cache.attach_metrics_monitor(monitor)
+    if monitors is None:
+        monitors = [LoggerMetricsMonitor()]
+
+    for monitor in monitors:
+        cache.attach_metrics_monitor(monitor)
 
     while await_finished:
         try:
