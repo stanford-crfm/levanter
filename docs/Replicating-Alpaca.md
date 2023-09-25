@@ -25,19 +25,6 @@ If you haven't gone through that guide before, you should do so now. If you have
 bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
 ```
 
-## Choosing a Llama
-
-### Llama 1
-
-If you want, you can use [HuggyLlama's repo for Llama 1](https://huggingface.co/huggyllama/llama-7b),
-you'll just need to pass in `--model_name_or_path huggyllama/llama-7b` instead of `meta-llama/Llama-2-7b-hf`.
-
-### Getting Llama 2
-
-If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
-
-Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
-
 ## The Alpaca script
 
 We have a [Levanter version](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.py) of the [original Alpaca script](https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py)
@@ -45,21 +32,21 @@ We have a [Levanter version](https://github.com/stanford-crfm/levanter/blob/main
 There's a bit of ceremony in both versions, but the broad strokes of the script are the same. The main differences
 are highlighted in the Levanter version.
 
-We also need a config file, which we paste here:
+We also need a config file. We provide two versions: [an "original" Alpaca config]( [Llama 2 config](https://github.com/stanford-crfm/levanter/tree/main/alpaca.yaml) that uses
+Llama 2, and a version that uses Llama 2.
+
+### Original Alpaca Config
 
 ```yaml
 # cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
-#model_name_or_path: huggyllama/llama-7b/llama-7b-hf
-model_name_or_path: meta-llama/Llama-2-7b-hf
+model_name_or_path: huggyllama/llama-7b
 trainer:
   mp: p=f32,c=bfloat16
   wandb:
     project: "levanter-alpaca"
   num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
   train_batch_size: 128
-  per_device_parallelism: 2  # TPUS have fairly limited memory, so we can't do too much parallelism
-                             # If using Llama 1 you can probably do 4 or more here
-                             # or a TPU v3-64 with LLama 2 can probably do 4
+  per_device_parallelism: 4
   # if using model parallelism, this is useful:
   tensor_parallel_axes: ["mlp", "heads"]
 optimizer:
@@ -67,16 +54,41 @@ optimizer:
   weight_decay: 0.0
 ```
 
+This config uses mixed fp32/bf16 precision and sets the number of training steps to be roughly 3 epochs. It sets up the optimizer
+to use a learning rate of 2e-5 and no weight decay. `trainer.per_device_parallelism` is roughly equivalent to HF's
+`per_device_train_batch_size`. If you want to use model parallelism, you can set `trainer.model_axis_size` to something
+like 2. (This will split the model across two devices. This might be useful if you're using a v3-64 or something and
+want to maintain the same batch size.)
+
+### Llama 2 Config
+
+The [Llama 2 config](https://github.com/stanford-crfm/levanter/tree/main/alpaca-llama2.yaml) is identical,
+except for the HF model name and `per_device_parallelism`. The reason it's different
+is that Llama 2's width is 4096 tokens instead, and it pushes us over the line for the number of examples we can fit
+on a single TPU.
+
+If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
+
+Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
+to the TPU VM as an environment variable. (We'll show you how to do this later.)
+
+
 ### Changing the config
 
 If you make changes to the config, you'll need to get the config file to all the workers. The best way to do this
 is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
 
 ```bash
-gsutil cp levanter/examples/train-alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+gsutil cp levanter/examples/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
 ```
 
-And then using `--config_path gs://<somewhere>/train-alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
+If using Llama 2:
+
+```bash
+gsutil cp levanter/examples/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
 in the command line below.
 
 ## Launching the job
@@ -121,9 +133,6 @@ not a ton to see here (yet), but you can see the training loss go down over time
 Llama 1 should take about ~3.5 hours on a v3-32 (which is more or less in line with A100 times). Unfortunately, LLama 2
 is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
 accumulation to fit on the TPU. It should take about ~9 hours on a v3-32.
-
-(TODO: see if adding flash attention will mitigate this.)
-
 
 ## Code Walkthrough
 
