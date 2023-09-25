@@ -18,6 +18,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -28,6 +29,7 @@ from typing import (
 
 import fsspec.core
 import jax
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
@@ -46,6 +48,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from levanter.data.shard_source import ShardedDataSource
+
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -59,17 +63,31 @@ LEDGER_FILE_NAME = "cache_ledger.json"
 
 
 class BatchProcessor(Generic[T_contra], ABC):
+    """
+    A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
+    processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
+    The number of output examples can be different from the number of input examples.
+    """
+
     @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[T_contra]) -> Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]:
+        """
+        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
+        example), or a dict of sequences (one per output field).
+
+        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
+        """
         raise NotImplementedError
 
     @property
     def resources(self) -> Dict[str, float]:
+        """Any resources that this processor needs to run. Ray uses this to schedule tasks."""
         return {}
 
     @property
     @abstractmethod
     def num_cpus(self) -> int:
+        """The number of CPUs this processor needs to run."""
         raise NotImplementedError
 
     @property
@@ -81,23 +99,7 @@ class BatchProcessor(Generic[T_contra], ABC):
         return 1024
 
 
-class ShardedDataSource(Generic[T_co]):
-    @property
-    def shard_names(self) -> Sequence[str]:
-        raise NotImplementedError
-
-    @property
-    def num_shards(self) -> int:
-        return len(self.shard_names)
-
-    def open_shard(self, shard_name: str) -> Iterator[T_co]:
-        return self.open_shard_at_row(shard_name, 0)
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
-        raise NotImplementedError
-
-
-def cache_dataset(
+def build_cache(
     cache_dir: str,
     input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T],
@@ -106,6 +108,35 @@ def cache_dataset(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
 ) -> "ShardCache":
+    """
+    Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any a path
+    on any file system understood by fsspec.
+
+    This system is designed with tokenization and similar processes in mind, but it can potentially be used for any kind
+    of preprocessing that converts input batches to output batches. The main design goal is to make it easy to
+    parallelize preprocessing across multiple machines while maintaining reproducibility and fault tolerance.
+    Usually the machines in question are the ones doing the training, but they could be separate machines as well.
+
+    See the [Dataloader Design Doc](https://github.com/stanford-crfm/levanter/blob/main/docs/design/Data-Loader-Design.md)
+    for a somewhat out of date overview of the design.
+
+    Args:
+        cache_dir: The directory to write the cache to. This can be any path understood by fsspec.
+        input_shards: A ShardedDataSource that will be used to read the input data. Conceptually, it's just a mapping
+                    from shard names to iterators over the data in that shard.
+        processor: A BatchProcessor that will be used to process batches of data. This is the main place where
+                    you can customize the preprocessing pipeline.
+        batch_size:
+        rows_per_chunk: The number of rows to write to each chunk. May be smaller at the end of a shard.
+        await_finished: If True, this function will block until the cache is finished. If False, it will return
+                    immediately.
+        monitors: a list of MetricsMonitors to attach to the cache. These will be called periodically with
+            metrics about the cache build process. If None, will add a LoggerMetricsMonitor.
+
+    Returns:
+       (ShardCache) A ShardCache object that can be used to read the cache.
+
+    """
     # first see if we need to do anything
     cache = ShardCache.build_or_load(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
 
@@ -113,9 +144,11 @@ def cache_dataset(
         logger.info("Cache already finished. Skipping.")
         return cache
 
-    if monitors is not None:
-        for monitor in monitors:
-            cache.attach_metrics_monitor(monitor)
+    if monitors is None:
+        monitors = [LoggerMetricsMonitor()]
+
+    for monitor in monitors:
+        cache.attach_metrics_monitor(monitor)
 
     while await_finished:
         try:
@@ -299,9 +332,10 @@ def _produce_chunks_for_shard(
         # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
         # other shards since we want to stream them round-robin
         priority = priority_fn(shard_idx, shard_writer.num_chunks)
-        record_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        record_batch = ray.get(record_batch_future)
+        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
+        output_batch = ray.get(output_batch_future)
 
+        record_batch = _as_record_batch(output_batch)
         if writer is None:
             chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
             writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
@@ -332,6 +366,32 @@ def _produce_chunks_for_shard(
         yield_chunk(chunk)
 
 
+def _as_record_batch(doc: Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]) -> pa.RecordBatch:
+    """Converts a document to an arrow-compatible record batch."""
+
+    if isinstance(doc, pa.RecordBatch):
+        return doc
+
+    if isinstance(doc, Mapping):
+        # structure of arrays
+        def _as_array(x):
+            # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
+            if isinstance(x, np.ndarray) and x.ndim > 1:
+                return [_as_array(y) for y in x]
+            elif isinstance(x, np.ndarray):
+                return list(x)
+            else:
+                return pa.array(x)
+
+        names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
+
+        return pa.RecordBatch.from_arrays(list(columns), names)
+    elif isinstance(doc, Sequence):
+        return pa.RecordBatch.from_pylist(doc)
+    else:
+        raise ValueError(f"Cannot convert {type(doc)} to record batch")
+
+
 def _serialize_json_and_commit(path, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
@@ -347,8 +407,8 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     try:
-        logger.info(f"Attempting to load cache ledger from {cache_dir}/{LEDGER_FILE_NAME}")
         ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
+        logger.debug(f"Attempting to load cache ledger from {ledger_path}")
         with fsspec.open(ledger_path) as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
         return cache_ledger
@@ -554,7 +614,6 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     BatchProcessorQueue spins up tasks to process batches of data.
     It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
     It then waits for a task to finish before spinning up another one.
-    # TODO: implement the waiting/spin up logic
     """
 
     pqueue: PriorityQueue[_QueueItem]
@@ -922,6 +981,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
         batch_size: int,
         _ledger: Optional[CacheLedger],
         _broker: Optional[ActorHandle],
+        reader_offset: int = 0,
+        num_readers: int = 1,
     ):
         self.cache_dir = cache_dir
         self._ledger = _ledger
@@ -931,9 +992,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
         self._metrics_monitors = []
         self._monitor_thread = None
 
+        self._num_readers = num_readers
+        self._reader_offset = reader_offset
+
     @staticmethod
     def load(cache_dir: str, batch_size: int) -> "ShardCache":
         """Loads a cache from disk. Raises FileNotFoundError if the cache doesn't exist"""
+        logger.info(f"Loading cache from {cache_dir}")
         ledger = _load_cache_ledger(cache_dir)
         return ShardCache(cache_dir, batch_size, ledger, None)
 
@@ -968,29 +1033,34 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     def read_chunk(self, chunk_idx: int) -> Iterator[pa.RecordBatch]:
         """Reads a chunk from the cache"""
-        chunk = self.get_chunk(chunk_idx)
+        chunk = self.get_chunk(self._map_index(chunk_idx))
         yield from self._read_chunk(chunk)
 
-    def get_chunk(self, chunk_idx: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
+    def _map_index(self, index):
+        return index * self._num_readers + self._reader_offset
+
+    def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
+        mapped_index = self._map_index(index)
         if self._ledger is not None:
-            return self._ledger.chunks[chunk_idx]
+            return self._ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
-            chunk = ray.get(self._broker.get_chunk.remote(chunk_idx), timeout=timeout)
+            chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=timeout)
             if chunk is None:
-                raise IndexError(f"Chunk index {chunk_idx} out of bounds")
+                raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
             return chunk
 
     async def get_chunk_async(self, index: int) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
+        mapped_index = self._map_index(index)
         if self._ledger is not None:
-            return self._ledger.chunks[index]
+            return self._ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
-            chunk = await self._broker.get_chunk.remote(index)
+            chunk = await self._broker.get_chunk.remote(mapped_index)
             if chunk is None:
-                raise IndexError(f"Chunk index {index} out of bounds")
+                raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
             return chunk
 
     def final_chunk_count(self) -> Optional[int]:
@@ -1001,7 +1071,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
             assert self._broker is not None
             return ray.get(self._broker.final_chunk_count.remote())
 
-    def iter_batches_from_chunks(self, shard_offset: int, num_shards: int, loop: bool = False):
+    def iter_batches_from_chunks(self, loop: bool = False):
+        shard_offset = self._reader_offset
+
         if self._ledger is not None:
             num_chunks = len(self._ledger.chunks)
 
@@ -1009,14 +1081,15 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 return
 
             while True:
-                for i in range(shard_offset, num_chunks, num_shards):
+                i = 0
+                for i in range(shard_offset, num_chunks, self._num_readers):
                     chunk = self._ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
                 if not loop:
                     break
 
-                shard_offset = i % num_shards
+                shard_offset = i % len(self._ledger.chunks)
         else:
             assert self._broker is not None
             i = shard_offset
@@ -1024,7 +1097,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 try:
                     logger.debug(f"Reading chunk {i}")
                     chunk = self.get_chunk(i)
-                    i += num_shards
+                    i += self._num_readers
                     yield from self._read_chunk(chunk)
                 except IndexError:
                     if loop:
@@ -1039,7 +1112,34 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     raise e
 
     def __iter__(self):
-        return self.iter_batches_from_chunks(0, 1)
+        return self.iter_batches_from_chunks()
+
+    def shard(self, offset, num_readers):
+        """
+        Returns a shard of this shard cache. This method shards w.r.t the current shard cache, not the base shard cache.
+
+        Args:
+            offset:
+            num_readers:
+
+        Returns:
+            (ShardCache): A shard of this shard cache.
+        """
+        if offset >= num_readers:
+            raise ValueError(f"Shard index {offset} is out of range")
+
+        if num_readers == 1:
+            return self
+
+        new_offset = self._reader_offset * num_readers + offset
+        new_num_readers = self._num_readers * num_readers
+        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
+
+    def unshard(self):
+        """
+        Gets the "base" shard cache that this shard cache is a shard of.
+        """
+        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, 0, 1)
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
