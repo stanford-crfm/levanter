@@ -402,17 +402,13 @@ class Trainer:
             trainable, non-trainable
         """
         # TODO: checking for named_array isn't ideal. need to fix in Haliax.
-        def is_inexact_arrayish_named(x):
-            if is_named_array(x):
-                return is_inexact_arrayish(x.array)
-            else:
-                return is_inexact_arrayish(x)
-
         def trainable_and_diffable(pred):
-            if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish_named(x)
+            if is_named_array(pred):
+                return trainable_and_diffable(pred.array)
+            elif callable(pred):
+                return lambda x: pred(x) and is_inexact_arrayish(x)
             elif pred is True:
-                return is_inexact_arrayish_named
+                return is_inexact_arrayish
             else:
                 return pred
 
