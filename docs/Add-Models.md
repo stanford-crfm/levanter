@@ -20,7 +20,7 @@ hidden_dim: int = 4096
 intermediate_dim: int = 11008
 ```
 
-**Model axies** are used for parallelization. An Axis is registered with its name and size. The size of an Axis is normally associated with a hyperparameter. For example:
+**Model axes** are used for parallelization. An Axis is registered with its name and size. The size of an Axis is normally associated with a hyperparameter. For example:
 
 ```python
 Pos = property(lambda self: Axis(name="position", size=self.seq_len))
