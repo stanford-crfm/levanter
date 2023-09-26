@@ -351,7 +351,7 @@ def save_peft_checkpoint_callback(
     base_path,
     config: LoraConfig,
     base_model_name_or_path,
-    upload_to_hf: Union[bool, str, RepoRef] = False,
+    upload_to_hf: Optional[Union[bool, str, RepoRef]] = False,
     **hf_upload_kwargs,
 ):
     """

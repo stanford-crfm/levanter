@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import jax
 import jax.random as jrandom
 import wandb
 
