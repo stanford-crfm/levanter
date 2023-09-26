@@ -23,7 +23,6 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.util import is_named_array
 
 import levanter.logging
 from levanter.checkpoint import CheckpointerConfig
@@ -225,9 +224,12 @@ class Trainer:
 
         if ckpt is not None:
             trainable_model, (opt_state, training_key), completed_step = ckpt
-            # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-            non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-            model = eqx.combine(trainable_model, non_trainable)
+            if model is not None:
+                model = eqx.combine(trainable_model, model)
+            else:
+                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+                model = eqx.combine(trainable_model, non_trainable)
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -396,23 +398,22 @@ class Trainer:
     def partition_trainable_params(self, model):
         """
         Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation, but you can also use it to filter out params for logging or something.
+        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
+        or something.
 
         Returns:
             trainable, non-trainable
         """
-        # TODO: checking for named_array isn't ideal. need to fix in Haliax.
+
         def trainable_and_diffable(pred):
-            if is_named_array(pred):
-                return trainable_and_diffable(pred.array)
-            elif callable(pred):
+            if callable(pred):
                 return lambda x: pred(x) and is_inexact_arrayish(x)
             elif pred is True:
                 return is_inexact_arrayish
             else:
                 return pred
 
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param, is_leaf=is_named_array)
+        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
         return eqx.partition(model, combined_mask)
 
 
