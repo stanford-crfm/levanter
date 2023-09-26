@@ -85,8 +85,9 @@ nav:
   - 'User Guide':
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
-      - "Replicating-Alpaca.md"
       - 'Configuration-Guide.md'
+      - "Replicating-Alpaca.md"
+      - "Alpaca-LoRA.md"
   - Other:
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"

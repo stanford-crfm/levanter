@@ -218,6 +218,27 @@ def combine_lora_params(params: M, lora_params: M) -> M:
 def is_lora_param(node):
     return isinstance(node, LowRankLinear)
 
+def lora_trainable_params_filter(model: M) -> M:
+    """
+    Creates a filter tree suitable for passing to Trainer.is_trainable marking which parameters are trainable and which
+    are not.
+
+    Returns:
+       (PyTree) A filter tree marking which parameters are trainable and which are not. This filter is the same as the model,
+       except every LoRA param is replaced with True and every other leaf (really, every array) is replaced with False.
+    """
+
+    # We only want to train on the lora params. The way to do this in Equinox is generally with
+    # a filter tree (cf https://docs.kidger.site/equinox/examples/frozen_layer/),
+    # which is a tree with the same structure (or a "tree prefix" thereof) as the model, but with
+    # bools or Callable[..., bool] at the leaves. We can then pass this tree to the trainer and it
+    # will only train the parameters that are True in the tree.
+    # Levanter defines `is_lora_param` for this purpose, but we need to be careful about how we use it.
+    # Equinox's primitives don't really have a "match all tree nodes matching a predicate" function (just
+    # a "match all tree leaves matching a predicate" function), so we need to be just a bit careful.
+    # Basically, we want to halt recursion in the tree whenever we hit a node that is a lora param.
+    return jax.tree_util.tree_map(is_lora_param, model, is_leaf=is_lora_param)
+
 
 def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str, batch_dims: Tuple[Axis, ...]) -> M:
     """
