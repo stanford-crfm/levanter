@@ -1,8 +1,8 @@
-In the [Replicating Alpaca](./Replicating-Alpaca.md) tutorial, we reproduced Alpaca using Levanter and Llama 1 or Llama 2. 
+In the [Replicating Alpaca](./Replicating-Alpaca.md) tutorial, we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
 
 In this guide, we'll use [LoRA](https://arxiv.org/abs/2106.09685) to do a lighter-weight
-version of Alpaca, similar to [tloen/alpaca-lora](https://github.com/tloen/alpaca-lora). We'll borrow heavily from 
-the our "vanilla" Alpaca script, and only change the parts that are necessary to use LoRA.
+version of Alpaca, similar to [tloen/alpaca-lora](https://github.com/tloen/alpaca-lora). We'll borrow heavily from
+our "vanilla" Alpaca script, and only change the parts that are necessary to use LoRA.
 
 The LoRA model we create will be compatible with [Hugging Face's PEFT](https://github.com/huggingface/peft) library,
 so that you can use it with their inference scripts or anywhere else you might want to use a PEFT model.
@@ -32,40 +32,48 @@ class LoraConfig:
 By default, we loraize all linear modules in the model, which we recommend. This was found to be better than the other
 options: https://twitter.com/Tim_Dettmers/status/1689375417189412864, https://arxiv.org/pdf/2305.14314.pdf Section 4.
 
-In our modifications below, we apply `loraize` inside of a `haliax.named_jit` function. This ensures that the 
+In our modifications below, we apply `loraize` inside of a `haliax.named_jit` function. This ensures that the
 parameters are sharded correctly.
 
 ```python
 @dataclass
 class TrainArgs(alpaca.TrainArgs):
     lora: LoraConfig = LoraConfig()
-    
+
+    # should we save merged (i.e. not peft) checkpoints?
+    merged_hf_save_path: Optional[str] = None  # path to save merged hf checkpoints
+    merged_hf_upload: Optional[str] = None
 ...
 
 def train(config: TrainArgs):
     ...
     with config.trainer.device_mesh:
-        # Major difference from Alpaca: we loraize the model.
+        ...
 
+        # Major difference from Alpaca: we loraize the model.
         @hax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
             return loraize(model, config.lora, key=lora_key)
 
         model = loraize_hf_model(model)
-        
-        # we only want to train on the lora params. The way to do this in Equinox is generally with
-        # a filter tree (cf https://docs.kidger.site/equinox/examples/frozen_layer/),
-        # which is a tree with the same structure (or a "tree prefix" thereof) as the model, but with
-        # bools or Callable[..., bool] at the leaves. We can then pass this tree to the trainer and it
-        # will only train the parameters that are True in the tree.
-        # Levanter defines `is_lora_param` for this purpose, but we need to be careful about how we use it.
-        # Equinox's primitives don't really have a "match all tree nodes matching a predicate" function (just
-        # a "match all tree leaves matching a predicate" function), so we need to be just a bit careful.
-        # Basically, we want to halt recursion in the tree whenever we hit a node that is a lora param.
 
-        # Functionally, this filter is the same as the model, except every lora param is replaced with True
-        # and every other leaf (really, every array) is replaced with False
-        lora_param_filter = jax.tree_util.tree_map(is_lora_param, model, is_leaf=is_lora_param)
+
+```
+
+### 2. Tell the trainer to only train the lora params
+
+`Trainer` takes an optional `is_trainable` argument, which is a [Equinox filter_spec](https://docs.kidger.site/equinox/examples/frozen_layer/).
+You don't need to worry about the internals, but the gist is that it's a "tree of functions" that has the same
+shape as the model's tree, except that instead of arrays there are boolean values for whether or not to train that part
+of the model.
+
+```python
+def train(config: TrainArgs):
+    ...
+    with config.trainer.device_mesh:
+        ...
+
+        lora_param_filter = lora_trainable_params_filter(model)
 
         def compute_loss(model: LmHeadModel, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
@@ -73,3 +81,55 @@ def train(config: TrainArgs):
         trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
 ```
 
+### 3. Serialize a PEFT-compatible checkpoint
+
+Levanter's LoRA module has a function for saving a PEFT-compatible checkpoint, `levanter.lora.save_peft_pretrained`,
+which is analogous to PEFT's `model.save_pretrained`.
+
+```python
+        # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
+        if config.hf_save_path is not None:
+            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
+            trainer.add_hook(
+                save_peft_checkpoint_callback(
+                    full_save_path, config.lora, config.model_name_or_path, config.hf_upload
+                ),
+                every=config.hf_save_steps,
+            )
+```
+
+For good measure, we'll also save the merged HF checkpoint, which is the full model with the LoRA parameters
+merged back in. This is useful if you want to use the model with Hugging Face's inference scripts without PEFT,
+or want to use [llama.cpp](https://github.com/ggerganov/llama.cpp) or something.
+
+```python
+
+        # Save merged HF checkpoints if requested
+        if config.merged_hf_save_path is not None:
+            full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
+            trainer.add_hook(
+                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
+                every=config.hf_save_steps,
+            )
+```
+
+
+#### Using the checkpoints in Hugging Face's PEFT library
+
+You can use the checkpoints in Hugging Face's PEFT library by doing something like this:
+
+```python
+peft_config = PeftConfig.from_pretrained(path)
+base_model = AutoModelForCausalLM.from_pretrained(peft_config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(base_model, path).cpu()
+```
+
+#### Using the merged checkpoints
+
+You can use the merged checkpoints with Hugging Face's inference scripts by doing something like this:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained(path)
+```

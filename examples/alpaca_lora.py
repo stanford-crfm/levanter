@@ -2,40 +2,36 @@
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import Optional
 
-import jax
 import jax.random as jrandom
 import transformers
 import wandb
-from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 
 import levanter
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
-from levanter.data import Dataset
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import HFDatasetDataSource, JsonDataSource
-from levanter.data.text import BatchEncodingDataset
-from levanter.lora import LoraConfig, is_lora_param, loraize
-from levanter.models.attention import CausalMask
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.lora import (
+    LoraConfig,
+    lora_trainable_params_filter,
+    loraize,
+    save_merged_hf_checkpoint_callback,
+    save_peft_checkpoint_callback,
+)
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils import fsspec_utils
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.trainer import Trainer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
+
 # This is a bit of a hack to make sure we can load the module no matter where we run it from.
 # You can also just set the PYTHONPATH environment variable.
-import sys
-
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 
 import alpaca  # noqa: E402
-
 from alpaca import SupervisedDataset  # noqa: E402
 
 
@@ -45,6 +41,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainArgs(alpaca.TrainArgs):
     lora: LoraConfig = LoraConfig()
+
+    # should we save merged (i.e. not peft) checkpoints?
+    merged_hf_save_path: Optional[str] = None  # path to save merged hf checkpoints
+    merged_hf_upload: Optional[str] = None
 
 
 def train(config: TrainArgs):
@@ -89,6 +89,8 @@ def train(config: TrainArgs):
 
         model = loraize_hf_model(model)
 
+        lora_param_filter = lora_trainable_params_filter(model)
+
         def compute_loss(model: LmHeadModel, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
 
@@ -121,12 +123,21 @@ def train(config: TrainArgs):
             for i in range(state.step):
                 next(loader)  # type: ignore
 
-        # We also save HF checkpoints periodically (and at the end of training).
+        # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
-
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload),
+                save_peft_checkpoint_callback(
+                    full_save_path, config.lora, config.model_name_or_path, config.hf_upload
+                ),
+                every=config.hf_save_steps,
+            )
+
+        # Save merged HF checkpoints if requested
+        if config.merged_hf_save_path is not None:
+            full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
+            trainer.add_hook(
+                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
                 every=config.hf_save_steps,
             )
 

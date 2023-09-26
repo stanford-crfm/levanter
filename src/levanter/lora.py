@@ -315,7 +315,7 @@ def save_peft_pretrained(
     base_model_name_or_path,
     path: str,
     prefix: Optional[str] = DEFAULT_DICT_PREFIX,
-    upload_to: Optional[Union[str, RepoRef]] = None,
+    upload_to: Optional[Union[bool, str, RepoRef]] = None,
     **upload_kwargs,
 ):
     """
@@ -339,7 +339,10 @@ def save_peft_pretrained(
         with open(f"{local_path}/{CONFIG_NAME}", "w") as f:
             json.dump(hf_config, f)
 
-        if upload_to is not None:
+        if upload_to is True:
+            upload_to = RepoRef.from_string(base_model_name_or_path)
+
+        if upload_to:
             upload_to = RepoRef.from_string(upload_to) if isinstance(upload_to, str) else upload_to
             upload_to_hub(local_path, repo_ref=upload_to, **upload_kwargs)
 
@@ -348,7 +351,7 @@ def save_peft_checkpoint_callback(
     base_path,
     config: LoraConfig,
     base_model_name_or_path,
-    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    upload_to_hf: Union[bool, str, RepoRef] = False,
     **hf_upload_kwargs,
 ):
     """
