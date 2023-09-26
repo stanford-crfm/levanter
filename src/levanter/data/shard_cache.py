@@ -126,7 +126,7 @@ def build_cache(
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
-        batch_size: The number of input examples to process at once. 
+        batch_size: The number of input examples to process at once.
         rows_per_chunk: The number of rows to write to each chunk. May be smaller at the end of a shard.
         await_finished: If True, this function will block until the cache is finished. If False, it will return
                     immediately.
