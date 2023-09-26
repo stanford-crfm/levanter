@@ -391,7 +391,7 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
 
                 try:
                     axis_to_shard = index_where(
-                        lambda axis: arr.shape[axis] % process_mesh.devices.size == 0, arr.shape
+                        lambda axis_size: axis_size % process_mesh.devices.size == 0, arr.shape
                     )
                 except ValueError:
                     return np.array(arr)
