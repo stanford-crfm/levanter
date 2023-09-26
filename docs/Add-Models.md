@@ -63,7 +63,7 @@ def model_type(cls) -> Type["LlamaLMHeadModel"]:
 
 ### Write Model
 After you have defined your config class, you can start writing your model.
-You can follow the breakdown of the model in your Hugging Face implmentation. This would make it easier to validate the implementation through unit tests.
+You can follow the breakdown of the model in your Hugging Face implementation. This would make it easier to validate the implementation through unit tests.
 
 For example, in GPT2, we have the following breakdown:
 - `Gpt2Mlp`
@@ -134,6 +134,8 @@ for jax_out, torch_out in zip(levanter_output, hf_output):
     torch_out = torch_out.numpy()
     assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 ```
+
+Be sure to use `np.isclose` with reasonably loose tolerances to account for numerical differences.
 
 For input variables that are common among tests, you can create a helper function to generate them.
 For example, below is the helper function for unit tests in Llama:
@@ -260,7 +262,7 @@ If you are interested in profiling the training throughput of your model, good n
 Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like `examples_per_second` and `tokens_per_second` across the training time.
 
 ## Tips for Optimization
-1. Avoid upcasting to float32. Levanter uses float16 by default, which is more memory efficient and faster for training. You should avoid upcasting to float32 unless it is necessary.
+1. Avoid upcasting to float32. Levanter uses bfloat16 by default, which is more memory efficient and faster for training. You should avoid upcasting to float32 unless it is necessary for stability or accuracy.
 2. For attention, rearrange the heads and position axes to make the computation more efficient. For example, in Llama, we did the following:
 
 ```python
