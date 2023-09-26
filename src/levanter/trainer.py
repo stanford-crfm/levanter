@@ -23,6 +23,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.util import is_named_array
 
 import levanter.logging
 from levanter.checkpoint import CheckpointerConfig
@@ -400,16 +401,22 @@ class Trainer:
         Returns:
             trainable, non-trainable
         """
+        # TODO: checking for named_array isn't ideal. need to fix in Haliax.
+        def is_inexact_arrayish_named(x):
+            if is_named_array(x):
+                return is_inexact_arrayish(x.array)
+            else:
+                return is_inexact_arrayish(x)
 
         def trainable_and_diffable(pred):
             if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish(x)
+                return lambda x: pred(x) and is_inexact_arrayish_named(x)
             elif pred is True:
-                return is_inexact_arrayish
+                return is_inexact_arrayish_named
             else:
                 return pred
 
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
+        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param, is_leaf=is_named_array)
         return eqx.partition(model, combined_mask)
 
 
