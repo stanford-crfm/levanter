@@ -32,8 +32,8 @@ We have a [Levanter version](https://github.com/stanford-crfm/levanter/blob/main
 There's a bit of ceremony in both versions, but the broad strokes of the script are the same. The main differences
 are highlighted in the Levanter version.
 
-We also need a config file. We provide two versions: [an "original" Alpaca config]( [Llama 2 config](https://github.com/stanford-crfm/levanter/tree/main/alpaca.yaml) that uses
-Llama 2, and a version that uses Llama 2.
+We also need a config file. We provide two versions: [an "original" Alpaca config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.yaml) that uses LLaMA and [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-llama2.yaml) that uses
+Llama 2.
 
 ### Original Alpaca Config
 
@@ -57,12 +57,12 @@ optimizer:
 This config uses mixed fp32/bf16 precision and sets the number of training steps to be roughly 3 epochs. It sets up the optimizer
 to use a learning rate of 2e-5 and no weight decay. `trainer.per_device_parallelism` is roughly equivalent to HF's
 `per_device_train_batch_size`. If you want to use model parallelism, you can set `trainer.model_axis_size` to something
-like 2. (This will split the model across two devices. This might be useful if you're using a v3-64 or something and
+like 2. (This will split the model across two devices. This might be useful if you're using a v3-64 or something similar and
 want to maintain the same batch size.)
 
 ### Llama 2 Config
 
-The [Llama 2 config](https://github.com/stanford-crfm/levanter/tree/main/alpaca-llama2.yaml) is identical,
+The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-llama2.yaml) is identical,
 except for the HF model name and `per_device_parallelism`. The reason it's different
 is that Llama 2's width is 4096 tokens instead, and it pushes us over the line for the number of examples we can fit
 on a single TPU.
