@@ -118,7 +118,7 @@ In a unit test, you test your module in the following aspects:
 3. The output value is correct.
 
 The point 3 is the most important one, but it is also the most difficult one to implement. If you have a reference implementation in another framework, like HuggingFace, you can use it to test your implementation on the output consistency.
-Here is a piece of example code to test a same module of Levanter against HuggingFace:
+Here is a piece of example code to test a same module of Levanter against Hugging Face Transformers:
 
 ```python
 x = random.normal(key, (1, seq_len))
