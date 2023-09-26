@@ -218,6 +218,7 @@ def combine_lora_params(params: M, lora_params: M) -> M:
 def is_lora_param(node):
     return isinstance(node, LowRankLinear)
 
+
 def lora_trainable_params_filter(model: M) -> M:
     """
     Creates a filter tree suitable for passing to Trainer.is_trainable marking which parameters are trainable and which
@@ -412,9 +413,7 @@ def save_merged_hf_checkpoint_callback(
         callback
     """
 
-    def save_merged_hf_model(step: StepInfo):
-        nonlocal hf_upload_kwargs, upload_to_hf
-
+    def save_merged_hf_model_cb(step: StepInfo):
         if step.step == 0:
             return
         if upload_to_hf is not None and "commit_message" not in hf_upload_kwargs:
@@ -424,20 +423,37 @@ def save_merged_hf_checkpoint_callback(
             my_upload_kwargs = hf_upload_kwargs
 
         logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
+        path = os.path.join(base_path, f"step-{step.step}")
 
-        merged_model = merge_lora_modules(step.model)
-        if upload_to_hf is None:
-            upload_to_hf = False  # type: ignore
-        converter.save_pretrained(
-            merged_model,
-            os.path.join(base_path, f"step-{step.step}"),
-            upload_to_hf=upload_to_hf,  # type: ignore
-            **my_upload_kwargs,
-        )
+        model = step.model
+
+        save_merged_hf_model(model, converter, path, upload_to_hf=upload_to_hf, **my_upload_kwargs)
 
         logger.info("Saved merged checkpoint.")
 
-    return save_merged_hf_model
+    return save_merged_hf_model_cb
+
+
+def save_merged_hf_model(
+    lora_model: M,
+    converter: HFCheckpointConverter,
+    path: str,
+    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    **upload_kwargs,
+):
+    """
+    Saves a merged HF checkpoint for the given model. This method essentially combines the base model with the LoRA
+    model using [levanter.lora.merge_lora_modules][], and then saves the combined model as a HuggingFace checkpoint
+    """
+    merged_model = merge_lora_modules(lora_model)
+    if upload_to_hf is None:
+        upload_to_hf = False  # type: ignore
+    converter.save_pretrained(
+        merged_model,
+        path,
+        upload_to_hf=upload_to_hf,  # type: ignore
+        **upload_kwargs,
+    )
 
 
 def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:
