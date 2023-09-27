@@ -103,7 +103,7 @@ sudo -u $USERNAME git clone $REPO $HDIR/levanter
 
 echo "Checking out branch $BRANCH"
 
-git -C $HDIR/levanter checkout $BRANCH
+sudo -u $USERNAME git -C $HDIR/levanter checkout $BRANCH
 
 # install levanter
 
