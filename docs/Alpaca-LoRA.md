@@ -121,7 +121,7 @@ You can use the checkpoints in Hugging Face's PEFT library by doing something li
 ```python
 peft_config = PeftConfig.from_pretrained(path)
 base_model = AutoModelForCausalLM.from_pretrained(peft_config.base_model_name_or_path)
-lora_model = PeftModel.from_pretrained(base_model, path).cpu()
+lora_model = PeftModel.from_pretrained(base_model, path)
 ```
 
 #### Using the merged checkpoints
