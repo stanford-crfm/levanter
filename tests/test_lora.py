@@ -9,7 +9,15 @@ import haliax as hax
 import haliax.nn as hnn
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.lora import LoraConfig, LoraLinear, lora_state_dict, loraize, merge_lora_modules, save_peft_pretrained
+from levanter.lora import (
+    LoraConfig,
+    LoraLinear,
+    lora_state_dict,
+    loraize,
+    merge_lora_modules,
+    save_merged_hf_model,
+    save_peft_pretrained,
+)
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
@@ -185,3 +193,50 @@ def test_lora_load_in_peft():
         hf_lora_out = hf_lora_out.logits.detach().numpy()
 
         assert np.allclose(lev_lora_out, hf_lora_out, atol=1e-4)
+        assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)
+
+
+@skip_if_no_torch
+def test_lora_merged_load_in_hf():
+    import torch
+
+    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
+    Vocab = converter.Vocab
+
+    model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
+    model = inference_mode(model, True)
+
+    input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
+
+    causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
+
+    with (tempfile.TemporaryDirectory() as tmpdir):
+        converter.save_pretrained(model, f"{tmpdir}/model")
+
+        lora_config = LoraConfig(r=8, target_modules=["c_attn"])
+        loraized = loraize(model, lora_config, key=jax.random.PRNGKey(0))
+        save_merged_hf_model(loraized, converter, f"{tmpdir}/loraized")
+
+        hf_model = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/model").cpu()
+        hf_model.eval()
+        hf_out = hf_model(torch_input)
+        hf_out = hf_out.logits.detach().numpy()
+
+        lev_out = model(input, attn_mask=causal_mask)
+        lev_out = np.array(lev_out.array)
+        assert np.allclose(lev_out, hf_out, atol=1e-4)
+
+        # load merged model with hf
+        hf_lora_model = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/loraized").cpu()
+
+        lev_lora_out = loraized(input, attn_mask=causal_mask)
+        lev_lora_out = np.array(lev_lora_out.array)
+
+        hf_lora_model.eval()
+        hf_lora_out = hf_lora_model(torch_input)
+        hf_lora_out = hf_lora_out.logits.detach().numpy()
+
+        assert np.allclose(lev_lora_out, hf_lora_out, atol=1e-4)
+        assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)

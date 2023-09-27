@@ -219,6 +219,28 @@ def is_lora_param(node):
     return isinstance(node, LowRankLinear)
 
 
+def lora_trainable_params_filter(model: M) -> M:
+    """
+    Creates a filter tree suitable for passing to Trainer.is_trainable marking which parameters are trainable and which
+    are not.
+
+    Returns:
+       (PyTree) A filter tree marking which parameters are trainable and which are not. This filter is the same as the model,
+       except every LoRA param is replaced with True and every other leaf (really, every array) is replaced with False.
+    """
+
+    # We only want to train on the lora params. The way to do this in Equinox is generally with
+    # a filter tree (cf https://docs.kidger.site/equinox/examples/frozen_layer/),
+    # which is a tree with the same structure (or a "tree prefix" thereof) as the model, but with
+    # bools or Callable[..., bool] at the leaves. We can then pass this tree to the trainer and it
+    # will only train the parameters that are True in the tree.
+    # Levanter defines `is_lora_param` for this purpose, but we need to be careful about how we use it.
+    # Equinox's primitives don't really have a "match all tree nodes matching a predicate" function (just
+    # a "match all tree leaves matching a predicate" function), so we need to be just a bit careful.
+    # Basically, we want to halt recursion in the tree whenever we hit a node that is a lora param.
+    return jax.tree_util.tree_map(is_lora_param, model, is_leaf=is_lora_param)
+
+
 def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str, batch_dims: Tuple[Axis, ...]) -> M:
     """
     This implementation is mostly straightforward, with one major wrinkle: scan layers like Stacked, which
@@ -293,7 +315,7 @@ def save_peft_pretrained(
     base_model_name_or_path,
     path: str,
     prefix: Optional[str] = DEFAULT_DICT_PREFIX,
-    upload_to: Optional[Union[str, RepoRef]] = None,
+    upload_to: Optional[Union[bool, str, RepoRef]] = None,
     **upload_kwargs,
 ):
     """
@@ -317,7 +339,10 @@ def save_peft_pretrained(
         with open(f"{local_path}/{CONFIG_NAME}", "w") as f:
             json.dump(hf_config, f)
 
-        if upload_to is not None:
+        if upload_to is True:
+            upload_to = RepoRef.from_string(base_model_name_or_path)
+
+        if upload_to:
             upload_to = RepoRef.from_string(upload_to) if isinstance(upload_to, str) else upload_to
             upload_to_hub(local_path, repo_ref=upload_to, **upload_kwargs)
 
@@ -326,7 +351,7 @@ def save_peft_checkpoint_callback(
     base_path,
     config: LoraConfig,
     base_model_name_or_path,
-    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    upload_to_hf: Optional[Union[bool, str, RepoRef]] = False,
     **hf_upload_kwargs,
 ):
     """
@@ -369,7 +394,6 @@ def save_peft_checkpoint_callback(
 def save_merged_hf_checkpoint_callback(
     base_path,
     converter: HFCheckpointConverter,
-    base_model,
     upload_to_hf: Optional[Union[str, RepoRef]] = None,
     **hf_upload_kwargs,
 ):
@@ -392,9 +416,7 @@ def save_merged_hf_checkpoint_callback(
         callback
     """
 
-    def save_merged_hf_model(step: StepInfo):
-        nonlocal hf_upload_kwargs, upload_to_hf
-
+    def save_merged_hf_model_cb(step: StepInfo):
         if step.step == 0:
             return
         if upload_to_hf is not None and "commit_message" not in hf_upload_kwargs:
@@ -404,21 +426,37 @@ def save_merged_hf_checkpoint_callback(
             my_upload_kwargs = hf_upload_kwargs
 
         logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
+        path = os.path.join(base_path, f"step-{step.step}")
 
-        combined_model = combine_lora_params(base_model, lora_params=step.model)
-        merged_model = merge_lora_modules(combined_model)
-        if upload_to_hf is None:
-            upload_to_hf = False  # type: ignore
-        converter.save_pretrained(
-            merged_model,
-            os.path.join(base_path, f"step-{step.step}"),
-            upload_to_hf=upload_to_hf,  # type: ignore
-            **my_upload_kwargs,
-        )
+        model = step.model
+
+        save_merged_hf_model(model, converter, path, upload_to_hf=upload_to_hf, **my_upload_kwargs)
 
         logger.info("Saved merged checkpoint.")
 
-    return save_merged_hf_model
+    return save_merged_hf_model_cb
+
+
+def save_merged_hf_model(
+    lora_model: M,
+    converter: HFCheckpointConverter,
+    path: str,
+    upload_to_hf: Optional[Union[str, RepoRef]] = None,
+    **upload_kwargs,
+):
+    """
+    Saves a merged HF checkpoint for the given model. This method essentially combines the base model with the LoRA
+    model using [levanter.lora.merge_lora_modules][], and then saves the combined model as a HuggingFace checkpoint
+    """
+    merged_model = merge_lora_modules(lora_model)
+    if upload_to_hf is None:
+        upload_to_hf = False  # type: ignore
+    converter.save_pretrained(
+        merged_model,
+        path,
+        upload_to_hf=upload_to_hf,  # type: ignore
+        **upload_kwargs,
+    )
 
 
 def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = None, **kwargs) -> dict:

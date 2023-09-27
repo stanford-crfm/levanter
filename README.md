@@ -1,5 +1,17 @@
 # Levanter
 
+<a href="https://github.com/stanford-crfm/levanter/actions?query=branch%3Amain++">
+    <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/stanford-crfm/levanter/run_tests.yaml?branch=main">
+</a>
+<a href="https://levanter.readthedocs.io/en/latest/?badge=latest">
+    <img alt="Documentation Status" src="https://readthedocs.org/projects/levanter/badge/?version=latest">
+</a>
+<img alt="License" src="https://img.shields.io/github/license/stanford-crfm/levanter?color=blue" />
+<a href="https://https://pypi.org/project/levanter/">
+    <img alt="PyPI" src="https://img.shields.io/pypi/v/levanter?color=blue" />
+</a>
+
+
 <!--levanter-intro-start-->
 > *You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew.* <br/>
 > — Cora L. V. Hatch
@@ -13,21 +25,17 @@ Levanter is a framework for training large language models (LLMs) and other foun
 We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox),
 and [Haliax](https://github.com/stanford-crfm/haliax).
 
-[//]: # (Levanter supports distributed training on TPUs &#40;and, soon, GPUs&#41;, including FSDP, tensor parallelism, distributed checkpointing, distributed data loading, and more.)
-[//]: # (Levanter integrates with WandB for logging and with the Hugging Face ecosystem for tokenizers, datasets, and model import and export.)
-
 ## Features
 
 * **Distributed Training**: We support distributed training on TPUs (and soon, GPUs), including FSDP and tensor parallelism.
+* **Compatibility**: Levanter supports importing and exporting models to/from the Hugging Face ecosystem, including tokenizers, datasets, and models via [SafeTensors](https://github.com/huggingface/safetensors).
+* **Performance**: Levanter's performance rivals commercially-backed frameworks like MosaicML's Composer or Google's MaxText.
+* **Reproducibility**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 * **Cached On-Demand Data Preprocessing**: We preprocess corpora online, but we cache the results of preprocessing so
 that resumes are much faster and so that subsequent runs are even faster. As soon as the first part of the cache is complete, Levanter will start training.
-* **Online Visualization**: Levanter also provides a feature for visualizing the probability of each token in the validation set during training. This is useful for debugging and for understanding how the model is learning.
-* **Export**: We support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
-* **Optimization**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
-  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
-* **Stability**: The GPT-2 implementation uses the [Mistral stability trick](https://crfm.stanford.edu/2021/08/26/mistral.html) to improve stability during training.
+* **Optimization**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization. Our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 
 <!--levanter-intro-end-->
 
@@ -37,6 +45,11 @@ Levanter was created by [Stanford's Center for Research on Foundation Models (CR
 
 Here is a small set of examples to get you started. For more information about the various configuration options, please see the [Training Getting Started](docs/Getting-Started-Training.md) guide.
 You can also use `--help` or poke around other configs to see all the options available to you.
+
+### Documentation
+
+Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
+Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
 
 ### Installing Levanter
 

@@ -18,7 +18,7 @@ import wandb
 from draccus import field
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
-from optax import OptState
+from optax import GradientTransformation, OptState
 
 import haliax as hax
 from haliax import Axis
@@ -31,21 +31,22 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
+from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
+from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
-
 M = TypeVar("M", bound=PyTree)
 S = TypeVar("S", bound=PyTree)
+
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
-
 
 # A note on the semantics of "step" vs "next_step":
 # The "step" of a TrainerState is the state after `step` steps have been taken.
@@ -106,15 +107,35 @@ class TrainerHooks:
 
 class Trainer:
     config: "TrainerConfig"
-    optimizer: optax.GradientTransformation
+    optimizer: GradientTransformation
     hooks: TrainerHooks
+    is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
 
-    def __init__(self, config: "TrainerConfig", optimizer, loss_fn):
+    def __init__(
+        self,
+        config: "TrainerConfig",
+        optimizer: GradientTransformation,
+        loss_fn: Callable,
+        *,
+        is_trainable: PyTree[FilterSpec] = True,
+    ):
+        """
+
+        Args:
+            config:  the trainer config
+            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
+            loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
+                scalar loss. It should be jit-able and should not have any side effects.
+            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
+                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
+                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
+        """
         self.hooks = TrainerHooks()
         self.config = config
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
+        self.is_trainable_param = is_trainable
 
     @cached_property
     def loss_fn(self):
@@ -191,15 +212,24 @@ class Trainer:
 
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
 
+        # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
+        trainable_model_shape = self.trainable_params_only(model_shape)
+
         ckpt = self.config.maybe_load_checkpoint(
-            model_shape,
+            trainable_model_shape,
             (opt_state_shape, training_key),
             axis_mapping=self.parameter_axis_mapping,
             mesh=self.device_mesh,
         )
 
         if ckpt is not None:
-            model, (opt_state, training_key), completed_step = ckpt
+            trainable_model, (opt_state, training_key), completed_step = ckpt
+            if model is not None:
+                model = eqx.combine(trainable_model, model)
+            else:
+                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+                model = eqx.combine(trainable_model, non_trainable)
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -268,9 +298,8 @@ class Trainer:
         self.add_eval_hook(eval_loader)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.config.run_id)
+        checkpointer = self.config.checkpointer.create(self.config.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
-        return checkpointer
 
     def add_eval_hook(self, eval_loader):
         from levanter import callbacks
@@ -320,24 +349,72 @@ class Trainer:
             out_axis_resources=self.parameter_axis_mapping,
             donate_args=(True, True),
         )
-        def fn(model, opt_state, *batch, **batch_kwargs):
+        def train_step(model, opt_state, *batch, **batch_kwargs):
             model = inference_mode(model, False)
-            loss, grads = accumulate_gradients_sharded(
-                self.loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(_params_only(grads), opt_state, params=_params_only(model))
+            # we do this so that we only take the gradients of the trainable parameters
+            trainable_model, rest_model = self.partition_trainable_params(model)
+
+            def split_loss_fn(trainable_model, *batch, **batch_kwargs):
+                model = eqx.combine(trainable_model, rest_model)
+                return self.loss_fn(model, *batch, **batch_kwargs)
+
+            loss, grads = accumulate_gradients_sharded(
+                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+            )(trainable_model, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
 
-        return fn
+        return train_step
 
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
-        model = self.mp.cast_to_param(model)
-        opt_state = self.optimizer.init(_params_only(model))
+        # only force trainable params to param precision. Other params are cast to compute precision
+        trainable, non_trainable = self.partition_trainable_params(model)
+        trainable = self.mp.cast_to_param(trainable)
+        non_trainable = self.mp.cast_to_compute(non_trainable)
+        model = eqx.combine(trainable, non_trainable)
+        opt_state = self.optimizer.init(trainable)
         return model, opt_state
+
+    def _init_non_trainable_params(self, model_init):
+        model = model_init()
+        # only force trainable params to param precision. Other params are cast to compute precision
+        trainable, non_trainable = self.partition_trainable_params(model)
+        non_trainable = self.mp.cast_to_compute(non_trainable)
+        return non_trainable
+
+    def trainable_params_only(self, model: M) -> M:
+        """
+        Filters out non-trainable parameters from the model. This is used internally to
+        for the optimizer state and to compute gradients, but you can also use it to filter out
+        params for logging or something.
+        """
+        return self.partition_trainable_params(model)[0]
+
+    def partition_trainable_params(self, model):
+        """
+        Partitions the model into trainable and non-trainable parameters. This is used internally
+        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
+        or something.
+
+        Returns:
+            trainable, non-trainable
+        """
+
+        def trainable_and_diffable(pred):
+            if callable(pred):
+                return lambda x: pred(x) and is_inexact_arrayish(x)
+            elif pred is True:
+                return is_inexact_arrayish
+            else:
+                return pred
+
+        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
+        return eqx.partition(model, combined_mask)
 
 
 @dataclass
@@ -560,7 +637,7 @@ class OptimizerConfig:
     warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
-    def build(self, num_train_steps: int):
+    def build(self, num_train_steps: int) -> GradientTransformation:
         """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
@@ -606,4 +683,4 @@ class OptimizerConfig:
 
 
 def _params_only(t):
-    return eqx.filter(t, eqx.is_inexact_array)
+    return eqx.filter(t, is_inexact_arrayish)
