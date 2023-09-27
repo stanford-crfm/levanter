@@ -109,7 +109,7 @@ def build_cache(
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
 ) -> "ShardCache":
     """
-    Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any a path
+    Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
     on any file system understood by fsspec.
 
     This system is designed with tokenization and similar processes in mind, but it can potentially be used for any kind
@@ -126,7 +126,7 @@ def build_cache(
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
-        batch_size:
+        batch_size: The number of input examples to process at once.
         rows_per_chunk: The number of rows to write to each chunk. May be smaller at the end of a shard.
         await_finished: If True, this function will block until the cache is finished. If False, it will return
                     immediately.
