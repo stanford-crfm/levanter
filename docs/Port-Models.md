@@ -1,7 +1,7 @@
 # Porting Models to Levanter
 
 ## Overview
-This guide outlines the process of porting new models into Levanter. While we emphasize adding a causal language model (LM) that is implemented in Hugging Face, these steps are applicable to general models from multiple sources.
+This guide outlines the process of porting new models into Levanter. While we emphasize the scenario of adding a causal language model (LM) that is implemented in Hugging Face, this guide is applicable to general models from all sources.
 
 We'll start with a detailed walkthrough on implementing your model and testing it. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
 
@@ -64,7 +64,7 @@ class LlamaConfig(HFCompatConfig):
 
 #### Register Your Model
 Lastly, there are a few steps to register a model in Levanter and make it tightly integrated with the training pipeline:
-1. For language models, You can register your config class with `LmConfig.register_subclass("ModelName")`. By doing so, the trainer can use the name as the `model.type` field from the training configuration file to identify your config and model.
+1. For language models, You can register your config class with `LmConfig.register_subclass("ModelName")`. By doing so, the trainer can use the name from the `model.type` field in the training configuration file to identify your config and model.
 2. You will need to decorate the config class as a dataclass for parsing the config file.
 3. You will need to register your head model's class name as a class property. This step can be deferred until the head class is constructed. Same as 1, this class property would make it easier to automatically identify and select your model in the training and evaluation pipeline.
 
@@ -96,7 +96,7 @@ We follow the same breakdown in the implementation of Llama in Levanter.
 
 #### Note on the Implementation Format
 - Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
-- If Each class will be extended from Equinox's `Module` class.
+- Each class will be extended from Equinox's `Module` class.
 
 ### Serialization to/from State Dicts
 
@@ -120,7 +120,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return {"blocks": "h"}
 ```
 
-This says that the field called `blocks`` in this class should be (de)serialized as `h``, because the Hugging Face GPT-2 implementation uses `h``, which is not very clear. You can also "flatten" the submodules of a field by using `None`` or even include `.s` in the name if needed.
+This says that the field called `blocks` in this class should be (de)serialized as `h`, because the Hugging Face GPT-2 implementation uses `h`, which is not very clear. You can also "flatten" the submodules of a field by using `None` or even include `.s` in the name if needed.
 
 #### Hard Case: Custom Serialization
 
