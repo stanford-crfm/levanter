@@ -35,7 +35,7 @@ For real examples and deeper understanding, check out `Gpt2Config` in [gpt2.py](
 #### [For HF models] Convert to/from Hugging Face Config
 To convert your config class to and from Hugging Face config class, you will need to:
 1. Extend your config class from `HFCompatConfig`
-2. Write class functions `to_hf_config()` and `from_hf_config()` that maps the input parameters to the corresponding Hugging Face parameters. 
+2. Write class functions `to_hf_config()` and `from_hf_config()` that maps the input parameters to the corresponding Hugging Face parameters.
 
 For example, in Llama, we have the following:
 
@@ -65,7 +65,7 @@ class LlamaConfig(HFCompatConfig):
 #### Register Your Model
 Lastly, there are a few steps to register a model in Levanter and make it tightly integrated with the training pipeline:
 1. For language models, You can register your config class with `LmConfig.register_subclass("ModelName")`. By doing so, the trainer can use the name as the `model.type` field from the training configuration file to identify your config and model.
-2. You will need to decorate the config class as a dataclass for parsing the config file. 
+2. You will need to decorate the config class as a dataclass for parsing the config file.
 3. You will need to register your head model's class name as a class property. This step can be deferred until the head class is constructed. Same as 1, this class property would make it easier to automatically identify and select your model in the training and evaluation pipeline.
 
 Below is an example:
@@ -100,7 +100,7 @@ We follow the same breakdown in the implementation of Llama in Levanter.
 
 ### Serialization to/from State Dicts
 
-PyTorch and Hugging Face Transformers use "state dicts" as their preferred serialization format, either as pickles or as the new [safetensors](https://github.com/huggingface/safetensors) format. 
+PyTorch and Hugging Face Transformers use "state dicts" as their preferred serialization format, either as pickles or as the new [safetensors](https://github.com/huggingface/safetensors) format.
 A state dict is a Python `dict` with string keys and tensor values. The keys of the dict are json-ish "key paths" like `model.blocks.0.mlp.c_proj` and the values are the corresponding parameters for that key path.
 You can read more about [PyTorch State Dicts here](https://pytorch.org/tutorials/recipes/recipes/what_is_state_dict.html).
 
@@ -115,7 +115,7 @@ If for some reason you want to use different names from the HF implementation (e
 ```python
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     ...
-    
+
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"blocks": "h"}
 ```
