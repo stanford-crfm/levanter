@@ -205,18 +205,7 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        special_tokens_dict = dict()
-        if tokenizer.pad_token is None:
-            special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
-        if tokenizer.eos_token is None:
-            special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
-        if tokenizer.bos_token is None:
-            special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
-        if tokenizer.unk_token is None:
-            special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
-
-        # this is smart_token_embeddings_resize in the original
-        num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+        num_new_tokens = add_special_tokens(tokenizer)
         logger.info(f"Added {num_new_tokens} new tokens")
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
@@ -246,6 +235,21 @@ def train(config: TrainArgs):
             )
 
         trainer.train(state, loader)
+
+
+def add_special_tokens(tokenizer):
+    special_tokens_dict = dict()
+    if tokenizer.pad_token is None:
+        special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
+    if tokenizer.eos_token is None:
+        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
+    if tokenizer.bos_token is None:
+        special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
+    if tokenizer.unk_token is None:
+        special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+    # this is smart_token_embeddings_resize in the original
+    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+    return num_new_tokens
 
 
 if __name__ == "__main__":
