@@ -224,9 +224,12 @@ class Trainer:
 
         if ckpt is not None:
             trainable_model, (opt_state, training_key), completed_step = ckpt
-            # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-            non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-            model = eqx.combine(trainable_model, non_trainable)
+            if model is not None:
+                model = eqx.combine(trainable_model, model)
+            else:
+                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+                model = eqx.combine(trainable_model, non_trainable)
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -395,7 +398,8 @@ class Trainer:
     def partition_trainable_params(self, model):
         """
         Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation, but you can also use it to filter out params for logging or something.
+        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
+        or something.
 
         Returns:
             trainable, non-trainable
