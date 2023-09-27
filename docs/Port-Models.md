@@ -155,7 +155,6 @@ The correctness of your implementation can be validated through serialization te
 There are two types of tests that you should write for your model: unit tests and serialization tests.
 
 ### [Optional] Unit Tests
-Unit tests are very useful for testing the correctness of your model implementation.
 This is optional, but sometimes it helps to make unit tests for each of your modules. This way you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end.
 
 In a unit test, you test your module in the following aspects:
