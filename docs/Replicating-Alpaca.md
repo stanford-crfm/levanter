@@ -1,7 +1,7 @@
 # Replicating Alpaca
 
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
-using the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
+using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
 We'll use a TPU V3-32 VM, though this same tutorial should work on an A100 box as well.
 
 ## Setup
