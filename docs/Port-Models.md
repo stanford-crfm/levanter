@@ -1,15 +1,17 @@
-# Add New Models to Levanter
+# Porting Models to Levanter
 
-This guide outlines the process of adding new models into Levanter. While we emphasize adding models that are implemented in Hugging Face, these steps are applicable to models from other sources.
+## Overview
+This guide outlines the process of porting new models into Levanter. While we emphasize adding a causal language model (LM) that is implemented in Hugging Face, these steps are applicable to general models from multiple sources.
 
 We'll start with a detailed walkthrough on implementing your model and testing it. Subsequently, we'll describe how to configure and run a training job with your model. To conclude, we'll share insights and recommendations to enhance your model's training efficiency.
 
 ## Write Your Model
-Writing a new model in Levanter is very similar to Hugging Face. You start by adding a new file in [models/](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models). You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model.
+At a high level, writing a new model in Levanter is very similar to Hugging Face. You start by adding a new file in [models/](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/models). You first create a config class to register the key hyperparameters and axes of your model. Then, you write the model class that includes key layers and components of your model.
 
 ### Write Config
 We start by writing your model config class. This class will register all the hyperparameters and axes of your models. We want to define them as the first step because they will be used immidately in the next step that implements your model.
 
+#### Define Hyperparameters and Axes
 Note that you don't need to write all of configurations at once. You can start with the key hyperparameters and axes, and add more as you implement the model.
 
 **Hyperparameters** should be declared with their type and a default value, illustrated below:
@@ -30,40 +32,57 @@ Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
 
 For real examples and deeper understanding, check out `Gpt2Config` in [gpt2.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/gpt2.py) and `LlamaConfig` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py).
 
-To convert your config class to and from Hugging Face config class, you can write class functions `to_hf_config()` and `from_hf_config()` that maps the input parameters to the corresponding Hugging Face parameters. For example, in Llama, we have the following:
+#### [For HF models] Convert to/from Hugging Face Config
+To convert your config class to and from Hugging Face config class, you will need to:
+1. Extend your config class from `HFCompatConfig`
+2. Write class functions `to_hf_config()` and `from_hf_config()` that maps the input parameters to the corresponding Hugging Face parameters. 
+
+For example, in Llama, we have the following:
 
 ```python
 from transformers import PretrainedConfig as HfPretrainedConfig
+from levanter.compat.hf_checkpoints import HFCompatConfig
 
 # ...
 
-@classmethod
-def from_hf_config(cls, hf_config: HfPretrainedConfig):
-    return LlamaConfig(
-        seq_len=hf_config.max_position_embeddings,
-        hidden_dim=hf_config.hidden_size,
-        intermediate_dim=hf_config.intermediate_size,
-        num_layers=hf_config.num_hidden_layers,
-        num_heads=hf_config.num_attention_heads,
-        activation_function=hf_config.hidden_act,
-        initializer_range=hf_config.initializer_range,
-        layer_norm_epsilon=hf_config.rms_norm_eps,
-        rope_scaling=hf_config.rope_scaling,
-    )
+class LlamaConfig(HFCompatConfig):
+    # ...
+    @classmethod
+    def from_hf_config(cls, hf_config: HfPretrainedConfig):
+        return LlamaConfig(
+            seq_len=hf_config.max_position_embeddings,
+            hidden_dim=hf_config.hidden_size,
+            intermediate_dim=hf_config.intermediate_size,
+            num_layers=hf_config.num_hidden_layers,
+            num_heads=hf_config.num_attention_heads,
+            activation_function=hf_config.hidden_act,
+            initializer_range=hf_config.initializer_range,
+            layer_norm_epsilon=hf_config.rms_norm_eps,
+            rope_scaling=hf_config.rope_scaling,
+        )
 ```
 
-Lastly, you should register your head model's class name as a class property. This step can be deferred until the head class is constructed.
-This class property would make it easier to call your model with the config class. For example:
+#### Register Your Model
+Lastly, there are a few steps to register a model in Levanter and make it tightly integrated with the training pipeline:
+1. For language models, You can register your config class with `LmConfig.register_subclass("ModelName")`. By doing so, the trainer can use the name as the `model.type` field from the training configuration file to identify your config and model.
+2. You will need to decorate the config class as a dataclass for parsing the config file. 
+3. You will need to register your head model's class name as a class property. This step can be deferred until the head class is constructed. Same as 1, this class property would make it easier to automatically identify and select your model in the training and evaluation pipeline.
+
+Below is an example:
 
 ```python
-@property
-def model_type(cls) -> Type["LlamaLMHeadModel"]:
-    return LlamaLMHeadModel
+@LmConfig.register_subclass("gpt2") # if implementing a Causal Language model
+@dataclass(frozen=True)  # for parsing the config file
+class MyConfig(HFCompatConfig):
+    # ...
+    @property
+    def model_type(cls) -> Type["Gpt2LMHeadModel"]:
+        return Gpt2LMHeadModel
 ```
 
 ### Write Model
 After you have defined your config class, you can start writing your model.
-You can follow the breakdown of the model in your Hugging Face implementation. This would make it easier to validate the implementation through unit tests.
+You can follow the breakdown of the model in your Hugging Face implementation (or from other sources). This would make it easier to validate the implementation through unit tests.
 
 For example, in GPT2, we have the following breakdown:
 - `Gpt2Mlp`
@@ -77,17 +96,44 @@ We follow the same breakdown in the implementation of Llama in Levanter.
 
 #### Note on the Implementation Format
 - Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
-- Each class will inherit from `StateDictSerializationMixin` from `torch_serialization` and Equinox's `Module` class.
+- If Each class will be extended from Equinox's `Module` class.
 
-### Mapping weights from/to Hugging Face
-To load weights from Hugging Face, you will need to write a class function `from_hf_state_dict()` in each of your model class. It takes in a Hugging Face state_dict and returns a Levanter state_dict.
+### Serialization to/from State Dicts
 
-For implementation, there are a few helper classes from `torch_serialization` that you can use:
+PyTorch and Hugging Face Transformers use "state dicts" as their preferred serialization format, either as pickles or as the new [safetensors](https://github.com/huggingface/safetensors) format. 
+A state dict is a Python `dict` with string keys and tensor values. The keys of the dict are json-ish "key paths" like `model.blocks.0.mlp.c_proj` and the values are the corresponding parameters for that key path.
+You can read more about [PyTorch State Dicts here](https://pytorch.org/tutorials/recipes/recipes/what_is_state_dict.html).
+
+Levanter has machinery for (de)serializing to and from state dicts. Simple cases are handled automatically, but often times custom logic is needed.
+
+#### Easy Case: Identical Module Structure
+If your module has exactly the same fields with the same names and same shapes as the Hugging Face state dict (e.g. Gpt2Mlp), you don't need to do anything.
+
+#### Medium Case: Different Names
+If for some reason you want to use different names from the HF implementation (e.g. because the names from HF aren't clear...), you can extend your class from  `StateDictSerializationMixin` and use `_state_dict_key_map` to rename keys. For instance, the `Gpt2Transformer` class has this method:
+
+```python
+class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
+    ...
+    
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"blocks": "h"}
+```
+
+This says that the field called `blocks`` in this class should be (de)serialized as `h``, because the Hugging Face GPT-2 implementation uses `h``, which is not very clear. You can also "flatten" the submodules of a field by using `None`` or even include `.s` in the name if needed.
+
+#### Hard Case: Custom Serialization
+
+If your modules need special logic, you'll need to extend your class from `StateDictSerializationMixin` and overwrite the default function `to_state_dict()` and `from_state_dict()`. It takes in a Hugging Face state dict and returns a Levanter state_dict.
+
+For implementation, there are a few helper classes from torch_serialization that you can use:
 - To add specific prefix to the keys of Hugging Face state_dict, you can use the helper function `apply_prefix()`. The prefix comes from the name of attributes defined at the beginning of your model class.
 - To unflatten the linear layers of Hugging Face, you can use the helper function `unflatten_linear_params()`.
 - To unstack the transformer blocks of Hugging Face, you can use the helper function `unstack_transformer_blocks()`.
 
-For example, below is the implementation of `from_hf_state_dict()` in LlamaAttention:
+For example, below is the implementation of `from_state_dict()` in `LlamaAttention`. `LLamaAttention`, like most attention layers in Levanter, projects the embeddings (with shape `(Pos, Embed)`) to a tensor of shape `(Pos, Head, HeadSize)`, rather than the convention in Hugging Face Transformers that uses `(Pos, Head * HeadSize)` and then reshapes (because PyTorch Linear doesn't support multiple input or output dimensions).
+
+This difference means that we have to flatten linear layers when converting to a Hugging Face Transformers-compatible state dict and unflatten them when they are read in.
 
 ```python
 def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "LlamaAttention":
@@ -101,23 +147,23 @@ def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -
     return super().from_state_dict(d, prefix)
 ```
 
-Similarly, to save weights to Hugging Face, you will need to write a class function `to_hf_state_dict()` in each of your model class.
+Similarly, to save weights to Hugging Face, you will need to write a class function `to_state_dict()` in each of your model class.
 
 The correctness of your implementation can be validated through serialization tests, which will be discussed in the next section.
 
 ## Write Tests
 There are two types of tests that you should write for your model: unit tests and serialization tests.
 
-### Unit Tests
+### [Optional] Unit Tests
 Unit tests are very useful for testing the correctness of your model implementation.
-It is recommended to have at least one test for each of your modules, so that you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end.
+This is optional, but sometimes it helps to make unit tests for each of your modules. This way you can make sure that each module is working as expected and capture any surprises early on, before you test them end-to-end.
 
 In a unit test, you test your module in the following aspects:
 1. The forward pass is successful.
 2. The output shape is correct.
 3. The output value is correct.
 
-The point 3 is the most important one, but it is also the most difficult one to implement. If you have a reference implementation in another framework, like HuggingFace, you can use it to test your implementation on the output consistency.
+The point 3 is the most important one, but it is also the most difficult one to implement. If you have a reference implementation in another framework, like Hugging Face, you can use it to test your implementation on the output consistency.
 Here is a piece of example code to test a same module of Levanter against Hugging Face Transformers:
 
 ```python

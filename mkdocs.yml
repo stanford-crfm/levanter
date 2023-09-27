@@ -84,10 +84,11 @@ nav:
       - 'Getting-Started-CUDA.md'
   - 'User Guide':
       - 'Getting-Started-Training.md'
-      - 'Add-Models.md'
       - "Training-On-Your-Data.md"
       - "Replicating-Alpaca.md"
       - 'Configuration-Guide.md'
+  - 'Developer Guide':
+      - 'Port-Models.md'
   - Other:
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"
