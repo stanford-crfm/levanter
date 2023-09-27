@@ -201,9 +201,9 @@ If your module contains model weights, such consistency tests would require you 
 ### Serialization Tests
 
 In order to validate the implementation on Levanter matches with the reference implementation in HuggingFace, we would like to pass the same input to both implementations and compare the output.
-However, if the model are initialized with different weights, such comparison would not be meaningful. Therefore, we will need to serialize the weights from HuggingFace and load them into Levanter, or vice versa. We call such test "serialization test".
+However, if the model are initialized with different weights, such comparison would not be meaningful. Therefore, we will need to serialize the weights from Hugging Face transformers and load them into Levanter, or vice versa. We call such test "serialization test".
 
-For modules like Attention, Mlp, and Embeddings, you can read the weight from Levanter in memory and load into corresponding modules in HuggingFace. For example, in Llama, we did the following:
+For modules like Attention, Mlp, and Embeddings, you can read the weight from Levanter as state dict in memory and load into corresponding modules in HuggingFace. For example, in Llama, we did the following:
 
 ```python
 # initialize the module in Levanter
