@@ -11,11 +11,7 @@ fi
 
 # if we still don't have a venv, we'll look in our default
 if [ ! -d "$VENV" ]; then
-  VENV=/files/venv32
-fi
-
-if [ ! -d "$VENV" ]; then
-  VENV=~/files/venv310
+  VENV=~/venv310
 fi
 
 source $VENV/bin/activate
