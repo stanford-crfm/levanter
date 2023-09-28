@@ -88,6 +88,8 @@ nav:
       - 'Configuration-Guide.md'
       - "Replicating-Alpaca.md"
       - "Alpaca-LoRA.md"
+  - 'Developer Guide':
+      - 'Port-Models.md'
   - Other:
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"
