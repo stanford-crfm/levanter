@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Option
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 import optax
@@ -666,20 +667,30 @@ class OptimizerConfig:
         lr_decay_steps = num_train_steps - warmup_steps
         min_lr = self.learning_rate * self.min_lr_ratio
 
-        if self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-        elif self.lr_schedule == "linear":
-            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+        match self.lr_schedule:
+            case "constant":
+                schedule = optax.constant_schedule(self.learning_rate)
+            case "cosine":
+                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+            case "linear":
+                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+            case "inv_sqrt":
+                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr)
+            case _:
+                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
         if warmup_steps != 0:
             warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
             schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
 
         return schedule
+
+
+def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0):
+    def schedule(count):
+        return jnp.maximum(lr / jnp.sqrt(jnp.maximum(count, 1)), min_lr)
+
+    return schedule
 
 
 def _params_only(t):
