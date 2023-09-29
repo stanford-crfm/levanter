@@ -1,4 +1,7 @@
-# ---
+# Levanter 1.0 Release Post
+
+<!--
+---
 layout: blog
 title: Levanter — Legible, Scalable, Reproducible Foundation Models with JAX
 authors:
@@ -18,6 +21,7 @@ display: False
     </strong>
 > </div>
 
+-->
 
 # Introduction
 

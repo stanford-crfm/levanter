@@ -86,10 +86,12 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
-      - "Replicating-Alpaca.md"
-      - "Alpaca-LoRA.md"
+  - 'Tutorials':
+      - "tutorials/Replicating-Alpaca.md"
+      - "tutorials/Alpaca-LoRA.md"
   - 'Developer Guide':
       - 'Port-Models.md'
   - Other:
+      - 'release-notes.md'
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"

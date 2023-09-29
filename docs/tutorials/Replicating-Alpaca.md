@@ -18,7 +18,7 @@ pip install -e .
 
 ### Setting up a TPU VM
 
-First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
+First, we'll spin up a TPU VM using the [Getting Started with TPUs](../Getting-Started-TPU-VM.md) guide.
 If you haven't gone through that guide before, you should do so now. If you have, you can just run, e.g.:
 
 ```bash
@@ -105,12 +105,13 @@ levanter/examples/alpaca.py \
 --config_path levanter/examples/alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
+--data_cache_dir gs://<somewhere> \
 --trainer.wandb.id <some id>"  # optional, but useful if using preemption
 ```
 
 If you're using preemptible or TRC TPUs, you'll want to add `--trainer.wandb.id <some id>` to the command line,
-and probably use the [babysitting script](./Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
-vm and job if it gets preempted. That would look like this:
+and probably use the [babysitting script](../Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
+VM and job if it gets preempted. That would look like this:
 
 ```bash
 infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
@@ -121,6 +122,7 @@ levanter/examples/alpaca.py \
 --config_path levanter/examples/alpaca-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
+--data_cache_dir gs://<somewhere> \
 --trainer.wandb.id <some id>  # optional, but useful if using preemption
 ```
 
