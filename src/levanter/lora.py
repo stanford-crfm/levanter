@@ -74,12 +74,8 @@ logger = logging.getLogger(__name__)
 
 M = TypeVar("M", bound=PyTree)
 
-# Tasks
+# Remaining Tasks
 # - bias
-# - dropout
-# - better filtering of parameters (make our own old-style filter_grad)
-# - replicate alpaca-lora functionality
-# - document alpaca-lora functionality
 
 
 LORA_R = "LORA_R"

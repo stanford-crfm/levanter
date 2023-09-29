@@ -102,7 +102,7 @@ gcloud compute tpus tpu-vm ssh llama-32 --zone us-east1-d --worker=all \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
 levanter/examples/alpaca.py \
---config_path levanter/examples/train-alpaca.yaml \
+--config_path levanter/examples/alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
 --trainer.wandb.id <some id>"  # optional, but useful if using preemption
@@ -118,7 +118,7 @@ WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
 levanter/examples/alpaca.py \
---config_path levanter/examples/train-alpaca.yaml \
+--config_path levanter/examples/alpaca-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
 --trainer.wandb.id <some id>  # optional, but useful if using preemption
