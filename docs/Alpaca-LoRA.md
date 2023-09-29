@@ -10,7 +10,7 @@ so that you can use it with their inference scripts or anywhere else you might w
 ## Changes to the Alpaca script
 
 There are three things we need to do differently:
-1. Apply the lora transform to the model.
+1. Apply the LoRA transform to the model.
 2. Tell the trainer to only train the lora params.
 3. Serialize a PEFT-compatible checkpoint.
 
@@ -132,4 +132,44 @@ You can use the merged checkpoints with Hugging Face's inference scripts by doin
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model = AutoModelForCausalLM.from_pretrained(path)
+```
+
+
+## The Configuration File
+
+The configuration files are almost identical to the non-LoRA versions, with two differences:
+
+1. We should dial up the learning rate. We use 3e-4, which is pretty high relative to what's usually recommended (1e-4),
+but it seems to work.
+2. For the LLama-2 version, we set `per_device_parallelism` to 4 (The max for a v3-32 with batch size 128 is 4 since 32 * 4 = 128).
+
+We also add WandB tags, but that's not important.
+
+You can change the LoRA parameters by adding a `lora` section, or providing appropriate command line flags:
+
+```yaml
+lora:
+  r: 16
+  dropout: 0.1
+```
+
+The default configs are available as [`alpaca-lora.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora.yaml)
+and [`alpaca-lora-llama2.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora-llama2.yaml)
+
+
+## Running Alpaca-Lora
+
+Running this modified script is basically identical to running the original script.
+For example:
+
+```bash
+infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
+WANDB_API_KEY=${YOUR TOKEN HERE} \
+HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
+bash levanter/infra/run.sh python \
+levanter/examples/alpaca_lora.py \
+--config_path levanter/examples/alpaca-lora-llama2.yaml \
+--trainer.checkpointer.base_path gs://<somewhere> \
+--hf_save_path gs://<somewhere> \
+--trainer.wandb.id <some id>  # optional, but useful if using preemption
 ```
