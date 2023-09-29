@@ -21,6 +21,8 @@ from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
+
 
 logger = logging.getLogger(__name__)
 
