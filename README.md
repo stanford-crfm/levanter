@@ -55,7 +55,7 @@ Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.re
 
 <!--levanter-installation-start-->
 
-After [installing JAX]((https://github.com/google/jax/blob/main/README.md#installation)) with the appropriate configuration
+After [installing JAX](https://github.com/google/jax/blob/main/README.md#installation) with the appropriate configuration
 for your platform, you can install Levanter with:
 
 ```bash
