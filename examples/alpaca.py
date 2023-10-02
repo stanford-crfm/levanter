@@ -256,4 +256,5 @@ def add_special_tokens(tokenizer):
 
 
 if __name__ == "__main__":
+    print("\n\nSTARTING TO TRAIN\n\n")
     levanter.config.main(train)()
