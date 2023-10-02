@@ -174,6 +174,7 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
 
 
 def train(config: TrainArgs):
+    print("\n\nENTERED TRAIN")
     config.trainer.initialize(config)
     print("\n\nENTERED TRAIN\n\n")
 
