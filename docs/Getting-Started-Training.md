@@ -1,6 +1,12 @@
 # Getting Started
 
 This document provides a guide on how to launch model training and configure it according to your specific needs.
+For an even more detailed guide, please refer to the [Levanter Documentation](https://levanter.readthedocs.io/en/latest/),
+in particular the [Training on Your Own Data](https://levanter.readthedocs.io/en/latest/Training-On-Your-Data/) page.
+
+## Installation
+
+Please see the [Installation Guide](Installation.md) for more information on how to install Levanter.
 
 ## Quick Start Examples
 

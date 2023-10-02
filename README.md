@@ -43,7 +43,8 @@ Levanter was created by [Stanford's Center for Research on Foundation Models (CR
 
 ## Getting Started
 
-Here is a small set of examples to get you started. For more information about the various configuration options, please see the [Training Getting Started](docs/Getting-Started-Training.md) guide.
+Here is a small set of examples to get you started. For more information about the various configuration options,
+please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
 ### Documentation
