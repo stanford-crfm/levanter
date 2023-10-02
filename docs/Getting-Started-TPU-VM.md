@@ -94,7 +94,7 @@ venv and a copy of the repo.
 `gcloud compute tpus tpu-vm scp $name:path/to/file my_file --zone us-east1-d --worker=0`
 
 ## Running Levanter GPT-2
-Now that you have a TPU VM instance, you can follow the [Running Levanter] steps, but here are a few shortcuts:
+Now that you have a TPU VM instance, you can follow the [Getting Started](Getting-Started-Training.md) steps, but here are a few shortcuts:
 
 ### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
