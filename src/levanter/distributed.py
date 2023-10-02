@@ -194,7 +194,7 @@ def auto_ray_cluster(
 
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
-                    os.system(f"ray start --head --port {ray_port}")
+                    os.system(f"ray start --head --port {ray_port} --num-cpus 30")
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
@@ -207,7 +207,7 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     print("\n\nCALLING RAY INIT\n\n")
-    ray.init(address=address, namespace=namespace, num_cpus=30, **kwargs)
+    ray.init(address=address, namespace=namespace, **kwargs)
     print("\n\nRAY INIT FINISHED")
     atexit.register(lambda: ray.shutdown())
     print("\n\nREGISTERING RAY SHUT DOWN")
