@@ -150,6 +150,7 @@ def auto_ray_cluster(
     We don't use that because it's more geared towards submitting jobs to a ray cluster that is backed by slurm.
     Instead, we have our machines already.
     """
+    print("\n\nENTERED AUTO RAY CLUSTER\n\n")
     global _already_initialized
 
     if _already_initialized:
@@ -157,6 +158,7 @@ def auto_ray_cluster(
         return
 
     def _munge_address_port(address: str):
+        print("\n\nMUNGE ADDRESS IN AUTO RAY CLUSTER\n\n")
         # the coordinator address typically includes a port that jax wants to use. we want to use our own port
         # we add a deterministic number to the chosen port and then cycle through the ephemeral range
         # this is a hack, but it works
@@ -165,6 +167,7 @@ def auto_ray_cluster(
         return host, port
 
     if address is None:
+        print("\n\nRAY ADDRESS WAS NONE\n\n")
         # Ray automatically looks at RAY_ADDRESS. We don't want to use our defaulting logic if that is set
         if os.getenv("RAY_ADDRESS") is not None:
             address = os.getenv("RAY_ADDRESS")
@@ -203,8 +206,11 @@ def auto_ray_cluster(
 
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
+    print("\n\nCALLING RAY INIT\n\n")
     ray.init(address=address, namespace=namespace, **kwargs)
+    print("\n\nRAY INIT FINISHED")
     atexit.register(lambda: ray.shutdown())
+    print("\n\nREGISTERING RAY SHUT DOWN")
     _already_initialized = True
 
 
@@ -258,4 +264,5 @@ class RayConfig:
 
     def initialize(self):
         if self.auto_start_cluster:
+            print("\n\nAUTO START CLUSTER IS TRUE\n\n")
             auto_ray_cluster(address=self.address, start_workers=self.start_workers)
