@@ -144,8 +144,6 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
         self.input_key = input_key
         self.output_key = output_key
         
-        print(self.num_cpus())
-
     def __call__(self, batch: Sequence[dict]) -> dict:
         prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
