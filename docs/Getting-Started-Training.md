@@ -119,7 +119,7 @@ python src/levanter/main/train_lm.py \
     --trainer.wandb.project my_project \
     --trainer.wandb.name my_run \
     --trainer.wandb.id asdf1234 \
-    --trainer.wandb,group my_new_exp_group
+    --trainer.wandb.group my_new_exp_group
 ```
 
 This will overwrite the default WandB configuration from the `TrainerConfig` in [config.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/config.py).
