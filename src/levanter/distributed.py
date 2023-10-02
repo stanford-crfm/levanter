@@ -207,7 +207,7 @@ def auto_ray_cluster(
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     print("\n\nCALLING RAY INIT\n\n")
-    ray.init(address=address, namespace=namespace, **kwargs)
+    ray.init(address=address, namespace=namespace, num_cpus=30, **kwargs)
     print("\n\nRAY INIT FINISHED")
     atexit.register(lambda: ray.shutdown())
     print("\n\nREGISTERING RAY SHUT DOWN")
