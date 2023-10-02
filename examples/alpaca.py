@@ -175,6 +175,7 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
 
 def train(config: TrainArgs):
     config.trainer.initialize(config)
+    print("\n\nENTERED TRAIN\n\n")
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
