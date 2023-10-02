@@ -163,19 +163,20 @@ optimizer:
 
 ### Other Architectures
 
-Currently, we support GPT-2, [Backpacks](http://backpackmodels.science/) and MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
-architectures. We plan to add more in the future.
+Currently, we support the following architectures:
+* GPT-2
+* [LLama 1 or 2](https://ai.meta.com/llama/)
+* [Backpacks](http://backpackmodels.science/)
+* MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
 
-#### A Tiny Backpack Model
+We plan to add more in the future.
+
+#### Continued Pretraining with Llama 1 or Llama 2
+
+Here's an example of how to continue pretraining a Llama 1 or Llama 2 model on the OpenWebText dataset:
 
 ```bash
-python -m levanter.main.train_lm --config_path config/backpack_nano.yaml
-```
-
-#### Continued Pretraining with MPT
-
-```bash
-python -m levanter.main.train_lm --config_path config/mpt_7b_continued.yaml
+python -m levanter.main.train_lm --config_path config/llama2_7b_continued.yaml
 ```
 
 

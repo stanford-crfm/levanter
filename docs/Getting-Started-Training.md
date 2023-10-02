@@ -1,4 +1,4 @@
-# Getting Started with Training
+# Getting Started
 
 This document provides a guide on how to launch model training and configure it according to your specific needs.
 
