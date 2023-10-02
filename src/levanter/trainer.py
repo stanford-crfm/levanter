@@ -499,7 +499,9 @@ class TrainerConfig:
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name in the process"""
         self.distributed.initialize()
+        print("\n\nSTARTING TO INIT RAY")
         self.ray.initialize()
+        print("\n\nFINISHED INITING RAY")
         self._initialize_jax_config()
         self.wandb.init(all_config)
         self._initialize_logging()
