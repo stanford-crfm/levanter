@@ -15,12 +15,12 @@
   * [An in-depth guide to configuration](./Configuration-Guide.md)
   * [A detailed guide to porting models](./Port-Models.md)
 * Pure-JAX implementation of Flash-Attention 2 added to GPT-2 implementation.
-  * (Note: doesn't really improve speed in JAX except for very long sequences.)
+  * (Note: doesn't really improve speed in JAX/TPU except for very long sequences. Enables sequences of 32k through reduced memory usage.)
 
 ### Misc Improvements
 
 * Added background data loading, reducing overhead for training small models substantially.
-* Various performance improvments to loading checkpoints
+* Various performance improvements to loading checkpoints
 * Bumped various dependencies.
 * Improved TPU spin-up scripts.
 
