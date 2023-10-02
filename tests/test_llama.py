@@ -17,7 +17,7 @@ from levanter.models.llama import (
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
-from test_utils import skip_if_no_torch
+from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
@@ -298,3 +298,12 @@ def _get_random_inputs(config: LlamaConfig):
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
     return x, mask
+
+
+@parameterize_with_configs("llama*.yaml")
+def test_llama_configs(config_file):
+    from levanter.main.train_lm import TrainLmConfig
+
+    config_class = TrainLmConfig
+
+    check_load_config(config_class, config_file)
