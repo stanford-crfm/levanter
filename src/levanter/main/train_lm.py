@@ -139,7 +139,7 @@ def main(config: TrainLmConfig):
         trainer.add_default_hooks(eval_loader)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
+            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
 
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
