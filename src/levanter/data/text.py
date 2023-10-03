@@ -567,7 +567,8 @@ class LMDatasetConfig:
         if self.id is not None:
             dict_source = HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream)
         else:
-            dict_source = JsonlDataSource(self.urls_for_split(split))
+            source = TextDataSource if self.plaintext else JsonlDataSource
+            dict_source = source(self.urls_for_split(split))
 
         return dict_source.map(lambda x: x[self.text_key])
 
