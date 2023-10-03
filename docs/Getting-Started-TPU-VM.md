@@ -53,17 +53,6 @@ Defaults are:
 - `type`: `v3-32`
 - `preemptible`: `false`
 
-**For Stanford CRFM Developers**:
-
-Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
-
-```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
-```
-
-In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
-venv and a copy of the repo.
-
 **Notes**:
 
 * This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
@@ -71,6 +60,19 @@ path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 * The command will spam you with a lot of output, sorry.
 * If you use a preemptible instance, you probably want to use the ["babysitting" script](#babysitting-script) to
 the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
+
+
+
+**For Stanford CRFM Developers**:
+
+Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
+
+```bash
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/helpers/setup-tpu-vm-nfs.sh
+```
+
+In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
+venv and a copy of the repo.
 
 
 ## Useful commands
@@ -92,7 +94,7 @@ the VM. That's explained down below in the [Running Levanter GPT-2](#running-lev
 `gcloud compute tpus tpu-vm scp $name:path/to/file my_file --zone us-east1-d --worker=0`
 
 ## Running Levanter GPT-2
-Now that you have a TPU VM instance, you can follow the [Running Levanter] steps, but here are a few shortcuts:
+Now that you have a TPU VM instance, you can follow the [Getting Started](Getting-Started-Training.md) steps, but here are a few shortcuts:
 
 ### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
@@ -111,7 +113,7 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_
 ### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
-the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The baby-sitting
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The babysitting
 script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
 It keeps running the command (and relaunching) until the command exits successfully.
 
