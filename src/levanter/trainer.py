@@ -527,9 +527,9 @@ class TrainerConfig:
         self.distributed.initialize()
         self.ray.initialize()
         self._initialize_jax_config()
+        self._validate_and_set_defaults()
         self.wandb.init(self.id, all_config)
         self._initialize_logging()
-        self._validate_and_set_defaults()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
@@ -596,7 +596,22 @@ class TrainerConfig:
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
+        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
+
+    def __post_init__(self):
+        # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
+        if self.id is None:
+            # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
+            if "RUN_ID" in os.environ:
+                self.id = os.environ["RUN_ID"]
+            elif self.wandb.id is not None:
+                self.id = self.wandb.id
+            else:
+                # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
+                # NB: do NOT use the seed here. we want the run id to be independent of the seed
+                self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
+
+            logger.info(f"Setting run id to {self.id}")
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -623,21 +638,6 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
-
-        # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
-        if self.id is None:
-            # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
-            if "RUN_ID" in os.environ:
-                logger.info("pick up run id from environment")
-                self.id = os.environ["RUN_ID"]
-            elif self.wandb.id is not None:
-                self.id = self.wandb.id
-            else:
-                # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
-                # NB: do NOT use the seed here. we want the run id to be independent of the seed
-                self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
-
-            logger.info(f"Setting run id to {self.id}")
 
 
 @dataclass
