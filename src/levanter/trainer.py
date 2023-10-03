@@ -153,24 +153,11 @@ class Trainer:
 
         return fn
 
-    @cached_property
+    @property
     def run_id(self) -> str:
-        # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
-        if self.config.id is not None:
-            return self.config.id
-        elif "RUN_ID" in os.environ:
-            return os.environ["RUN_ID"]
-        else:
-            try:
-                import wandb
-
-                if wandb.run is not None:
-                    return wandb.run.id
-            except ImportError:
-                pass
-        # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
-        # NB: do NOT use the seed here. we want the run id to be independent of the seed
-        return "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
+        """Returns the run id"""
+        assert self.config.id is not None
+        return self.config.id
 
     @property
     def mp(self) -> jmp.Policy:
@@ -636,6 +623,18 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
+        if self.id is None:
+            # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
+            if "RUN_ID" in os.environ:
+                self.id = os.environ["RUN_ID"]
+            elif self.wandb.id is not None:
+                self.id = self.wandb.id
+            else:
+                # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
+                # NB: do NOT use the seed here. we want the run id to be independent of the seed
+                self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
 
 
 @dataclass

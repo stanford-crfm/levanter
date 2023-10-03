@@ -156,8 +156,11 @@ class WandbConfig:
     def init(self, run_id: Optional[str], hparams=None, **extra_hparams):
         import wandb
 
-        if run_id is not None and self.id is not None:
-            warnings.warn("Both trainer's id and id are set. WandB will use the id set in its config.")
+        if run_id is not None and self.id is not None and run_id != self.id:
+            warnings.warn(
+                f"Both trainer's id {run_id} and WandB's id {self.id} are set. WandB will use the id set in its"
+                " config."
+            )
 
         id = self.id
         if id is None:
