@@ -58,7 +58,7 @@ Defaults are:
 * This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
 path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 * The command will spam you with a lot of output, sorry.
-* If you use a preemptible instance, you probably want to use the ["babysitting" script](#using-the-babysitting-script-with-a-preemptible-or-trc-tpu-vm) that automatically re-creates
+* If you use a preemptible instance, you probably want to use the ["babysitting" script](#babysitting-script) to
 the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
 
 
@@ -117,8 +117,8 @@ the VM. This is because preemptible instances can be preempted and will always b
 script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
 It keeps running the command (and relaunching) until the command exits successfully.
 
-Running in this mode is a bit more complex because you need to set a unique run id
-for your run, which would otherwise be generated for you by WandB.
+Note that the babysitting-script will automatically set the `RUN_ID` environment variable if not set, and pass it to the
+training command. This ensures that restarted jobs have the same run id, which is important for resumes to work.
 
 You can run it like this:
 
@@ -144,11 +144,10 @@ Afterward, you can use the config directly from the TPU VM instance, e.g.:
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
-    --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
+    --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
-The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
-to use WandB, and `--trainer.wandb.name` is a human-readable name for the run,
+The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec.
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
 
