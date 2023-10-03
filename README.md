@@ -43,7 +43,8 @@ Levanter was created by [Stanford's Center for Research on Foundation Models (CR
 
 ## Getting Started
 
-Here is a small set of examples to get you started. For more information about the various configuration options, please see the [Training Getting Started](docs/Getting-Started-Training.md) guide.
+Here is a small set of examples to get you started. For more information about the various configuration options,
+please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
 ### Documentation
@@ -55,7 +56,7 @@ Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.re
 
 <!--levanter-installation-start-->
 
-After [installing JAX]((https://github.com/google/jax/blob/main/README.md#installation)) with the appropriate configuration
+After [installing JAX](https://github.com/google/jax/blob/main/README.md#installation) with the appropriate configuration
 for your platform, you can install Levanter with:
 
 ```bash
@@ -163,19 +164,20 @@ optimizer:
 
 ### Other Architectures
 
-Currently, we support GPT-2, [Backpacks](http://backpackmodels.science/) and MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
-architectures. We plan to add more in the future.
+Currently, we support the following architectures:
+* GPT-2
+* [LLama 1 or 2](https://ai.meta.com/llama/)
+* [Backpacks](http://backpackmodels.science/)
+* MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
 
-#### A Tiny Backpack Model
+We plan to add more in the future.
+
+#### Continued Pretraining with Llama 1 or Llama 2
+
+Here's an example of how to continue pretraining a Llama 1 or Llama 2 model on the OpenWebText dataset:
 
 ```bash
-python -m levanter.main.train_lm --config_path config/backpack_nano.yaml
-```
-
-#### Continued Pretraining with MPT
-
-```bash
-python -m levanter.main.train_lm --config_path config/mpt_7b_continued.yaml
+python -m levanter.main.train_lm --config_path config/llama2_7b_continued.yaml
 ```
 
 
