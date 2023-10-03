@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -31,7 +31,7 @@ from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
-from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
+from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast, PreTrainedTokenizer  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
@@ -48,7 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     _serialize_json_and_commit,
     build_cache,
 )
-from levanter.data.shard_source import HFDatasetDataSource, JsonlDataSource, ShardedDataSource  # noqa
+from levanter.data.shard_source import HFDatasetDataSource, JsonlDataSource, TextDataSource, ShardedDataSource  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -481,6 +481,8 @@ class LMDatasetConfig:
 
     # config for the tokenizer
     tokenizer: str = "gpt2"
+    plaintext: bool = False
+    vocab_size: Optional[int] = None
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     # config related to caching
@@ -492,7 +494,11 @@ class LMDatasetConfig:
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.tokenizer)
+        if self.tokenizer == "passthrough":
+            print(f"using passthrough tokenizer with vocab size {self.vocab_size}")
+            return PassthroughTokenizer(self.vocab_size)
+        else:
+            return load_tokenizer(self.tokenizer)
 
     def token_seq_dataset(self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
         cache = self.build_or_load_cache(split, monitors=monitors)
@@ -534,7 +540,9 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            for doc in JsonlDataSource(urls).iter_data():
+
+            source = TextDataSource if self.plaintext else JsonlDataSource
+            for doc in source(urls).iter_data():
                 yield doc[self.text_key]
 
     def urls_for_split(self, split):
@@ -563,3 +571,30 @@ class LMDatasetConfig:
             dict_source = JsonlDataSource(self.urls_for_split(split))
 
         return dict_source.map(lambda x: x[self.text_key])
+
+
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        self._vocab = {i: i for i in range(vocab_size)}
+        self._vocab_size = vocab_size
+        super().__init__(**kwargs)
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    def get_vocab(self):
+        return self._vocab
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
+
+    def _tokenize(self, text, **kwargs):
+        tokens = np.fromstring(text, dtype=int, sep=" ")
+        return tokens
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)

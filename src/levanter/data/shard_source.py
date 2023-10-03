@@ -128,6 +128,23 @@ class JsonlDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
+class TextDataSource(ShardedDataSource[dict]):
+    def __init__(self, urls):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f.readlines():
+                yield line
+
+
 class JsonDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
