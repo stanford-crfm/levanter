@@ -236,7 +236,7 @@ class Trainer:
         # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
         trainable_model_shape = self.trainable_params_only(model_shape)
 
-        ckpt = self.config.maybe_load_checkpoint(
+        ckpt = self.maybe_load_checkpoint(
             trainable_model_shape,
             (opt_state_shape, training_key),
             axis_mapping=self.parameter_axis_mapping,
@@ -437,6 +437,30 @@ class Trainer:
         combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
         return eqx.partition(model, combined_mask)
 
+    def maybe_load_checkpoint(
+        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
+    ) -> Optional[Tuple[M, S, int]]:
+        """Loads a checkpoint if one exists and we're supposed to load it,
+        otherwise returns the model and training state as is"""
+        if self.config.load_checkpoint is not False:
+            # TODO: don't remake the checkpointer every time
+            checkpointer = self.config.checkpointer.create(self.run_id)
+            load_checkpoint_path = self.config.load_checkpoint_path
+
+            if load_checkpoint_path is None:
+                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+
+            ckpt = checkpointer.load_checkpoint(
+                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+            )
+
+            if ckpt is None and self.config.load_checkpoint is True:
+                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
+
+            return ckpt
+        else:
+            return None
+
 
 @dataclass
 class TrainerConfig:
@@ -587,27 +611,6 @@ class TrainerConfig:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
 
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        if self.load_checkpoint is not False:
-            checkpointer = self.checkpointer.create(self.id)
-            assert (
-                self.load_checkpoint_path is not None
-            ), "load_checkpoint_path should have been set during initialization"
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, self.load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
-
-            if ckpt is None and self.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
-
-            return ckpt
-        else:
-            return None
-
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
         if jax.device_count() % self.model_axis_size != 0:
@@ -633,9 +636,6 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
-
-        if self.load_checkpoint_path is None:
-            self.load_checkpoint_path = self.checkpointer.expanded_path(self.id)
 
 
 @dataclass
