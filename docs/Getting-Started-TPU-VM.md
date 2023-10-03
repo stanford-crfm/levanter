@@ -142,10 +142,10 @@ Afterward, you can use the config directly from the TPU VM instance, e.g.:
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
-    --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
+    --trainer.id rrr --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
-The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
+The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.id` must be unique
 to use WandB, and `--trainer.wandb.name` is a human-readable name for the run,
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
