@@ -112,7 +112,6 @@ python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.wandb.project my_project \
     --trainer.wandb.name my_run \
-    --trainer.id asdf1234 \
     --trainer.wandb.group my_new_exp_group
 ```
 

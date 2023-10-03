@@ -7,4 +7,4 @@ if [[ $? -ne 0 ]]; then
   TR=tr
 fi
 
-cat /dev/urandom | $TR -C -d a-z0-9 | head -c 10
+cat /dev/urandom | $TR -C -d a-z0-9 | head -c 8

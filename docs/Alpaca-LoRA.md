@@ -170,6 +170,5 @@ bash levanter/infra/run.sh python \
 levanter/examples/alpaca_lora.py \
 --config_path levanter/examples/alpaca-lora-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
---hf_save_path gs://<somewhere> \
---trainer.id <some id>  # optional, but useful if using preemption
+--hf_save_path gs://<somewhere>
 ```

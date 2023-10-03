@@ -8,7 +8,9 @@
 
 # Syntax: babysit-tpu-vm.sh <args to spin-up-vm.sh> -- command to run on the vm
 
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
 
 # first extract the args for just spin-up-vm.sh and pass them to the helper
 
@@ -40,6 +42,7 @@ done
 # Now turn CMD_ARGS into a single string we can pass
 CMD_ARGS_STR=$(printf ' %s' "${CMD_ARGS[@]}")
 CMD_ARGS_STR=${CMD_ARGS_STR:1}
+CMD_ARGS_STR="RUN_ID=${RUN_ID} ${CMD_ARGS_STR}"
 
 # now source the helper
 source "$SCRIPT_DIR"/helpers/parse-tpu-creation-args.sh "${CREATION_ARGS[@]}"
@@ -54,6 +57,12 @@ fi
 if [ -z "$SSH_AUTH_SOCK" ]; then
   echo "Error: ssh-agent not running. This script needs to be run from a machine with ssh-agent running. Please run ssh-add ~/.ssh/google_compute_engine and try again"
   exit 1
+fi
+
+
+if [ -z "$RUN_ID" ]; then
+  RUN_ID=$(bash "${SCRIPT_DIR}"/helpers/gen-id.sh)
+  echo "RUN_ID not set, setting to $RUN_ID"
 fi
 
 # check if the VM is running
