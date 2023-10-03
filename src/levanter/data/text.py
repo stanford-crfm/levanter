@@ -495,7 +495,6 @@ class LMDatasetConfig:
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerFast:
         if self.tokenizer == "passthrough":
-            print(f"using passthrough tokenizer with vocab size {self.vocab_size}")
             return PassthroughTokenizer(self.vocab_size)
         else:
             return load_tokenizer(self.tokenizer)
