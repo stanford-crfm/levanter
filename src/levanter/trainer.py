@@ -628,6 +628,7 @@ class TrainerConfig:
         if self.id is None:
             # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
             if "RUN_ID" in os.environ:
+                logger.info("pick up run id from environment")
                 self.id = os.environ["RUN_ID"]
             elif self.wandb.id is not None:
                 self.id = self.wandb.id
@@ -635,6 +636,8 @@ class TrainerConfig:
                 # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
                 # NB: do NOT use the seed here. we want the run id to be independent of the seed
                 self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
+
+            logger.info(f"Setting run id to {self.id}")
 
 
 @dataclass
