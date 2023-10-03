@@ -107,6 +107,42 @@ class HFDatasetDataSource(ShardedDataSource[dict]):
         return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
 
 
+class TextUrlDataSource(ShardedDataSource[str]):
+    """
+    Datasource for various text formats.
+    """
+
+    def __init__(self, urls, text_key="text"):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        self.text_key = text_key
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            if url.endswith(".jsonl"):
+                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                # which is not nothing, but not ideal.
+                for line in f:
+                    if i >= row:
+                        yield json.loads(line)[self.text_key]
+                    i += 1
+            elif url.endswith(".txt"):
+                for line in f:
+                    if i >= row:
+                        yield line
+                    i += 1
+            elif url.endswith(".json"):
+                data = json.load(f)
+                for doc in data[row:]:
+                    yield doc[self.text_key]
+
+
 class JsonlDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
@@ -122,7 +158,8 @@ class JsonlDataSource(ShardedDataSource[dict]):
         with fsspec.open(url, "r", compression="infer") as f:
             # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
             # which is not nothing, but not ideal.
-            for line in f.readlines():
+            for line in f:
+                print(i, line)
                 if i >= row:
                     yield json.loads(line)
                 i += 1
@@ -141,8 +178,10 @@ class TextDataSource(ShardedDataSource[dict]):
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
         with fsspec.open(url, "r", compression="infer") as f:
-            for line in f.readlines():
-                yield line
+            for line in f:
+                if i >= row:
+                    yield line
+                i += 1
 
 
 class JsonDataSource(ShardedDataSource[dict]):

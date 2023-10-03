@@ -325,7 +325,7 @@ def _produce_chunks_for_shard(
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
 
-    def do_tokenize(batch):
+    def do_preprocess(batch):
         nonlocal writer
 
         # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
@@ -354,11 +354,11 @@ def _produce_chunks_for_shard(
         batch.append(row)
 
         if len(batch) == target_batch_size:
-            do_tokenize(batch)
+            do_preprocess(batch)
             batch = []
 
     if batch:
-        do_tokenize(batch)
+        do_preprocess(batch)
     if writer is not None:
         writer.__exit__(None, None, None)
         chunk = writer.get_metadata()
