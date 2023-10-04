@@ -11,7 +11,7 @@ import ray
 from jax._src import clusters
 from jax._src.clusters import SlurmCluster, TpuCluster
 
-from levanter.utils.py_utils import logical_cpu_core_count
+#from levanter.utils.py_utils import logical_cpu_core_count
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ def auto_ray_cluster(
                 
                 if cluster_type.get_process_id() == 0:
                     # Explicitly setting the number of CPUs on ray init stops init errors
-                    num_cpus = max(1, logical_cpu_core_count() - 2)
+                    num_cpus = max(1, os.cpu_count() - 2)
                     print(f"Starting ray with num_cpus set to {num_cpus}.")
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
