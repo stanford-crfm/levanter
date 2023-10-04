@@ -172,9 +172,7 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
 
 
 def train(config: TrainArgs):
-    print("\n\nENTERED TRAIN")
     config.trainer.initialize(config)
-    print("\n\nENTERED TRAIN\n\n")
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -255,5 +253,4 @@ def add_special_tokens(tokenizer):
 
 
 if __name__ == "__main__":
-    print("\n\nSTARTING TO TRAIN\n\n")
     levanter.config.main(train)()

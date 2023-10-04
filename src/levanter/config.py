@@ -68,7 +68,6 @@ def main(fn=None, *, args: Optional[List[str]] = None, config_dir: Optional[str]
 
     @wraps(fn)
     def wrapper_inner(*args, **kwargs):
-        print("\n\nGETTING CONFIG PATH AND COMMAND LINE ARGS\n\n")
         config_path, cmdline_args = _maybe_get_config_path_and_cmdline_args(_cmdline_args)
         paths_to_check = [config_path, f"{config_path}.yaml", f"{config_path}.yml"]
         if config_path is not None and config_dir is not None:
@@ -81,9 +80,7 @@ def main(fn=None, *, args: Optional[List[str]] = None, config_dir: Optional[str]
 
         argspec = inspect.getfullargspec(fn)
         argtype = argspec.annotations[argspec.args[0]]
-        print("\n\nABOUT TO PARSE COMMAND LINE INPUT\n\n")
         cfg = parse(config_class=argtype, config_path=config_path, args=cmdline_args)
-        print("\n\nCALLING INPUTED FUNCTION\n\n")
         response = fn(cfg, *args, **kwargs)
         return response
 
