@@ -360,6 +360,9 @@ def _produce_chunks_for_shard(
     for row in shard_iter:
         batch.append(row)
 
+        if len(batch) % 20 == 0:
+            print(f"batch: {len(batch)}")
+
         if len(batch) == target_batch_size:
             print("batch")
             do_preprocess(batch)
