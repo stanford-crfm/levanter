@@ -358,10 +358,13 @@ def _produce_chunks_for_shard(
 
     logger.info(f"Starting to get rows for shard {shard_name}")
     for row in shard_iter:
+        print("row")
         batch.append(row)
 
         if len(batch) == target_batch_size:
+            print("batch")
             do_preprocess(batch)
+            print("done batch")
             batch = []
 
     if batch:
