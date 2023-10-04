@@ -362,7 +362,7 @@ def _produce_chunks_for_shard(
             batch.append(row)
 
             if len(batch) % 20 == 0:
-                print(f"batch: {len(batch)}")
+                print(f"batch: {len(batch)}", flush=True)
 
             if len(batch) == target_batch_size:
                 print("batch")
@@ -370,13 +370,13 @@ def _produce_chunks_for_shard(
                 print("done batch")
                 batch = []
     except Exception as e:
-        print("exception")
+        print("exception", flush=True)
         logger.exception(f"Error while processing shard {shard_name}")
         ray.get(sink.shard_failed.remote(shard_name, _exc_info()))
         raise e
 
     if batch:
-        print("tiny batch")
+        print("tiny batch", flush=True)
         do_preprocess(batch)
     if writer is not None:
         writer.__exit__(None, None, None)
