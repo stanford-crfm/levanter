@@ -141,6 +141,8 @@ class TextUrlDataSource(ShardedDataSource[str]):
                 data = json.load(f)
                 for doc in data[row:]:
                     yield doc[self.text_key]
+            else:
+                raise ValueError(f"Unsupported file type: {url}")
 
 
 class JsonlDataSource(ShardedDataSource[dict]):

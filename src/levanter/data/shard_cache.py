@@ -1,6 +1,7 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import asyncio
 import dataclasses
+import gc
 import logging
 import os
 import sys
@@ -334,20 +335,26 @@ def _produce_chunks_for_shard(
         priority = priority_fn(shard_idx, shard_writer.num_chunks)
         output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
         output_batch = ray.get(output_batch_future)
+        del batch
 
         record_batch = _as_record_batch(output_batch)
+        del output_batch_future
+        del output_batch
+
         if writer is None:
             chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
             writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
             writer.__enter__()
 
         writer.write_batch(record_batch)
+        del record_batch
 
         if writer.num_rows >= rows_per_chunk:
             writer.__exit__(None, None, None)
             chunk = writer.get_metadata()
             writer = None
             yield_chunk(chunk)
+            gc.collect()
 
     logger.info(f"Starting to get rows for shard {shard_name}")
     for row in shard_iter:
