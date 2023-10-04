@@ -1053,11 +1053,10 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     def read_chunk(self, chunk_idx: int) -> Iterator[pa.RecordBatch]:
         """Reads a chunk from the cache"""
-        chunk = self.get_chunk(self._map_index(chunk_idx))
+        chunk = self.get_chunk(chunk_idx)
         yield from self._read_chunk(chunk)
 
     def _map_index(self, index):
-        print(f"Mapping index {index} to {index * self._num_readers + self._reader_offset}", flush=True)
         return index * self._num_readers + self._reader_offset
 
     def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
@@ -1169,11 +1168,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         new_num_readers = self._num_readers * num_readers
         new_offset = self._num_readers * offset + self._reader_offset
-        print(
-            f"Sharding {self.cache_dir} to {new_num_readers} readers with offset {new_offset} "
-            f"(was: {self._num_readers} readers with offset {self._reader_offset})",
-            flush=True,
-        )
         return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
 
     def unshard(self):
