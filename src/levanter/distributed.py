@@ -197,6 +197,7 @@ def auto_ray_cluster(
                     except:
                         num_cpus = logical_cpu_core_count()
                         
+                    print(f"Starting ray with num_cpus set to {num_cpus}.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
