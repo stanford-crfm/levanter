@@ -1067,6 +1067,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
         mapped_index = self._map_index(index)
+        return self._get_chunk_unmapped(mapped_index, timeout=timeout)
+
+    def _get_chunk_unmapped(self, mapped_index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
         if self._ledger is not None:
             return self._ledger.chunks[mapped_index]
         else:
@@ -1084,7 +1087,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     continue
 
                 if chunk is None:
-                    raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
+                    raise IndexError(f"Chunk index out of bounds. (Mapped index {mapped_index})")
 
                 return chunk
 
@@ -1136,7 +1139,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
             while True:
                 try:
                     logger.debug(f"Reading chunk {i}")
-                    chunk = self.get_chunk(i)
+                    chunk = self._get_chunk_unmapped(i)
                     i += self._num_readers
                     yield from self._read_chunk(chunk)
                 except IndexError:
