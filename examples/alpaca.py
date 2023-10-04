@@ -143,7 +143,7 @@ class EncoderDecoderProcessor(BatchProcessor[dict]):
         self.tokenizer = tokenizer
         self.input_key = input_key
         self.output_key = output_key
-        
+
     def __call__(self, batch: Sequence[dict]) -> dict:
         prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
