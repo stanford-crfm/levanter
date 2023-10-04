@@ -359,24 +359,27 @@ def _produce_chunks_for_shard(
     writer_loop_cert = _writer_loop.remote(preprocessed_batch_futures_queue)
 
     # below is producer
-    def enqueue_process_batch(batch):
-        priority = priority_fn(shard_idx, shard_writer.num_chunks)
+    def enqueue_process_batch(batch, idx):
+        priority = priority_fn(shard_idx, idx)
         output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
         preprocessed_batch_futures_queue.put(_RefBox(output_batch_future))
 
     logger.info(f"Starting to get rows for shard {shard_name}")
     target_batch_size = min(processor.batch_size, rows_per_chunk)
     batch = []
+    batch_idx = 0
 
     for row in shard_iter:
         batch.append(row)
 
         if len(batch) == target_batch_size:
-            enqueue_process_batch(batch)
+            enqueue_process_batch(batch, batch_idx)
+            batch_idx += 1
             batch = []
 
     if batch:
-        enqueue_process_batch(batch)
+        enqueue_process_batch(batch, batch_idx)
+        del batch
 
     preprocessed_batch_futures_queue.put(None)
     ray.get(writer_loop_cert)
@@ -713,8 +716,8 @@ class ChunkCacheBuilder:
 
             num_shards = len(source.shard_names)
 
-            def priority_fn(shard_idx, chunk_idx):
-                return chunk_idx * num_shards + shard_idx
+            def priority_fn(shard_idx, batch_idx):
+                return batch_idx * num_shards + shard_idx
 
             for shard_idx, shard_name in enumerate(source.shard_names):
                 self._current_round_robin.append(shard_name)
