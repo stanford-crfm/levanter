@@ -38,6 +38,7 @@ import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
+from ray.exceptions import GetTimeoutError
 from ray.util.queue import Queue
 from rich.progress import (
     BarColumn,
@@ -1065,10 +1066,25 @@ class ShardCache(Iterable[pa.RecordBatch]):
             return self._ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
-            chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=timeout)
-            if chunk is None:
-                raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
-            return chunk
+            time_in = time.time()
+            # we want to also log if we're waiting for a long time, so we do this in a loop
+            while timeout is None or time.time() - time_in < timeout:
+                current_timeout = 10.0  # be generous
+                if timeout is not None:
+                    current_timeout = min(current_timeout, timeout - (time.time() - time_in))
+                try:
+                    chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
+                except GetTimeoutError:
+                    logger.warning(f"Waiting for chunk {mapped_index} after {time.time() - time_in} seconds")
+                    continue
+
+                if chunk is None:
+                    raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
+
+                return chunk
+
+            if timeout is not None:
+                raise TimeoutError(f"Timeout while waiting for chunk {mapped_index}")
 
     async def get_chunk_async(self, index: int) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
