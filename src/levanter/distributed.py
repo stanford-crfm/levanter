@@ -189,7 +189,7 @@ def auto_ray_cluster(
 
                 ray_port = _choose_port(port + 10234)
                 address = f"{host}:{ray_port}"
-                
+
                 if cluster_type.get_process_id() == 0:
                     # Explicitly setting the number of CPUs on ray init stops init errors
                     #num_cpus = max(1, os.cpu_count() - 2)
