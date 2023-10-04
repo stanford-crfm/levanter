@@ -357,17 +357,23 @@ def _produce_chunks_for_shard(
             gc.collect()
 
     logger.info(f"Starting to get rows for shard {shard_name}")
-    for row in shard_iter:
-        batch.append(row)
+    try:
+        for row in shard_iter:
+            batch.append(row)
 
-        if len(batch) % 20 == 0:
-            print(f"batch: {len(batch)}")
+            if len(batch) % 20 == 0:
+                print(f"batch: {len(batch)}")
 
-        if len(batch) == target_batch_size:
-            print("batch")
-            do_preprocess(batch)
-            print("done batch")
-            batch = []
+            if len(batch) == target_batch_size:
+                print("batch")
+                do_preprocess(batch)
+                print("done batch")
+                batch = []
+    except Exception as e:
+        print("exception")
+        logger.exception(f"Error while processing shard {shard_name}")
+        ray.get(sink.shard_failed.remote(shard_name, _exc_info()))
+        raise e
 
     if batch:
         print("tiny batch")
