@@ -11,6 +11,7 @@ import ray
 from jax._src import clusters
 from jax._src.clusters import SlurmCluster, TpuCluster
 
+from levanter.utils.py_utils import logical_cpu_core_count
 
 logger = logging.getLogger(__name__)
 
@@ -188,10 +189,13 @@ def auto_ray_cluster(
 
                 ray_port = _choose_port(port + 10234)
                 address = f"{host}:{ray_port}"
+                
+                num_cpus = max(1, logical_cpu_core_count() - 2)
+                logger.info("Starting ray with num_cpus set to {num_cpus}.")
 
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
-                    os.system(f"ray start --head --port {ray_port} --num-cpus 30")
+                    os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
