@@ -1057,11 +1057,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
         yield from self._read_chunk(chunk)
 
     def _map_index(self, index):
-        print(
-            f"Mapping index {index} to {index * self._num_readers + self._reader_offset}"
-            f" {self._num_readers} {self._reader_offset}",
-            flush=True,
-        )
         return index * self._num_readers + self._reader_offset
 
     def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
