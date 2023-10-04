@@ -1069,13 +1069,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
             time_in = time.time()
             # we want to also log if we're waiting for a long time, so we do this in a loop
             while timeout is None or time.time() - time_in < timeout:
-                current_timeout = 10.0  # be generous
+                current_timeout = 20.0  # be generous
                 if timeout is not None:
                     current_timeout = min(current_timeout, timeout - (time.time() - time_in))
                 try:
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
-                    logger.warning(f"Waiting for chunk {mapped_index} after {time.time() - time_in} seconds")
+                    logger.warning(f"Waiting for chunk {mapped_index} after {int(time.time() - time_in)} seconds")
                     continue
 
                 if chunk is None:
