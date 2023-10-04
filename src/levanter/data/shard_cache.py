@@ -1,7 +1,6 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import asyncio
 import dataclasses
-import gc
 import logging
 import os
 import sys
@@ -39,6 +38,7 @@ import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
+from ray.util.queue import Queue
 from rich.progress import (
     BarColumn,
     Progress,
@@ -315,74 +315,71 @@ def _produce_chunks_for_shard(
     else:
         logger.info(f"Starting shard {shard_name}")
     shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
-    target_batch_size = min(processor.batch_size, rows_per_chunk)
-    writer: Optional[_ChunkWriter] = None
-    batch = []
+
+    # TODO: make configurable
+    preprocessed_batch_futures_queue = Queue(maxsize=20)
 
     def yield_chunk(chunk: ChunkMetadata):
-        nonlocal total_rows_written
-        total_rows_written += chunk.num_rows
         logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
+        return chunk.num_rows
 
-    def do_preprocess(batch):
-        nonlocal writer
+    # consumer: writes chunks and yields them to sink
+    @ray.remote(num_cpus=0.0)
+    def _writer_loop(queue):
+        writer: Optional[_ChunkWriter] = None
 
-        # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
-        # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
-        # other shards since we want to stream them round-robin
-        priority = priority_fn(shard_idx, shard_writer.num_chunks)
-        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        output_batch = ray.get(output_batch_future)
-        del batch
+        while True:
+            record_batch = queue.get()
 
-        record_batch = _as_record_batch(output_batch)
-        del output_batch_future
-        del output_batch
+            if record_batch is None:
+                break
 
-        if writer is None:
-            chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
-            writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
-            writer.__enter__()
+            record_batch = ray.get(record_batch.ref)
 
-        writer.write_batch(record_batch)
-        del record_batch
+            if writer is None:
+                chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
+                writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
+                writer.__enter__()
+            writer.write_batch(record_batch)
+            del record_batch
 
-        if writer.num_rows >= rows_per_chunk:
+            if writer.num_rows >= rows_per_chunk:
+                writer.__exit__(None, None, None)
+                chunk = writer.get_metadata()
+                writer = None
+                yield_chunk(chunk)
+
+        if writer is not None:
             writer.__exit__(None, None, None)
             chunk = writer.get_metadata()
-            writer = None
             yield_chunk(chunk)
-            gc.collect()
+
+    writer_loop_cert = _writer_loop.remote(preprocessed_batch_futures_queue)
+
+    # below is producer
+    def enqueue_process_batch(batch):
+        priority = priority_fn(shard_idx, shard_writer.num_chunks)
+        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
+        preprocessed_batch_futures_queue.put(_RefBox(output_batch_future))
 
     logger.info(f"Starting to get rows for shard {shard_name}")
-    try:
-        for row in shard_iter:
-            batch.append(row)
+    target_batch_size = min(processor.batch_size, rows_per_chunk)
+    batch = []
 
-            if len(batch) % 20 == 0:
-                print(f"batch: {len(batch)}", flush=True)
+    for row in shard_iter:
+        batch.append(row)
 
-            if len(batch) == target_batch_size:
-                print("batch")
-                do_preprocess(batch)
-                print("done batch")
-                batch = []
-    except Exception as e:
-        print("exception", flush=True)
-        logger.exception(f"Error while processing shard {shard_name}")
-        ray.get(sink.shard_failed.remote(shard_name, _exc_info()))
-        raise e
+        if len(batch) == target_batch_size:
+            enqueue_process_batch(batch)
+            batch = []
 
     if batch:
-        print("tiny batch", flush=True)
-        do_preprocess(batch)
-    if writer is not None:
-        writer.__exit__(None, None, None)
-        chunk = writer.get_metadata()
-        writer = None
-        yield_chunk(chunk)
+        enqueue_process_batch(batch)
+
+    preprocessed_batch_futures_queue.put(None)
+    ray.get(writer_loop_cert)
 
 
 def _as_record_batch(doc: Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]) -> pa.RecordBatch:
@@ -605,7 +602,9 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
     def process_task(batch: List[T]) -> pa.RecordBatch:
         logging.basicConfig(level=logging.INFO)
         ray.get(queue.task_running.remote())
-        return processor(batch)
+        result = processor(batch)
+        del batch
+        return _as_record_batch(result)
 
     return process_task
 
@@ -615,6 +614,7 @@ class _QueueItem:
     priority: float
     batch: ray.ObjectRef = dataclasses.field(compare=False)
     task_id: int
+    task_future: asyncio.Future
 
 
 @dataclass
@@ -637,7 +637,6 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
     pqueue: PriorityQueue[_QueueItem]
     processor: BatchProcessor
-    task_futures: Dict[int, asyncio.Future]
     _next_task_id: int
     ready: bool  # whether or not we can spin up a new task
 
@@ -648,7 +647,6 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     def __init__(self, batch_processor: BatchProcessor[T]):
         self.pqueue = PriorityQueue()
         self.processor = batch_processor
-        self.task_futures = {}
         self._next_task_id = 0
         self.ready = True  # whether we're ready to ask ray to start a new task
         self_ref = ray.runtime_context.get_runtime_context().current_actor
@@ -661,18 +659,17 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
         starts, not when it finishes. You then call ray.get on the future's result to get the actual batch."""
         task_id = self._next_task_id
         self._next_task_id += 1
-        self.pqueue.put(_QueueItem(priority, batch.ref, task_id))
-        self.task_futures[task_id] = asyncio.Future()
+        f: asyncio.Future = asyncio.Future()
+        self.pqueue.put(_QueueItem(priority, batch.ref, task_id, f))
         self._maybe_start_task()
-        return await self.task_futures[task_id]
+        return await f
 
     def _maybe_start_task(self):
         if self.ready and not self.pqueue.empty():
             self.ready = False
             item = self.pqueue.get()
-            task_id = item.task_id
             batch = item.batch
-            self.task_futures[task_id].set_result(self._task_processor.remote(batch))
+            item.task_future.set_result(self._task_processor.remote(batch))
 
     def task_running(self):
         self.ready = True
