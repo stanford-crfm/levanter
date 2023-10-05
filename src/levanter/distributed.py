@@ -207,7 +207,7 @@ def auto_ray_cluster(
                         f"Starting ray worker and connecting to {address}."
                         f" We are process {cluster_type.get_process_id()}."
                     )
-                    os.system(f"ray start --address {address}")
+                    os.system(f"ray start --address {address} --num-cpus {num_cpus}")
 
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
