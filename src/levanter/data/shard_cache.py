@@ -1175,7 +1175,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
             return self
 
         new_num_readers = self._num_readers * num_readers
-        new_offset = self._num_readers * offset + self._reader_offset
+        new_offset = self._reader_offset * num_readers + offset
         return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
 
     def unshard(self):
