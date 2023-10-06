@@ -667,13 +667,6 @@ class OptimizerConfig:
 
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
-    def _convert_warmup(self, num_train_steps: int):
-        if self.warmup_ratio is not None:
-            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
-            return int(self.warmup_ratio * num_train_steps)
-        else:
-            return _convert_ratio_or_steps(self.warmup, num_train_steps)
-
     def lr_scheduler(self, num_train_steps):
         warmup_steps = self._convert_warmup(num_train_steps)
         cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
@@ -712,6 +705,13 @@ class OptimizerConfig:
 
         return schedule
 
+    def _convert_warmup(self, num_train_steps: int):
+        if self.warmup_ratio is not None:
+            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
+            return int(self.warmup_ratio * num_train_steps)
+        else:
+            return _convert_ratio_or_steps(self.warmup, num_train_steps)
+
 
 def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0):
     def schedule(count):
@@ -722,7 +722,6 @@ def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0):
 
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
-
 
 
 def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
