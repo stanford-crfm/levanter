@@ -7,23 +7,9 @@ data_mixture:
     redpajama: 0.4
 model:
   type: gpt2
-  hidden_dim: 768
-  num_heads: 12
-  num_layers: 12
-  seq_len: 1024
-  gradient_checkpointing: true
-  scale_attn_by_inverse_layer_idx: true
+  hidden_dim: 32
+  num_heads: 4
+  num_layers: 2
 trainer:
-  wandb:
-    project: "levanter"
-    tags: [ "openwebtext", "wikitext", "data_mix", "gpt2"]
-
-  mp: p=f32,c=bfloat16
-  model_axis_size: 1
-  per_device_parallelism: 4
-
-  train_batch_size: 512
-optimizer:
-  learning_rate: 6E-4
-  weight_decay: 0.1
-  min_lr_ratio: 0.1
+  num_train_steps: 100
+  train_batch_size: 32
