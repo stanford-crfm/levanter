@@ -17,6 +17,7 @@ import numpy as np
 import optax
 import wandb
 from draccus import field
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
@@ -523,8 +524,9 @@ class TrainerConfig:
         return Axis("batch", self.eval_batch_size)
 
     def initialize(self, all_config):
-        """Initializes jax, wandb, logging, setting the run name in the process"""
+        """Initializes jax, wandb, logging, setting the run name/id in the process"""
         self.distributed.initialize()
+        self._maybe_set_id()
         self.ray.initialize()
         self._initialize_jax_config()
         self._validate_and_set_defaults()
@@ -598,7 +600,13 @@ class TrainerConfig:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
 
-    def __post_init__(self):
+    def _maybe_set_id(self):
+        # always do this so we don't get weird hangs if the id isn't set right
+        # for random ids, we want to ensure that all hosts have the same id
+        # NB: do NOT use the run seed here. we want the run id to be independent of the seed
+        seed = np.random.randint(0, 2**31 - 1)
+        seed = multihost_utils.broadcast_one_to_all(jax.numpy.array(seed, dtype=np.int32)).item()
+
         # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
         if self.id is None:
             # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
@@ -608,8 +616,10 @@ class TrainerConfig:
                 self.id = self.wandb.id
             else:
                 # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
-                # NB: do NOT use the seed here. we want the run id to be independent of the seed
-                self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
+                # we also want to ensure that all hosts have the same run id
+                # we do this by syncing a random seed across all hosts and then using that to generate the run id
+                gen = np.random.default_rng(seed)
+                self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
 
