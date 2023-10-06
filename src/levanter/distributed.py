@@ -11,6 +11,8 @@ import ray
 from jax._src import clusters
 from jax._src.clusters import SlurmCluster, TpuCluster
 
+from levanter.utils.py_utils import logical_cpu_core_count
+
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +191,15 @@ def auto_ray_cluster(
                 ray_port = _choose_port(port + 10234)
                 address = f"{host}:{ray_port}"
 
+                # Explicitly setting the number of CPUs on ray init stops init errors
+                num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
+                if num_cpus is None:
+                    num_cpus = logical_cpu_core_count()
+
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
-                    os.system(f"ray start --head --port {ray_port}")
+                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
+                    os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
@@ -199,7 +207,8 @@ def auto_ray_cluster(
                         f"Starting ray worker and connecting to {address}."
                         f" We are process {cluster_type.get_process_id()}."
                     )
-                    os.system(f"ray start --address {address}")
+                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
+                    os.system(f"ray start --address {address} --num-cpus {num_cpus}")
 
     logger.info(f"ray.init(address='{address}', **{kwargs})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
