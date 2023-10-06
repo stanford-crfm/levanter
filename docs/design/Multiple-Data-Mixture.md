@@ -35,20 +35,8 @@ users to tune the weights.
 ```yaml
 data_mixture:
   configs:
-    pile:
-      train_urls:
-        - gs://levanter-data/pile/train/{00..29}.jsonl.zst
-      validation_urls:
-        - gs://levanter-data/pile/val.jsonl.zst
-      cache_dir: "gs://levanter-data/tokenized/pile-old/"
-      tokenizer: "EleutherAI/gpt-neox-20b"
-    redpajama:
-      id: togethercomputer/RedPajama-Data-1T
-      cache_dir: gs://levanter-data/tokenized/redpajama/
-      tokenizer: EleutherAI/gpt-neox-20b
-      splits:
-        - train
-      rows_per_chunk: 4096
+    owt: !include data/openwebtext_source.yaml
+    pile: !include data/pile_source_old.yaml
   weights:
     pile: 0.6
     redpajama: 0.4
