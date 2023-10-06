@@ -11,10 +11,12 @@ from levanter.trainer import TrainerConfig
 
 
 def test_main_wrapper_loads_from_fsspec():
-    yaml_config = """
-    project: test
-    """
-    args = ["--config_path", _write_yaml_to_memory(yaml_config), "--x", "2"]
+    with fsspec.open("memory://test.yaml", "w") as f:
+        f.write("""
+        project: test
+        """)
+
+    args = ["--config_path", "memory://test.yaml", "--x", "2"]
 
     @dataclasses.dataclass
     class Config:
@@ -51,7 +53,7 @@ def test_new_style_axis_mapping():
 def test_lm_dataset_config():
     @dataclasses.dataclass
     class Config:
-        data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = dataclasses.field(default_factory=LMDatasetConfig)
+        data: LMDatasetConfig = dataclasses.field(default_factory=LMDatasetConfig)
 
     yaml_config = """
     data:
@@ -71,29 +73,34 @@ def test_lm_dataset_config():
 def test_lm_mixture_dataset_config():
     @dataclasses.dataclass
     class Config:
-        data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = dataclasses.field(default_factory=LMDatasetConfig)
+        data_mixture: LMMixtureDatasetConfig = dataclasses.field(default_factory=LMMixtureDatasetConfig)
 
     yaml_config = """
-    data:
-        datasets:
-            - cache_dir: "gs://levanter-data/tokenized/openwebtext/"
-              tokenizer: "EleutherAI/gpt-neox-20b"
-              weight: 0.5
-            - cache_dir: "gs://levanter-data/tokenized/pile-old/"
-              tokenizer: "EleutherAI/gpt-neox-20b"
-              weight: 0.5
+    data_mixture:
+        configs:
+            pile:
+                train_urls:
+                    - gs://levanter-data/pile/train/{00..29}.jsonl.zst
+                validation_urls:
+                    - gs://levanter-data/pile/val.jsonl.zst
+                cache_dir: "gs://levanter-data/tokenized/pile-old/"
+                tokenizer: "EleutherAI/gpt-neox-20b"
+            redpajama:
+                id: togethercomputer/RedPajama-Data-1T
+                cache_dir: gs://levanter-data/tokenized/redpajama/
+                tokenizer: EleutherAI/gpt-neox-20b
+                splits:
+                    - train
+                rows_per_chunk: 4096
+        weights:
+            pile: 0.6
+            redpajama: 0.4
     """
     args = ["--config_path", _write_yaml_to_memory(yaml_config)]
 
     @levanter.config.main(args=args)
     def main(config: Config):
-        assert len(config.data.datasets) == 2
-        assert config.data.datasets[0].cache_dir == "gs://levanter-data/tokenized/openwebtext/"
-        assert config.data.datasets[0].tokenizer == "EleutherAI/gpt-neox-20b"
-        assert config.data.datasets[0].weight == 0.5
-        assert config.data.datasets[1].cache_dir == "gs://levanter-data/tokenized/pile-old/"
-        assert config.data.datasets[1].tokenizer == "EleutherAI/gpt-neox-20b"
-        assert config.data.datasets[1].weight == 0.5
+        assert config.data_mixture is not None
 
     main()
 

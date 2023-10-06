@@ -28,38 +28,30 @@ as specified in the [Data Loader design](Data-Loader-Design.md).
 
 ## Design and Implementation
 ### Configuration
-Currently, in a configuration file, under "data" section, users would only specify a single dataset,
-for example:
+We introduce a new `data-mixture` field in the configuration file, which takes in datasets and their
+weights. We separate the configuration of datasets and their weights to make it more flexible for
+users to tune the weights.
 
 ```yaml
-data:
-  train_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-      - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-  cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
-```
-
-In the new design, users can specify multiple datasets as a list of LMDatasetConfig. Within
-each LMDatasetConfig, users can specify the weight of each dataset, for example:
-
-```yaml
-data:
-  datasets:
-    - name: "openwebtext"
-      weight: 0.5
+data_mixture:
+  configs:
+    pile:
       train_urls:
-        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+        - gs://levanter-data/pile/train/{00..29}.jsonl.zst
       validation_urls:
-          - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-      cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
-    - name: "reddit"
-      weight: 0.5
-      train_urls:
-        - "gs://pubmed-mosaic/reddit-sharded/reddit_train.{1..128}-of-128.jsonl.gz"
-      validation_urls:
-        - "gs://pubmed-mosaic/reddit-sharded/reddit_val.{1..8}-of-8.jsonl.gz"
-      cache_dir: "gs://pubmed-mosaic/tokenized/reddit/"
+        - gs://levanter-data/pile/val.jsonl.zst
+      cache_dir: "gs://levanter-data/tokenized/pile-old/"
+      tokenizer: "EleutherAI/gpt-neox-20b"
+    redpajama:
+      id: togethercomputer/RedPajama-Data-1T
+      cache_dir: gs://levanter-data/tokenized/redpajama/
+      tokenizer: EleutherAI/gpt-neox-20b
+      splits:
+        - train
+      rows_per_chunk: 4096
+  weights:
+    pile: 0.6
+    redpajama: 0.4
 ```
 
 Note that this design is backward compatible, as users can still specify a single dataset in the

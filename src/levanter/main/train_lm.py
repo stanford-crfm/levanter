@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data_mixture: LMMixtureDatasetConfig = field(default_factory=LMMixtureDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -98,12 +99,6 @@ def main(config: TrainLmConfig):
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
-    train_loader = ShardedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos),
-        config.trainer.device_mesh,
-        Batch,
-        compute_axis_mapping,
-    )
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp

@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Union
 
 import braceexpand
 import datasets
@@ -254,7 +254,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         return np.random.choice(len(weights), p=weights)
 
     @property
-    def item_shape(self) -> PyTree:
+    def item_shape(self):
         return ShapeSpec((self.seq_len,), np.int32)
 
 
@@ -642,39 +642,19 @@ class LMDatasetConfig:
 @dataclass
 class LMMixtureDatasetConfig:
     """This class represents a mixture of datasets with their associated weights.
-    It provides a consistent interface as LMDatasetConfig.
     """
-
-    datasets: List[LMDatasetConfig]
+    configs: Dict[str, LMDatasetConfig]
+    weights: Dict[str, float]
 
     def __post_init__(self):
-        if len(self.datasets) == 0:
-            raise ValueError("Must provide at least one dataset")
-
-        self.weights = [d.weight for d in self.datasets]
-
-        # ensure all datasets use the same tokenizer
-        if len(set([d.tokenizer for d in self.datasets])) != 1:
-            raise ValueError("All datasets must use the same tokenizer")
-
-    @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.datasets[0].tokenizer)
-
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> MixtureDataset:
-        doc_caches = self.build_or_load_cache(split, monitors=monitors)
-        return MixtureDataset(doc_caches=doc_caches, seq_len=seq_len, weights=self.weights)
-
-    def build_or_load_cache(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> List[Optional[TokenizedDocumentCache]]:
-        caches = []
-        for d in self.datasets:
-            cache = d.build_or_load_cache(split, monitors)
-            caches.append(cache)
-        return caches
+        # check the number of keys in configs and weights
+        if len(self.configs) == 0:
+            raise ValueError("At least one dataset must be provided")
+        
+        # the keys in configs and weights must be the same
+        if set(self.configs.keys()) != set(self.weights.keys()):
+            raise ValueError("The keys in configs and weights must be the same;"
+                             f"got {self.configs.keys()} and {self.weights.keys()}")
 
 
 class HFDatasetDataSource(ShardedDataSource[str]):
