@@ -637,6 +637,8 @@ class LMDatasetConfig:
             return HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream).map(
                 lambda x: x[self.text_key]
             )
+        else:
+            return TextUrlDataSource(self.urls_for_split(split), self.text_key)
 
 
 @dataclass
@@ -655,67 +657,3 @@ class LMMixtureDatasetConfig:
         if set(self.configs.keys()) != set(self.weights.keys()):
             raise ValueError("The keys in configs and weights must be the same;"
                              f"got {self.configs.keys()} and {self.weights.keys()}")
-
-
-class HFDatasetDataSource(ShardedDataSource[str]):
-    """
-    This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
-    Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
-    for all other datasets.
-    """
-
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-        self._shard_names = self._compute_shard_names()
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return self._shard_names
-
-    def _compute_shard_names(self):
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset):
-            try:
-                return [str(i) for i in range(dataset.n_shards)]
-            except NotImplementedError:
-                return ["data"]
-        else:
-            return ["data"]
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
-            shard = dataset._ex_iterable.shard_data_sources([int(shard_name)])
-        else:
-            shard = dataset
-
-        idx = 0
-        for _, doc in shard:
-            if idx >= row:
-                yield doc[self.config.text_key]
-            idx += 1
-
-    def _load_dataset(self):
-        # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing and stuff
-        # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(
-            self.config.id, split=self.split, name=self.config.name, streaming=self.config.stream
-        )
-
-
-class TextDataSource(ShardedDataSource[str]):
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-        self._shard_name_to_url_mapping = {}
-
-        urls = config.urls_for_split(split)
-
-        # remove common prefix
-        if len(urls) == 1:
-            common_prefix = os.path.dirname(urls[0])
-        else:
-            return TextUrlDataSource(self.urls_for_split(split), self.text_key)
