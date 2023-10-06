@@ -1,0 +1,27 @@
+data:
+  train_urls:
+    - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_train.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+    - "gs://pubmed-mosaic/pubmed-sharded/pubmedRandomized_val.{1..8}-of-8.jsonl.gz"
+  cache_dir: "gs://pubmed-mosaic/tokenized/pubmed-sharded-neox/"
+  tokenizer: "EleutherAI/gpt-neox-20b"
+model:
+  type: mpt
+initialize_from_hf: "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2"
+use_hf_model_config: true
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["pubmed", "mpt", "continued"]
+
+  mp: p=f32,c=bfloat16
+
+  model_axis_size: 1
+  per_device_parallelism: 8
+
+  train_batch_size: 2048
+  num_train_steps: 50000
+  steps_per_eval: 1000
+optimizer:
+  learning_rate: 1.2e-5
+  weight_decay: 0.1

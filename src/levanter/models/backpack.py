@@ -1,4 +1,4 @@
-import math
+import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
@@ -14,18 +14,17 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
-from haliax.util import ensure_tuple
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
-    flatten_linear_layer,
-    reshape_mlp_linear_layer,
-    unflatten_linear_layer,
+    flatten_linear_layers,
+    unflatten_linear_layers,
 )
-from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Embeddings, Gpt2Transformer
+from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -131,14 +130,13 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
         d = {}
-        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
         d.update(
-            reshape_mlp_linear_layer(state_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), out_dims)
+            unflatten_linear_layers(
+                apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, out_dims_first_in_dict=False
+            )
         )
         d.update(
-            reshape_mlp_linear_layer(
-                state_dict, apply_prefix(prefix, "c_fc"), (self.c_fc.In.size,), (self.c_fc.Out.size,)
-            )
+            unflatten_linear_layers(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
         )
         return super().from_state_dict(d, prefix)
 
@@ -146,18 +144,10 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        out_dims = tuple(x.size for x in ensure_tuple(self.c_proj.Out))
-
         my_dict.update(
-            reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_proj"), (self.c_proj.In.size,), (math.prod(out_dims),)
-            )
+            flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False)
         )
-        my_dict.update(
-            reshape_mlp_linear_layer(
-                my_dict, apply_prefix(prefix, "c_fc"), (self.c_fc.In.size,), (self.c_fc.Out.size,)
-            )
-        )
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
 
         state_dict.update(my_dict)
         return state_dict
@@ -189,7 +179,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
@@ -210,18 +200,16 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         attn_scores = hax.dot("head_dim", q, k)
 
         if mask is not None:
+            mask = materialize_mask(mask)
             attn_scores = attn_scores + (1.0 - mask) * -1e15
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        attn_weights = self.dropout(attn_weights, key=key)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        d = {}
-        d.update(
-            unflatten_linear_layer(
-                apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
-            )
+        d = unflatten_linear_layers(
+            apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
         )
         return super().from_state_dict(d, prefix)
 
@@ -231,7 +219,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layer(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
 
         state_dict.update(my_dict)
         return state_dict
@@ -265,13 +253,13 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         return NoMixBlock(ln_1=ln_1, ln_2=ln_2, mlp=mlp, resid_dropout1=resid_dropout1, resid_dropout2=resid_dropout2)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, residual: NamedArray, inference, *, key):
+    def __call__(self, hidden_states: NamedArray, residual: NamedArray, *, key):
         k1, k2 = haliax.jax_utils.maybe_rng_split(key, 2)
 
-        residual = self.resid_dropout1(hidden_states, key=k1, inference=inference) + residual
+        residual = self.resid_dropout1(hidden_states, key=k1) + residual
         hidden_states = self.ln_1(residual)
         mlp_out = self.mlp(hidden_states)
-        residual = self.resid_dropout2(mlp_out, key=k2, inference=inference) + residual
+        residual = self.resid_dropout2(mlp_out, key=k2) + residual
         hidden_states = self.ln_2(residual)
 
         return hidden_states
@@ -315,18 +303,21 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def sense_embed(self, input_embeds, inference, *, key):
+    def sense_embed(self, input_embeds, *, key):
         hidden_states = self.ln(input_embeds)
-        hidden_states = self.block(hidden_states, input_embeds, inference=inference, key=key)
+        hidden_states = self.block(hidden_states, input_embeds, key=key)
         senses = self.final_mlp(hidden_states)
 
         return senses
 
 
-class BackpackGpt2Embeddings(Gpt2Embeddings):
-    """
-    We want to re-use the Gpt2Embeddings class, but we need to add a new method to only embed the input_ids.
-    """
+class BackpackGpt2Embeddings(eqx.Module):
+    Vocab: Axis = eqx.static_field()
+    config: Gpt2Config = eqx.static_field()
+
+    token_embeddings: NamedArray
+    position_embeddings: NamedArray
+    dropout: hnn.Dropout
 
     @staticmethod
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "BackpackGpt2Embeddings":
@@ -342,6 +333,25 @@ class BackpackGpt2Embeddings(Gpt2Embeddings):
     def embed_input_ids(self, input_ids: NamedArray) -> NamedArray:
         return self.token_embeddings.take("vocab", input_ids)
 
+    @named_call
+    def embed(self, input_ids, *, key):
+        input_embeds = self.token_embeddings.take("vocab", input_ids)
+        position_embeds = self.position_embeddings
+        x = input_embeds + position_embeds
+        x = self.dropout(x, key=key)
+
+        return x
+
+    def unembed(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_embeddings)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+
+    def resize_embeddings(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+
 
 class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     transformer: Gpt2Transformer
@@ -352,10 +362,6 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
     @property
     def config(self):
         return self.transformer.config
-
-    @property
-    def vocab_size(self) -> int:
-        return self.embeddings.Vocab.size
 
     @property
     def Vocab(self) -> Axis:
@@ -393,26 +399,19 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         )
 
     @named_call
-    def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
-    ) -> NamedArray:
-        if not inference and key is None:
-            raise ValueError("key must be provided for training")
-
+    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
 
         # Compute contextualization weights
-        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
+        hidden_states = self.embeddings.embed(input_ids, key=k_embed)
+        hidden_states = self.transformer(hidden_states, attn_mask, key=k_transformer)
         contextualization_weights = self.kq_selfattention(
-            hidden_states, mask=attn_mask, inference=inference, layer_idx=self.config.num_layers, key=k_sa
+            hidden_states, mask=attn_mask, layer_idx=self.config.num_layers, key=k_sa
         )  # (seq, seq, senses)
 
         ## Compute sense vectors
         sense_input_embeds = self.embeddings.embed_input_ids(input_ids)  # (seq, embed
-        sense_vectors = self.sense_net.sense_embed(
-            sense_input_embeds, inference=inference, key=k_senses
-        )  # (seq, senses, embed)
+        sense_vectors = self.sense_net.sense_embed(sense_input_embeds, key=k_senses)  # (seq, senses, embed)
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
@@ -426,6 +425,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         lm_logits = self.embeddings.unembed(hidden_states)
 
         return lm_logits
+
+    def resize_vocab(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
+        return dataclasses.replace(self, embeddings=new_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {

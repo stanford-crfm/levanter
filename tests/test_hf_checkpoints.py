@@ -1,14 +1,17 @@
 import tempfile
 
+import jax.numpy as jnp
 import numpy as np
 import numpy.testing
+import pytest
 from jax.random import PRNGKey
 
 import haliax
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, _convert_to_jnp
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.mpt import MptConfig, MptLmHeadModel
+from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
 
@@ -59,8 +62,8 @@ def test_save_model_with_code():
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
         causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
         np.testing.assert_equal(
-            np.array(lev_model(input, causal_mask, inference=True).array),
-            np.array(loaded_model(input, causal_mask, inference=True).array),
+            np.array(lev_model(input, causal_mask).array),
+            np.array(loaded_model(input, causal_mask).array),
         )
 
         # now double check that the pytorch model is the same
@@ -103,6 +106,7 @@ def test_save_backpack_model_with_code():
     Vocab = converter.Vocab
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    lev_model = inference_mode(lev_model, True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         converter._save_pretrained_local(lev_model, tmpdir)
@@ -111,6 +115,7 @@ def test_save_backpack_model_with_code():
 
         assert new_converter.config_from_hf_config(config) == lev_config
         loaded_model = new_converter.load_pretrained(BackpackLMHeadModel)
+        loaded_model = inference_mode(loaded_model, True)
 
         assert loaded_model.config == lev_model.config
         assert loaded_model.Vocab == lev_model.Vocab
@@ -118,8 +123,8 @@ def test_save_backpack_model_with_code():
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
         causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
         np.testing.assert_equal(
-            np.array(lev_model(input, causal_mask, inference=True, key=None).array),
-            np.array(loaded_model(input, causal_mask, inference=True, key=None).array),
+            np.array(lev_model(input, causal_mask, key=None).array),
+            np.array(loaded_model(input, causal_mask, key=None).array),
         )
 
         # now double check that the pytorch model is the same
@@ -129,3 +134,17 @@ def test_save_backpack_model_with_code():
         np.testing.assert_allclose(
             model(torch_input).logits[0].detach().numpy(), loaded_model(torch_input).logits[0].detach().numpy()
         )
+
+
+@skip_if_no_torch
+def test_conversion_to_jnp_bfloat16():
+    import torch
+
+    x = torch.arange(10, dtype=torch.bfloat16) / 3.14
+    with pytest.raises(TypeError):
+        x.cpu().numpy()
+
+    x_jnp = _convert_to_jnp(x)
+    assert x_jnp.dtype == jnp.bfloat16
+    assert x_jnp.shape == x.shape
+    assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)

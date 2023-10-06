@@ -12,6 +12,7 @@ from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.tree_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
@@ -33,7 +34,7 @@ def test_backpack_predict():
 
     def compute(input):
         return hax.nn.softmax(
-            model(input, inference=True, key=None, attn_mask=attn_mask),
+            model(input, key=None, attn_mask=attn_mask),
             axis=model.Vocab,
         )
 
@@ -92,11 +93,12 @@ def test_backpack_nano_compare():
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    lev_model = inference_mode(lev_model, True)
 
     hax_input = haliax.named(input, lev_config.Pos)
     attn_mask = hax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
     with jax.disable_jit():
-        lev_out = lev_model(hax_input, attn_mask=attn_mask, inference=True, key=None).array
+        lev_out = lev_model(hax_input, attn_mask=attn_mask, key=None).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-2, rtol=1e-2)
 

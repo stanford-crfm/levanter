@@ -3,22 +3,22 @@ import functools as ft
 import json
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple, TypeVar
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 import equinox as eqx
 import jax
 from jax import lax
 from jax import numpy as jnp
-from jax import random as jrandom
-from jax.sharding import PartitionSpec
+from jax._src.array import ArrayImpl
 from jaxtyping import PRNGKeyArray, PyTree
 
-from haliax.jax_utils import is_jax_array_like, shaped_rng_split
-from haliax.util import ensure_tuple
+from haliax.jax_utils import is_jax_array_like
 
 
 def jnp_to_python(a: jnp.ndarray):
-    if a.shape == () or a.shape == (1,):
+    if isinstance(a, (float, int)):
+        return float(a)
+    elif a.shape == () or a.shape == (1,):
         return a.item()
     else:
         return a.tolist()
@@ -37,7 +37,7 @@ def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.devices("cpu")[0]):
+    with jax.default_device(jax.local_devices(backend="cpu")[0]):
         yield
 
 
@@ -55,6 +55,37 @@ def parameter_count(model: PyTree):
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
     leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if is_jax_array_like(x)}
     return sum(x.size for x in leaves.values())
+
+
+def currently_allocated_array_memory(backend=None) -> Mapping[jax.Device, int]:
+    """Returns a mapping from device to the number of bytes currently allocated on that device"""
+    if backend is None:
+        backend = jax.lib.xla_bridge.get_backend()
+
+    result: dict[jax.Device, int] = {}
+
+    array: ArrayImpl
+    for array in backend.live_arrays():
+        for buffer in array.device_buffers:
+            result[buffer.device()] = result.get(buffer.device(), 0) + buffer.nbytes
+
+    return result
+
+
+def format_currently_allocated_array_memory(backend=None) -> str:
+    def _format_bytes(n):
+        if n < 1024:
+            return f"{n}B"
+        elif n < 1024**2:
+            return f"{n / 1024:.2f}KB"
+        elif n < 1024**3:
+            return f"{n / 1024 ** 2:.2f}MB"
+        else:
+            return f"{n / 1024 ** 3:.2f}GB"
+
+    return "\n".join(
+        f"{device}: {_format_bytes(nbytes)}" for device, nbytes in currently_allocated_array_memory(backend).items()
+    )
 
 
 def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
@@ -84,40 +115,6 @@ def set_hardware_rng_ops(enabled: bool = True):
         jax.config.update("jax_default_prng_impl", "unsafe_rbg")
     else:
         jax.config.update("jax_default_prng_impl", "threefry2x32")
-
-
-def global_key_array(key: PRNGKeyArray, global_shape, mesh, mesh_axes):
-    """
-    Create a global array with the given key. This ensures that:
-    * individual keys at positions are unique
-    * the same key is made for the same position in all devices that have that position
-    """
-
-    # add key shape to global_shape and pad out axes
-    global_shape = ensure_tuple(global_shape)
-    orig_global_shape = global_shape
-    global_shape = global_shape + key.shape
-    mesh_axes = list(mesh_axes) + [None] * (len(global_shape) - len(mesh_axes))
-    mesh_axes = PartitionSpec(*mesh_axes)
-
-    assert len(global_shape) == len(mesh_axes)
-
-    def data_callback(index: Tuple[slice, ...]):
-        # we take advantage of the fact that the start indices are non-overlapping across machines (except
-        # when they're identical) so we can use the index to make the keys unique
-        indices = [s.indices(x) for s, x in zip(index, global_shape)]
-        starts = [i[0] for i in indices]
-        base_key = ft.reduce(jrandom.fold_in, (s for s in starts), key)
-
-        assert all(i[2] == 1 for i in indices)
-        lens = [i[1] - i[0] for i in indices]
-        return shaped_rng_split(base_key, lens[0 : len(orig_global_shape)])
-
-    return jax.make_array_from_callback(
-        global_shape,
-        jax.sharding.NamedSharding(mesh=mesh, spec=mesh_axes),
-        data_callback=data_callback,
-    )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -201,30 +198,45 @@ def _isnamedtupleinstance(x):
     return all(type(n) == str for n in f)
 
 
-def leaf_key_paths(pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any], bool]] = None):
+def leaf_key_paths(
+    pytree,
+    prefix: Optional[str] = "",
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+    use_state_dict_keys: bool = False,
+):
     """Creates unique, hopefully meaningful key paths for each leaf in a pytree. This is useful for
     serialization mostly. This functions knows about dicts, lists, NamedTuples, tuples, and equinox-style modules"""
     # TODO: jax now has a tree_flatten_with_path function. We should use that instead
+    rec = lambda x, p: leaf_key_paths(  # noqa: E731
+        x, prefix=join_key(prefix, p), is_leaf=is_leaf, use_state_dict_keys=use_state_dict_keys
+    )
+
     if is_leaf is not None and is_leaf(pytree):
         return prefix
     elif isinstance(pytree, dict):
-        return {k: leaf_key_paths(v, prefix=join_key(prefix, k)) for k, v in pytree.items()}
+        return {k: rec(v, k) for k, v in pytree.items()}
     elif _isnamedtupleinstance(pytree):
-        d = {k: leaf_key_paths(v, prefix=join_key(prefix, k), is_leaf=is_leaf) for k, v in pytree._asdict().items()}
+        d = {k: rec(v, k) for k, v in pytree._asdict().items()}
         return pytree.__class__(**d)
     elif isinstance(pytree, list):
-        return [leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree)]
+        return [rec(v, str(i)) for i, v in enumerate(pytree)]
     elif isinstance(pytree, tuple):
-        return tuple(leaf_key_paths(v, prefix=join_key(prefix, str(i)), is_leaf=is_leaf) for i, v in enumerate(pytree))
+        return tuple(rec(v, str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
         names = []
         rec_values = []
         for field in fields(pytree):
             if field.metadata.get("static", False):
                 continue
-            names.append(field.name)
-            field_prefix = join_key(prefix, field.name)
-            rec_value = leaf_key_paths(getattr(pytree, field.name), prefix=field_prefix, is_leaf=is_leaf)
+            field_name = field.name
+            field = getattr(pytree, field_name)
+            names.append(field_name)
+
+            if use_state_dict_keys and hasattr(pytree, "_state_dict_key_map"):
+                field_name = pytree._state_dict_key_map().get(field_name, field_name)
+
+            rec_value = rec(field, field_name)
             rec_values.append(rec_value)
         return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
@@ -236,7 +248,15 @@ def leaf_key_paths(pytree, prefix: str = "", *, is_leaf: Optional[Callable[[Any]
 
 
 def join_key(prefix, k):
+    if k is None:
+        return prefix
     return f"{prefix}.{k}" if prefix else k
+
+
+def key_iterator(key: PRNGKeyArray):
+    while True:
+        key, subkey = jax.random.split(key)
+        yield subkey
 
 
 # from https://github.com/google/jax/issues/4285
@@ -252,3 +272,16 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def is_inexact_arrayish(x):
+    """
+    Similar to [equinox.is_inexact_array][] but works on anything that has a shape and dtype
+    and the dtype is inexact.
+
+    Specifically, we want to work with [jax.ShapeDtypeStruct][]s, which are not arrays.
+    """
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return jnp.issubdtype(x.dtype, jnp.inexact)
+    else:
+        return False

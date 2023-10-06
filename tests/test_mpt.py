@@ -2,19 +2,18 @@ import tempfile
 
 import jax
 import numpy as np
-import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 
 import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
+from levanter.utils.tree_utils import inference_mode
 from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
-@pytest.mark.parametrize("use_bias", [True, False])
-def test_mpt_nano_compare(use_bias):
+def test_mpt_nano_compare():
     import torch
 
     # conjure up a fake model and compare
@@ -31,7 +30,6 @@ def test_mpt_nano_compare(use_bias):
         n_layers=2,
         attn_config={"attn_impl": "torch", "alibi": True},
         vocab_size=vocab_size,
-        no_bias=not use_bias,
     )
 
     model = cls(config)
@@ -59,12 +57,12 @@ def test_mpt_nano_compare(use_bias):
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
+    lev_model = inference_mode(lev_model, True)
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
-    with jax.disable_jit():
-        lev_out = lev_model(hax_input, causal_mask, inference=True, key=None).array
+    lev_out = lev_model(hax_input, causal_mask).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
@@ -93,12 +91,10 @@ def test_mpt_nano_compare(use_bias):
 #
 #     del model
 #
-#     lev_config = MptConfig.from_torch_config(config)
+#     lev_config = MptConfig.from_hf_config(config)
 #
 #     Vocab = haliax.Axis("vocab", config.vocab_size)
-#     lev_model = MptLmHeadModel(Vocab, lev_config, key=PRNGKey(0))
-#
-#     lev_model = lev_model.from_state_dict(state_dict)
+#     lev_model = MptLmHeadModel.from_hf_pretrained("mosaicml/mpt-7b")
 
 
 @parameterize_with_configs("mpt*.yaml")

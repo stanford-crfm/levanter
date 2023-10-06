@@ -11,6 +11,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.models.backpack import BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_checkpoint_not_accessible, skip_if_hf_model_not_accessible, skip_if_no_torch
 
 
@@ -79,6 +80,9 @@ def test_hf_gpt2_consistency():
 def _compare_models_output(model_1, model_2):
     import torch
 
+    model_1 = inference_mode(model_1, True)
+    model_2 = inference_mode(model_2, True)
+
     input = hax.random.randint(PRNGKey(0), model_1.Pos, 0, model_1.Vocab.size)
     out_1, out_2 = None, None
     if model_1 is not None:
@@ -87,7 +91,7 @@ def _compare_models_output(model_1, model_2):
 
         def compute(input):
             return hax.nn.softmax(
-                model_1(input, inference=True, key=None, attn_mask=attn_mask),
+                model_1(input, key=None, attn_mask=attn_mask),
                 axis=model_1.Vocab,
             )
 
