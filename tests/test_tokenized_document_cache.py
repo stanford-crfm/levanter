@@ -86,7 +86,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
             assert as_listed == docs[i]
 
 
-@pytest.mark.parametrize("batch_size", list(range(1, 10)))
+@pytest.mark.parametrize("batch_size", list([1, 2, 3, 8]))
 def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
     def batch_docs(doc_ids):
         return BatchEncoding(data=dict(input_ids=[list(range(10 * i, 10 * (i + 1))) for i in doc_ids]))

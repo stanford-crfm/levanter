@@ -274,3 +274,21 @@ def test_can_get_chunk_before_finished():
 
         # now wait until the cache is finished. mostly so that the tempdir cleanup works
         cache.await_finished(timeout=10)
+
+
+def test_shard_cache_crashes_if_processor_throws():
+    class ThrowingProcessor(BatchProcessor[Sequence[int]]):
+        def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
+            raise RuntimeError("exc")
+
+        @property
+        def batch_size(self) -> int:
+            return 8
+
+        @property
+        def num_cpus(self) -> int:
+            return 1
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(RuntimeError):
+            build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
