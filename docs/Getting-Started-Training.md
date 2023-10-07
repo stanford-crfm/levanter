@@ -68,7 +68,7 @@ python src/levanter/main/train_lm.py \
 ```
 
 This will overwrite the default checkpoint settings from the `TrainerConfig` and `CheckpointerConfig` in [checkpoint.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/checkpoint.py) to
-save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/${wandb_id}`
+save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/${run_id}`
 
 Note that:
 - The `--trainer.load_checkpoint_path` argument is optional. You only need to specify it if you want to load a checkpoint from a previous
@@ -118,7 +118,6 @@ python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
     --trainer.wandb.project my_project \
     --trainer.wandb.name my_run \
-    --trainer.wandb.id asdf1234 \
     --trainer.wandb.group my_new_exp_group
 ```
 
@@ -128,14 +127,13 @@ For more information on the WandB configuration, please refer to the [WandB docu
 
 ### Resume Training Runs
 When you resume a training run, you may like to restart from a previously saved checking and resume the corresponding WandB run, as well.
-To do so, you can use the following command:
+To do so, you can use the following command. The `trainer.wandb.resume true` is optional, but will make WandB error out if the run ID does not exist.
 
 ```
 python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
-    --trainer.load_checkpoint_path checkpoints/gpt2/wandb_id  \
     --trainer.wandb.resume true \
-    --trainer.wandb.id asdf1234
+    --trainer.id asdf1234
 ```
 
 There are two things to note here:

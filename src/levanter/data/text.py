@@ -493,7 +493,7 @@ class LMDatasetConfig:
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
+    def the_tokenizer(self) -> PreTrainedTokenizerBase:
         if self.tokenizer == "passthrough":
             return PassthroughTokenizer(self.vocab_size)
         else:

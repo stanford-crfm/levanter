@@ -125,7 +125,7 @@ def train(config: TrainArgs):
 
         # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
+            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
             trainer.add_hook(
                 save_peft_checkpoint_callback(
                     full_save_path, config.lora, config.model_name_or_path, config.hf_upload
@@ -135,7 +135,7 @@ def train(config: TrainArgs):
 
         # Save merged HF checkpoints if requested
         if config.merged_hf_save_path is not None:
-            full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
+            full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
             trainer.add_hook(
                 save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
                 every=config.hf_save_steps,

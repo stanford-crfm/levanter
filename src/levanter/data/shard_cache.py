@@ -39,7 +39,6 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 from ray.exceptions import GetTimeoutError
-from ray.util.queue import Queue
 from rich.progress import (
     BarColumn,
     Progress,
@@ -316,74 +315,56 @@ def _produce_chunks_for_shard(
     else:
         logger.info(f"Starting shard {shard_name}")
     shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
-
-    # TODO: make configurable
-    preprocessed_batch_futures_queue = Queue(maxsize=20)
+    target_batch_size = min(processor.batch_size, rows_per_chunk)
+    writer: Optional[_ChunkWriter] = None
+    batch = []
 
     def yield_chunk(chunk: ChunkMetadata):
+        nonlocal total_rows_written
+        total_rows_written += chunk.num_rows
         logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
         return chunk.num_rows
 
-    # consumer: writes chunks and yields them to sink
-    @ray.remote(num_cpus=0.0)
-    def _writer_loop(queue):
-        writer: Optional[_ChunkWriter] = None
+    def do_preprocess(batch):
+        nonlocal writer
 
-        while True:
-            record_batch = queue.get()
+        # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
+        # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
+        # other shards since we want to stream them round-robin
+        priority = priority_fn(shard_idx, shard_writer.num_chunks)
+        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
+        record_batch = ray.get(output_batch_future)
 
-            if record_batch is None:
-                break
+        if writer is None:
+            chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
+            writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
+            writer.__enter__()
 
-            record_batch = ray.get(record_batch.ref)
+        writer.write_batch(record_batch)
 
-            if writer is None:
-                chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
-                writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
-                writer.__enter__()
-            writer.write_batch(record_batch)
-            del record_batch
-
-            if writer.num_rows >= rows_per_chunk:
-                writer.__exit__(None, None, None)
-                chunk = writer.get_metadata()
-                writer = None
-                yield_chunk(chunk)
-
-        if writer is not None:
+        if writer.num_rows >= rows_per_chunk:
             writer.__exit__(None, None, None)
             chunk = writer.get_metadata()
+            writer = None
             yield_chunk(chunk)
 
-    writer_loop_cert = _writer_loop.remote(preprocessed_batch_futures_queue)
-
-    # below is producer
-    def enqueue_process_batch(batch, idx):
-        priority = priority_fn(shard_idx, idx)
-        output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        preprocessed_batch_futures_queue.put(_RefBox(output_batch_future))
-
     logger.info(f"Starting to get rows for shard {shard_name}")
-    target_batch_size = min(processor.batch_size, rows_per_chunk)
-    batch = []
-    batch_idx = 0
-
     for row in shard_iter:
         batch.append(row)
 
         if len(batch) == target_batch_size:
-            enqueue_process_batch(batch, batch_idx)
-            batch_idx += 1
+            do_preprocess(batch)
             batch = []
 
     if batch:
-        enqueue_process_batch(batch, batch_idx)
-        del batch
-
-    preprocessed_batch_futures_queue.put(None)
-    ray.get(writer_loop_cert)
+        do_preprocess(batch)
+    if writer is not None:
+        writer.__exit__(None, None, None)
+        chunk = writer.get_metadata()
+        writer = None
+        yield_chunk(chunk)
 
 
 def _as_record_batch(doc: Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]) -> pa.RecordBatch:
@@ -717,8 +698,8 @@ class ChunkCacheBuilder:
 
             num_shards = len(source.shard_names)
 
-            def priority_fn(shard_idx, batch_idx):
-                return batch_idx * num_shards + shard_idx
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
 
             for shard_idx, shard_name in enumerate(source.shard_names):
                 self._current_round_robin.append(shard_name)
@@ -1057,11 +1038,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
         yield from self._read_chunk(chunk)
 
     def _map_index(self, index):
-        print(
-            f"{index} -> {index * self._num_readers + self._reader_offset}, {self._num_readers},"
-            f" {self._reader_offset}",
-            flush=True,
-        )
         return index * self._num_readers + self._reader_offset
 
     def get_chunk(self, index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
@@ -1174,8 +1150,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
         if num_readers == 1:
             return self
 
+        new_offset = self._reader_offset * num_readers + offset
         new_num_readers = self._num_readers * num_readers
-        new_offset = self._num_readers * offset + self._reader_offset
         return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
 
     def unshard(self):

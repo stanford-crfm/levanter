@@ -125,24 +125,36 @@ class TextUrlDataSource(ShardedDataSource[str]):
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
         with fsspec.open(url, "r", compression="infer") as f:
-            if url.endswith(".jsonl"):
-                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
-                # which is not nothing, but not ideal.
-                for line in f:
-                    if i >= row:
-                        yield json.loads(line)[self.text_key]
-                    i += 1
-            elif url.endswith(".txt"):
-                for line in f:
-                    if i >= row:
-                        yield line
-                    i += 1
-            elif url.endswith(".json"):
-                data = json.load(f)
-                for doc in data[row:]:
-                    yield doc[self.text_key]
-            else:
-                raise ValueError(f"Unsupported file type: {url}")
+            format = _sniff_format(url)
+            match format:
+                case ".jsonl":
+                    # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                    # which is not nothing, but not ideal.
+                    for line in f:
+                        if i >= row:
+                            yield json.loads(line)[self.text_key]
+                        i += 1
+                case ".txt":
+                    for line in f:
+                        if i >= row:
+                            yield line
+                        i += 1
+                case ".json":
+                    data = json.load(f)
+                    for doc in data[row:]:
+                        yield doc[self.text_key]
+                case _:
+                    raise ValueError(f"Unknown format {format}")
+
+
+def _sniff_format(url):
+    # should take into account compression etc
+    good_formats = [".jsonl", ".txt", ".json"]
+    # try both with and without compression (could be gz, bz2, etc, so look at the "first" extension)
+    extensions = [os.path.splitext(url)[1], os.path.splitext(os.path.splitext(url)[0])[1]]
+    for format in good_formats:
+        if any(ext == format for ext in extensions):
+            return format
 
 
 class JsonlDataSource(ShardedDataSource[dict]):
@@ -161,7 +173,6 @@ class JsonlDataSource(ShardedDataSource[dict]):
             # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
             # which is not nothing, but not ideal.
             for line in f:
-                print(i, line)
                 if i >= row:
                     yield json.loads(line)
                 i += 1

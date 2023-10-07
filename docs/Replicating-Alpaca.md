@@ -105,10 +105,10 @@ levanter/examples/alpaca.py \
 --config_path levanter/examples/alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
---trainer.wandb.id <some id>"  # optional, but useful if using preemption
+--trainer.id <some id>"  # optional, but useful if using preemption
 ```
 
-If you're using preemptible or TRC TPUs, you'll want to add `--trainer.wandb.id <some id>` to the command line,
+If you're using preemptible or TRC TPUs, you'll want to add `--trainer.id <some id>` to the command line,
 and probably use the [babysitting script](./Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
 vm and job if it gets preempted. That would look like this:
 
@@ -121,7 +121,7 @@ levanter/examples/alpaca.py \
 --config_path levanter/examples/alpaca-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
---trainer.wandb.id <some id>  # optional, but useful if using preemption
+--trainer.id <some id>  # optional, but useful if using preemption
 ```
 
 
@@ -361,7 +361,7 @@ def train(config: TrainArgs):
 
         # We also save HF checkpoints periodically (and at the end of training).
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
+            full_save_path = os.path.join(config.hf_save_path, trainer.id)
 
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload),

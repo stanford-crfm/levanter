@@ -2,6 +2,7 @@ import atexit
 import copy
 import functools
 import logging as pylogging
+import os
 import sys
 import typing
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ import numpy as np
 import optax
 import wandb
 from draccus import field
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
@@ -153,7 +155,14 @@ class Trainer:
         return fn
 
     @property
+    def run_id(self) -> str:
+        """Returns the run id"""
+        assert self.config.id is not None
+        return self.config.id
+
+    @property
     def mp(self) -> jmp.Policy:
+        """Returns the mixed precision policy"""
         return self.config.mp
 
     @typing.overload
@@ -215,7 +224,7 @@ class Trainer:
         # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
         trainable_model_shape = self.trainable_params_only(model_shape)
 
-        ckpt = self.config.maybe_load_checkpoint(
+        ckpt = self.maybe_load_checkpoint(
             trainable_model_shape,
             (opt_state_shape, training_key),
             axis_mapping=self.parameter_axis_mapping,
@@ -298,7 +307,7 @@ class Trainer:
         self.add_eval_hook(eval_loader)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.config.run_id, self.is_trainable_param)
+        checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_loader):
@@ -416,6 +425,30 @@ class Trainer:
         combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
         return eqx.partition(model, combined_mask)
 
+    def maybe_load_checkpoint(
+        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
+    ) -> Optional[Tuple[M, S, int]]:
+        """Loads a checkpoint if one exists and we're supposed to load it,
+        otherwise returns the model and training state as is"""
+        if self.config.load_checkpoint is not False:
+            # TODO: don't remake the checkpointer every time
+            checkpointer = self.config.checkpointer.create(self.run_id)
+            load_checkpoint_path = self.config.load_checkpoint_path
+
+            if load_checkpoint_path is None:
+                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+
+            ckpt = checkpointer.load_checkpoint(
+                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+            )
+
+            if ckpt is None and self.config.load_checkpoint is True:
+                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
+
+            return ckpt
+        else:
+            return None
+
 
 @dataclass
 class TrainerConfig:
@@ -425,6 +458,7 @@ class TrainerConfig:
     wandb: WandbConfig = field(default_factory=WandbConfig)
     log_dir: Path = Path("logs/")
     run_base_dir: Path = Path("runs/")
+    id: Optional[str] = None  # run id. if None, will be set to a random string
 
     # config related to partitioning
 
@@ -474,19 +508,12 @@ class TrainerConfig:
 
     @property
     def run_name(self) -> str:
-        import wandb
+        try:
+            import wandb
 
-        return wandb.run and (wandb.run.name or wandb.run.id) or "unnamed"
-
-    @property
-    def run_id(self) -> str:
-        import wandb
-
-        return wandb.run and wandb.run.id or "unnamed"
-
-    @property
-    def run_dir(self) -> Path:
-        return self.run_base_dir / self.run_name
+            return wandb.run and (wandb.run.name or wandb.run.id) or "unnamed"
+        except ImportError:
+            return "unnamed"
 
     @property
     def TrainBatch(self):
@@ -497,13 +524,14 @@ class TrainerConfig:
         return Axis("batch", self.eval_batch_size)
 
     def initialize(self, all_config):
-        """Initializes jax, wandb, logging, setting the run name in the process"""
+        """Initializes jax, wandb, logging, setting the run name/id in the process"""
         self.distributed.initialize()
+        self._maybe_set_id()
         self.ray.initialize()
         self._initialize_jax_config()
-        self.wandb.init(all_config)
-        self._initialize_logging()
         self._validate_and_set_defaults()
+        self.wandb.init(self.id, all_config)
+        self._initialize_logging()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
@@ -570,28 +598,30 @@ class TrainerConfig:
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.run_name}.log")
+        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
 
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        if self.load_checkpoint is not False:
-            checkpointer = self.checkpointer.create(self.run_id)
-            assert (
-                self.load_checkpoint_path is not None
-            ), "load_checkpoint_path should have been set during initialization"
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, self.load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
+    def _maybe_set_id(self):
+        # always do this so we don't get weird hangs if the id isn't set right
+        # for random ids, we want to ensure that all hosts have the same id
+        # NB: do NOT use the run seed here. we want the run id to be independent of the seed
+        seed = np.random.randint(0, 2**31 - 1)
+        seed = multihost_utils.broadcast_one_to_all(jax.numpy.array(seed, dtype=np.int32)).item()
 
-            if ckpt is None and self.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {self.load_checkpoint_path}")
+        # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
+        if self.id is None:
+            # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
+            if "RUN_ID" in os.environ:
+                self.id = os.environ["RUN_ID"]
+            elif self.wandb.id is not None:
+                self.id = self.wandb.id
+            else:
+                # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
+                # we also want to ensure that all hosts have the same run id
+                # we do this by syncing a random seed across all hosts and then using that to generate the run id
+                gen = np.random.default_rng(seed)
+                self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
-            return ckpt
-        else:
-            return None
+            logger.info(f"Setting run id to {self.id}")
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -618,9 +648,6 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
-
-        if self.load_checkpoint_path is None:
-            self.load_checkpoint_path = self.checkpointer.expanded_path(self.run_id)
 
 
 @dataclass
