@@ -643,17 +643,18 @@ class LMDatasetConfig:
 
 @dataclass
 class LMMixtureDatasetConfig:
-    """This class represents a mixture of datasets with their associated weights.
-    """
-    configs: Dict[str, LMDatasetConfig]
-    weights: Dict[str, float]
+    """This class represents a mixture of datasets with their associated weights."""
+
+    configs: Dict[str, LMDatasetConfig] = {}
+    weights: Dict[str, float] = {}
 
     def __post_init__(self):
         # check the number of keys in configs and weights
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
-        
+
         # the keys in configs and weights must be the same
         if set(self.configs.keys()) != set(self.weights.keys()):
-            raise ValueError("The keys in configs and weights must be the same;"
-                             f"got {self.configs.keys()} and {self.weights.keys()}")
+            raise ValueError(
+                f"The keys in configs and weights must be the same;got {self.configs.keys()} and {self.weights.keys()}"
+            )

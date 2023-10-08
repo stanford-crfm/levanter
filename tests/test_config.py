@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Union
 
 import fsspec
 
@@ -12,9 +11,11 @@ from levanter.trainer import TrainerConfig
 
 def test_main_wrapper_loads_from_fsspec():
     with fsspec.open("memory://test.yaml", "w") as f:
-        f.write("""
+        f.write(
+            """
         project: test
-        """)
+        """
+        )
 
     args = ["--config_path", "memory://test.yaml", "--x", "2"]
 

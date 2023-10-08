@@ -14,10 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data import ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample, LMMixtureDatasetConfig
-from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.logging import capture_time, log_time_to_wandb
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
