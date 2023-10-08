@@ -195,35 +195,28 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     their associated weights.
     We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
 
-    :param doc_cache_list: a list of TokenizedDocumentCache to draw from
+    :param doc_caches: TokenizedDocumentCache of each dataset to draw from
     :param seq_len: The max length of sequences to emit
-    :param weight_list: a list of weights for each dataset
+    :param weights: weights for each dataset
     """
 
-    def __init__(self, doc_caches: List, seq_len: int, weights: List[float]):
-        doc_caches, weights = self._check_doc_cache(doc_caches, weights)
+    def __init__(self, doc_caches: dict, seq_len: int, weights: Dict[str, float]):
         self.doc_caches = doc_caches
-        self.token_seq_datasets = [TokenSeqDataset(doc_cache, seq_len) for doc_cache in doc_caches]
+        self.token_seq_datasets = {name: TokenSeqDataset(doc_cache, seq_len) for name, doc_cache in doc_caches.items()}
         self.seq_len = seq_len
         self.weights = self.normalize_weights(weights)
 
-    def _check_doc_cache(self, doc_caches, weights):
-        """Check if there's null doc_cache. If so, remove the doc_cache and corresponding weights"""
-        for i in range(len(doc_caches) - 1, -1, -1):
-            if doc_caches[i] is None:
-                del doc_caches[i]
-                del weights[i]
-        return doc_caches, weights
-
     @staticmethod
-    def normalize_weights(weights):
-        total_weight = sum(weights)
-        factor = 1.0 / total_weight
-        return [w * factor for w in weights]
+    def normalize_weights(weights: Dict[str, float]):
+        """Normalize the weights to sum to 1"""
+        total = sum(weights.values())
+        if total == 0:
+            raise ValueError("Datasets' Weights cannot sum to 0")
+        return {name: weight / total for name, weight in weights.items()}
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
-        sharded_doc_caches = [doc_cache.shard(shard_id, num_shards) for doc_cache in self.doc_caches]
+        sharded_doc_caches = {name: cache.shard(shard_id, num_shards) for name, cache in self.doc_caches.items()}
         return MixtureDataset(sharded_doc_caches, self.seq_len, self.weights)
 
     def __iter__(self) -> Iterator[np.ndarray]:
@@ -231,25 +224,19 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         docs from doc_cache and yield batches of token sequences. We leverage this
         implementation of iteration. This function mainly samples a dataset according to
         the weights and call __iter__() function from corresponding TokenSeqDataset.
-
-        Edge cases to consider:
-        1. Some of the iterators have been exhausted. We need to drop them and corresponding weights.
-        2. Some of the datasets may have weights of 0.
         """
-        token_seq_iterators = [iter(dataset) for dataset in self.token_seq_datasets]
-        weights = self.weights
-        while len(token_seq_iterators) > 0 and sum(weights) > 0:
-            dataset_index = self.sample_index(weights)
+        token_seq_iterators = {name: iter(dataset) for name, dataset in self.token_seq_datasets.items()}
+        while len(token_seq_iterators) > 0 and sum(self.weights.values()) > 0:
+            dataset_index = self.sample_index(self.weights.values())
             try:
                 item = next(token_seq_iterators[dataset_index])
                 yield item
             except StopIteration:
-                # if the iterator is exhausted, we need to drop the iterator and its weight
-                del token_seq_iterators[dataset_index]
-                del weights[dataset_index]
+                #  TODO: handle StopIteration
+                break
 
     @staticmethod
-    def sample_index(weights):
+    def sample_index(weights: List[float]):
         """Sample a dataset according to the weights"""
         return np.random.choice(len(weights), p=weights)
 
@@ -537,16 +524,21 @@ def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
 
 
 @dataclass
-class LMDatasetConfig:
-    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+class LMDatasetSourceConfig:
+    """This class represents a dataset source with URLs or hf name/id."""
 
     id: Optional[str] = None  # id (or path) for hf dataset
     name: Optional[str] = None  # name for hf dataset
-    stream: bool = True  # whether to use streaming when doing hf
-    weight: float = 1.0  # weight for this dataset when sampling
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
+
+
+@dataclass
+class LMDatasetConfig(LMDatasetSourceConfig):
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    stream: bool = True  # whether to use streaming when doing hf
 
     # config for the tokenizer
     tokenizer: str = "gpt2"
@@ -643,10 +635,19 @@ class LMDatasetConfig:
 
 @dataclass
 class LMMixtureDatasetConfig:
-    """This class represents a mixture of datasets with their associated weights."""
+    """This class represents a mixture of datasets with their associated weights.
+    configs: specify the configuration of each dataset sources (urls, hf dataset id, etc.)
+    weights: pecify the weights for each dataset sources. They will be normalized to sum to 1.
+    tokenizer: we use a same tokenizer for all the datasets.
+    """
 
-    configs: Dict[str, LMDatasetConfig] = field(default_factory=dict)
+    # data source configs and weights
+    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
     weights: Dict[str, float] = field(default_factory=dict)
+
+    # tokenizer and cache_dir
+    tokenizer: str = "gpt2"
+    cache_dir: str = "cache/"
 
     def __post_init__(self):
         # check the number of keys in configs and weights
@@ -658,3 +659,32 @@ class LMMixtureDatasetConfig:
             raise ValueError(
                 f"The keys in configs and weights must be the same;got {self.configs.keys()} and {self.weights.keys()}"
             )
+
+    @cached_property
+    def the_tokenizer(self) -> PreTrainedTokenizerFast:
+        return load_tokenizer(self.tokenizer)
+
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> MixtureDataset:
+        doc_caches = self.build_caches(split, monitors=monitors)
+        return MixtureDataset(doc_caches=doc_caches, seq_len=seq_len, weights=self.weights)
+
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Dict[str, TokenizedDocumentCache]:
+        caches = {}
+        for name, source_config in self.configs.items():
+            source_config_dict = source_config.__dict__
+            dataset = LMDatasetConfig(
+                tokenizer=self.tokenizer,
+                cache_dir=os.path.join(self.cache_dir, name),
+                **source_config_dict,
+            )
+            cache = dataset.build_or_load_cache(split, monitors)
+            # drop the data source and corresponding weight if the cache is not built
+            if cache is None:
+                self.weights.pop(name)
+            else:
+                caches[name] = cache
+        return caches

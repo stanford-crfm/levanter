@@ -74,34 +74,30 @@ def test_lm_dataset_config():
 def test_lm_mixture_dataset_config():
     @dataclasses.dataclass
     class Config:
-        data_mixture: LMMixtureDatasetConfig = dataclasses.field(default_factory=LMMixtureDatasetConfig)
+        data: LMMixtureDatasetConfig = dataclasses.field(default_factory=LMMixtureDatasetConfig)
 
     yaml_config = """
-    data_mixture:
+    data:
         configs:
-            pile:
+            owt:
                 train_urls:
-                    - gs://levanter-data/pile/train/{00..29}.jsonl.zst
+                    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
                 validation_urls:
-                    - gs://levanter-data/pile/val.jsonl.zst
-                cache_dir: "gs://levanter-data/tokenized/pile-old/"
-                tokenizer: "EleutherAI/gpt-neox-20b"
-            redpajama:
-                id: togethercomputer/RedPajama-Data-1T
-                cache_dir: gs://levanter-data/tokenized/redpajama/
-                tokenizer: EleutherAI/gpt-neox-20b
-                splits:
-                    - train
-                rows_per_chunk: 4096
+                    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+            wikitext:
+                id: dlwh/wikitext_103_detokenized
         weights:
-            pile: 0.6
-            redpajama: 0.4
+            owt: 0.6
+            wikitext: 0.4
+        tokenizer: gpt2
+        cache_dir: "gs://levanter-data/tokenized/mixture"
     """
     args = ["--config_path", _write_yaml_to_memory(yaml_config)]
 
     @levanter.config.main(args=args)
     def main(config: Config):
-        assert config.data_mixture is not None
+        assert config.data is not None
+        # TODO: assert more things
 
     main()
 

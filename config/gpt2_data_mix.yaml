@@ -1,10 +1,18 @@
-data_mixture:
+data:
   configs:
-    owt: !include data/openwebtext_source.yaml
-    pile: !include data/pile_source_old.yaml
+    owt:
+      train_urls:
+        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+      validation_urls:
+        - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+      cache_dir: "gs://levanter-data/tokenized/openwebtext/"
+    wikitext:
+      id: dlwh/wikitext_103_detokenized
+      cache_dir: "gs://levanter-data/tokenized/wikitext"
   weights:
     pile: 0.6
     redpajama: 0.4
+  tokenizer: gpt2
 model:
   type: gpt2
   hidden_dim: 32
