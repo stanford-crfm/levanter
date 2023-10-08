@@ -645,8 +645,8 @@ class LMDatasetConfig:
 class LMMixtureDatasetConfig:
     """This class represents a mixture of datasets with their associated weights."""
 
-    configs: Dict[str, LMDatasetConfig] = {}
-    weights: Dict[str, float] = {}
+    configs: Dict[str, LMDatasetConfig] = field(default_factory=dict)
+    weights: Dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
         # check the number of keys in configs and weights
