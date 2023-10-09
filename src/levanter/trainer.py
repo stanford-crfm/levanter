@@ -745,7 +745,8 @@ def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0, timescale: float = 
         timescale = 100
 
     def schedule(count):
-        return jnp.maximum(lr / jnp.sqrt(jnp.maximum(count, 1) / timescale), min_lr)
+        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count, 1) / timescale))
+        return jnp.maximum(lr * decay, min_lr)
 
     return schedule
 
