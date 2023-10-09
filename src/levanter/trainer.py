@@ -740,9 +740,9 @@ class OptimizerConfig:
             return _convert_ratio_or_steps(self.warmup, num_train_steps)
 
 
-def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0):
+def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0, timescale: float = 10000):
     def schedule(count):
-        return jnp.maximum(lr / jnp.sqrt(jnp.maximum(count, 1)), min_lr)
+        return jnp.maximum(lr / jnp.sqrt(jnp.maximum(count, 1) / timescale), min_lr)
 
     return schedule
 
