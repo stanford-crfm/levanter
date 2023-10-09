@@ -571,15 +571,6 @@ class _ShardStatus:
         return self.producer_task is not None
 
 
-def _mk_process_task(processor: BatchProcessor[T]):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        return processor(batch)
-
-    return process_task
-
-
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:

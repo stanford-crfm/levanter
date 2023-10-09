@@ -18,7 +18,8 @@ T = TypeVar("T")
 
 
 def setup_module(module):
-    ray_designated_cores = max(1, logical_cpu_core_count())
+    # ray_designated_cores = max(1, logical_cpu_core_count())
+    ray_designated_cores = 1
     ray.init("local", num_cpus=ray_designated_cores)
 
 
