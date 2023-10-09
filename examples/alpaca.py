@@ -195,9 +195,11 @@ def train(config: TrainArgs):
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
+    print("\n\nTRAINER INITING NOW\n\n")
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
     with trainer.device_mesh:
+        print("\n\nENTERED WITH TRAINER DEVICE MESH\n\n")
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
@@ -234,6 +236,7 @@ def train(config: TrainArgs):
                 every=config.hf_save_steps,
             )
 
+        print("\n\nCALL TO TRAININER.TRAIN ABOUT TO HAPPEN\n\n")
         trainer.train(state, loader)
 
 
