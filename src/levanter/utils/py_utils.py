@@ -13,7 +13,10 @@ def logical_cpu_core_count():
 
 def non_caching_cycle(iterable):
     """Like itertools.cycle, but doesn't cache the iterable."""
+    i = 0
     while True:
+        print(f"Start epoch {1}!", flush=True)
+        i += 1
         yield from iterable
 
 
