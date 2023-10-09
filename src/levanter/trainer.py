@@ -250,8 +250,11 @@ class Trainer:
         """
         Performs a single training step.
         """
+        print("\n\nINSIDE OF TRAIN STEP\n\n")
         with capture_time() as step_time:
+            print("ABOUT TO CALL jax.random.split\n\n")
             key, new_key = jax.random.split(state.training_key)
+            print("\n\n Calling self._train_step_fn\n\n")
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
             )
@@ -266,15 +269,18 @@ class Trainer:
         """
         Generator that yields training steps and runs hooks.
         """
+        print("\n\nGETTING DATA ITERATOR\n\n")
         iter_data = iter(train_loader)
 
         while state.step < self.config.num_train_steps:
+            print("\n\nGETTING TRAINING EXAMPLE\n\n")
             with capture_time() as loading_time:
                 example = next(iter_data)
 
             # TODO: refactor logging
             wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
 
+            print("\n\nCALLING STELF.TRAIN_STEP\n\n")
             info = self.train_step(state, example)
             state = info.state
 
@@ -290,6 +296,7 @@ class Trainer:
         """
         Performs training until the number of steps is reached.
         """
+        print("\n\nABOUT TO RUN HOOKS IN def train\n\n")
         for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
             pass
 
