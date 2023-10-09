@@ -708,7 +708,7 @@ class OptimizerConfig:
             case "linear":
                 schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
             case "inv_sqrt":
-                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps)
+                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
             case _:
                 raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -740,12 +740,9 @@ class OptimizerConfig:
             return _convert_ratio_or_steps(self.warmup, num_train_steps)
 
 
-def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0, timescale: float = 10000):
-    if timescale <= 0:
-        timescale = 100
-
+def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
     def schedule(count):
-        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count, 1) / timescale))
+        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
         return jnp.maximum(lr * decay, min_lr)
 
     return schedule
