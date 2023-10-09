@@ -598,6 +598,7 @@ class TrainerConfig:
 
     @cached_property
     def parameter_axis_mapping(self) -> ResourceMapping:
+        print("\n\nINSIDE PARAMETER ACESS MAPPING FN\n\n")
         mapping = dict(self.compute_axis_mapping)
 
         for axis, resource in self.parameter_axis_resources.items():
@@ -609,6 +610,7 @@ class TrainerConfig:
             for axis in self.fsdp_axis:
                 mapping[axis] = ResourceAxis.DATA
 
+        print("\n\nRETURNING MAPPING\n\n")
         return mapping
 
     def _initialize_jax_config(self):
