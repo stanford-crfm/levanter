@@ -173,7 +173,6 @@ class JsonlDataSource(ShardedDataSource[dict]):
             # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
             # which is not nothing, but not ideal.
             for line in f:
-                print(i, line)
                 if i >= row:
                     yield json.loads(line)
                 i += 1
