@@ -221,9 +221,9 @@ class _ChunkWriter:
             value = batch.column(i)
             if isinstance(value, pa.ListArray):
                 value = value.flatten()
-                self.field_counts[name] = len(value)
+                self.field_counts[name] = self.field_counts.get(name, 0) + len(value)
             elif isinstance(value, pa.ChunkedArray):
-                self.field_counts[name] = value.length()
+                self.field_counts[name] = self.field_counts.get(name, 0) + value.length()
 
     def get_metadata(self) -> ChunkMetadata:
         if not self.is_finished:
