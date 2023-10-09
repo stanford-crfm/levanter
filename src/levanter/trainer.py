@@ -664,7 +664,7 @@ class OptimizerConfig:
 
     min_lr_ratio: float = 0.0
     warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
-    warmup: float = 0.0
+    warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
     cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
@@ -708,7 +708,7 @@ class OptimizerConfig:
             case "linear":
                 schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
             case "inv_sqrt":
-                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr)
+                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps)
             case _:
                 raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -741,6 +741,9 @@ class OptimizerConfig:
 
 
 def _inv_sqrt_decay_schedule(lr: float, min_lr: float = 0.0, timescale: float = 10000):
+    if timescale <= 0:
+        timescale = 100
+
     def schedule(count):
         return jnp.maximum(lr / jnp.sqrt(jnp.maximum(count, 1) / timescale), min_lr)
 
