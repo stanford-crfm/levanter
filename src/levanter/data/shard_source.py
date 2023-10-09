@@ -107,6 +107,56 @@ class HFDatasetDataSource(ShardedDataSource[dict]):
         return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
 
 
+class TextUrlDataSource(ShardedDataSource[str]):
+    """
+    Datasource for various text formats.
+    """
+
+    def __init__(self, urls, text_key="text"):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        self.text_key = text_key
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            format = _sniff_format(url)
+            match format:
+                case ".jsonl":
+                    # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                    # which is not nothing, but not ideal.
+                    for line in f:
+                        if i >= row:
+                            yield json.loads(line)[self.text_key]
+                        i += 1
+                case ".txt":
+                    for line in f:
+                        if i >= row:
+                            yield line
+                        i += 1
+                case ".json":
+                    data = json.load(f)
+                    for doc in data[row:]:
+                        yield doc[self.text_key]
+                case _:
+                    raise ValueError(f"Unknown format {format}")
+
+
+def _sniff_format(url):
+    # should take into account compression etc
+    good_formats = [".jsonl", ".txt", ".json"]
+    # try both with and without compression (could be gz, bz2, etc, so look at the "first" extension)
+    extensions = [os.path.splitext(url)[1], os.path.splitext(os.path.splitext(url)[0])[1]]
+    for format in good_formats:
+        if any(ext == format for ext in extensions):
+            return format
+
+
 class JsonlDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
@@ -122,9 +172,29 @@ class JsonlDataSource(ShardedDataSource[dict]):
         with fsspec.open(url, "r", compression="infer") as f:
             # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
             # which is not nothing, but not ideal.
-            for line in f.readlines():
+            for line in f:
+                print(i, line)
                 if i >= row:
                     yield json.loads(line)
+                i += 1
+
+
+class TextDataSource(ShardedDataSource[dict]):
+    def __init__(self, urls):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f:
+                if i >= row:
+                    yield line
                 i += 1
 
 

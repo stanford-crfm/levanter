@@ -88,14 +88,14 @@ which is analogous to PEFT's `model.save_pretrained`.
 
 ```python
         # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
-        if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.config.run_id)
-            trainer.add_hook(
-                save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.model_name_or_path, config.hf_upload
-                ),
-                every=config.hf_save_steps,
-            )
+if config.hf_save_path is not None:
+    full_save_path = os.path.join(config.hf_save_path, trainer.id)
+    trainer.add_hook(
+        save_peft_checkpoint_callback(
+            full_save_path, config.lora, config.model_name_or_path, config.hf_upload
+        ),
+        every=config.hf_save_steps,
+    )
 ```
 
 For good measure, we'll also save the merged HF checkpoint, which is the full model with the LoRA parameters
@@ -104,13 +104,13 @@ or want to use [llama.cpp](https://github.com/ggerganov/llama.cpp) or something.
 
 ```python
 
-        # Save merged HF checkpoints if requested
-        if config.merged_hf_save_path is not None:
-            full_save_path = os.path.join(config.merged_hf_save_path, trainer.config.run_id)
-            trainer.add_hook(
-                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
-                every=config.hf_save_steps,
-            )
+# Save merged HF checkpoints if requested
+if config.merged_hf_save_path is not None:
+    full_save_path = os.path.join(config.merged_hf_save_path, trainer.id)
+    trainer.add_hook(
+        save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
+        every=config.hf_save_steps,
+    )
 ```
 
 
@@ -170,6 +170,5 @@ bash levanter/infra/run.sh python \
 levanter/examples/alpaca_lora.py \
 --config_path levanter/examples/alpaca-lora-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
---hf_save_path gs://<somewhere> \
---trainer.wandb.id <some id>  # optional, but useful if using preemption
+--hf_save_path gs://<somewhere>
 ```

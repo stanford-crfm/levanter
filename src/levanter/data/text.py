@@ -31,7 +31,7 @@ from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
-from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
+from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
@@ -48,7 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     _serialize_json_and_commit,
     build_cache,
 )
-from levanter.data.shard_source import HFDatasetDataSource, JsonlDataSource, ShardedDataSource  # noqa
+from levanter.data.shard_source import HFDatasetDataSource, ShardedDataSource, TextUrlDataSource  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -534,8 +534,8 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            for doc in JsonlDataSource(urls).iter_data():
-                yield doc[self.text_key]
+
+            yield from TextUrlDataSource(urls, self.text_key).iter_data()
 
     def urls_for_split(self, split):
         if split == "train":
@@ -556,10 +556,9 @@ class LMDatasetConfig:
         return urls
 
     def get_shard_source(self, split) -> ShardedDataSource[str]:
-        dict_source: ShardedDataSource[dict]
         if self.id is not None:
-            dict_source = HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream)
+            return HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream).map(
+                lambda x: x[self.text_key]
+            )
         else:
-            dict_source = JsonlDataSource(self.urls_for_split(split))
-
-        return dict_source.map(lambda x: x[self.text_key])
+            return TextUrlDataSource(self.urls_for_split(split), self.text_key)

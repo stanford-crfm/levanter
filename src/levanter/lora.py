@@ -285,6 +285,7 @@ def _loraize(model: M, config: LoraConfig, key: jax.random.PRNGKey, prefix: str,
     )
 
 
+@hax.named_jit  # needs to be inside (named) jit s.t. it works with sharded parameters
 def merge_lora_modules(module: M) -> M:
     """
     Merges LoRA modules into their wrapped modules. That is, it adds the LoRA parameters to the wrapped weights,

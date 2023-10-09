@@ -4,6 +4,7 @@ import logging as pylogging
 import os
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
@@ -152,8 +153,18 @@ class WandbConfig:
     save_xla_dumps: bool = False
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
-    def init(self, hparams=None, **extra_hparams):
+    def init(self, run_id: Optional[str], hparams=None, **extra_hparams):
         import wandb
+
+        if run_id is not None and self.id is not None and run_id != self.id:
+            warnings.warn(
+                f"Both trainer's id {run_id} and WandB's id {self.id} are set. WandB will use the id set in its"
+                " config."
+            )
+
+        id = self.id
+        if id is None:
+            id = run_id
 
         if hparams is None:
             hparams_to_save = {}
@@ -174,7 +185,7 @@ class WandbConfig:
         if isinstance(self.save_code, str):
             code_dir = self.save_code
         elif self.save_code:
-            code_dir = WandbConfig._infer_experiment_git_root() or "."
+            code_dir = WandbConfig._infer_experiment_git_root() or "."  # type: ignore
         else:
             code_dir = None
 
@@ -197,13 +208,15 @@ class WandbConfig:
             project=self.project,
             name=self.name,
             tags=self.tags,
-            id=self.id,
+            id=id,
             group=self.group,
             resume=self.resume,
             mode=mode,
             config=hparams_to_save,
             settings=other_settings,
         )
+
+        assert r is not None
 
         if jax.process_count() > 1:
             # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
@@ -231,7 +244,8 @@ class WandbConfig:
                 config_path = os.path.join(tmpdir, "config.yaml")
                 with open(config_path, "w") as f:
                     draccus.dump(hparams, f, encoding="utf-8")
-                wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
+                if wandb.run is not None:
+                    wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
         # generate a pip freeze
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -239,7 +253,8 @@ class WandbConfig:
             requirements = _generate_pip_freeze()
             with open(requirements_path, "w") as f:
                 f.write(requirements)
-            wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
+            if wandb.run is not None:
+                wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
 
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
