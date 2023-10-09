@@ -258,6 +258,7 @@ class Trainer:
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
             )
+            print("\n\nLOSS, NEW_MODEL, and NEW OPSTATE have been returned\n\n")
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
         print(f"\n\nGOT FIRST LOSS: {loss}\n\n")
@@ -283,6 +284,7 @@ class Trainer:
             print("\n\nCALLING STELF.TRAIN_STEP\n\n")
             info = self.train_step(state, example)
             state = info.state
+            print("\n\nTRAIN STEP STATE RECIVED\n\n")
 
             if run_hooks:
                 with capture_time() as hook_time:
@@ -394,6 +396,7 @@ class Trainer:
             print("\n\nreturning from train step inside _train_step_fn\n\n")
             return loss, model, opt_state
 
+        print("\n\nRETURNING the function train_step from _train_step_fn\n\n")
         return train_step
 
     def _init_model_and_opt_state(self, model_init):
