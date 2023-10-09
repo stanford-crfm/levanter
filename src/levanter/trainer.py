@@ -93,6 +93,7 @@ class TrainerHooks:
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
+            print(f"\n\nRUNNING HOOK: {hook}\n\n")
             if force or info.step % hook.every == 0:
                 hook.fn(info)
 
@@ -293,6 +294,7 @@ class Trainer:
             pass
 
         if run_hooks:
+            print("\n\nABOUT TO RUN HOOKS IN def train\n\n")
             # force hooks to run at the end
             self.run_hooks(info, force=True)
 
@@ -306,7 +308,9 @@ class Trainer:
         self.add_eval_hook(eval_loader)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
+        print("\n\nCREATING CHECK POINTER BEFORE ADDINF AS A HOOK\n\n")
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
+        print("\n\nAdding checkpointer as a hook\n\n")
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_loader):

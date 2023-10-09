@@ -195,7 +195,6 @@ def train(config: TrainArgs):
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
-    print("\n\nTRAINER INITING NOW\n\n")
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
     with trainer.device_mesh:
@@ -235,8 +234,7 @@ def train(config: TrainArgs):
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload),
                 every=config.hf_save_steps,
             )
-
-        print("\n\nCALL TO TRAININER.TRAIN ABOUT TO HAPPEN\n\n")
+        print("\n\nCalling trainer.train\n\n")
         trainer.train(state, loader)
 
 
