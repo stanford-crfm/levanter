@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
+import wandb
+
 
 def logical_cpu_core_count():
     """Returns the number of logical CPU cores in the system."""
@@ -15,7 +17,8 @@ def non_caching_cycle(iterable):
     """Like itertools.cycle, but doesn't cache the iterable."""
     i = 0
     while True:
-        print(f"Start epoch {1}!", flush=True)
+        print(f"Start epoch {i}!", flush=True)
+        wandb.log({"epoch": i})
         i += 1
         yield from iterable
 
