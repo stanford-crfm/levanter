@@ -260,7 +260,7 @@ class Trainer:
             )
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
-
+        print(f"\n\nGOT FIRST LOSS: {loss}\n\n")
         return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
 
     def training_steps(
@@ -369,22 +369,29 @@ class Trainer:
             donate_args=(True, True),
         )
         def train_step(model, opt_state, *batch, **batch_kwargs):
+            print("\n\nGetting model mode\n\n")
             model = inference_mode(model, False)
 
             # we do this so that we only take the gradients of the trainable parameters
+            print("\n\nPARTITIONING TRAINABLE PARAMETERS\n\n")
             trainable_model, rest_model = self.partition_trainable_params(model)
 
             def split_loss_fn(trainable_model, *batch, **batch_kwargs):
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
+            print("\n\nCalling accumlate gradients sharded")
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(trainable_model, *batch, **batch_kwargs)
 
+            print("\n\nUpdateing optimizer state")
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+
+            print("\n\nApplying optimizer updates\n\n")
             model = eqx.apply_updates(model, updates)
 
+            print("\n\nreturning from train step inside _train_step_fn\n\n")
             return loss, model, opt_state
 
         return train_step
