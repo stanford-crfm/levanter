@@ -168,8 +168,6 @@ In the second, we create [levanter.models.lm.LmExample][] objects from the cache
 ```python
 class LmExample(eqx.Module):
     tokens: hax.NamedArray
-    # TODO: remove targets
-    targets: hax.NamedArray
     attn_mask: AttnMask
     loss_mask: hax.NamedArray
 ```
@@ -192,18 +190,18 @@ def postprocess(batch):
                           return_attention_mask=False)
 
     input_ids = hax.named(batch["input_ids"], ("batch", "position"))
-    targets = hax.roll(input_ids, -1, "position")
     Batch, Pos = input_ids.resolve_axis("batch", "position")
 
     # mask out padding and anything before the start of the target
     loss_mask = hax.arange(input_ids) >= hax.array(batch["source_lens"], Batch)
-    loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+    # don't compute loss when next token is padding
+    loss_mask = loss_mask & (hax.roll(input_ids, -1, "position") != tokenizer.pad_token_id)
 
     # causal mask needs both the position and the key position
     KeyPos = Pos.alias("key_position")
     attn_mask = CausalMask(Pos, KeyPos)
 
-    return LmExample(input_ids, targets, attn_mask, loss_mask)
+    return LmExample(input_ids, attn_mask, loss_mask)
 
 dataset = dataset.map_batches(postprocess, batch_size=config.trainer.train_batch_size, num_cpus=1)
 ```
