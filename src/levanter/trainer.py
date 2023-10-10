@@ -600,6 +600,8 @@ class TrainerConfig:
     def parameter_axis_mapping(self) -> ResourceMapping:
         print("\n\nINSIDE PARAMETER ACESS MAPPING FN\n\n")
         mapping = dict(self.compute_axis_mapping)
+        print("The mappiing is:")
+        print(mapping)
 
         print("\n\nPARAM AXIS MAPPINGS:\n")
         for axis, resource in self.parameter_axis_resources.items():
