@@ -48,7 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     _serialize_json_and_commit,
     build_cache,
 )
-from levanter.data.shard_source import HFDatasetDataSource, ShardedDataSource, TextUrlDataSource  # noqa
+from levanter.data.shard_source import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -243,7 +243,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     @staticmethod
     def build_or_load(
         cache_dir,
-        source: ShardedDataSource[str],
+        source: ShardedDataset[str],
         tokenizer: PreTrainedTokenizerBase,
         flatten_docs=True,
         enforce_eos=True,
@@ -534,7 +534,7 @@ class LMDatasetConfig:
         else:
             urls = self.urls_for_split(split)
 
-            yield from TextUrlDataSource(urls, self.text_key).iter_data()
+            yield from TextUrlDataset(urls, self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -554,10 +554,10 @@ class LMDatasetConfig:
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
 
-    def get_shard_source(self, split) -> ShardedDataSource[str]:
+    def get_shard_source(self, split) -> ShardedDataset[str]:
         if self.id is not None:
-            return HFDatasetDataSource(self.id, split=split, name=self.name, streaming=self.stream).map(
+            return WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream).map(
                 lambda x: x[self.text_key]
             )
         else:
-            return TextUrlDataSource(self.urls_for_split(split), self.text_key)
+            return TextUrlDataset(self.urls_for_split(split), self.text_key)
