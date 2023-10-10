@@ -662,7 +662,7 @@ class OptimizerConfig:
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
-    min_lr_ratio: float = 0.0
+    min_lr_ratio: float = 0.1
     warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
     warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
@@ -723,7 +723,8 @@ class OptimizerConfig:
         schedules.append(schedule)
 
         if cooldown_steps != 0:
-            cooldown = optax.linear_schedule(self.learning_rate, min_lr, cooldown_steps)
+            final_main_lr = schedule(lr_decay_steps)
+            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
             schedules.append(cooldown)
             boundaries.append(num_train_steps - cooldown_steps)
 
