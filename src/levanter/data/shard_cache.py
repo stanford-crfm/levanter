@@ -1246,7 +1246,7 @@ def _map_batches_in_parallel(
     # in the background. We yield the results in order.
 
     # `it` is a Callable[[], Iterator[T]] b/c we can't pass in certain stateful iterators to Ray tasks.
-    queue = Queue(maxsize=max_queue_size)
+    queue = Queue(maxsize=max_queue_size, actor_options={"num_cpus": 0})
 
     @ray.remote(num_cpus=0)
     def producer_task(it, fn):
