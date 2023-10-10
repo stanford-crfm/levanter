@@ -601,9 +601,13 @@ class TrainerConfig:
         print("\n\nINSIDE PARAMETER ACESS MAPPING FN\n\n")
         mapping = dict(self.compute_axis_mapping)
 
+        print("\n\nPARAM AXIS MAPPINGS:\n")
         for axis, resource in self.parameter_axis_resources.items():
+            print(f"Axis: {axis}, Resource: {resource}\n")
             mapping[axis] = resource
 
+        print("\nFSDP Axis:\n")
+        print(self.fsdp_axis)
         if isinstance(self.fsdp_axis, str):
             mapping[self.fsdp_axis] = ResourceAxis.DATA
         elif isinstance(self.fsdp_axis, list):
