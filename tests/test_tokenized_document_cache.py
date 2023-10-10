@@ -18,8 +18,7 @@ T = TypeVar("T")
 
 
 def setup_module(module):
-    # ray_designated_cores = max(1, logical_cpu_core_count())
-    ray_designated_cores = 1
+    ray_designated_cores = max(1, logical_cpu_core_count())
     ray.init("local", num_cpus=ray_designated_cores)
 
 
@@ -32,7 +31,12 @@ def test_index_empty_file():
         empty_dataset = [""]
         source = SingleShardDocumentSource(empty_dataset)
         cache = TokenizedDocumentCache.build_or_load(
-            f"{tmpdir}/cache", source, tokenizer, flatten_docs=True, enforce_eos=False
+            f"{tmpdir}/cache",
+            source,
+            tokenizer,
+            flatten_docs=True,
+            enforce_eos=False,
+            override_resources={"num_cpus": 1},
         )
 
         for chunk in cache:
@@ -44,7 +48,12 @@ def test_index_no_files():
         empty_dataset = []
         source = SingleShardDocumentSource(empty_dataset)
         cache = TokenizedDocumentCache.build_or_load(
-            f"{tmpdir}/cache", source, tokenizer, flatten_docs=True, enforce_eos=False
+            f"{tmpdir}/cache",
+            source,
+            tokenizer,
+            flatten_docs=True,
+            enforce_eos=False,
+            override_resources={"num_cpus": 1},
         )
 
         for chunk in cache:

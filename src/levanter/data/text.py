@@ -252,8 +252,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
         monitors=None,
         await_finished=True,
+        override_resources=None,
     ) -> "TokenizedDocumentCache":
-        bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
+        bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos, override_resources=override_resources)
         monitors = monitors or []
         cache = build_cache(
             cache_dir,
@@ -367,9 +368,10 @@ class BatchTokenizer(BatchProcessor[str]):
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True):
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True, override_resources=None):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
+        self.override_resources = override_resources
 
         # see if the tokenizer appends eos
         # HF's BPE-based tokenizers do not, but the bert and roberta ones do
@@ -393,7 +395,17 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def num_cpus(self) -> int:
+        if self.override_resources is not None:
+            cpus = self.override_resources.get("num_cpus", None)
+            if cpus is not None:
+                return cpus
         return num_cpus_used_by_tokenizer(self.tokenizer)
+
+    @property
+    def num_gpus(self) -> int:
+        if self.override_resources is not None:
+            return self.override_resources.get("num_gpus", 0)
+        return 0
 
 
 def concatenate_and_group_texts(

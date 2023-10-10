@@ -1013,7 +1013,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
         if self._broker is None:
-            return ray.remote(lambda: None).remote()
+            return ray.remote(num_cpus=0)(lambda: None).remote()
         else:
             return self._broker.finished_sentinel.remote()
 
