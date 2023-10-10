@@ -1,11 +1,13 @@
 import json
 import os
-from typing import Callable, Generic, Iterator, List, Sequence, TypeVar
+from typing import Callable, Iterator, List, Sequence, TypeVar
 
 import datasets
 import fsspec
 
 from levanter.utils import fsspec_utils
+
+from .dataset import Dataset
 
 
 T = TypeVar("T")
@@ -13,10 +15,14 @@ T_contra = TypeVar("T_contra", contravariant=True)
 T_co = TypeVar("T_co", covariant=True)
 
 
-class ShardedDataSource(Generic[T_co]):
+class ShardedDataset(Dataset[T_co]):
     """
-    A ShardedDataSource is the main interface for reading data. It's basically a mapping from shard names to iterators,
+    A ShardedDataset is the main interface for reading data. It's basically a mapping from shard names to iterators,
     with the extra feature that it exposes the ability to skip to a particular row in a shard.
+
+    The difference between a [ShardedDataset][] and a [ShardableDataset][] is that a [ShardedDataset][]
+    has a fixed number of shards, and a [ShardableDataset][] supports a `shard` method that can be used to
+    split the dataset into multiple shards.
     """
 
     @property
@@ -33,7 +39,7 @@ class ShardedDataSource(Generic[T_co]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
         raise NotImplementedError
 
-    def iter_data(self):
+    def __iter__(self):
         """
         Iterate over all data in the dataset, in order.
         """
@@ -41,12 +47,12 @@ class ShardedDataSource(Generic[T_co]):
             for doc in self.open_shard(shard_name):
                 yield doc
 
-    def map(self, fn: Callable[[T_co], T]) -> "ShardedDataSource[T]":
-        return MappedShardedDataSource(self, fn)
+    def map(self, fn: Callable[[T_co], T]) -> "ShardedDataset[T]":
+        return MappedShardedDataset(self, fn)
 
 
-class MappedShardedDataSource(ShardedDataSource[T]):
-    def __init__(self, source: ShardedDataSource[T_co], fn: Callable[[T_co], T]):
+class MappedShardedDataset(ShardedDataset[T]):
+    def __init__(self, source: ShardedDataset[T_co], fn: Callable[[T_co], T]):
         self.source = source
         self.fn = fn
 
@@ -58,7 +64,7 @@ class MappedShardedDataSource(ShardedDataSource[T]):
         return map(self.fn, self.source.open_shard_at_row(shard_name, row))
 
 
-class HFDatasetDataSource(ShardedDataSource[dict]):
+class WrappedHFDataset(ShardedDataset[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
     Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
@@ -107,9 +113,9 @@ class HFDatasetDataSource(ShardedDataSource[dict]):
         return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
 
 
-class TextUrlDataSource(ShardedDataSource[str]):
+class TextUrlDataset(ShardedDataset[str]):
     """
-    Datasource for various text formats.
+    Dataset for various text formats.
     """
 
     def __init__(self, urls, text_key="text"):
@@ -157,7 +163,7 @@ def _sniff_format(url):
             return format
 
 
-class JsonlDataSource(ShardedDataSource[dict]):
+class JsonlDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -179,7 +185,7 @@ class JsonlDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
-class TextDataSource(ShardedDataSource[dict]):
+class TextDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -198,7 +204,7 @@ class TextDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
-class JsonDataSource(ShardedDataSource[dict]):
+class JsonDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)

@@ -9,7 +9,7 @@ import pytest
 import ray
 
 from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, _get_broker_actor, build_cache
-from levanter.data.shard_source import ShardedDataSource
+from levanter.data.shard_source import ShardedDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -41,7 +41,7 @@ class TestProcessor(BatchProcessor[Sequence[int]]):
         return 1
 
 
-class SimpleShardSource(ShardedDataSource[List[int]]):
+class SimpleShardSource(ShardedDataset[List[int]]):
     def __init__(self, num_shards: int = 4):
         self._num_shards = num_shards
 
@@ -103,7 +103,7 @@ class _CustomException(Exception):
 
 
 def test_cache_recover_from_crash():
-    class CrashingShardSource(ShardedDataSource[List[int]]):
+    class CrashingShardSource(ShardedDataset[List[int]]):
         def __init__(self, crash_point: int):
             self.crash_point = crash_point
 
@@ -146,7 +146,7 @@ def test_cache_recover_from_crash():
 
 
 def test_no_hang_if_empty_shard_source():
-    class EmptyShardSource(ShardedDataSource[List[int]]):
+    class EmptyShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return []
@@ -173,7 +173,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
 
     blocker_to_wait_on_test = Blocker.remote()
 
-    class SlowShardSource(ShardedDataSource[List[int]]):
+    class SlowShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0", "shard_1"]
@@ -239,7 +239,7 @@ def test_can_get_chunk_before_finished():
 
     blocker_to_wait_on_test = Blocker.remote()
 
-    class SlowShardSource(ShardedDataSource[List[int]]):
+    class SlowShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0"]

@@ -49,7 +49,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from levanter.data.shard_source import ShardedDataSource
+from levanter.data.shard_source import ShardedDataset
 
 
 T = TypeVar("T")
@@ -102,7 +102,7 @@ class BatchProcessor(Generic[T_contra], ABC):
 
 def build_cache(
     cache_dir: str,
-    input_shards: ShardedDataSource[T],
+    input_shards: ShardedDataset[T],
     processor: BatchProcessor[T],
     batch_size: int = 1,
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
@@ -123,7 +123,7 @@ def build_cache(
 
     Args:
         cache_dir: The directory to write the cache to. This can be any path understood by fsspec.
-        input_shards: A ShardedDataSource that will be used to read the input data. Conceptually, it's just a mapping
+        input_shards: A ShardedDataset that will be used to read the input data. Conceptually, it's just a mapping
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
@@ -234,7 +234,7 @@ class _ChunkWriter:
 @ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
     sink: ActorHandle,  # _ChunkCacheBuilder
-    source: ShardedDataSource[T],
+    source: ShardedDataset[T],
     priority_fn: Callable[[int, int], float],
     shard_idx: int,
     processor: BatchProcessor,
@@ -676,7 +676,7 @@ class ChunkCacheBuilder:
         self,
         broker_ref,
         cache_dir: str,
-        source: ShardedDataSource[T],
+        source: ShardedDataset[T],
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
@@ -818,9 +818,7 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
-    def __init__(
-        self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
-    ):
+    def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
         logging.basicConfig(level=logging.INFO)
         self.chunks = []
         self._reader_promises = {}
@@ -939,7 +937,7 @@ def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk=DEFAULT
 
 class ShardCache(Iterable[pa.RecordBatch]):
     """A cache which is backed by a collection of chunks of preprocessed documents. These chunks
-    are produced by tokenizing/preprocessing a ShardedDataSource.
+    are produced by tokenizing/preprocessing a ShardedDataset.
 
         This is the main interface for building and reading from a shard cache.
 
@@ -1006,7 +1004,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        shard_source: ShardedDataSource[T],
+        shard_source: ShardedDataset[T],
         processor: BatchProcessor[T],
         batch_size: int,
         rows_per_chunk: int,
