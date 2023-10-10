@@ -429,7 +429,7 @@ class SupervisedDataset(Dataset[LmExample]):
             loss_mask = loss_mask & (targets != self.pad_token_id)
             attn_mask = CausalMask(self.Pos, self.KeyPos)
 
-            yield LmExample(input_ids, targets, attn_mask, loss_mask)
+            yield LmExample(input_ids, attn_mask, loss_mask)
 ```
 
 Here's the `EncoderDecoderProcessor`. It basically replicates the [original logic from the alpaca script](https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py#L88-L124).
