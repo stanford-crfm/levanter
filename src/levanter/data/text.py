@@ -61,6 +61,8 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
+FIRST_STOP_STRATEGY = "first_exhausted"
+ALL_STOP_STRATEGY = "all_exhausted"
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -198,13 +200,27 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     :param doc_caches: TokenizedDocumentCache of each dataset to draw from
     :param seq_len: The max length of sequences to emit
     :param weights: weights for each dataset
+    :param stop_strategy: strategy for stopping the iteration, by default FIRST_STOP_STRATEGY
+        - FIRST_STOP_STRATEGY: stop when one dataset has been exhausted
+        - ALL_STOP_STRATEGY: stop when all datasets have been exhausted
+    :param key: random key for datasets sampling
     """
 
-    def __init__(self, doc_caches: dict, seq_len: int, weights: Dict[str, float]):
+    def __init__(
+        self,
+        doc_caches: dict,
+        seq_len: int,
+        weights: Dict[str, float],
+        stop_strategy: str = FIRST_STOP_STRATEGY,
+        key: int = 0,
+    ):
         self.doc_caches = doc_caches
-        self.token_seq_datasets = {name: TokenSeqDataset(doc_cache, seq_len) for name, doc_cache in doc_caches.items()}
         self.seq_len = seq_len
+        self.n_datasets = len(self.doc_caches.keys())
+        self.set_token_seq_iterators()
         self.weights = self.normalize_weights(weights)
+        self.set_stop_strategy(stop_strategy)
+        self.rng = np.random.default_rng(key)
 
     @staticmethod
     def normalize_weights(weights: Dict[str, float]):
@@ -213,6 +229,22 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         if total == 0:
             raise ValueError("Datasets' Weights cannot sum to 0")
         return {name: weight / total for name, weight in weights.items()}
+
+    def set_stop_strategy(self, stop_strategy: str):
+        assert stop_strategy in [FIRST_STOP_STRATEGY, ALL_STOP_STRATEGY], f"Unknown stopping strategy {stop_strategy}"
+        self.stop_strategy = stop_strategy
+        self.exhausted_datasets = set()
+        if stop_strategy == FIRST_STOP_STRATEGY:
+            self.stop_strategy_func = lambda x: len(x) > 0
+        else:
+            self.stop_strategy_func = lambda x: len(x) == self.n_datasets
+
+    def set_token_seq_iterators(self):
+        # we save the token_seq_datasets to avoid re-creating them when restarting an iterator
+        self.token_seq_datasets = {
+            name: TokenSeqDataset(doc_cache, self.seq_len) for name, doc_cache in self.doc_caches.items()
+        }
+        self.token_seq_iterators = {name: iter(dataset) for name, dataset in self.token_seq_datasets.items()}
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
@@ -225,20 +257,24 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         implementation of iteration. This function mainly samples a dataset according to
         the weights and call __iter__() function from corresponding TokenSeqDataset.
         """
-        token_seq_iterators = {name: iter(dataset) for name, dataset in self.token_seq_datasets.items()}
-        while len(token_seq_iterators) > 0 and sum(self.weights.values()) > 0:
-            dataset_index = self.sample_index(self.weights.values())
+
+        while len(self.token_seq_iterators) > 0 and sum(self.weights.values()) > 0:
+            dataset_name = self.sample_index(self.weights.values())
             try:
-                item = next(token_seq_iterators[dataset_index])
+                item = next(self.token_seq_iterators[dataset_name])
                 yield item
             except StopIteration:
                 #  TODO: handle StopIteration
-                break
+                self.exhausted_datasets.add(dataset_name)
+                if self.stop_strategy_func(self.exhausted_datasets):
+                    break
+                else:
+                    # restart the iterator
+                    self.token_seq_iterators[dataset_name] = iter(self.token_seq_datasets[dataset_name])
 
-    @staticmethod
-    def sample_index(weights: List[float]):
-        """Sample a dataset according to the weights"""
-        return np.random.choice(len(weights), p=weights)
+    def sample_index(self) -> str:
+        """Sample a dataset according to their weights"""
+        return self.rng.choice(list(self.weights.keys()), p=list(self.weights.values()))
 
     @property
     def item_shape(self):
