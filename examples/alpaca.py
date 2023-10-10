@@ -119,14 +119,16 @@ class SupervisedDataset(Dataset[LmExample]):
     def __iter__(self):
         for ex in self.batch_encoding_dataset:
             input_ids = hax.named(ex["input_ids"], self.Pos)
-            targets = hax.roll(input_ids, -1, self.Pos)
 
             # mask out padding and anything before the start of the target
             loss_mask = hax.arange(self.Pos) >= ex["input_ids_lens"]
+            # don't predict the padding
+            targets = hax.roll(input_ids, -1, self.Pos)
             loss_mask = loss_mask & (targets != self.pad_token_id)
+
             attn_mask = CausalMask(self.Pos, self.KeyPos)
 
-            yield LmExample(input_ids, targets, attn_mask, loss_mask)
+            yield LmExample(input_ids, attn_mask, loss_mask)
 
 
 def _get_data_source(path_or_id):

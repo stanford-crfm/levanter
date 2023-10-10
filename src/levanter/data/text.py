@@ -105,11 +105,10 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             attn_mask = attn_mask & ExplicitMask(fcm_mask)
 
         tokens = hax.named(tokens, self.QPos)
-        targets = hax.roll(tokens, -1, self.QPos)
 
         loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
 
-        example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
+        example = LmExample(tokens=tokens, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
 
