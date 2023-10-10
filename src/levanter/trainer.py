@@ -17,6 +17,7 @@ import numpy as np
 import optax
 import wandb
 from draccus import field
+from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
@@ -235,10 +236,12 @@ class Trainer:
             trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
                 model = eqx.combine(trainable_model, model)
-            else:
+            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
                 # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
                 non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
                 model = eqx.combine(trainable_model, non_trainable)
+            else:
+                model = trainable_model
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
