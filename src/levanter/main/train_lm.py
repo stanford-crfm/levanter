@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
-    data_mixture: LMMixtureDatasetConfig = field(default_factory=LMMixtureDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
