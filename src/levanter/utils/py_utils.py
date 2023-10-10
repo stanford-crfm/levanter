@@ -18,7 +18,7 @@ def non_caching_cycle(iterable):
     i = 0
     while True:
         print(f"Start epoch {i}!", flush=True)
-        wandb.log({"epoch": i})
+        wandb.log({"epoch": i}, commit=False)
         i += 1
         yield from iterable
 
