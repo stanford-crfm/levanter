@@ -617,6 +617,8 @@ class TrainerConfig:
                 mapping[axis] = ResourceAxis.DATA
 
         print("\n\nRETURNING MAPPING\n\n")
+        print("The mapping at the end is:")
+        print(mapping)
         return mapping
 
     def _initialize_jax_config(self):
