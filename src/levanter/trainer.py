@@ -371,32 +371,32 @@ class Trainer:
             donate_args=(True, True),
         )
         def train_step(model, opt_state, *batch, **batch_kwargs):
-            print("\n\nGetting model mode\n\n")
+            jax.debug.print("\n\nGetting model mode\n\n")
             model = inference_mode(model, False)
 
             # we do this so that we only take the gradients of the trainable parameters
-            print("\n\nPARTITIONING TRAINABLE PARAMETERS\n\n")
+            jax.debug.print("\n\nPARTITIONING TRAINABLE PARAMETERS\n\n")
             trainable_model, rest_model = self.partition_trainable_params(model)
 
             def split_loss_fn(trainable_model, *batch, **batch_kwargs):
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
-            print("\n\nCalling accumlate gradients sharded")
+            jax.debug.print("\n\nCalling accumlate gradients sharded")
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(trainable_model, *batch, **batch_kwargs)
 
-            print("\n\nUpdateing optimizer state")
+            jax.debug.print("\n\nUpdateing optimizer state")
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
 
-            print("\n\nApplying optimizer updates\n\n")
+            jax.debug.print("\n\nApplying optimizer updates\n\n")
             model = eqx.apply_updates(model, updates)
 
-            print("\n\nreturning from train step inside _train_step_fn\n\n")
+            jax.debug.print("\n\nreturning from train step inside _train_step_fn\n\n")
             return loss, model, opt_state
 
-        print("\n\nRETURNING the function train_step from _train_step_fn\n\n")
+        jax.debug.print("\n\nRETURNING the function train_step from _train_step_fn\n\n")
         return train_step
 
     def _init_model_and_opt_state(self, model_init):
