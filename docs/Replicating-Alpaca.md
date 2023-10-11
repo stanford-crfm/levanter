@@ -120,22 +120,19 @@ import datasets
 PROMPT_DICT = ...
 tokenizer = ...
 
-hf_dataset = datasets.load_dataset(config.dataset, split="train")
-
-# TODO: aspirational
-# wrap with Levanter's native dataset class for fancier preprocessing
+# wrap an HF dataset with Levanter's native dataset class for fancier preprocessing.
 # Levanter's native dataset class supports streaming, deteriministic, distributed preprocessing out of the box,
 # which is a bit overkill for this dataset, but it's a good example of how to use it.
-dataset = levanter.data.dataset_from_hf(hf_dataset)
+dataset = levanter.data.dataset_from_hf(config.dataset, split="train")
 ```
 
 Preprocessing in Levanter typically comes in two phases:
 * creating the on-disk cache,
-* transforming examples from the cache into a dataset.
+* transforming examples from the cache into the examples that the model expects.
 
-(This is a bit overkill for this dataset, but it's a good example of how to use Levanter's preprocessing.)
-
-Here's the first phase:
+Here's the first phase, where we create the cache. We basically want to interpolate the prompt with the input
+and instructions, and then tokenize the result. We also want to keep track of the length of the input, so we
+can mask out the loss appropriately.
 
 ```python
 prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
