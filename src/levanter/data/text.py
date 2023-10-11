@@ -233,7 +233,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     def set_stop_strategy(self, stop_strategy: str):
         assert stop_strategy in [FIRST_STOP_STRATEGY, ALL_STOP_STRATEGY], f"Unknown stopping strategy {stop_strategy}"
         self.stop_strategy = stop_strategy
-        self.exhausted_datasets = set()
+        self.exhausted_datasets: set = set()
         if stop_strategy == FIRST_STOP_STRATEGY:
             self.stop_strategy_func = lambda x: len(x) > 0
         else:
@@ -259,7 +259,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         """
 
         while len(self.token_seq_iterators) > 0 and sum(self.weights.values()) > 0:
-            dataset_name = self.sample_index(self.weights.values())
+            dataset_name = self.sample_index()
             try:
                 item = next(self.token_seq_iterators[dataset_name])
                 yield item
