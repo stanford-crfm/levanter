@@ -30,6 +30,9 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
+
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+
 import jax.random as jrandom
 import transformers
 from transformers import PreTrainedTokenizerBase
