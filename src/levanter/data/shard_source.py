@@ -64,6 +64,17 @@ class MappedShardedDataset(ShardedDataset[T]):
         return map(self.fn, self.source.open_shard_at_row(shard_name, row))
 
 
+def dataset_from_hf(id: str, *, split, **kwargs) -> ShardedDataset[dict]:
+    """
+    Create a ShardedDataset from a HuggingFace dataset. Arguments are passed to load_dataset.
+    """
+    return WrappedHFDataset(id, split=split, **kwargs)
+
+
+def dataset_from_jsonl(urls_or_paths: Sequence[str]) -> ShardedDataset[dict]:
+    return JsonlDataset(urls_or_paths)
+
+
 class WrappedHFDataset(ShardedDataset[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
