@@ -13,8 +13,8 @@ from equinox import static_field
 from transformers import BatchEncoding
 
 from levanter.checkpoint import _get_fs_and_plain_path
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import ShardedDataset
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import ShardedDataset
 from levanter.data.text import _stack_batch_encodings
 
 

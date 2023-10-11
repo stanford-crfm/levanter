@@ -39,8 +39,8 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import JsonDataset, WrappedHFDataset
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.data.text import BatchEncodingDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
