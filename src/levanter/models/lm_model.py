@@ -18,7 +18,6 @@ LmT = TypeVar("LmT", bound="LmHeadModel")
 
 class LmExample(eqx.Module):
     tokens: hax.NamedArray
-    targets: hax.NamedArray
     attn_mask: AttnMask
     loss_mask: hax.NamedArray
 
@@ -98,7 +97,8 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
         logits = self(example.tokens, example.attn_mask, key=key)
-        target_y = hax.nn.one_hot(example.targets, self.Vocab, dtype=logits.dtype)
+        targets = hax.roll(example.tokens, -1, axis=self.Pos)
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )

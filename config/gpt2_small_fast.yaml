@@ -21,3 +21,4 @@ trainer:
 optimizer:
   learning_rate: 1E-3
   weight_decay: 0.1
+  warmup: 0.01
