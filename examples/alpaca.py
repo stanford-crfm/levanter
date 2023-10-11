@@ -30,9 +30,6 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
-
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-
 import jax.random as jrandom
 import transformers
 from transformers import PreTrainedTokenizerBase
@@ -51,6 +48,9 @@ from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle
+
+
+# os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 
 logger = logging.getLogger(__name__)
