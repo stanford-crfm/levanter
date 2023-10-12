@@ -2,7 +2,7 @@
 
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
 using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
-We'll use a TPU V3-32 VM, though this same tutorial should work on an A100 box as well.
+We'll demonstrate how to replicate Alpaca using a node of 8 A100 GPUs or a TPU V3-32 VM. Other NVIDIA GPUs will work out of the box as well.
 
 ## Setup
 
@@ -15,6 +15,8 @@ git clone https://github.com/stanford-crfm/levanter.git
 cd levanter
 pip install -e .
 ```
+
+### Setting up your GPU environment
 
 ### Setting up a TPU VM
 
