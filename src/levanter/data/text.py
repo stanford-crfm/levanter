@@ -34,12 +34,12 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
+from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import CacheLedger  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
-    BatchProcessor,
     ChunkMetadata,
     LoggerMetricsMonitor,
     MetricsMonitor,
@@ -48,7 +48,7 @@ from levanter.data.shard_cache import (  # noqa
     _serialize_json_and_commit,
     build_cache,
 )
-from levanter.data.shard_source import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
+from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -172,11 +172,16 @@ class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
             if self.return_batches:
                 yield encoding
             else:
-                for i in range(encoding.n_sequences):
+                batch_size = 0
+                for v in encoding.values():
+                    batch_size = len(v)
+                    break
+
+                for i in range(batch_size):
                     # this doesn't work for reconstituted batches, so we have to do this
                     # I have no idea why this is the case
                     #     yield encoding[i]
-                    yield BatchEncoding({k: v[i] for k, v in encoding.items()}, n_sequences=1)
+                    yield BatchEncoding({k: v[i] for k, v in encoding.items()})
 
     def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
         return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
@@ -331,26 +336,9 @@ def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
                 b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
                 for i in range(b.num_columns)
             },
-            n_sequences=1,
         )
     else:
-        # we follow the convention from hf batchencoding where homogeneous-lengthed arrays are turned into nd arrays
-        # while heterogeneous lists are left as lists of arrays
-        def to_hf_batched(x):
-            if len(x) == 0:
-                return list(x)
-            elif isinstance(x[0], Sequence) or isinstance(x[0], np.ndarray):
-                if all(len(y) == len(x[0]) for y in x):
-                    return np.stack(x)
-                else:
-                    return list(x)
-            else:
-                return x
-
-        return BatchEncoding(
-            {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)},
-            n_sequences=b.num_rows,
-        )
+        return BatchEncoding(dict_from_record_batch(b))
 
 
 def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):

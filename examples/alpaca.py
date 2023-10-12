@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
 import jax.random as jrandom
+import numpy as np
 import transformers
 from transformers import PreTrainedTokenizerBase
 
@@ -39,9 +40,8 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import JsonDataset, WrappedHFDataset
-from levanter.data.text import BatchEncodingDataset
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
@@ -94,39 +94,28 @@ class TrainArgs:
 # training examples. We use a class with Haliax named arrays instead.
 # We basically do string interpolation of the (input, output) pairs with the prompt, and mask out the input and padding
 class SupervisedDataset(Dataset[LmExample]):
-    def __init__(
-        self, cache_dir, Pos: hax.Axis, KeyPos: hax.Axis, data: str, tokenizer: transformers.PreTrainedTokenizer
-    ):
-        super(SupervisedDataset, self).__init__()
-        self.Pos = Pos
-        self.KeyPos = KeyPos
-        self.pad_token_id = tokenizer.pad_token_id
-
-        # Levanter's preprocessing will automatically cache the preprocessed data. This is a bit overkill for this
-        # dataset, but it's a good example of how to use it. It's also useful if you're using preemptible nodes.
-        logging.warning(f"Checking for cached preprocessed data in {cache_dir}")
-        source = _get_data_source(data)
-        cache = levanter.data.build_cache(
-            cache_dir=cache_dir,
-            input_shards=source,
-            processor=EncoderDecoderProcessor(tokenizer),
-        )
-
-        # This converts the on-disk cache into a dataset that we can iterate over. It's functionally an iterable
-        # over dicts for each example.
-        self.batch_encoding_dataset = BatchEncodingDataset(cache)
+    def __init__(self, preproc_dataset, tokenizer):
+        self.preproc_dataset = preproc_dataset
+        self.tokenizer = tokenizer
 
     def __iter__(self):
-        for ex in self.batch_encoding_dataset:
-            input_ids = hax.named(ex["input_ids"], self.Pos)
+        for ex in self.preproc_dataset:
+            # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+            ex = self.tokenizer.pad(
+                {k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length"
+            )
+            ex = {k: v[0] for k, v in ex.items()}
+            input_ids = hax.named(ex["input_ids"], "position")
+            Pos = input_ids.resolve_axis("position")
 
             # mask out padding and anything before the start of the target
-            loss_mask = hax.arange(self.Pos) >= ex["input_ids_lens"]
-            # don't predict the padding
-            targets = hax.roll(input_ids, -1, self.Pos)
-            loss_mask = loss_mask & (targets != self.pad_token_id)
+            loss_mask = hax.arange(Pos) >= ex["source_lens"]
 
-            attn_mask = CausalMask(self.Pos, self.KeyPos)
+            # don't predict the padding
+            targets = hax.roll(input_ids, -1, Pos)
+            loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
+
+            attn_mask = CausalMask(Pos, Pos.alias("key_position"))
 
             yield LmExample(input_ids, attn_mask, loss_mask)
 
@@ -138,6 +127,37 @@ def _get_data_source(path_or_id):
         return JsonDataset([path_or_id])
     else:
         return WrappedHFDataset(path_or_id, split="train")
+
+
+def mk_dataset(data_path_or_id: str, cache_dir: str, tokenizer):
+    dataset = _get_data_source(data_path_or_id)
+
+    prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
+
+    def preprocess(batch):
+        sources = [
+            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
+            for example in batch
+        ]
+        targets = [f"{example['output']}{tokenizer.eos_token}" for example in batch]
+        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+        examples = [s + t for s, t in zip(sources, targets)]
+        sources_tokenized = tokenizer(sources, return_tensors="np", padding=False, truncation=True)
+        examples_tokenized = tokenizer(examples, return_tensors="np", padding=False, truncation=True)
+
+        source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+        return {
+            "input_ids": examples_tokenized["input_ids"],
+            "source_lens": source_lens,
+        }
+
+    dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
+    dataset = dataset.build_cache(cache_dir, await_finished=True)
+
+    dataset = SupervisedDataset(dataset, tokenizer)
+
+    return dataset
 
 
 class EncoderDecoderProcessor(BatchProcessor[dict]):
@@ -192,6 +212,8 @@ def train(config: TrainArgs):
         padding_side="right",
     )
 
+    train_dataset = mk_dataset(config.data, config.data_cache_dir, tokenizer)
+
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
@@ -212,7 +234,6 @@ def train(config: TrainArgs):
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
-        train_dataset = SupervisedDataset(config.data_cache_dir, model.Pos, model.KeyPos, config.data, tokenizer)
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.

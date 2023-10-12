@@ -93,11 +93,70 @@ and don't want to mask out any tokens. So we'll instead write a custom script th
 
 If you just want to run something, here's the command line for Llama 1:
 
-XXX
+```bash
+python levanter/examples/alpaca.py \
+--config_path levanter/examples/alpaca.yaml \
+--trainer.checkpointer.base_path somewhere \
+--hf_save_path somewhere_else
+```
+
+You'll likely want to set `--trainer.id` to something unique if you're using preemptible VMs so you can easily restart
+the job if it gets preempted.
+
+If you want to use Llama 2, you'll need to [request access to the model](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
+Once you have access, you can run:
+
+```bash
+export HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE}
+python levanter/examples/alpaca.py \
+--config_path levanter/examples/alpaca-llama2.yaml \
+--trainer.checkpointer.base_path somewhere \
+--hf_save_path somewhere_else
+```
+
+### Original Alpaca Config
+
+In case you want to change the config, here's our config for Llama 1:
+
+TODO: update for GPU
+
+```yaml
+# cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
+model_name_or_path: huggyllama/llama-7b
+trainer:
+  mp: p=f32,c=bfloat16
+  wandb:
+    project: "levanter-alpaca"
+  num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
+  train_batch_size: 128
+  per_device_parallelism: 4
+  # if using model parallelism, this is useful:
+  tensor_parallel_axes: ["mlp", "heads"]
+optimizer:
+  learning_rate: 2e-5
+  weight_decay: 0.0
+```
 
 And for Llama 2:
 
-XXX
+```yaml
+# cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
+model_name_or_path: meta-llama/Llama-2-7b-hf
+trainer:
+  mp: p=f32,c=bfloat16
+  wandb:
+    project: "levanter-alpaca"
+    tags: ["llama2"]
+  num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
+  train_batch_size: 128
+  per_device_parallelism: 2  # 2 is the max for llama-2-7b right now on a v3-32 right now
+
+  # if using model parallelism, this is useful:
+  tensor_parallel_axes: ["mlp", "heads"]
+optimizer:
+  learning_rate: 2e-5
+  weight_decay: 0.0
+```
 
 ### Customizing the Config
 
@@ -109,21 +168,18 @@ Currently, Levanter supports GPT-2, Llama, MPT, and Backpack checkpoints.
 
 ## Preparing the Dataset
 
-The first step is to download the dataset. We'll use the [Hugging Face Datasets library](
-https://huggingface.co/docs/datasets/loading_datasets.html) to do this. (You can also download it directly from the
-[dataset page](https://huggingface.co/datasets/tatsu-lab/alpaca), but the Datasets library is a bit more convenient.)
+The first step is to get the dataset. We'll use the [Hugging Face Dataset version](https://huggingface.co/datasets/tatsu-lab/alpaca)
+to do this. (You can also download it directly from the [dataset page](https://huggingface.co/datasets/tatsu-lab/alpaca), but
+Levanter's integration with Hugging Face datasets makes it a bit easier to use.)
 
 ```python
-import levanter
-import datasets
-
-PROMPT_DICT = ...
-tokenizer = ...
-
-# wrap an HF dataset with Levanter's native dataset class for fancier preprocessing.
-# Levanter's native dataset class supports streaming, deteriministic, distributed preprocessing out of the box,
-# which is a bit overkill for this dataset, but it's a good example of how to use it.
-dataset = levanter.data.dataset_from_hf(config.dataset, split="train")
+def _get_data_source(path_or_id):
+    """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
+    dataset that's compatible with the structure of the alpaca dataset."""
+    if fsspec_utils.exists(path_or_id):
+        return JsonDataset([path_or_id])
+    else:
+        return levanter.data.dataset_from_hf(path_or_id, split="train")
 ```
 
 Preprocessing in Levanter typically comes in two phases:
@@ -135,28 +191,39 @@ and instructions, and then tokenize the result. We also want to keep track of th
 can mask out the loss appropriately.
 
 ```python
-prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
+def mk_dataset(data_path_or_id: str, cache_dir: str, tokenizer):
+    # wrap an HF dataset with Levanter's native dataset class for fancier preprocessing.
+    # Levanter's native dataset class supports streaming, deteriministic, distributed preprocessing out of the box,
+    # which is a bit overkill for this dataset, but it's a good example of how to use it.
+    dataset = _get_data_source(data_path_or_id)
 
-def preprocess(batch):
-    sources = [
-        prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
-        for example in batch
-    ]
-    targets = [f"{example['output']}{tokenizer.eos_token}" for example in batch]
-    # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
-    examples = [s + t for s, t in zip(sources, targets)]
-    sources_tokenized = tokenizer(sources, return_tensors="np", padding=False, truncation=True)
-    examples_tokenized = tokenizer(examples, return_tensors="np", padding=False, truncation=True)
+    prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
 
-    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+    def preprocess(batch):
+        sources = [
+            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
+            for example in batch
+        ]
+        targets = [f"{example['output']}{tokenizer.eos_token}" for example in batch]
+        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+        examples = [s + t for s, t in zip(sources, targets)]
+        sources_tokenized = tokenizer(sources, return_tensors="np", padding=False, truncation=True)
+        examples_tokenized = tokenizer(examples, return_tensors="np", padding=False, truncation=True)
 
-    return {
-        "input_ids": examples_tokenized["input_ids"],
-        "source_lens": source_lens,
-    }
+        source_lens = [len(s) for s in sources_tokenized["input_ids"]]
 
-dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-dataset = dataset.cache(dir=config.data_cache_dir)
+        return {
+            "input_ids": examples_tokenized["input_ids"],
+            "source_lens": source_lens,
+        }
+
+    dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
+    dataset = dataset.build_cache(cache_dir, await_finished=True)
+
+    # SupervisedDataset does last minute padding and masking
+    dataset = SupervisedDataset(dataset, tokenizer)
+
+    return dataset
 ```
 
 In the second, we create [levanter.models.lm.LmExample][] objects from the cache. These are the inputs to the model.
@@ -171,9 +238,9 @@ class LmExample(eqx.Module):
 
 So we need to populate these fields. We'll do that with one last preprocessing step:
 
-```python
-import numpy as np
+TODO: this next bit is aspirational.
 
+```python
 # JAX has to recompile for each different shape of input, so we pad to a multiple of 128
 BATCH_MULTIPLE = 128
 
@@ -190,7 +257,7 @@ def postprocess(batch):
     Batch, Pos = input_ids.resolve_axis("batch", "position")
 
     # mask out padding and anything before the start of the target
-    loss_mask = hax.arange(input_ids) >= hax.array(batch["source_lens"], Batch)
+    loss_mask = hax.arange(Pos) >= hax.array(batch["source_lens"], Batch)
     # don't compute loss when next token is padding
     loss_mask = loss_mask & (hax.roll(input_ids, -1, "position") != tokenizer.pad_token_id)
 
@@ -209,17 +276,7 @@ The rest is pretty boilerplate-y: setting up the model, optimizer, and trainer, 
 We'll skip over that in this tutorial, but you can see the full script [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.py)
 
 
-## Setup
-
-### Cloning Levanter
-
-First, we'll clone Levanter:
-
-```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-```
+## Quick TPU Guide
 
 ### Setting up a TPU VM
 
@@ -229,16 +286,6 @@ If you haven't gone through that guide before, you should do so now. If you have
 ```bash
 bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
 ```
-
-## The Alpaca script
-
-We have a [Levanter version](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.py) of the [original Alpaca script](https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py). A tutorial follows at the end.
-
-There's a bit of ceremony in both versions, but the broad strokes of the script are the same. The main differences
-are highlighted in the Levanter version.
-
-We also need a config file. We provide two versions: [an "original" Alpaca config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.yaml) that uses LLaMA and [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-llama2.yaml) that uses
-Llama 2.
 
 ### Original Alpaca Config
 

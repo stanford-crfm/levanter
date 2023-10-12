@@ -8,8 +8,9 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, _get_broker_actor, build_cache
-from levanter.data.shard_source import ShardedDataset
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.shard_cache import ChunkMetadata, _get_broker_actor, build_cache
+from levanter.data.sharded_dataset import ShardedDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -274,3 +275,29 @@ def test_can_get_chunk_before_finished():
 
         # now wait until the cache is finished. mostly so that the tempdir cleanup works
         cache.await_finished(timeout=10)
+
+
+def test_map_batches_and_map_shard_cache():
+    td = tempfile.TemporaryDirectory()
+    with td as tmpdir:
+        ray_ds = (
+            SimpleShardSource()
+            .map(lambda list: list * 2)
+            .map_batches(TestProcessor(), 8)
+            .map(lambda d: {"q": d["test"]})
+            .build_cache(tmpdir, await_finished=True)
+        )
+
+        def composite_fn(list):
+            assert len(list) == 1
+            return {"q": list[0] * 2}
+
+        simple_processed = simple_process(composite_fn, SimpleShardSource())
+
+        # we internally change all the int lists in the ray_ds to np arrays, so we need to convert them back to lists
+        ray_entries = []
+        for entry in ray_ds:
+            assert entry.keys() == {"q"}
+            ray_entries.append({"q": entry["q"].tolist()})
+
+        assert ray_entries == list(simple_processed)
