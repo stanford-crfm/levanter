@@ -2,7 +2,7 @@
 
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
 using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
-We'll demonstrate how to replicate Alpaca using GPUs or a TPU V3-32 VM. If you intend to only use GPUs, you should skip sections
+We'll demonstrate how to replicate Alpaca using GPUs or using a TPU V3-32 VM. If you intend to only use GPUs, you should skip sections
 with [TPU] in the title. Similarly, if you are only working on TPUs, skip the sections labeled [GPU]. Levanter is designed for
 seamless transition between both types of accelerators without code changes.
 
@@ -77,7 +77,7 @@ If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.
 Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
 to the TPU VM as an environment variable. (We'll show you how to do this later.)
 
-## [GPU] Launching the Job
+### [GPU] Launching the Job
 
 Right now Levanter only works with single node GPU training. The example commands below demonstrate how to launch a training job
 on a node with 8 A100 GPUs, but should work for other single node GPU configurations. For example, we've also tested alpaca replication with
@@ -112,7 +112,7 @@ you could launch a training job on a slurm cluster with `srun` as follows:
 srun --account=nlp --cpus-per-task=32 --gpus-per-node=8 --mem=400G --open-mode=append --partition=sphinx  --nodes=1 --pty bash train_alpaca.sh
 ```
 
-## [TPU] Launching the Job
+### [TPU] Launching the Job
 
 Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
 (If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
