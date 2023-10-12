@@ -39,8 +39,8 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import HFDatasetDataSource, JsonDataSource
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.data.text import BatchEncodingDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
@@ -135,9 +135,9 @@ def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
-        return JsonDataSource([path_or_id])
+        return JsonDataset([path_or_id])
     else:
-        return HFDatasetDataSource(path_or_id, split="train")
+        return WrappedHFDataset(path_or_id, split="train")
 
 
 class EncoderDecoderProcessor(BatchProcessor[dict]):
