@@ -5,6 +5,7 @@ import logging as pylogging
 import os
 import sys
 import typing
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -12,11 +13,14 @@ from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Option
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 import optax
 import wandb
 from draccus import field
+from jax import ShapeDtypeStruct
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
@@ -234,10 +238,12 @@ class Trainer:
             trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
                 model = eqx.combine(trainable_model, model)
-            else:
+            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
                 # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
                 non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
                 model = eqx.combine(trainable_model, non_trainable)
+            else:
+                model = trainable_model
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -523,8 +529,9 @@ class TrainerConfig:
         return Axis("batch", self.eval_batch_size)
 
     def initialize(self, all_config):
-        """Initializes jax, wandb, logging, setting the run name in the process"""
+        """Initializes jax, wandb, logging, setting the run name/id in the process"""
         self.distributed.initialize()
+        self._maybe_set_id()
         self.ray.initialize()
         self._initialize_jax_config()
         self._validate_and_set_defaults()
@@ -598,7 +605,13 @@ class TrainerConfig:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
 
-    def __post_init__(self):
+    def _maybe_set_id(self):
+        # always do this so we don't get weird hangs if the id isn't set right
+        # for random ids, we want to ensure that all hosts have the same id
+        # NB: do NOT use the run seed here. we want the run id to be independent of the seed
+        seed = np.random.randint(0, 2**31 - 1)
+        seed = multihost_utils.broadcast_one_to_all(jax.numpy.array(seed, dtype=np.int32)).item()
+
         # RUN ID comes from a few places: the config, the environment, or wandb, or a random string
         if self.id is None:
             # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
@@ -608,8 +621,10 @@ class TrainerConfig:
                 self.id = self.wandb.id
             else:
                 # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
-                # NB: do NOT use the seed here. we want the run id to be independent of the seed
-                self.id = "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), size=8))
+                # we also want to ensure that all hosts have the same run id
+                # we do this by syncing a random seed across all hosts and then using that to generate the run id
+                gen = np.random.default_rng(seed)
+                self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
 
@@ -650,8 +665,12 @@ class OptimizerConfig:
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
-    min_lr_ratio: float = 0.0
-    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
+    min_lr_ratio: float = 0.1
+    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
+    warmup: float = 0.01
+    """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
+    cooldown: float = 0.0
+    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     def build(self, num_train_steps: int) -> GradientTransformation:
@@ -679,25 +698,66 @@ class OptimizerConfig:
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
     def lr_scheduler(self, num_train_steps):
-        warmup_steps = int(self.warmup_ratio * num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps
+        warmup_steps = self._convert_warmup(num_train_steps)
+        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
+        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
         min_lr = self.learning_rate * self.min_lr_ratio
 
-        if self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-        elif self.lr_schedule == "linear":
-            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+        match self.lr_schedule:
+            case "constant":
+                schedule = optax.constant_schedule(self.learning_rate)
+            case "cosine":
+                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+            case "linear":
+                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+            case "inv_sqrt":
+                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
+            case _:
+                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+
+        schedules = []
+        boundaries = []
 
         if warmup_steps != 0:
             warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+            schedules.append(warmup)
+            boundaries.append(warmup_steps)
+
+        schedules.append(schedule)
+
+        if cooldown_steps != 0:
+            final_main_lr = schedule(lr_decay_steps)
+            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
+            schedules.append(cooldown)
+            boundaries.append(num_train_steps - cooldown_steps)
+
+        if len(schedules) > 1:
+            schedule = optax.join_schedules(schedules, boundaries)
 
         return schedule
+
+    def _convert_warmup(self, num_train_steps: int):
+        if self.warmup_ratio is not None:
+            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
+            return int(self.warmup_ratio * num_train_steps)
+        else:
+            return _convert_ratio_or_steps(self.warmup, num_train_steps)
+
+
+def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
+    def schedule(count):
+        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
+        return jnp.maximum(lr * decay, min_lr)
+
+    return schedule
 
 
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
+
+
+def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
+    if ratio_or_steps < 1.0:
+        return int(ratio_or_steps * num_train_steps)
+    else:
+        return int(ratio_or_steps)
