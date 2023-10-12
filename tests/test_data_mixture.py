@@ -36,10 +36,12 @@ def test_mixture_dataset():
         build_cache(f"{tmpdir}/cache_2", source_2, IdentityProcessor())
         cache_2 = TokenizedDocumentCache.load(f"{tmpdir}/cache_2", flatten_docs=False)
 
+        # set reuseable config
         mixture_data_config = {
             "doc_caches": {"1": cache_1, "2": cache_2},
             "seq_len": seq_len,
         }
+        # test mixture with all weights on one dataset
         mixture_1_only = MixtureDataset(
             weights={"1": 1.0, "2": 0.0},
             stop_strategy=FIRST_STOP_STRATEGY,
@@ -51,6 +53,7 @@ def test_mixture_dataset():
             counter += 1
         assert counter == 10
 
+        # compare mixture with different strategies
         mixture_balanced_first = MixtureDataset(
             weights={"1": 0.5, "2": 0.5},
             stop_strategy=FIRST_STOP_STRATEGY,
@@ -65,3 +68,11 @@ def test_mixture_dataset():
         )
         counter_all = sum([1 for _ in mixture_balanced_all])
         assert counter_first < counter_all
+
+        # test normalized weights
+        mixture_normalized = MixtureDataset(
+            weights={"1": 2.0, "2": 2.0},
+            stop_strategy=FIRST_STOP_STRATEGY,
+            **mixture_data_config,
+        )
+        mixture_normalized.weights["1"] == mixture_normalized.weights["2"] == 0.5
