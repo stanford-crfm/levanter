@@ -1,9 +1,10 @@
 import tempfile
+
 import ray
 from transformers import BatchEncoding
 
 from levanter.data.shard_cache import build_cache
-from levanter.data.text import MixtureDataset, TokenizedDocumentCache, FIRST_STOP_STRATEGY, ALL_STOP_STRATEGY
+from levanter.data.text import ALL_STOP_STRATEGY, FIRST_STOP_STRATEGY, MixtureDataset, TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, SingleShardDocumentSource
 
