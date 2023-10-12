@@ -50,6 +50,12 @@ from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle
 
 
+# TODOs
+# * make CausalMask not need to know the axis names
+# * make a pad_stack function that can pad and stack arrays in one go
+# * make batch loader support pad_stack
+
+
 logger = logging.getLogger(__name__)
 
 # copy paste from alpaca

@@ -32,7 +32,6 @@ from levanter.utils.py_utils import non_caching_cycle
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 
 import alpaca  # noqa: E402
-from alpaca import SupervisedDataset  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +64,8 @@ def train(config: TrainArgs):
         model_max_length=model_config.Pos.size,
         padding_side="right",
     )
+
+    train_dataset = alpaca.mk_dataset(config.data, config.data_cache_dir, tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -111,7 +112,6 @@ def train(config: TrainArgs):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
-        train_dataset = SupervisedDataset(config.data_cache_dir, model.Pos, model.KeyPos, config.data, tokenizer)
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
