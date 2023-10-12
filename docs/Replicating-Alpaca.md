@@ -9,7 +9,7 @@ seamless transition between both types of accelerators without code changes.
 ## Setup
 
 ### [GPU] Environment Setup
-First, follow the instructions in the [Getting Started with GPUs](./Getting-Started-CUDA.md) guide to create a conda environment and install JAX with cuda.
+First, follow the instructions in the [Getting Started with GPUs](./Getting-Started-GPU.md) guide to create a conda environment and install JAX with cuda.
 
 ### [TPU] Environment Setup
 First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.

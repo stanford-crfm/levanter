@@ -9,7 +9,7 @@ We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with Jax i
 ```bash
 # 3.11 is too new for tensorstore
 # this doesn't actually install pytorch, but it bundles cuda dependencies nicely
-conda create --name levanter -c pytorch python~=3.10
+conda create --name levanter python~=3.10
 conda activate levanter
 ```
 ### Install Jax with CUDA

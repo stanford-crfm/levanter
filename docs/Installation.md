@@ -1,34 +1,5 @@
 # Installation
 
-## Quickstart
-
-{%
-   include-markdown "../README.md"
-   start="<!--levanter-installation-start-->"
-   end="<!--levanter-installation-end-->"
-%}
-
-If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).
-If you're using CUDA, more complete documentation for setting that up is available [here](Getting-Started-CUDA.md).
-
-## Setting up a development environment
-
-For development, please follow these steps:
-
-First, install the appropriate version of Jax for your system.
-See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
-as it varies from platform to platform.
-
-Now clone this repository and install it with pip:
-
-```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-wandb login  # optional, we use wandb for logging
-```
-
-
 ## Create a virtual environment
 
 It is recommended to install Levanter using a virtual environment with Python version 3.10 to avoid dependency conflicts. Levanter requires Python version 3.10. To create, a Python virtual environment with Python version >= 3.10 and activate it, follow the instructions below.
@@ -55,4 +26,32 @@ python3 -m virtualenv -p python3.8 levanter-venv
 
 # Activate the virtual environment.
 source levanter-venv/bin/activate
+```
+
+## Quickstart
+
+If you're using CUDA, follow the installation steps here first before installing levanter [here](Getting-Started-GPU.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).
+
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-installation-start-->"
+   end="<!--levanter-installation-end-->"
+%}
+
+## Setting up a development environment
+
+For development, please follow these steps:
+
+First, install the appropriate version of Jax for your system.
+See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
+as it varies from platform to platform.
+
+Now clone this repository and install it with pip:
+
+```bash
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+wandb login  # optional, we use wandb for logging
 ```
