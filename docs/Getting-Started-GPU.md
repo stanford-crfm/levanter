@@ -8,7 +8,7 @@ We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with Jax i
 ### Setting up Conda Environment
 ```bash
 # 3.11 is too new for tensorstore
-conda create --name levanter python~=3.10
+conda create --name levanter python=3.10
 conda activate levanter
 ```
 ### Install Jax with CUDA
@@ -26,6 +26,7 @@ pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-re
 ### Install Levanter
 
 ```bash
+git clone https://github.com/stanford-crfm/levanter.git
 cd levanter
 pip install -e .
 ```
