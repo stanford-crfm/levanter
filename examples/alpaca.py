@@ -30,9 +30,6 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
-
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-
 import jax.random as jrandom
 import transformers
 from transformers import PreTrainedTokenizerBase
@@ -203,7 +200,6 @@ def train(config: TrainArgs):
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
     with trainer.device_mesh:
-        print("\n\nENTERED WITH TRAINER DEVICE MESH\n\n")
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
@@ -239,7 +235,7 @@ def train(config: TrainArgs):
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload),
                 every=config.hf_save_steps,
             )
-        print("\n\nCalling trainer.train\n\n")
+
         trainer.train(state, loader)
 
 
