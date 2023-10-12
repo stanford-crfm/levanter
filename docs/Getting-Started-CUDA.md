@@ -1,6 +1,6 @@
-# Getting Started on CUDA
+# Getting Started on GPU
 
-**Note** that right now CUDA support is very preliminary and Levanter does not work on a multi-machine setup. (We think this is just a dependency/environment issue.)
+**Note** that right now GPU support is very preliminary and Levanter does not work on a multi-machine setup. (We think this is just a dependency/environment issue.)
 
 We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with Jax it should work, though.
 
@@ -9,7 +9,7 @@ We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with Jax i
 ```bash
 # 3.11 is too new for tensorstore
 # this doesn't actually install pytorch, but it bundles cuda dependencies nicely
-conda create --name levanter -c pytorch -c nvidia pytorch-cuda=11.7 python~=3.10
+conda create --name levanter -c pytorch python~=3.10
 conda activate levanter
 ```
 ### Install Jax with CUDA
