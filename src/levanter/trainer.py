@@ -392,6 +392,7 @@ class Trainer:
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(trainable_model, *batch, **batch_kwargs)
+            jax.debug.breakpoint()
 
             jax.debug.print("\n\nUpdateing optimizer state")
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
