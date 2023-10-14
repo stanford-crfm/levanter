@@ -65,7 +65,7 @@ def train(config: TrainArgs):
         padding_side="right",
     )
 
-    train_dataset = alpaca.mk_dataset(config.data, config.data_cache_dir, tokenizer)
+    train_dataset = alpaca.mk_dataset(config, tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
