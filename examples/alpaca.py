@@ -2,10 +2,10 @@
 
 # Differences:
 # - We use the huggingface dataset version of alpaca rather than checking it in
-# - Levanter doesn't do epochs, just steps.
+# - Levanter doesn't (currently) do epochs, just steps.
 # - We use Levanter's distributed preprocessing, which is a bit overkill for this dataset but is a good example.
 #   (The original's preprocessing is very slow, which is usually fine, but not good for preemptible nodes.)
-# - We use the fast tokenizers. I don't know why the original code doesn't use them.
+# - We use fast tokenizers. I don't know why the original code doesn't use them.
 # - We produce Levanter's LmExample class instead of a dict, and loss masks are used instead of the -100 sentinel value.
 
 # Ways this script could be improved:
@@ -28,19 +28,17 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
 import jax.random as jrandom
 import numpy as np
 import transformers
-from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data._preprocessor import BatchProcessor
 from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
@@ -96,9 +94,9 @@ class TrainArgs:
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
 
-# Encoder/Decoder dataset for Alpaca. This is a bit different from the original code, which uses a dict for
-# training examples. We use a class with Haliax named arrays instead.
-# We basically do string interpolation of the (input, output) pairs with the prompt, and mask out the input and padding
+# Encoder/Decoder dataset for Alpaca.
+# We basically do string interpolation of the (instruction, input, output) triples with the prompt,
+# and mask out the prompt and padding.
 class SupervisedDataset(Dataset[LmExample]):
     def __init__(self, preproc_dataset, tokenizer):
         self.preproc_dataset = preproc_dataset
@@ -112,9 +110,9 @@ class SupervisedDataset(Dataset[LmExample]):
             )
             ex = {k: v[0] for k, v in ex.items()}
             input_ids = hax.named(ex["input_ids"], "position")
-            Pos = input_ids.resolve_axis("position")
 
             # mask out padding and anything before the start of the target
+            Pos = input_ids.resolve_axis("position")
             loss_mask = hax.arange(Pos) >= ex["source_lens"]
 
             # don't predict the padding
@@ -164,39 +162,6 @@ def mk_dataset(data_path_or_id: str, cache_dir: str, tokenizer):
     dataset = SupervisedDataset(dataset, tokenizer)
 
     return dataset
-
-
-class EncoderDecoderProcessor(BatchProcessor[dict]):
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, input_key: str = "input", output_key: str = "output"):
-        self.tokenizer = tokenizer
-        self.input_key = input_key
-        self.output_key = output_key
-
-    def __call__(self, batch: Sequence[dict]) -> dict:
-        prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
-        sources = [
-            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
-            for example in batch
-        ]
-        targets = [f"{example['output']}{self.tokenizer.eos_token}" for example in batch]
-        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
-        examples = [s + t for s, t in zip(sources, targets)]
-        sources_tokenized = self.tokenizer(sources, return_tensors="np", padding="max_length", truncation=True)
-        examples_tokenized = self.tokenizer(examples, return_tensors="np", padding="max_length", truncation=True)
-
-        # We want to modify our examples with an extra field for the length of the input.
-        # this will turn into a loss mask later.
-        input_ids_lens = (sources_tokenized["input_ids"] != self.tokenizer.pad_token_id).sum(axis=-1)
-
-        return {
-            "input_ids": examples_tokenized["input_ids"],
-            "input_ids_lens": input_ids_lens,
-        }
-
-    @property
-    def num_cpus(self) -> int:
-        # HF tokenizers are (sometimes) multithreaded, so we tell Ray how many cpus the tokenizer will use.
-        return num_cpus_used_by_tokenizer(self.tokenizer)
 
 
 def train(config: TrainArgs):
