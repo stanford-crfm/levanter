@@ -1,4 +1,28 @@
 # levanter version of https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import Optional, Union
+
+import fsspec
+import jax.random as jrandom
+import numpy as np
+import transformers
+
+import haliax as hax
+
+import levanter
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
+from levanter.data import Dataset
+from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
+from levanter.models.attention import CausalMask
+from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.utils import fsspec_utils
+from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.utils.py_utils import non_caching_cycle
+
 
 # Differences:
 # - We use the huggingface dataset version of alpaca rather than checking it in
@@ -25,28 +49,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import logging
-import os
-from dataclasses import dataclass
-from typing import Optional, Union
-
-import jax.random as jrandom
-import numpy as np
-import transformers
-
-import haliax as hax
-
-import levanter
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
-from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
-from levanter.models.attention import CausalMask
-from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils import fsspec_utils
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
-from levanter.utils.py_utils import non_caching_cycle
-
 
 # TODOs
 # * make CausalMask not need to know the axis names
@@ -62,7 +64,7 @@ DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
-PROMPT_DICT = {
+DEFAULT_PROMPT_DICT = {
     "prompt_input": (
         "Below is an instruction that describes a task, paired with an input that provides further context. "
         "Write a response that appropriately completes the request.\n\n"
@@ -83,6 +85,7 @@ class TrainArgs:
 
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
+    prompts: Optional[str] = None  # Path to the prompts file. can be gcs
 
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
     trust_remote_code: bool = False  # Trust remote code when loading from HuggingFace checkpoints.
@@ -133,10 +136,10 @@ def _get_data_source(path_or_id):
         return WrappedHFDataset(path_or_id, split="train")
 
 
-def mk_dataset(data_path_or_id: str, cache_dir: str, tokenizer):
-    dataset = _get_data_source(data_path_or_id)
+def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
+    dataset = _get_data_source(config.data)
 
-    prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
+    prompt_input, prompt_no_input = get_prompts(config.prompts)
 
     def preprocess(batch):
         sources = [
@@ -157,11 +160,19 @@ def mk_dataset(data_path_or_id: str, cache_dir: str, tokenizer):
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_cache(cache_dir, await_finished=True)
+    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
 
     dataset = SupervisedDataset(dataset, tokenizer)
 
     return dataset
+
+
+def get_prompts(prompt_path):
+    prompts = DEFAULT_PROMPT_DICT
+    if prompt_path is not None:
+        with fsspec.open(prompt_path) as f:
+            prompts = json.load(f)
+    return (prompts["prompt_input"]), (prompts["prompt_no_input"])
 
 
 def train(config: TrainArgs):
@@ -183,7 +194,7 @@ def train(config: TrainArgs):
         padding_side="right",
     )
 
-    train_dataset = mk_dataset(config.data, config.data_cache_dir, tokenizer)
+    train_dataset = mk_dataset(config, tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
