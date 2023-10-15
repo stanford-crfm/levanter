@@ -1,6 +1,8 @@
-In the [Replicating Alpaca](./Replicating-Alpaca.md) tutorial, we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
+# LoRA Tutorial: Alpaca-LoRA
 
-In this guide, we'll use [LoRA](https://arxiv.org/abs/2106.09685) to do a lighter-weight
+In the [Fine-Tuning tutorial](./Fine-Tuning.md), we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
+
+In this guide, we'll use Levanter's implementation of [LoRA](https://arxiv.org/abs/2106.09685) to do a lighter-weight
 version of Alpaca, similar to [tloen/alpaca-lora](https://github.com/tloen/alpaca-lora). We'll borrow heavily from
 our "vanilla" Alpaca script, and only change the parts that are necessary to use LoRA.
 
