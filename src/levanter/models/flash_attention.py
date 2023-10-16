@@ -13,6 +13,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import ds
 from haliax.jax_utils import named_call
+from haliax.types import PrecisionLike
 
 from levanter.models.attention import AttentionMask, materialize_mask
 
@@ -30,11 +31,14 @@ def flash_attention(
     k: hax.NamedArray,
     v: hax.NamedArray,
     mask: Optional[AttentionMask | hax.NamedArray] = None,
-    dropout: float = 0.0,
+    bias: Optional[hax.NamedArray] = None,
     *,
+    dropout: float = 0.0,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
     block_size: int = BLOCK_SIZE,
+    dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
 ):
     """
     Flash Attention impl, vaguely following the v2 paper.
@@ -48,6 +52,11 @@ def flash_attention(
     if dropout < 0 or dropout > 1:
         raise ValueError(f"invalid dropout {dropout}")
 
+    # TODO: is it maybe better to do this just-in-time blockwise?
+    if dtype is not None:
+        q = q.astype(dtype)
+        k = k.astype(dtype)
+
     # premultiply by 1/sqrt(d_k) for normal dot product attention
     q = q * jax.lax.rsqrt(float(q.axis_size(Key)))
 
@@ -55,7 +64,17 @@ def flash_attention(
     KPos = k.resolve_axis(KPos)
 
     return _flash_attention(
-        (q, k, v), QPos, KPos, Key, mask, dropout, inference=inference, key=key, block_size=block_size
+        (q, k, v),
+        QPos,
+        KPos,
+        Key,
+        mask,
+        bias,
+        dropout,
+        inference=inference,
+        key=key,
+        block_size=block_size,
+        precision=precision,
     )
 
 
@@ -66,14 +85,27 @@ def _flash_attention(
     KPos: hax.Axis,
     Key: hax.Axis,
     mask: Optional[AttentionMask | hax.NamedArray] = None,
+    bias: Optional[hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
+    precision: PrecisionLike,
 ) -> hax.NamedArray:
     return _flash_attention_forward(
-        None, qkv, QPos, KPos, Key, mask, dropout, inference=inference, key=key, block_size=block_size
+        None,
+        qkv,
+        QPos,
+        KPos,
+        Key,
+        mask,
+        bias,
+        dropout,
+        inference=inference,
+        key=key,
+        block_size=block_size,
+        precision=precision,
     )[0]
 
 
@@ -85,11 +117,13 @@ def _flash_attention_forward(
     KPos: hax.Axis,
     Key: hax.AxisSelector,
     mask: Optional[AttentionMask | hax.NamedArray],
+    bias: Optional[hax.NamedArray],
     dropout: float,
     *,
     inference: bool,
     key: Optional[PRNGKeyArray],
     block_size: int,
+    precision: PrecisionLike,
 ):
     del ignore
     q, k, v = qkv
@@ -133,9 +167,12 @@ def _flash_attention_forward(
             k_j = k[KPos, ds.block(j, block_size)]
             v_j = v[KPos, ds.block(j, block_size)]
 
-            # TODO: precision
             # Step 8: compute Sij = QiKj^T
-            attn_ij = hax.dot(Key, q_i, k_j)
+            attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
+
+            if bias is not None:
+                bias_ij = bias[QPos : ds.block(i, block_size), KPos : ds.block(j, block_size)]
+                attn_ij = attn_ij + bias_ij
 
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
@@ -191,11 +228,13 @@ def _flash_attention_backward(
     KPos: hax.Axis,
     Key: hax.AxisSelector,
     mask: Optional[hax.NamedArray] = None,
+    bias: Optional[hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
+    precision: PrecisionLike,
 ):
     del ignore
     O, L = residuals
@@ -236,13 +275,16 @@ def _flash_attention_backward(
             L_i = L[QPos, ds.block(i, block_size)]
             D_i = D[QPos, ds.block(i, block_size)]
 
-            # TODO: precision
-            attn_ij = hax.dot(Key, q_i, k_j)
+            attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
 
             if dropout > 0 and not inference:
                 attn_ij = hax.nn.dropout(
                     attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc.size + j)
                 )
+
+            if bias is not None:
+                bias_ij = bias[QPos : ds.block(i, block_size), KPos : ds.block(j, block_size)]
+                attn_ij = attn_ij + bias_ij
 
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
