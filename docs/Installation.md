@@ -1,5 +1,7 @@
 # Installation
 
+If you are using GPUs, please follow the installation steps [here instead](Getting-Started-GPU.md).
+
 ## Create a virtual environment
 
 It is recommended to install Levanter using a virtual environment with Python version 3.10 to avoid dependency conflicts. Levanter requires Python version 3.10. To create, a Python virtual environment with Python version >= 3.10 and activate it, follow the instructions below.
@@ -22,22 +24,11 @@ Using [Virtualenv](https://docs.python.org/3/library/venv.html#creating-virtual-
 # Create a virtual environment.
 # Only run this the first time.
 python3 -m pip install virtualenv
-python3 -m virtualenv -p python3.8 levanter-venv
+python3 -m virtualenv -p python3.10 levanter-venv
 
 # Activate the virtual environment.
 source levanter-venv/bin/activate
 ```
-
-## Quickstart
-
-If you're using CUDA, follow the installation steps here first before installing levanter [here](Getting-Started-GPU.md).
-If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).
-
-{%
-   include-markdown "../README.md"
-   start="<!--levanter-installation-start-->"
-   end="<!--levanter-installation-end-->"
-%}
 
 ## Setting up a development environment
 
@@ -47,11 +38,12 @@ First, install the appropriate version of Jax for your system.
 See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
 as it varies from platform to platform.
 
-Now clone this repository and install it with pip:
+## Install Levanter
 
-```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-wandb login  # optional, we use wandb for logging
-```
+{%
+   include-markdown "../README.md"
+   start="<!--levanter-installation-start-->"
+   end="<!--levanter-installation-end-->"
+%}
+
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).

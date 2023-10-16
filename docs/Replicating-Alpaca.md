@@ -3,8 +3,8 @@
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
 using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
 We'll demonstrate how to replicate Alpaca using GPUs or using a TPU V3-32 VM. If you intend to only use GPUs, you should skip sections
-with [TPU] in the title. Similarly, if you are only working on TPUs, skip the sections labeled [GPU]. Levanter is designed for
-seamless transition between both types of accelerators without code changes.
+with [TPU] in the title. Similarly, if you are only working on TPUs, skip the sections labeled [GPU]. Levanter is designed to work
+seamlessly with both types of accelerators without code changes.
 
 ## Setup
 
@@ -91,7 +91,6 @@ conda activate levanter
 mkdir -p levanter/checkpoints
 wandb login ${YOUR TOKEN HERE}
 ```
-
 Now you can run the training command:
 
 ```bash
@@ -152,7 +151,7 @@ not a ton to see here (yet), but you can see the training loss go down over time
 
 Llama 1 should take about ~3.5 hours on 8 A100 GPUs and on v3-32 TPUs. It should take ~8.5 hours on 8 RTX 6000 Ada Generation GPUs.
 Unfortunately, LLama 2 is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
-accumulation to fit on the TPU/GPU. It should take about ~9 hours on a 8 A100s or v3-32.
+accumulation to fit on the TPU/GPU. It should take about ~9 hours on v3-32 TPUs.
 
 ## Code Walkthrough
 
