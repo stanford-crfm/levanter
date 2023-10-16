@@ -9,7 +9,7 @@ import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
 
-from levanter.models.attention import AttnMask
+from levanter.models.attention import AttentionMask
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
@@ -18,8 +18,8 @@ LmT = TypeVar("LmT", bound="LmHeadModel")
 
 class LmExample(eqx.Module):
     tokens: hax.NamedArray
-    attn_mask: AttnMask
     loss_mask: hax.NamedArray
+    attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?

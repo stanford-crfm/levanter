@@ -11,9 +11,10 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax import ds
 from haliax.jax_utils import named_call
 
-from levanter.models.attention import AttnMask
+from levanter.models.attention import AttentionMask, materialize_mask
 
 
 # TODO: tune
@@ -28,7 +29,7 @@ def flash_attention(
     q: hax.NamedArray,
     k: hax.NamedArray,
     v: hax.NamedArray,
-    mask: Optional[AttnMask] = None,
+    mask: Optional[AttentionMask | hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
@@ -64,7 +65,7 @@ def _flash_attention(
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.Axis,
-    mask: Optional[AttnMask] = None,
+    mask: Optional[AttentionMask | hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
     inference: bool,
@@ -83,7 +84,7 @@ def _flash_attention_forward(
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.AxisSelector,
-    mask: Optional[AttnMask],
+    mask: Optional[AttentionMask | hax.NamedArray],
     dropout: float,
     *,
     inference: bool,
@@ -96,9 +97,6 @@ def _flash_attention_forward(
         raise ValueError(f"q axis size {q.axis_size(QPos)} is not a multiple of {block_size}")
     if KPos.size % block_size != 0:
         raise ValueError(f"k axis size {k.axis_size(KPos)} is not a multiple of {block_size}")
-
-    QPosBlock = QPos.resize(block_size)  # Br in the paper
-    KPosBlock = KPos.resize(block_size)  # Bc in the paper
 
     # number of blocks for Q and K
     Tr = hax.Axis("Tr", QPos.size // block_size)
@@ -118,10 +116,11 @@ def _flash_attention_forward(
         i, o, ell = state
 
         # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
-        q_i = q.slice(QPos, QPosBlock, i * block_size)
+        q_i = q[QPos, ds.block(i, block_size)]
 
         # Step 2: init O_i = 0, sumexp_i = 0, max_i = -inf
-        o_i = o.slice(QPos, QPosBlock, i * block_size)
+        o_i = o[QPos, ds.block(i, block_size)]
+        QPosBlock = QPos.resize(block_size)
         sumexp_i = hax.zeros(q_batch_axes + (QPosBlock,), q.dtype)
         max_i = hax.full(q_batch_axes + (QPosBlock,), -jnp.inf, q.dtype)
 
@@ -131,15 +130,15 @@ def _flash_attention_forward(
             # Step 1: Divide Q into 𝑇𝑟 = \ceil(𝑁/Br) blocks of size Br x d each,
             #         K and V into 𝑇𝑐 = \ceil(𝑁/Bc) blocks of size Bc x d each.
             i, j, o_i, q_i, sumexp_i, old_max_i = state
-            k_j = k.slice(KPos, KPosBlock, j * block_size)
-            v_j = v.slice(KPos, KPosBlock, j * block_size)
+            k_j = k[KPos, ds.block(j, block_size)]
+            v_j = v[KPos, ds.block(j, block_size)]
 
             # TODO: precision
             # Step 8: compute Sij = QiKj^T
             attn_ij = hax.dot(Key, q_i, k_j)
 
             if mask is not None:
-                mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, QPosBlock, KPosBlock, block_size)
+                mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             # TODO: block causal
@@ -151,14 +150,14 @@ def _flash_attention_forward(
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
             # ...    l_i^j = exp(m_i^{j-1} - m_i^j) + rowsum(P_i^j)
-            max_i = hax.maximum(old_max_i, hax.max(attn_ij, axis=KPosBlock))
+            max_i = hax.maximum(old_max_i, hax.max(attn_ij, axis=KPos.name))
             P_ij = hax.exp(attn_ij - max_i)
 
             exp_diff = hax.exp(old_max_i - max_i)
-            sumexp_i = exp_diff * sumexp_i + hax.sum(P_ij, axis=KPosBlock)
+            sumexp_i = exp_diff * sumexp_i + hax.sum(P_ij, axis=KPos.name)
 
             # Step 10: Compute O_i = diag(exp(m_i^{j-1} - m_i^j) O_i + P_i^j V_j
-            o_i = exp_diff * o_i + hax.dot(KPosBlock, P_ij, v_j)
+            o_i = exp_diff * o_i + hax.dot(KPos.name, P_ij, v_j)
 
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
@@ -188,8 +187,8 @@ def _flash_attention_backward(
     grad_in: hax.NamedArray,
     ignore,
     qkv,
-    QPos: hax.AxisSelector,
-    KPos: hax.AxisSelector,
+    QPos: hax.Axis,
+    KPos: hax.Axis,
     Key: hax.AxisSelector,
     mask: Optional[hax.NamedArray] = None,
     dropout: float = 0.0,
@@ -209,9 +208,6 @@ def _flash_attention_backward(
     if isinstance(mask, hax.NamedArray):
         mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
 
-    KPosBlock = KPos.resize(block_size)
-    QPosBlock = QPos.resize(block_size)
-
     # Compute D = rowsum(dO * O), write D to HBM and divide it into Tr blocks of size Br each.
     # in the FA2 paper D is said to be \in R^{d}, but that doesn't make sense.
     # Triton impl has it as R^{QPos}, which makes more sense.
@@ -224,21 +220,21 @@ def _flash_attention_backward(
     @named_call
     def do_kv_block(state):
         j, dQ, dK, dV = state
-        k_j = k.slice(KPos, KPosBlock, j * block_size)
-        v_j = v.slice(KPos, KPosBlock, j * block_size)
+        k_j = k[KPos, ds.block(j, block_size)]
+        v_j = v[KPos, ds.block(j, block_size)]
 
-        dK_j = dK.slice(KPos, KPosBlock, j * block_size)
-        dV_j = dV.slice(KPos, KPosBlock, j * block_size)
+        dK_j = dK[KPos, ds.block(j, block_size)]
+        dV_j = dV[KPos, ds.block(j, block_size)]
 
         @named_call
         def do_inner_block(state):
             i, j, dQ, dK_j, dV_j = state
-            q_i = q.slice(QPos, QPosBlock, i * block_size)
+            q_i = q[QPos, ds.block(i, block_size)]
 
-            dQ_i = dQ.slice(QPos, QPosBlock, i * block_size)
-            dO_i = dO.slice(QPos, QPosBlock, i * block_size)
-            L_i = L.slice(QPos, QPosBlock, i * block_size)
-            D_i = D.slice(QPos, QPosBlock, i * block_size)
+            dQ_i = dQ[QPos, ds.block(i, block_size)]
+            dO_i = dO[QPos, ds.block(i, block_size)]
+            L_i = L[QPos, ds.block(i, block_size)]
+            D_i = D[QPos, ds.block(i, block_size)]
 
             # TODO: precision
             attn_ij = hax.dot(Key, q_i, k_j)
@@ -249,7 +245,7 @@ def _flash_attention_backward(
                 )
 
             if mask is not None:
-                mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, QPosBlock, KPosBlock, block_size)
+                mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
             p_ij = hax.exp(attn_ij - L_i)
@@ -261,10 +257,10 @@ def _flash_attention_backward(
             dAttn_ij = p_ij * (dP_ij - D_i)
             dAttn_ij = dAttn_ij.astype(dQ_i.dtype)
 
-            dV_j = dV_j + hax.dot(QPosBlock, p_ij, dO_i).astype(dV_j.dtype)
-            dK_j = dK_j + hax.dot(QPosBlock, dAttn_ij, q_i).astype(dK_j.dtype)
+            dV_j = dV_j + hax.dot(QPos.name, p_ij, dO_i).astype(dV_j.dtype)
+            dK_j = dK_j + hax.dot(QPos.name, dAttn_ij, q_i).astype(dK_j.dtype)
 
-            dQ_i = dQ_i + hax.dot(KPosBlock, dAttn_ij, k_j).astype(dQ.dtype)
+            dQ_i = dQ_i + hax.dot(KPos.name, dAttn_ij, k_j).astype(dQ.dtype)
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)
 
@@ -289,16 +285,10 @@ _flash_attention.def_fwd(_flash_attention_forward)
 _flash_attention.def_bwd(_flash_attention_backward)
 
 
-def _infer_attention_output_block_shape(QPosBlock, KPos, Key, q_i, k, v):
-    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, QPosBlock, KPos, Key, q_i, k, v)
+def _infer_attention_output_block_shape(QPos, KPos, Key, q_i, k, v):
+    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, QPos, KPos, Key, q_i, k, v)
     return out_shape.axes
 
 
-def _materialize_mask_slice(mask, i, j, QPos, KPos, QPosBlock, KPosBlock, block_size):
-    if isinstance(mask, hax.NamedArray):
-        mask_ij = mask.slice(QPos, QPosBlock, i * block_size).slice(KPos, KPosBlock, j * block_size)
-    else:
-        mask_ij = mask.slice(QPos, i * block_size, block_size).slice(KPos, j * block_size, block_size)
-        mask_ij = mask_ij.materialize()
-
-    return mask_ij
+def _materialize_mask_slice(mask, i, j, QPos, KPos, block_size):
+    return materialize_mask(mask, QPos, KPos, q_slice=hax.ds.block(i, block_size), k_slice=hax.ds.block(j, block_size))

@@ -30,7 +30,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import cached_classproperty
@@ -234,7 +234,11 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
     def __call__(
-        self, hidden_states: NamedArray, mask: Optional[AttnMask], bias: Optional[NamedArray], key: Optional[PRNGKey]
+        self,
+        hidden_states: NamedArray,
+        mask: Optional[AttentionMask | NamedArray],
+        bias: Optional[NamedArray],
+        key: Optional[PRNGKey],
     ) -> NamedArray:
         k_qkv, k_out = maybe_rng_split(key, 2)
         qkv_out = self.Wqkv(hidden_states, key=k_qkv)
@@ -255,7 +259,7 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
             attn_scores = attn_scores + bias
 
         if mask is not None:
-            mask = materialize_mask(mask)
+            mask = materialize_mask(mask, self.config.Pos, self.config.KeyPos)
             attn_scores = attn_scores + (1.0 - mask) * -1e9
 
         attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
@@ -313,7 +317,12 @@ class MptBlock(eqx.Module):
 
     @named_call
     def __call__(
-        self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask], *, key
+        self,
+        hidden_states: NamedArray,
+        attn_bias: Optional[NamedArray],
+        attention_mask: Optional[AttentionMask | NamedArray],
+        *,
+        key,
     ):
         k_attn, k_ffn = maybe_rng_split(key, 2)
         a = self.norm_1(hidden_states)
@@ -344,7 +353,9 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return MptTransformer(config, blocks, norm_f)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask], *, key) -> NamedArray:
+    def __call__(
+        self, hidden_states: NamedArray, attention_mask: Optional[AttentionMask | NamedArray], *, key
+    ) -> NamedArray:
         if self.config.attn_config.alibi:
             bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
@@ -408,7 +419,9 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, key=None) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None
+    ) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
         hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
         output_logits = self.wte.unembed(hidden_states)

@@ -285,7 +285,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         c = self.config
         if isinstance(mask, AttentionMask):
-            mask = mask.materialize()
+            mask = mask.materialize(c.Pos, c.KeyPos)
         attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
         if self.config.upcast_attn:
             attn_output = attn_output.astype(x.dtype)
