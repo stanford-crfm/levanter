@@ -96,8 +96,9 @@ and don't want to mask out any tokens. So we'll instead write a custom script th
 If you just want to run something, here's the command line for Llama 1:
 
 ```bash
-python levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca.yaml \
+cd levanter/examples/alpaca
+python alpaca.py \
+--config_path alpaca.yaml \
 --trainer.checkpointer.base_path somewhere \
 --hf_save_path somewhere_else
 ```
@@ -110,8 +111,9 @@ Once you have access, you can run:
 
 ```bash
 export HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE}
-python levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca-llama2.yaml \
+cd levanter/examples/alpaca
+python alpaca.py \
+--config_path alpaca-llama2.yaml \
 --trainer.checkpointer.base_path somewhere \
 --hf_save_path somewhere_else
 ```
@@ -271,7 +273,7 @@ dataset = dataset.map_batches(postprocess, batch_size=config.trainer.train_batch
 ## The rest
 
 The rest is pretty boilerplate-y: setting up the model, optimizer, and trainer, and then running the training loop.
-We'll skip over that in this tutorial, but you can see the full script [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.py)
+We'll skip over that in this tutorial, but you can see the full script [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca.py)
 
 
 ## Quick TPU Guide
@@ -312,7 +314,7 @@ want to maintain the same batch size.)
 
 ### Llama 2 Config
 
-The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-llama2.yaml) is identical,
+The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca-llama2.yaml) is identical,
 except for the HF model name and `per_device_parallelism`. The reason it's different
 is that Llama 2's width is 4096 tokens instead, and it pushes us over the line for the number of examples we can fit
 on a single TPU.
@@ -329,16 +331,16 @@ If you make changes to the config, you'll need to get the config file to all the
 is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
 
 ```bash
-gsutil cp levanter/examples/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+gsutil cp levanter/examples/alpaca/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
 ```
 
 If using Llama 2:
 
 ```bash
-gsutil cp levanter/examples/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+gsutil cp levanter/examples/alpaca/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
 ```
 
-And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
+And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/alpaca/train-alpaca.yaml`
 in the command line below.
 
 ## Launching the job
@@ -351,8 +353,8 @@ gcloud compute tpus tpu-vm ssh llama-32 --zone us-east1-d --worker=all \
 --command="WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
-levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca.yaml \
+levanter/examples/alpaca/alpaca.py \
+--config_path levanter/examples/alpaca/alpaca.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
 ```
@@ -366,8 +368,8 @@ infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
 WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
-levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca-llama2.yaml \
+levanter/examples/alpaca/alpaca.py \
+--config_path levanter/examples/alpaca/alpaca-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere> \
 ```

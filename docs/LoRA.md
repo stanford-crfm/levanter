@@ -155,8 +155,8 @@ lora:
   dropout: 0.1
 ```
 
-The default configs are available as [`alpaca-lora.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora.yaml)
-and [`alpaca-lora-llama2.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora-llama2.yaml)
+The default configs are available as [`alpaca-lora.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora/alpaca-lora.yaml)
+and [`alpaca-lora-llama2.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora/alpaca-lora-llama2.yaml)
 
 
 ## Running Alpaca-Lora
@@ -169,8 +169,8 @@ infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
 WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
-levanter/examples/alpaca_lora.py \
---config_path levanter/examples/alpaca-lora-llama2.yaml \
+levanter/examples/alpaca-lora/alpaca_lora.py \
+--config_path levanter/examples/alpaca-lora/alpaca-lora-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere>
 ```
