@@ -1,10 +1,84 @@
-from typing import Optional, overload
+from typing import Optional, Union, overload
 
 import equinox as eqx
+import jax.numpy as jnp
+from jaxtyping import PRNGKeyArray
 
 import haliax
-from haliax import Axis, NamedArray
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
+from haliax.types import PrecisionLike
+
+
+def dot_product_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union["AttentionMask", NamedArray]] = None,
+    bias: Optional[NamedArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    use_flash: bool = False,
+    flash_block_size: Optional[int] = None,
+    dropout: float = 0.0,
+    *,
+    inference: bool = True,
+    prng: Optional[PRNGKeyArray] = None,
+):
+    """
+    This method is similar to [haliax.nn.attention.dot_product_attention][] but uses the [AttentionMask][] class,
+    which we might move to haliax.nn.attention in the future.
+
+    Unlike the Haliax version, it requires that the Q and K already be different.
+
+    Args:
+        Key: Size of key dimension
+        QPos: Axis of query sequence length. Can be an AxisSpec to attend along more than one axis.
+        KPos: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
+        query: shape at least {QPos, KeySize}
+        key: shape at least {KPos, KeySize}
+        value: shape at least {KPos, ValueSize}
+        mask: attention mask
+        bias: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be float
+        attention_dtype: Optional dtype to use for attention
+        precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
+        use_flash: whether to use flash attention
+        flash_block_size: block size for flash attention. If None, will use an appropriate default
+    Returns:
+        NamedArray of shape (value.axes - KPos + QPos)
+    """
+    if QPos == KPos:
+        raise ValueError("QPos and KPos must be different")
+
+    if use_flash:
+        from levanter.models.flash_attention import flash_attention
+
+        return flash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            block_size=flash_block_size,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            key=prng,
+            dtype=attention_dtype,
+            precision=precision,
+        )
+    else:
+        m = materialize_mask(mask, QPos, KPos)
+        weights = haliax.nn.attention.dot_product_attention_weights(
+            Key, KPos, query, key, mask=m, bias=bias, precision=precision
+        )
+        weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+        return haliax.dot(KPos, weights, value)
 
 
 class AttentionMask(eqx.Module):
@@ -49,7 +123,7 @@ class AttentionMask(eqx.Module):
             causal = None
 
         if self.explicit_mask is not None:
-            explicit = self.explicit_mask[QPos.name, q_slice, KPos.name, k_slice]
+            explicit = self.explicit_mask[QPos, q_slice, KPos, k_slice]
         else:
             explicit = None
 
@@ -61,7 +135,7 @@ class AttentionMask(eqx.Module):
 
     @staticmethod
     def explicit(mask: NamedArray) -> "AttentionMask":
-        return AttentionMask(explicit_mask=mask)
+        return AttentionMask(is_causal=False, explicit_mask=mask)
 
     def __and__(self, other) -> "AttentionMask":
         is_causal = self.is_causal and other.is_causal
@@ -115,7 +189,7 @@ def materialize_mask(
                 q_slice = haliax.dslice(0, QPos.size)
             if k_slice is None:
                 k_slice = haliax.dslice(0, KPos.size)
-            mask = mask[QPos.name, q_slice, KPos.name, k_slice]
+            mask = mask[QPos, q_slice, KPos, k_slice]
 
         return mask
     else:
