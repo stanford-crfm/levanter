@@ -16,7 +16,6 @@ import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
 from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
-from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
@@ -122,9 +121,7 @@ class SupervisedDataset(Dataset[LmExample]):
             targets = hax.roll(input_ids, -1, Pos)
             loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
 
-            attn_mask = CausalMask(Pos, Pos.alias("key_position"))
-
-            yield LmExample(input_ids, attn_mask, loss_mask)
+            yield LmExample(input_ids, loss_mask)
 
 
 def _get_data_source(path_or_id):

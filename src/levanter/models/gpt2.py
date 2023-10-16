@@ -29,7 +29,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.flash_attention import flash_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -168,7 +168,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         return Gpt2Attention(config, c_attn, c_proj, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         k_drop, k_attn, k_out = hax.jax_utils.maybe_rng_split(key, 3)
         qkv_out = self.c_attn(x, key=k_attn).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
@@ -214,7 +214,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             attn_scores = hax.dot("head_size", q, k)
 
             if mask is not None:
-                mask = materialize_mask(mask)
+                mask = materialize_mask(mask, self.config.Pos, self.config.KeyPos)
                 attn_scores = attn_scores + (1.0 - mask) * -1e9
 
             attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
@@ -272,7 +272,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         return Gpt2Block(ln_1, attn, ln_2, mlp, resid_dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
 
         attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
@@ -303,7 +303,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
         return Gpt2Transformer(config, blocks, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[AttnMask], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
         x = self.ln_f(x)
@@ -397,7 +397,9 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
         x = self.transformer(x, attn_mask, key=k_transformer)

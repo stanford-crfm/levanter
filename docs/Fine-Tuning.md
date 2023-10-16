@@ -234,11 +234,11 @@ In the second, we create [levanter.models.lm.LmExample][] objects from the cache
 ```python
 class LmExample(eqx.Module):
     tokens: hax.NamedArray
-    attn_mask: AttnMask
     loss_mask: hax.NamedArray
+    attn_mask: AttentionMask = AttentionMask.causal()
 ```
 
-So we need to populate these fields. We'll do that with one last preprocessing step:
+So we need to populate the first two fields. We'll do that with one last preprocessing step:
 
 TODO: this next bit is aspirational.
 
@@ -263,11 +263,7 @@ def postprocess(batch):
     # don't compute loss when next token is padding
     loss_mask = loss_mask & (hax.roll(input_ids, -1, "position") != tokenizer.pad_token_id)
 
-    # causal mask needs both the position and the key position
-    KeyPos = Pos.alias("key_position")
-    attn_mask = CausalMask(Pos, KeyPos)
-
-    return LmExample(input_ids, attn_mask, loss_mask)
+    return LmExample(input_ids, loss_mask)
 
 dataset = dataset.map_batches(postprocess, batch_size=config.trainer.train_batch_size, num_cpus=1)
 ```
