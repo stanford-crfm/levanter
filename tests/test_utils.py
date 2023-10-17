@@ -10,12 +10,16 @@ import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
+from jax._src.random import PRNGKey
 from transformers import BatchEncoding
+
+import haliax as hax
 
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.sharded_dataset import ShardedDataset
 from levanter.data.text import _stack_batch_encodings
+from levanter.models.attention import AttentionMask
 
 
 T = TypeVar("T")
@@ -200,3 +204,13 @@ def check_load_config(config_class, config_file):
         draccus.parse(config_class, config_file, args=[])
     except Exception as e:
         raise Exception(f"failed to parse {config_file}") from e
+
+
+def check_model_works_with_seqlen(model_type, config, input_len):
+    key = PRNGKey(0)
+    Vocab = hax.Axis("vocab", 128)
+    model = model_type.init(Vocab, config, key=key)
+    input_ids = hax.arange(config.Pos.resize(input_len), dtype=jax.numpy.int32)
+    causal_mask = AttentionMask.causal()
+    a1 = model(input_ids, key=key, attn_mask=causal_mask)
+    assert a1.axis_size("position") == input_len

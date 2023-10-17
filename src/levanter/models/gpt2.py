@@ -327,7 +327,8 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
-        x = input_embeds + position_embeds
+        input_len = input_ids.resolve_axis("position").size
+        x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
         x = self.dropout(x, key=key)
 
         return x

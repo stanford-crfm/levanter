@@ -252,8 +252,16 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.config.Pos: self.config.KeyPos})
-        v = v.rename({self.config.Pos: self.config.KeyPos})
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
+
+        if bias is not None:
+            # slice out the bias for this input
+            if bias.has_axis("key_position"):
+                bias = bias["key_position", hax.dslice(0, k.axis_size("key_position"))]
+
+            if bias.has_axis("position"):
+                bias = bias["position", hax.dslice(0, q.axis_size("position"))]
 
         attn_output = levanter.models.attention.dot_product_attention(
             "position",

@@ -72,7 +72,9 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @abc.abstractmethod
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, key=None) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
         pass
 
     @abc.abstractmethod
