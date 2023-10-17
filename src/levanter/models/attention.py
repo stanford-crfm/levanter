@@ -54,7 +54,10 @@ def dot_product_attention(
         raise ValueError("QPos and KPos must be different")
 
     if use_flash:
-        from levanter.models.flash_attention import flash_attention
+        from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
+
+        if flash_block_size is None:
+            flash_block_size = BLOCK_SIZE
 
         return flash_attention(
             QPos,
@@ -75,7 +78,7 @@ def dot_product_attention(
     else:
         m = materialize_mask(mask, QPos, KPos)
         weights = haliax.nn.attention.dot_product_attention_weights(
-            Key, KPos, query, key, mask=m, bias=bias, precision=precision
+            Key, KPos, query, key, mask=m, bias=bias, precision=precision, attention_dtype=attention_dtype
         )
         weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
         return haliax.dot(KPos, weights, value)
