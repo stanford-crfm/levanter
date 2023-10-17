@@ -49,8 +49,7 @@ from levanter.utils.py_utils import non_caching_cycle
 #    limitations under the License.
 
 
-# TODOs
-# * make CausalMask not need to know the axis names
+# TODO
 # * make a pad_stack function that can pad and stack arrays in one go
 # * make batch loader support pad_stack
 
