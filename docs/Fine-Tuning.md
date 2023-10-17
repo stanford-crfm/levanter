@@ -1,4 +1,4 @@
-# Fine-Tuning Tutorial: Alpaca
+# Custom Fine-Tuning: Alpaca Tutorial
 
 While Levanter's main focus is pretraining, it can also be used for fine-tuning.
 As an example, we'll show how to reproduce [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html,
@@ -378,8 +378,36 @@ levanter/examples/alpaca/alpaca.py \
 ## Waiting
 
 At some point it will spit out a Wandb link. You can click on that to see the training progress. There's
-not a ton to see here (yet), but you can see the training loss go down over time.
+not a ton to see there (yet), but you can see the training loss go down over time.
 
-Llama 1 should take about ~3.5 hours on a v3-32 (which is more or less in line with A100 times). Unfortunately, LLama 2
-is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
-accumulation to fit on the TPU. It should take about ~9 hours on a v3-32.
+On a v3-32 or an 8xA100 box, training should take about ~3.5 hours.
+
+## Using the model
+
+When you're done, you can copy out the Hugging Face model with:
+
+```bash
+gsutil cp -r gs://<somewhere>/<run_id>/step-<something> ./my-alpaca
+```
+
+The model should work out-of-the-box as a Hugging Face model. You can use it like this:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained("./my-alpaca")
+tokenizer = AutoTokenizer.from_pretrained("./my-alpaca")
+
+instruction = "Translate the following phrase into French."
+input = "I love you."
+
+input = ("Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        f"### Instruction:\n {instruction}\n### Input:\n {input}\n### Response: \n")
+
+input_ids = tokenizer(input, return_tensors="pt")["input_ids"]
+output_ids = model.generate(input_ids, do_sample=True, max_length=100, num_beams=5, num_return_sequences=5)
+
+for output_id in output_ids:
+    print(tokenizer.decode(output_id, skip_special_tokens=True))
+```

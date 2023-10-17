@@ -85,8 +85,6 @@ def train(config: TrainArgs):
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
         logger.info(f"Added {num_new_tokens} new tokens")
-        # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
-        model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
         # Major difference from Alpaca: we loraize the model.
 
