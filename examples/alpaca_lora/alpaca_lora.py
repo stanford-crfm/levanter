@@ -65,7 +65,9 @@ def train(config: TrainArgs):
         model_max_length=model_config.Pos.size,
         padding_side="right",
     )
-    num_new_tokens = alpaca.add_special_tokens(tokenizer)
+    # because we're using lora, we can't add new tokens to the vocab, so we use the UNK token instead
+    num_new_tokens = alpaca.add_special_tokens(tokenizer, use_unk_instead_of_adding=True)
+    assert num_new_tokens == 0, "We can't add new tokens to the vocab when using lora."
 
     # modify converter to use our tokenizer, mostly so it saves the right vocab
     converter = converter.replaced(tokenizer=tokenizer)

@@ -248,19 +248,24 @@ def train(config: TrainArgs):
         trainer.train(state, loader)
 
 
-def add_special_tokens(tokenizer):
+def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
     special_tokens_dict = dict()
+    if use_unk_instead_of_adding:
+        if tokenizer.unk_token is None:
+            raise ValueError("use_unk_instead_of_add is True but tokenizer doesn't have an unk token")
+
+    unk = tokenizer.unk_token if use_unk_instead_of_adding else None
+
     if tokenizer.pad_token is None:
-        special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
+        special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN if not use_unk_instead_of_adding else unk
     if tokenizer.eos_token is None:
-        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
+        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN if not use_unk_instead_of_adding else unk
     if tokenizer.bos_token is None:
-        special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
+        special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN if not use_unk_instead_of_adding else unk
     if tokenizer.unk_token is None:
         special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
-    # this is smart_token_embeddings_resize in the original
-    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
-    return num_new_tokens
+
+    return tokenizer.add_special_tokens(special_tokens_dict)
 
 
 if __name__ == "__main__":
