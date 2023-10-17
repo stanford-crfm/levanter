@@ -68,7 +68,7 @@ def train(config: TrainArgs):
     # because we're using lora, we can't add new tokens to the vocab, so we use the UNK token instead
     num_new_tokens = alpaca.add_special_tokens(tokenizer, use_unk_instead_of_adding=True)
     assert (
-        num_new_tokens == 0
+        not num_new_tokens  # this can either be an int or a list depending on transformers version :angry-face:
     ), f"We can't add new tokens to the vocab when using lora, but {num_new_tokens} were added."
 
     # modify converter to use our tokenizer, mostly so it saves the right vocab
