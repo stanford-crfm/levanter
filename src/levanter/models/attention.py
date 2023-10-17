@@ -47,6 +47,9 @@ def dot_product_attention(
         precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
         use_flash: whether to use flash attention
         flash_block_size: block size for flash attention. If None, will use an appropriate default
+        dropout: dropout rate
+        inference: whether to use inference mode
+        prng: PRNGKeyArray for dropout
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
