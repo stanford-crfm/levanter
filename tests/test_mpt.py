@@ -10,7 +10,7 @@ import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.utils.tree_utils import inference_mode
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
