@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jax.random import PRNGKey
@@ -20,6 +19,7 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
+import levanter.models.attention
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -30,7 +30,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.models.attention import AttentionMask, materialize_mask
+from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import cached_classproperty
@@ -48,9 +48,11 @@ class MptAttentionConfig:
     qk_ln: bool = False
     alibi: bool = True
     alibi_bias_max: Optional[int] = 8
+    flash_attention_block_size: Optional[int] = None
 
     def __post_init__(self):
-        assert self.attn_impl in ["torch"], f"attn_impl={self.attn_impl} not implemented yet."
+        assert self.attn_type in ["multihead_attention"], f"attention_type={self.attn_type} not implemented yet."
+        assert self.attn_impl in ["torch", "flash"], f"attn_impl={self.attn_impl} not implemented yet."
         assert self.attn_pdrop == 0.0, f"attn_pdrop={self.attn_pdrop} not implemented yet."
         assert (
             not self.attn_uses_sequence_id
@@ -79,6 +81,10 @@ class MptAttentionConfig:
     def from_hf(config: HfMptAttentionConfig):
         if isinstance(config, dict):
             config = HfMptAttentionConfig(**config)
+        try:
+            flash_attention_block_size = config.flash_attention_block_size
+        except AttributeError:
+            flash_attention_block_size = None
         return MptAttentionConfig(
             attn_type=config.attn_type,
             attn_impl=config.attn_impl,
@@ -90,6 +96,7 @@ class MptAttentionConfig:
             qk_ln=config.qk_ln,
             alibi=config.alibi,
             alibi_bias_max=config.alibi_bias_max,
+            flash_attention_block_size=flash_attention_block_size,
         )
 
 
@@ -248,24 +255,19 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         k = k.rename({self.config.Pos: self.config.KeyPos})
         v = v.rename({self.config.Pos: self.config.KeyPos})
 
-        scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
-
-        # do this first to help keep FP values small
-        q = q * scale
-
-        attn_scores = hax.dot(self.config.HeadDim, q, k)
-
-        if bias is not None:
-            attn_scores = attn_scores + bias
-
-        if mask is not None:
-            mask = materialize_mask(mask, self.config.Pos, self.config.KeyPos)
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
-
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
-        # attn_weights = self.dropout(attn_weights, key=key, inference=inference)
-
-        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
+        attn_output = levanter.models.attention.dot_product_attention(
+            "position",
+            "key_position",
+            "head_dim",
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            inference=True,
+            use_flash=self.config.attn_config.attn_impl == "flash",
+            flash_block_size=self.config.attn_config.flash_attention_block_size,
+        )
 
         attn_output = self.out_proj(attn_output, key=k_out)
         return attn_output
