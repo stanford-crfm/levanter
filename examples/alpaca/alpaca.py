@@ -196,6 +196,11 @@ def train(config: TrainArgs):
         model_max_length=config.max_tune_length,
         padding_side="right",
     )
+    num_new_tokens = add_special_tokens(tokenizer)
+    logger.info(f"Added {num_new_tokens} new tokens")
+
+    # modify converter to use our tokenizer, mostly so it saves the right vocab
+    converter = converter.replaced(tokenizer=tokenizer)
 
     train_dataset = mk_dataset(config, tokenizer)
 
@@ -214,8 +219,6 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        num_new_tokens = add_special_tokens(tokenizer)
-        logger.info(f"Added {num_new_tokens} new tokens")
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
