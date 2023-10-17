@@ -66,10 +66,12 @@ def train(config: TrainArgs):
         padding_side="right",
     )
     # because we're using lora, we can't add new tokens to the vocab, so we use the UNK token instead
-    num_new_tokens = alpaca.add_special_tokens(tokenizer, use_unk_instead_of_adding=True)
-    assert (
-        not num_new_tokens  # this can either be an int or a list depending on transformers version :angry-face:
-    ), f"We can't add new tokens to the vocab when using lora, but {num_new_tokens} were added."
+    orig_vocab_size = len(tokenizer)
+    alpaca.add_special_tokens(tokenizer, use_unk_instead_of_adding=True)
+    if orig_vocab_size != len(tokenizer):
+        raise ValueError(
+            f"We can't add new tokens to the vocab when using lora, but {len(tokenizer) - orig_vocab_size} were added."
+        )
 
     # modify converter to use our tokenizer, mostly so it saves the right vocab
     converter = converter.replaced(tokenizer=tokenizer)
@@ -85,8 +87,6 @@ def train(config: TrainArgs):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
-
-        logger.info(f"Added {num_new_tokens} new tokens")
 
         # Major difference from Alpaca: we loraize the model.
 
