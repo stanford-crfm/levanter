@@ -240,34 +240,33 @@ class LmExample(eqx.Module):
     attn_mask: AttentionMask = AttentionMask.causal()
 ```
 
-So we need to populate the first two fields. We'll do that with one last preprocessing step:
-
-TODO: this next bit is aspirational.
+So we need to populate the first two fields. We'll do that with a dataset whose job is to take the cache and turn it into
+`LmExample`s.
 
 ```python
-# JAX has to recompile for each different shape of input, so we pad to a multiple of 128
-BATCH_MULTIPLE = 128
+class SupervisedDataset(Dataset[LmExample]):
+    def __init__(self, preproc_dataset, tokenizer):
+        self.preproc_dataset = preproc_dataset
+        self.tokenizer = tokenizer
 
-def postprocess(batch):
-    # first we need to pad the input_ids to the same length
-    batch = tokenizer.pad(batch,
-                          return_tensors="np",
-                          padding="longest",
-                          truncation=True,
-                          pad_to_multiple_of=BATCH_MULTIPLE,
-                          return_attention_mask=False)
+    def __iter__(self):
+        for ex in self.preproc_dataset:
+            # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+            ex = self.tokenizer.pad(
+                {k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length"
+            )
+            ex = {k: v[0] for k, v in ex.items()}
+            input_ids = hax.named(ex["input_ids"], "position")
 
-    input_ids = hax.named(batch["input_ids"], ("batch", "position"))
-    Batch, Pos = input_ids.resolve_axis("batch", "position")
+            # mask out padding and anything before the start of the target
+            Pos = input_ids.resolve_axis("position")
+            loss_mask = hax.arange(Pos) >= ex["source_lens"]
 
-    # mask out padding and anything before the start of the target
-    loss_mask = hax.arange(Pos) >= hax.array(batch["source_lens"], Batch)
-    # don't compute loss when next token is padding
-    loss_mask = loss_mask & (hax.roll(input_ids, -1, "position") != tokenizer.pad_token_id)
+            # don't predict the padding
+            targets = hax.roll(input_ids, -1, Pos)
+            loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
 
-    return LmExample(input_ids, loss_mask)
-
-dataset = dataset.map_batches(postprocess, batch_size=config.trainer.train_batch_size, num_cpus=1)
+            yield LmExample(input_ids, loss_mask)
 ```
 
 ## The rest
