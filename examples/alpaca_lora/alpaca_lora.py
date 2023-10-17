@@ -29,7 +29,9 @@ from levanter.utils.py_utils import non_caching_cycle
 
 # This is a bit of a hack to make sure we can load the module no matter where we run it from.
 # You can also just set the PYTHONPATH environment variable.
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
+dirname = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(dirname)  # noqa: E402
+sys.path.append(os.path.join(dirname, "..", "alpaca"))  # noqa: E402
 
 import alpaca  # noqa: E402
 
