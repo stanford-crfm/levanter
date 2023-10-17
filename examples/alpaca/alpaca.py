@@ -81,6 +81,7 @@ class TrainArgs:
     optimizer: OptimizerConfig
     trainer: TrainerConfig
 
+    max_tune_length: int = 2048  # maximum length of the input to the model during tuning
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
     prompts: Optional[str] = None  # Path to the prompts file. can be gcs
@@ -179,6 +180,12 @@ def train(config: TrainArgs):
     converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=config.trust_remote_code)
     model_config = converter.default_config
 
+    if config.max_tune_length > model_config.Pos.size:
+        logger.warning(
+            f"max_tune_length ({config.max_tune_length}) is greater than the model's maximum length"
+            f" ({model_config.Pos.size}). "
+        )
+
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
     training_key = jrandom.PRNGKey(config.trainer.seed)
 
@@ -186,7 +193,7 @@ def train(config: TrainArgs):
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         config.model_name_or_path,
         cache_dir=config.model_cache_dir,
-        model_max_length=model_config.Pos.size,
+        model_max_length=config.max_tune_length,
         padding_side="right",
     )
 
