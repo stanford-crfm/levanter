@@ -79,6 +79,8 @@ def dot_product_attention(
             precision=precision,
         )
     else:
+        QPos = query.resolve_axis(QPos)
+        KPos = key.resolve_axis(KPos)
         m = materialize_mask(mask, QPos, KPos)
         weights = haliax.nn.attention.dot_product_attention_weights(
             Key, KPos, query, key, mask=m, bias=bias, precision=precision, attention_dtype=attention_dtype
