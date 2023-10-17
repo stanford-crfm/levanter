@@ -171,7 +171,16 @@ def _flash_attention_forward(
             attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
 
             if bias is not None:
-                bias_ij = bias[QPos : ds.block(i, block_size), KPos : ds.block(j, block_size)]
+                if bias.has_axis(QPos.name):
+                    bias_i = bias[QPos, ds.block(i, block_size)]
+                else:
+                    bias_i = bias
+
+                if bias.has_axis(KPos.name):
+                    bias_ij = bias_i[KPos, ds.block(j, block_size)]
+                else:
+                    bias_ij = bias_i
+
                 attn_ij = attn_ij + bias_ij
 
             if mask is not None:
@@ -196,8 +205,10 @@ def _flash_attention_forward(
             # Step 10: Compute O_i = diag(exp(m_i^{j-1} - m_i^j) O_i + P_i^j V_j
             o_i = exp_diff * o_i + hax.dot(KPos.name, P_ij, v_j)
 
+            print(i, j + 1, o_i, q_i, sumexp_i, max_i)
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
+        print(i, 0, o_i, q_i, sumexp_i, max_i)
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
             lambda state: state[1] < Tc.size, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
         )
@@ -283,7 +294,7 @@ def _flash_attention_backward(
                 )
 
             if bias is not None:
-                bias_ij = bias[QPos : ds.block(i, block_size), KPos : ds.block(j, block_size)]
+                bias_ij = bias[QPos, ds.block(i, block_size), KPos, ds.block(j, block_size)]
                 attn_ij = attn_ij + bias_ij
 
             if mask is not None:
