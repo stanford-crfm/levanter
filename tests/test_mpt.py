@@ -108,3 +108,13 @@ def test_mpt_configs(config_file):
     config_class = TrainLmConfig
 
     check_load_config(config_class, config_file)
+
+
+def test_pass_different_length_seq():
+    config = MptConfig(
+        max_seq_len=32,
+        d_model=16,
+        n_layers=4,
+        n_heads=2,
+    )
+    check_model_works_with_seqlen(MptLmHeadModel, config, 16)

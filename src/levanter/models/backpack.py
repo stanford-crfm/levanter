@@ -22,7 +22,7 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -185,6 +185,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({"position": "key_position"})
 
+        mask = materialize_mask(mask, q.resolve_axis("position"), k.resolve_axis("key_position"))
+
         attn_weights = hnn.attention.dot_product_attention_weights(
             "head_dim",
             "key_position",
@@ -327,7 +329,8 @@ class BackpackGpt2Embeddings(eqx.Module):
     def embed(self, input_ids, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
-        x = input_embeds + position_embeds
+        input_len = input_ids.resolve_axis("position").size
+        x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
         x = self.dropout(x, key=key)
 
         return x

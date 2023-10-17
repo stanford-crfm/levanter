@@ -13,7 +13,7 @@ from haliax.partitioning import round_axis_for_partitioning
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
 VOCAB_SIZE = 50264
@@ -122,3 +122,14 @@ def test_backpack_configs(config_file):
     config_class = TrainLmConfig
 
     check_load_config(config_class, config_file)
+
+
+def test_pass_different_length_seq():
+    config = BackpackConfig(
+        seq_len=32,
+        hidden_dim=16,
+        num_layers=4,
+        num_heads=2,
+        gradient_checkpointing=False,
+    )
+    check_model_works_with_seqlen(BackpackLMHeadModel, config, 16)
