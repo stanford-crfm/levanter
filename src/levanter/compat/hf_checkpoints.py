@@ -788,7 +788,9 @@ def _convert_to_jnp(v):
     # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
     # if v.dtype == torch.bfloat16:
     #     v = v.to(torch.float32)
-    if v.dtype == torch.bfloat16:
+    if v is None:
+        return None
+    elif v.dtype == torch.bfloat16:
         return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
     else:
         return jax.numpy.array(v.cpu().numpy())
