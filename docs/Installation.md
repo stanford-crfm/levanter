@@ -37,7 +37,7 @@ source levanter-venv/bin/activate
 For development, please follow these steps:
 
 First, install the appropriate version of Jax for your system.
-See [Jax's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
+See [JAX's installation instructions](https://github.com/google/jax/blob/main/README.md#installation)
 as it varies from platform to platform.
 
 ## Install Levanter
