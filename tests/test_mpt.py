@@ -2,6 +2,7 @@ import tempfile
 
 import jax
 import numpy as np
+import pytest
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
 
@@ -13,7 +14,8 @@ from test_utils import check_load_config, parameterize_with_configs, skip_if_no_
 
 
 @skip_if_no_torch
-def test_mpt_nano_compare():
+@pytest.mark.parametrize("attn_impl", ["torch", "flash"])
+def test_mpt_nano_compare(attn_impl):
     import torch
 
     # conjure up a fake model and compare
@@ -28,7 +30,7 @@ def test_mpt_nano_compare():
         max_seq_len=512,
         n_heads=8,
         n_layers=2,
-        attn_config={"attn_impl": "torch", "alibi": True},
+        attn_config={"attn_impl": attn_impl, "alibi": True, "flash_attention_block_size": 32},
         vocab_size=vocab_size,
     )
 
@@ -69,6 +71,8 @@ def test_mpt_nano_compare():
     # now test round trip
     # convert all values to torch
     with tempfile.TemporaryDirectory() as tmpdir:
+        # FA hack: we need to override the config to use torch attention, as their impl doesn't work with flash/alibi
+        converter = converter.with_config_overrides(config_overrides={"attn_config": {"attn_impl": "torch"}})
         converter._save_pretrained_local(lev_model, tmpdir)
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 

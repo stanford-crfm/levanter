@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from transformers import PretrainedConfig
@@ -23,7 +22,7 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
-from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -179,31 +178,22 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
         # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({"position": "key_position"})
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.config.SenseHeadDim.size))
+        attn_weights = hnn.attention.dot_product_attention_weights(
+            "head_dim",
+            "key_position",
+            q,
+            k,
+            mask=mask,
+            attention_dtype=jnp.float32 if self.config.upcast_attn else None,
+        )
 
-        # do this first to help keep FP values small
-        q = q * scale
-
-        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
-
-        attn_scores = hax.dot("head_dim", q, k)
-
-        if mask is not None:
-            mask = materialize_mask(mask)
-            attn_scores = attn_scores + (1.0 - mask) * -1e15
-
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
         attn_weights = self.dropout(attn_weights, key=key)
         return attn_weights
 
@@ -399,7 +389,9 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         )
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, key=None) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
 
         # Compute contextualization weights
