@@ -13,7 +13,7 @@ conda activate levanter
 ```
 ### Install Jax with CUDA
 
-This is a bit in flux in Jax, but please take a look at the [Jax Installation Guide](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier). Here are two options that work circa June 2023:
+This is a bit in flux in JAX, but please take a look at the [JAX Installation Guide](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier). Here are two options that work circa June 2023:
 
 ```bash
 # CUDA 12 installation
