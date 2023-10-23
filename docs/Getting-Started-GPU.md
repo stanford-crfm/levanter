@@ -33,7 +33,7 @@ pip install -e .
 
 ### WandB login
 
-To use wandb to track your learning curves and other experiment metrics, you con log in to your wandb account on the command line as follows:
+To use WandB to track your learning curves and other experiment metrics, you con log in to your WandB account on the command line as follows:
 ```bash
 wandb login ${YOUR TOKEN HERE}
 ```
