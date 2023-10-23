@@ -133,8 +133,8 @@ def _flash_attention_forward(
         raise ValueError(f"k axis size {k.axis_size(KPos)} is not a multiple of {block_size}")
 
     # number of blocks for Q and K
-    Tr = hax.Axis("Tr", QPos.size // block_size)
-    Tc = hax.Axis("Tc", KPos.size // block_size)
+    Tr = QPos.size // block_size
+    Tc = KPos.size // block_size
 
     q_batch_axes: Tuple[hax.Axis, ...] = hax.eliminate_axes(q.axes, (QPos, Key))
 
@@ -190,9 +190,7 @@ def _flash_attention_forward(
             # TODO: block causal
 
             if dropout > 0 and not inference:
-                attn_ij = hax.nn.dropout(
-                    attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc.size + j)
-                )
+                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
             # Step 9: Compute m_i^j = max(m_i^{j-1}, rowmax(S_i^j)), P_i^j = exp(S_i^j - m_i^j),
             # ...    l_i^j = exp(m_i^{j-1} - m_i^j) + rowsum(P_i^j)
@@ -210,7 +208,7 @@ def _flash_attention_forward(
 
         print(i, 0, o_i, q_i, sumexp_i, max_i)
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
-            lambda state: state[1] < Tc.size, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
+            lambda state: state[1] < Tc, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
         )
 
         # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
@@ -224,7 +222,7 @@ def _flash_attention_forward(
         return i + 1, o, ell
 
     # o, ell = hax.map(do_o_block, Tr)(jnp.arange(Tr.size))
-    _, o, ell = jax.lax.while_loop(lambda state: state[0] < Tr.size, do_o_block, (0, o, ell))
+    _, o, ell = jax.lax.while_loop(lambda state: state[0] < Tr, do_o_block, (0, o, ell))
 
     return o, (o, ell)
 
@@ -252,8 +250,8 @@ def _flash_attention_backward(
     q, k, v = qkv
     dO = grad_in
 
-    Tr = hax.Axis("Tr", QPos.size // block_size)
-    Tc = hax.Axis("Tc", KPos.size // block_size)
+    Tr = QPos.size // block_size
+    Tc = KPos.size // block_size
 
     if isinstance(mask, hax.NamedArray):
         mask = mask.broadcast_axis((QPos, KPos))  # make sure mask is broadcastable
@@ -289,9 +287,7 @@ def _flash_attention_backward(
             attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
 
             if dropout > 0 and not inference:
-                attn_ij = hax.nn.dropout(
-                    attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc.size + j)
-                )
+                attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
             if bias is not None:
                 bias_ij = bias[QPos, ds.block(i, block_size), KPos, ds.block(j, block_size)]
@@ -320,9 +316,7 @@ def _flash_attention_backward(
             return i + 1, j, dQ, dK_j, dV_j
 
         # dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
-        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(
-            lambda state: state[0] < Tr.size, do_inner_block, (0, j, dQ, dK_j, dV_j)
-        )
+        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(lambda state: state[0] < Tr, do_inner_block, (0, j, dQ, dK_j, dV_j))
 
         dK = dK.updated_slice({KPos: j * block_size}, dK_j)
         dV = dV.updated_slice({KPos: j * block_size}, dV_j)
@@ -330,7 +324,7 @@ def _flash_attention_backward(
         return j + 1, dQ, dK, dV
 
     # dQ, (dK, dV) = hax.scan(do_kv_block, Tc)(dQ, jnp.arange(Tc.size))
-    j, dQ, dK, dV = jax.lax.while_loop(lambda state: state[0] < Tc.size, do_kv_block, (0, dQ, dK, dV))
+    j, dQ, dK, dV = jax.lax.while_loop(lambda state: state[0] < Tc, do_kv_block, (0, dQ, dK, dV))
     return dQ.rearrange(q.axes), dK.rearrange(k.axes), dV.rearrange(v.axes)
 
 
