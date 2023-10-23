@@ -37,7 +37,7 @@ To use WandB to track your learning curves and other experiment metrics, you con
 ```bash
 wandb login ${YOUR TOKEN HERE}
 ```
-You can find more information on getting setup with weights and biases here: https://wandb.ai/site
+You can find more information on getting setup with Weights and Biases here: https://wandb.ai/site
 
 
 ## Running a job on Slurm
