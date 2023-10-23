@@ -2,13 +2,27 @@
 
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
 using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
-We'll use a TPU V3-32 VM, though this same tutorial should work on an A100 box as well.
+We'll demonstrate how to replicate Alpaca using GPUs or using a TPU V3-32 VM. If you intend to only use GPUs, you should skip sections
+with \[TPU\] in the title. Similarly, if you are only working on TPUs, skip the sections labeled \[GPU\]. Levanter is designed to work
+seamlessly with both types of accelerators without code changes.
 
 ## Setup
 
-### Cloning Levanter
+### \[GPU\] Environment Setup
+First, follow the instructions in the [Getting Started with GPUs](./Getting-Started-GPU.md) guide to create a conda environment and install JAX with cuda.
 
-First, we'll clone Levanter:
+### \[TPU\] Environment Setup
+First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
+If you haven't gone through that guide before, you should do so now. If you have, you can just run the
+following command after levanter is installed:
+
+```bash
+bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
+```
+
+### Cloning and Installing Levanter
+
+If you haven't done so already as part of the GPU or TPU environment setup, clone and install Levanter:
 
 ```bash
 git clone https://github.com/stanford-crfm/levanter.git
@@ -16,16 +30,7 @@ cd levanter
 pip install -e .
 ```
 
-### Setting up a TPU VM
-
-First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
-If you haven't gone through that guide before, you should do so now. If you have, you can just run, e.g.:
-
-```bash
-bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
-```
-
-## The Alpaca script
+## Training Alpaca
 
 We have a [Levanter version](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca.py) of the [original Alpaca script](https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py)
 
@@ -72,26 +77,41 @@ If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.
 Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
 to the TPU VM as an environment variable. (We'll show you how to do this later.)
 
+### \[GPU\] Launching the Job
 
-### Changing the config
+Right now Levanter only works with single node GPU training. The example commands below demonstrate how to launch a training job
+on a node with 8 A100 GPUs, but should work for other single node GPU configurations. For example, we've also tested alpaca replication with
+a node of RTX 6000 Ada Generation 49.1GB GPUs.
 
-If you make changes to the config, you'll need to get the config file to all the workers. The best way to do this
-is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
-
-```bash
-gsutil cp levanter/examples/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
-```
-
-If using Llama 2:
+Before running your training bash command, ensure you are in your `levanter` conda environment, you've created a directory for saving checkpoints
+during training, you are logged into your wandb account with the following two commands:
 
 ```bash
-gsutil cp levanter/examples/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+conda activate levanter
+mkdir -p levanter/checkpoints
+wandb login ${YOUR TOKEN HERE}
+```
+Now you can run the training command:
+
+```bash
+python levanter/examples/alpaca.py \
+--config_path levanter/examples/alpaca.yaml \
+--trainer.checkpointer.base_path levanter/checkpoints \
+--hf_save_path levanter/checkpoints
 ```
 
-And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
-in the command line below.
+You can change `--trainer.checkpointer.base_path` and `--hf_save_path` to your desired model checkpoint directories.
 
-## Launching the job
+### \[GPU\] NLP-Group Slurm Cluster Launch Example
+
+Say you save the above Alpaca training command as a bash script called `train_alpaca.sh`, then
+you could launch a training job on a slurm cluster with `srun` as follows:
+
+```
+srun --account=nlp --cpus-per-task=32 --gpus-per-node=8 --mem=400G --open-mode=append --partition=sphinx  --nodes=1 --pty bash train_alpaca.sh
+```
+
+### \[TPU\] Launching the Job
 
 Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
 (If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
@@ -124,15 +144,14 @@ levanter/examples/alpaca.py \
 --trainer.id <some id>  # optional, but useful if using preemption
 ```
 
-
 ## Waiting
 
 At some point it will spit out a Wandb link. You can click on that to see the training progress. There's
 not a ton to see here (yet), but you can see the training loss go down over time.
 
-Llama 1 should take about ~3.5 hours on a v3-32 (which is more or less in line with A100 times). Unfortunately, LLama 2
-is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
-accumulation to fit on the TPU. It should take about ~9 hours on a v3-32.
+Llama 1 should take about ~3.5 hours on 8 A100 GPUs and on v3-32 TPUs. It should take ~8.5 hours on 8 RTX 6000 Ada Generation GPUs.
+Unfortunately, LLama 2 is much slower because of the much longer max sequence length of 4096 and the resulting requirement to do gradient
+accumulation to fit on the TPU/GPU. It should take about ~9 hours on v3-32 TPUs.
 
 ## Code Walkthrough
 
@@ -162,6 +181,24 @@ class TrainArgs:
     hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 ```
+
+### Changing the config
+
+If you make changes to the config, you'll need to get the config file to all the workers. The best way to do this
+is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
+
+```bash
+gsutil cp levanter/examples/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+If using Llama 2:
+
+```bash
+gsutil cp levanter/examples/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/train-alpaca.yaml`
+in the command line below.
 
 
 ### The Dataset
