@@ -13,6 +13,7 @@ from levanter.utils.tree_utils import inference_mode
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
+@pytest.mark.skip(reason="MPT is broken in the latest version of transformers")
 @skip_if_no_torch
 @pytest.mark.parametrize("attn_impl", ["torch", "flash"])
 def test_mpt_nano_compare(attn_impl):
