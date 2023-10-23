@@ -1,6 +1,8 @@
 # Installation
 
 If you are using GPUs, please follow the installation steps [here instead](Getting-Started-GPU.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).
+
 
 ## Create a virtual environment
 
@@ -45,5 +47,3 @@ as it varies from platform to platform.
    start="<!--levanter-installation-start-->"
    end="<!--levanter-installation-end-->"
 %}
-
-If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md).

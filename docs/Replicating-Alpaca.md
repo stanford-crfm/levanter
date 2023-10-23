@@ -3,15 +3,15 @@
 In this tutorial, we will replicate [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html)
 using either Llama 1 or the new [Llama 2](https://ai.meta.com/llama/) model and [Levanter](https://github.com/stanford-crfm/levanter).
 We'll demonstrate how to replicate Alpaca using GPUs or using a TPU V3-32 VM. If you intend to only use GPUs, you should skip sections
-with [TPU] in the title. Similarly, if you are only working on TPUs, skip the sections labeled [GPU]. Levanter is designed to work
+with \[TPU\] in the title. Similarly, if you are only working on TPUs, skip the sections labeled \[GPU\]. Levanter is designed to work
 seamlessly with both types of accelerators without code changes.
 
 ## Setup
 
-### [GPU] Environment Setup
+### \[GPU\] Environment Setup
 First, follow the instructions in the [Getting Started with GPUs](./Getting-Started-GPU.md) guide to create a conda environment and install JAX with cuda.
 
-### [TPU] Environment Setup
+### \[TPU\] Environment Setup
 First, we'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
 If you haven't gone through that guide before, you should do so now. If you have, you can just run the
 following command after levanter is installed:
@@ -77,7 +77,7 @@ If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.
 Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
 to the TPU VM as an environment variable. (We'll show you how to do this later.)
 
-### [GPU] Launching the Job
+### \[GPU\] Launching the Job
 
 Right now Levanter only works with single node GPU training. The example commands below demonstrate how to launch a training job
 on a node with 8 A100 GPUs, but should work for other single node GPU configurations. For example, we've also tested alpaca replication with
@@ -102,7 +102,7 @@ python levanter/examples/alpaca.py \
 
 You can change `--trainer.checkpointer.base_path` and `--hf_save_path` to your desired model checkpoint directories.
 
-### [GPU] NLP-Group Slurm Cluster Launch Example
+### \[GPU\] NLP-Group Slurm Cluster Launch Example
 
 Say you save the above Alpaca training command as a bash script called `train_alpaca.sh`, then
 you could launch a training job on a slurm cluster with `srun` as follows:
@@ -111,7 +111,7 @@ you could launch a training job on a slurm cluster with `srun` as follows:
 srun --account=nlp --cpus-per-task=32 --gpus-per-node=8 --mem=400G --open-mode=append --partition=sphinx  --nodes=1 --pty bash train_alpaca.sh
 ```
 
-### [TPU] Launching the Job
+### \[TPU\] Launching the Job
 
 Now we can launch the job. We need just a tiny bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
 (If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
