@@ -47,7 +47,7 @@ You can find more information on getting setup with weights and biases here: htt
 A simple srun example within your levanter conda environment and cloned levanter directory. Customize to your needs:
 
 ```bash
-srun --account=nlp --cpus-per-task=128 --gpus-per-node=8 --job-name=levanter-multi-1 --mem=1000G  --open-mode=append --partition=sphinx --time=14-0 ~/src/levanter/scripts/run-slurm.sh python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
+srun --account=nlp --cpus-per-task=128 --gpus-per-node=8 --job-name=levanter-multi-1 --mem=1000G  --open-mode=append --partition=sphinx --time=14-0 infra/run-slurm.sh python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
 ```
 
 ### Multinode
