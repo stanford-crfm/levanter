@@ -31,7 +31,7 @@ cd levanter
 pip install -e .
 ```
 
-### wandb login
+### WandB login
 
 To use wandb to track your learning curves and other experiment metrics, you con log in to your wandb account on the command line as follows:
 ```bash
