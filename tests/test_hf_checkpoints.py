@@ -2,7 +2,6 @@ import tempfile
 
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing
 import pytest
 from jax.random import PRNGKey
 

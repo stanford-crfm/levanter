@@ -42,7 +42,6 @@ from levanter.data import Dataset
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.data.text import BatchEncodingDataset
-from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
@@ -126,9 +125,7 @@ class SupervisedDataset(Dataset[LmExample]):
             targets = hax.roll(input_ids, -1, self.Pos)
             loss_mask = loss_mask & (targets != self.pad_token_id)
 
-            attn_mask = CausalMask(self.Pos, self.KeyPos)
-
-            yield LmExample(input_ids, attn_mask, loss_mask)
+            yield LmExample(input_ids, loss_mask)
 
 
 def _get_data_source(path_or_id):

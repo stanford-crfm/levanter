@@ -25,7 +25,7 @@ from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
-from levanter.models.attention import CausalMask, ExplicitMask
+from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
@@ -93,7 +93,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     @functools.partial(jax.jit, static_argnums=(0))
     def _create_lm_example(self, tokens, key):
-        attn_mask = CausalMask(self.QPos, self.KPos)
+        attn_mask = AttentionMask.causal()
         if self.fcm_prob > 0:
             # masks for attention
             # We support forgetful causal masking (FCM) which is a technique that improves training speed by
@@ -102,7 +102,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             assert self.key is not None
             this_key, key = jax.random.split(key)
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = attn_mask & ExplicitMask(fcm_mask)
+            attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
 
         tokens = hax.named(tokens, self.QPos)
 

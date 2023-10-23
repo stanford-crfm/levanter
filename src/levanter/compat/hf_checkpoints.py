@@ -18,6 +18,7 @@ import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
+import mergedeep
 import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -241,7 +242,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def with_config_overrides(self, config_overrides: dict, merge: bool = True) -> "HFCheckpointConverter":
         if self.config_overrides is not None and merge:
-            config_overrides = {**self.config_overrides, **config_overrides}
+            config_overrides = mergedeep.merge({}, self.config_overrides, config_overrides)
         return dataclasses.replace(self, config_overrides=config_overrides)  # type: ignore
 
     @staticmethod
@@ -579,7 +580,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 raise
 
         if self.config_overrides:
-            dict_config.update(self.config_overrides)
+            dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
 
         with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(dict_config, f)
