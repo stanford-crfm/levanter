@@ -39,8 +39,8 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import HFDatasetDataSource, JsonDataSource
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
 from levanter.data.text import BatchEncodingDataset
 from levanter.models.attention import CausalMask
 from levanter.models.lm_model import LmExample, LmHeadModel
@@ -135,9 +135,9 @@ def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
-        return JsonDataSource([path_or_id])
+        return JsonDataset([path_or_id])
     else:
-        return HFDatasetDataSource(path_or_id, split="train")
+        return WrappedHFDataset(path_or_id, split="train")
 
 
 class EncoderDecoderProcessor(BatchProcessor[dict]):
@@ -191,6 +191,11 @@ def train(config: TrainArgs):
         model_max_length=model_config.Pos.size,
         padding_side="right",
     )
+    num_new_tokens = add_special_tokens(tokenizer)
+    logger.info(f"Added {num_new_tokens} new tokens")
+
+    # modify converter to use our tokenizer, mostly so it saves the right vocab
+    converter = converter.replaced(tokenizer=tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -207,8 +212,6 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        num_new_tokens = add_special_tokens(tokenizer)
-        logger.info(f"Added {num_new_tokens} new tokens")
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 

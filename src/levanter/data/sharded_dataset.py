@@ -1,22 +1,42 @@
 import json
 import os
-from typing import Callable, Generic, Iterator, List, Sequence, TypeVar
+import warnings
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, TypeVar
 
 import datasets
 import fsspec
 
 from levanter.utils import fsspec_utils
 
+from ._preprocessor import (
+    BatchResult,
+    _BatchMapTransform,
+    _construct_composite_batch_processor,
+    _DatasetTransform,
+    _MapTransform,
+)
+from .dataset import Dataset, ShardableDataset
+from .utils import batched
+
+
+if TYPE_CHECKING:
+    from levanter.data.shard_cache import MetricsMonitor
+
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
 T_co = TypeVar("T_co", covariant=True)
+U = TypeVar("U")
 
 
-class ShardedDataSource(Generic[T_co]):
+class ShardedDataset(Dataset[T_co]):
     """
-    A ShardedDataSource is the main interface for reading data. It's basically a mapping from shard names to iterators,
+    A ShardedDataset is the main interface for reading data. It's basically a mapping from shard names to iterators,
     with the extra feature that it exposes the ability to skip to a particular row in a shard.
+
+    The difference between a [ShardedDataset][] and a [ShardableDataset][] is that a [ShardedDataset][]
+    has a fixed number of shards, and a [ShardableDataset][] supports a `shard` method that can be used to
+    split the dataset into multiple shards.
     """
 
     @property
@@ -33,7 +53,7 @@ class ShardedDataSource(Generic[T_co]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T_co]:
         raise NotImplementedError
 
-    def iter_data(self):
+    def __iter__(self):
         """
         Iterate over all data in the dataset, in order.
         """
@@ -41,24 +61,80 @@ class ShardedDataSource(Generic[T_co]):
             for doc in self.open_shard(shard_name):
                 yield doc
 
-    def map(self, fn: Callable[[T_co], T]) -> "ShardedDataSource[T]":
-        return MappedShardedDataSource(self, fn)
+    def build_cache(
+        self,
+        path: str,
+        *,
+        rows_per_chunk: Optional[int] = None,
+        await_finished: bool = True,
+        monitors: Optional[Sequence["MetricsMonitor"]] = None,
+    ) -> ShardableDataset[dict]:
+        """
+        Constructs a shard cache version of this dataset using Ray.
+
+        Levanter's preprocessing pipeline offers the following features/guarantees:
+        * distributed, sharded preprocessing using Ray
+        * deterministic ordering of data
+        * interruptible and resumable
+        * streaming results (no need to wait for everything to finish)
+
+        *Note that build_cache does not in general preserve the order of the data.*
+
+        Note that this is an experimental API and is subject to change. It is also not very well tested, so use at your
+        own risk.
+
+        Returns:
+            A new dataset that is backed by the cache.
+        """
+        from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, DictCacheDataset, build_cache
+
+        if rows_per_chunk is None:
+            rows_per_chunk = DEFAULT_ROWS_PER_CHUNK
+
+        source, processor = _construct_composite_batch_processor(self)
+
+        cache = build_cache(
+            path, source, processor, rows_per_chunk=rows_per_chunk, await_finished=await_finished, monitors=monitors
+        )
+        return DictCacheDataset(cache)
+
+    def map(self, fn: Callable[[T_co], U]) -> "ShardedDataset[U]":
+        return _MappedShardedDataset(self, fn)
+
+    def map_batches(
+        self, fn: Callable[[list[T_co]], BatchResult], batch_size, *, num_cpus=1, num_gpus=0, **resources
+    ) -> "ShardedDataset[dict]":
+        """
+        **Lazily** map a function over batches of data. This is useful for doing things like batching data for a model,
+        or for batched preprocessing.
+
+        This function is **lazy**.
+
+        Args:
+            fn:  A function that takes a list of data and returns an iterable of results
+            batch_size: The batch size to use
+            num_cpus: passed to ray
+            num_gpus: passed to ray
+            **resources: Resources to pass to Ray
+
+        Returns:
+            A new ShardedDataset.
+        """
+        return _BatchMappedShardedDataset(self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, **resources)
 
 
-class MappedShardedDataSource(ShardedDataSource[T]):
-    def __init__(self, source: ShardedDataSource[T_co], fn: Callable[[T_co], T]):
-        self.source = source
-        self.fn = fn
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return self.source.shard_names
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
-        return map(self.fn, self.source.open_shard_at_row(shard_name, row))
+def dataset_from_hf(id: str, *, split, **kwargs) -> ShardedDataset[dict]:
+    """
+    Create a ShardedDataset from a HuggingFace dataset. Arguments are passed to load_dataset.
+    """
+    return WrappedHFDataset(id, split=split, **kwargs)
 
 
-class HFDatasetDataSource(ShardedDataSource[dict]):
+def dataset_from_jsonl(urls_or_paths: Sequence[str]) -> ShardedDataset[dict]:
+    return JsonlDataset(urls_or_paths)
+
+
+class WrappedHFDataset(ShardedDataset[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
     Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
@@ -107,9 +183,9 @@ class HFDatasetDataSource(ShardedDataSource[dict]):
         return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
 
 
-class TextUrlDataSource(ShardedDataSource[str]):
+class TextUrlDataset(ShardedDataset[str]):
     """
-    Datasource for various text formats.
+    Dataset for various text formats.
     """
 
     def __init__(self, urls, text_key="text"):
@@ -157,7 +233,7 @@ def _sniff_format(url):
             return format
 
 
-class JsonlDataSource(ShardedDataSource[dict]):
+class JsonlDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -179,7 +255,7 @@ class JsonlDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
-class TextDataSource(ShardedDataSource[dict]):
+class TextDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -198,7 +274,7 @@ class TextDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
-class JsonDataSource(ShardedDataSource[dict]):
+class JsonDataset(ShardedDataset[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -245,3 +321,57 @@ def _mk_shard_name_mapping(urls):
         raise FileNotFoundError(f"Could not find the following urls:\n  - {missing_urls_str}")
 
     return _shard_name_to_url_mapping
+
+
+class _TransformedDataset:
+    source: ShardedDataset
+    _transform: _DatasetTransform
+
+
+class _MappedShardedDataset(ShardedDataset[T], _TransformedDataset):
+    def __init__(self, source: ShardedDataset[T_co], fn: Callable[[T_co], T]):
+        self.source = source
+        self.fn = fn
+        self._transform = _MapTransform(fn)
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return self.source.shard_names
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
+        return map(self.fn, self.source.open_shard_at_row(shard_name, row))
+
+
+class _BatchMappedShardedDataset(ShardedDataset[T], _TransformedDataset):
+    def __init__(
+        self,
+        source: ShardedDataset[T_co],
+        fn: Callable[[list[T_co]], Iterable[U]],
+        batch_size,
+        num_cpus=1,
+        num_gpus=0,
+        **resources,
+    ):
+        self.source = source
+        self._transform = _BatchMapTransform(fn, batch_size, num_cpus, num_gpus, resources)
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return self.source.shard_names
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
+        warnings.warn("This is not the best way to use batched preprocessing. Use build_cache instead.")
+        # this one is tricky because we have to do batching ourselves and there's no guarantee that input and output
+        # batch sizes are the same
+        i = 0
+        shard_iter = self.source.open_shard_at_row(shard_name, row)
+        for batch in batched(shard_iter, self._transform.batch_size):  # type: ignore
+            result = self._transform.fn(batch)  # type: ignore
+            if isinstance(result, Sized) and len(result) + i < row:
+                i += len(result)
+                continue
+
+            for doc in result:
+                if i >= row:
+                    yield doc
+                i += 1

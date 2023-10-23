@@ -58,13 +58,16 @@ def train(config: TrainArgs):
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
     training_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
 
-    # This is largely the same as in Alpaca. Only change is we use the fast tokenizer.
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         config.model_name_or_path,
         cache_dir=config.model_cache_dir,
         model_max_length=model_config.Pos.size,
         padding_side="right",
     )
+    num_new_tokens = alpaca.add_special_tokens(tokenizer)
+
+    # modify converter to use our tokenizer, mostly so it saves the right vocab
+    converter = converter.replaced(tokenizer=tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -76,7 +79,6 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
 
-        num_new_tokens = alpaca.add_special_tokens(tokenizer)
         logger.info(f"Added {num_new_tokens} new tokens")
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
@@ -128,7 +130,7 @@ def train(config: TrainArgs):
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
             trainer.add_hook(
                 save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.model_name_or_path, config.hf_upload
+                    full_save_path, config.lora, config.model_name_or_path, tokenizer, config.hf_upload
                 ),
                 every=config.hf_save_steps,
             )

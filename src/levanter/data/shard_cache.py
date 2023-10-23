@@ -6,7 +6,6 @@ import os
 import sys
 import threading
 import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from queue import PriorityQueue
 from typing import (
@@ -14,11 +13,9 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Generic,
     Iterable,
     Iterator,
     List,
-    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -29,7 +26,6 @@ from typing import (
 
 import fsspec.core
 import jax
-import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
@@ -49,11 +45,12 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from levanter.data.shard_source import ShardedDataSource
+from . import ShardableDataset
+from ._preprocessor import BatchProcessor, as_record_batch, dict_from_record_batch
+from .sharded_dataset import ShardedDataset
 
 
 T = TypeVar("T")
-T_contra = TypeVar("T_contra", contravariant=True)
 T_co = TypeVar("T_co", covariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
@@ -63,46 +60,9 @@ DEFAULT_ROWS_PER_CHUNK = 1024 * 32
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
-class BatchProcessor(Generic[T_contra], ABC):
-    """
-    A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
-    processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
-    The number of output examples can be different from the number of input examples.
-    """
-
-    @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]:
-        """
-        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
-        example), or a dict of sequences (one per output field).
-
-        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
-        """
-        raise NotImplementedError
-
-    @property
-    def resources(self) -> Dict[str, float]:
-        """Any resources that this processor needs to run. Ray uses this to schedule tasks."""
-        return {}
-
-    @property
-    @abstractmethod
-    def num_cpus(self) -> int:
-        """The number of CPUs this processor needs to run."""
-        raise NotImplementedError
-
-    @property
-    def num_gpus(self) -> int:
-        return 0
-
-    @property
-    def batch_size(self) -> int:
-        return 1024
-
-
 def build_cache(
     cache_dir: str,
-    input_shards: ShardedDataSource[T],
+    input_shards: ShardedDataset[T],
     processor: BatchProcessor[T],
     batch_size: int = 1,
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
@@ -123,7 +83,7 @@ def build_cache(
 
     Args:
         cache_dir: The directory to write the cache to. This can be any path understood by fsspec.
-        input_shards: A ShardedDataSource that will be used to read the input data. Conceptually, it's just a mapping
+        input_shards: A ShardedDataset that will be used to read the input data. Conceptually, it's just a mapping
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
@@ -234,7 +194,7 @@ class _ChunkWriter:
 @ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 def _produce_cache_for_shard(
     sink: ActorHandle,  # _ChunkCacheBuilder
-    source: ShardedDataSource[T],
+    source: ShardedDataset[T],
     priority_fn: Callable[[int, int], float],
     shard_idx: int,
     processor: BatchProcessor,
@@ -365,32 +325,6 @@ def _produce_chunks_for_shard(
         chunk = writer.get_metadata()
         writer = None
         yield_chunk(chunk)
-
-
-def _as_record_batch(doc: Union[pa.RecordBatch, Sequence[Mapping], Mapping[str, Sequence]]) -> pa.RecordBatch:
-    """Converts a document to an arrow-compatible record batch."""
-
-    if isinstance(doc, pa.RecordBatch):
-        return doc
-
-    if isinstance(doc, Mapping):
-        # structure of arrays
-        def _as_array(x):
-            # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
-            if isinstance(x, np.ndarray) and x.ndim > 1:
-                return [_as_array(y) for y in x]
-            elif isinstance(x, np.ndarray):
-                return list(x)
-            else:
-                return pa.array(x)
-
-        names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
-
-        return pa.RecordBatch.from_arrays(list(columns), names)
-    elif isinstance(doc, Sequence):
-        return pa.RecordBatch.from_pylist(doc)
-    else:
-        raise ValueError(f"Cannot convert {type(doc)} to record batch")
 
 
 def _serialize_json_and_commit(path, obj):
@@ -589,7 +523,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
         ray.get(queue.task_running.remote())
         result = processor(batch)
         del batch
-        return _as_record_batch(result)
+        return as_record_batch(result)
 
     return process_task
 
@@ -676,7 +610,7 @@ class ChunkCacheBuilder:
         self,
         broker_ref,
         cache_dir: str,
-        source: ShardedDataSource[T],
+        source: ShardedDataset[T],
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
@@ -818,9 +752,7 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
-    def __init__(
-        self, cache_dir: str, source: ShardedDataSource[T], processor: BatchProcessor[T], rows_per_chunk: int
-    ):
+    def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
         logging.basicConfig(level=logging.INFO)
         self.chunks = []
         self._reader_promises = {}
@@ -937,9 +869,45 @@ def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk=DEFAULT
     )
 
 
+class DictCacheDataset(ShardableDataset[dict]):
+    """
+    A Dataset that yields HF BatchEncodings from a ShardCache.
+    This basically yields a dict-of-arrays, just the HF BatchEncoding class version of dict.
+    """
+
+    def __init__(self, cache: "ShardCache", return_batches: bool = False):
+        self.cache = cache
+        self.return_batches = return_batches
+
+    def __iter__(self) -> Iterator[dict]:
+        for batch in self.cache:
+            encoding = dict_from_record_batch(batch)
+
+            if self.return_batches:
+                yield encoding
+            else:
+                batch_size = 0
+                for v in encoding.values():
+                    batch_size = len(v)
+                    break
+
+                for i in range(batch_size):
+                    yield {k: v[i] for k, v in encoding.items()}
+
+    def shard(self, shard_id: int, num_shards: int) -> "DictCacheDataset":
+        return DictCacheDataset(self.cache.shard(shard_id, num_shards))
+
+    @staticmethod
+    def load(cache_dir: str, return_batches: bool = False, batch_size: Optional[int] = None) -> "DictCacheDataset":
+        if batch_size is None:
+            batch_size = 1
+        cache = ShardCache.load(cache_dir, batch_size=batch_size)
+        return DictCacheDataset(cache, return_batches=return_batches)
+
+
 class ShardCache(Iterable[pa.RecordBatch]):
     """A cache which is backed by a collection of chunks of preprocessed documents. These chunks
-    are produced by tokenizing/preprocessing a ShardedDataSource.
+    are produced by tokenizing/preprocessing a ShardedDataset.
 
         This is the main interface for building and reading from a shard cache.
 
@@ -1006,7 +974,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        shard_source: ShardedDataSource[T],
+        shard_source: ShardedDataset[T],
         processor: BatchProcessor[T],
         batch_size: int,
         rows_per_chunk: int,

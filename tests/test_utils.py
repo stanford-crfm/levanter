@@ -13,8 +13,8 @@ from equinox import static_field
 from transformers import BatchEncoding
 
 from levanter.checkpoint import _get_fs_and_plain_path
-from levanter.data.shard_cache import BatchProcessor
-from levanter.data.shard_source import ShardedDataSource
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.sharded_dataset import ShardedDataset
 from levanter.data.text import _stack_batch_encodings
 
 
@@ -162,7 +162,7 @@ class IdentityProcessor(BatchProcessor[BatchEncoding]):
         return 0
 
 
-class ShardsDataSource(ShardedDataSource[T]):
+class ShardsDataset(ShardedDataset[T]):
     def __init__(self, docs: List[List[T]]):
         self.docs = docs
 
@@ -174,7 +174,7 @@ class ShardsDataSource(ShardedDataSource[T]):
         return self.docs[int(shard_name)][row:]
 
 
-class SingleShardDocumentSource(ShardedDataSource[T]):
+class SingleShardDocumentSource(ShardedDataset[T]):
     def __init__(self, docs: List[T]):
         self.docs = docs
 
