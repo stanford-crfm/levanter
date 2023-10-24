@@ -1,18 +1,24 @@
-In the [Replicating Alpaca](./Replicating-Alpaca.md) tutorial, we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
+# LoRA Tutorial: Alpaca-LoRA
 
-In this guide, we'll use [LoRA](https://arxiv.org/abs/2106.09685) to do a lighter-weight
+In the [Fine-Tuning tutorial](./Fine-Tuning.md), we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
+
+In this guide, we'll use Levanter's implementation of [LoRA](https://arxiv.org/abs/2106.09685) to do a lighter-weight
 version of Alpaca, similar to [tloen/alpaca-lora](https://github.com/tloen/alpaca-lora). We'll borrow heavily from
 our "vanilla" Alpaca script, and only change the parts that are necessary to use LoRA.
+The point of this tutorial is to show you how to use LoRA with Levanter, so that you can use it with your
+own data.
 
 The LoRA model we create will be compatible with [Hugging Face's PEFT](https://github.com/huggingface/peft) library,
 so that you can use it with their inference scripts or anywhere else you might want to use a PEFT model.
 
+
 ## Changes to the Alpaca script
 
-There are three things we need to do differently:
+There are four things we need to do differently:
 1. Apply the LoRA transform to the model.
 2. Tell the trainer to only train the lora params.
 3. Serialize a PEFT-compatible checkpoint.
+4. (Nitpicky) we shouldn't add tokens to the vocabulary, since we're adapting a model.
 
 ### 1. Apply the lora transform to the model
 
@@ -29,10 +35,11 @@ class LoraConfig:
     dropout: float = 0.0  # dropout probability for LoRA layers
 ```
 
-By default, we loraize all linear modules in the model, which we recommend. This was found to be better than the other
+By default, we LoRA-ize all linear modules in the model, which we recommend. This was found to be better than the other
 options: https://twitter.com/Tim_Dettmers/status/1689375417189412864, https://arxiv.org/pdf/2305.14314.pdf Section 4.
+(As with all config in Levanter, [these can be changed in the config file or via command line flags](./Configuration-Guide.md).)
 
-In our modifications below, we apply `loraize` inside of a `haliax.named_jit` function. This ensures that the
+In our modifications below, we apply `loraize` inside of a [`haliax.named_jit`](https://haliax.readthedocs.io/en/latest/partitioning/#haliax.named_jit) function. This ensures that the
 parameters are sharded correctly.
 
 ```python
@@ -60,7 +67,7 @@ def train(config: TrainArgs):
 
 ```
 
-### 2. Tell the trainer to only train the lora params
+### 2. Tell the trainer to only train the LoRA params
 
 `Trainer` takes an optional `is_trainable` argument, which is a [Equinox filter_spec](https://docs.kidger.site/equinox/examples/frozen_layer/).
 You don't need to worry about the internals, but the gist is that it's a "tree of functions" that has the same
@@ -153,8 +160,8 @@ lora:
   dropout: 0.1
 ```
 
-The default configs are available as [`alpaca-lora.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora.yaml)
-and [`alpaca-lora-llama2.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora-llama2.yaml)
+The default configs are available as [`alpaca-lora.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora/alpaca-lora.yaml)
+and [`alpaca-lora-llama2.yaml`](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca-lora/alpaca-lora-llama2.yaml)
 
 
 ## Running Alpaca-Lora
@@ -167,8 +174,44 @@ infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
 WANDB_API_KEY=${YOUR TOKEN HERE} \
 HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
 bash levanter/infra/run.sh python \
-levanter/examples/alpaca_lora.py \
---config_path levanter/examples/alpaca-lora-llama2.yaml \
+levanter/examples/alpaca-lora/alpaca_lora.py \
+--config_path levanter/examples/alpaca-lora/alpaca-lora-llama2.yaml \
 --trainer.checkpointer.base_path gs://<somewhere> \
 --hf_save_path gs://<somewhere>
+```
+
+
+## Using the model
+
+The model should work out-of-the-box as a Hugging Face PEFT model. First, copy the checkpoint to a local directory:
+
+```bash
+gsutil cp gs://<somewhere>/<run id>/step-<something> ./my-alpaca
+```
+
+Then, you can use it like this:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftConfig, PeftModel
+
+peft_model_id = "./my-alpaca"
+
+config = PeftConfig.from_pretrained(peft_model_id)
+tokenizer = AutoTokenizer.from_pretrained(config.base_model_name_or_path)
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path, device_map="auto")
+model = PeftModel.from_pretrained(model, peft_model_id, device_map="auto")
+
+instruction = "Translate the following phrase into French."
+input = "I love you."
+
+input = ("Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        f"### Instruction:\n {instruction}\n### Input:\n{input}\n### Response:\n")
+
+input_ids = tokenizer(input, return_tensors="pt").input_ids.to(model.device)
+output_ids = model.generate(input_ids, do_sample=True, max_length=100, num_beams=5, num_return_sequences=5)
+
+for output_id in output_ids:
+    print(tokenizer.decode(output_id, skip_special_tokens=True))
 ```

@@ -184,6 +184,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({"position": "key_position"})
+        QPos = q.resolve_axis("position")
+        KPos = k.resolve_axis("key_position")
 
         mask = materialize_mask(mask, q.resolve_axis("position"), k.resolve_axis("key_position"))
 
@@ -192,7 +194,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
             "key_position",
             q,
             k,
-            mask=mask,
+            mask=materialize_mask(mask, QPos, KPos),
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
 

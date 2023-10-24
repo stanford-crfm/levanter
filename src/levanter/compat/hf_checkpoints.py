@@ -542,7 +542,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # if save_reference_code is None, we save code for models that aren't in the HF repo.
         if save_reference_code is None:
-            save_reference_code = hasattr(self.default_hf_config, "auto_map")
+            #  the way we determine this is if the config class is in the HF package or not
+            save_reference_code = not self.HfConfigClass.__module__.startswith("transformers.")
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:

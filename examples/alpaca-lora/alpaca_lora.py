@@ -29,10 +29,11 @@ from levanter.utils.py_utils import non_caching_cycle
 
 # This is a bit of a hack to make sure we can load the module no matter where we run it from.
 # You can also just set the PYTHONPATH environment variable.
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
+dirname = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(dirname)  # noqa: E402
+sys.path.append(os.path.join(dirname, "..", "alpaca"))  # noqa: E402
 
 import alpaca  # noqa: E402
-from alpaca import SupervisedDataset  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -64,10 +65,18 @@ def train(config: TrainArgs):
         model_max_length=model_config.Pos.size,
         padding_side="right",
     )
-    num_new_tokens = alpaca.add_special_tokens(tokenizer)
+    # because we're using lora, we can't add new tokens to the vocab, so we use the UNK token instead
+    orig_vocab_size = len(tokenizer)
+    alpaca.add_special_tokens(tokenizer, use_unk_instead_of_adding=True)
+    if orig_vocab_size != len(tokenizer):
+        raise ValueError(
+            f"We can't add new tokens to the vocab when using lora, but {len(tokenizer) - orig_vocab_size} were added."
+        )
 
     # modify converter to use our tokenizer, mostly so it saves the right vocab
     converter = converter.replaced(tokenizer=tokenizer)
+
+    train_dataset = alpaca.mk_dataset(config, tokenizer)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -78,10 +87,6 @@ def train(config: TrainArgs):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
-
-        logger.info(f"Added {num_new_tokens} new tokens")
-        # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
-        model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
 
         # Major difference from Alpaca: we loraize the model.
 
@@ -113,7 +118,6 @@ def train(config: TrainArgs):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
-        train_dataset = SupervisedDataset(config.data_cache_dir, model.Pos, model.KeyPos, config.data, tokenizer)
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
