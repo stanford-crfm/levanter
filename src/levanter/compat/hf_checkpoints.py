@@ -18,6 +18,7 @@ import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
+import mergedeep
 import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -241,7 +242,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def with_config_overrides(self, config_overrides: dict, merge: bool = True) -> "HFCheckpointConverter":
         if self.config_overrides is not None and merge:
-            config_overrides = {**self.config_overrides, **config_overrides}
+            config_overrides = mergedeep.merge({}, self.config_overrides, config_overrides)
         return dataclasses.replace(self, config_overrides=config_overrides)  # type: ignore
 
     @staticmethod
@@ -541,7 +542,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # if save_reference_code is None, we save code for models that aren't in the HF repo.
         if save_reference_code is None:
-            save_reference_code = hasattr(self.default_hf_config, "auto_map")
+            #  the way we determine this is if the config class is in the HF package or not
+            save_reference_code = not self.HfConfigClass.__module__.startswith("transformers.")
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:
@@ -579,7 +581,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 raise
 
         if self.config_overrides:
-            dict_config.update(self.config_overrides)
+            dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
 
         with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(dict_config, f)
@@ -788,7 +790,9 @@ def _convert_to_jnp(v):
     # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
     # if v.dtype == torch.bfloat16:
     #     v = v.to(torch.float32)
-    if v.dtype == torch.bfloat16:
+    if v is None:
+        return None
+    elif v.dtype == torch.bfloat16:
         return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
     else:
         return jax.numpy.array(v.cpu().numpy())

@@ -116,7 +116,7 @@ def main(config: LoraLmConfig):
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
             trainer.add_hook(
                 save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.initialize_from_hf, config.peft_hf_upload
+                    full_save_path, config.lora, config.initialize_from_hf, tokenizer, config.peft_hf_upload
                 ),
                 every=config.hf_save_steps,
             )

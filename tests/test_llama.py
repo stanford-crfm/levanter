@@ -2,6 +2,7 @@ import tempfile
 
 import jax
 import numpy as np
+import pytest
 import transformers
 from jax import random
 
@@ -17,7 +18,7 @@ from levanter.models.llama import (
 )
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
@@ -129,11 +130,12 @@ def test_apply_rotary_pos_emb():
 
 
 @skip_if_no_torch
-def test_llama_attention():
+@pytest.mark.parametrize("use_flash", [True, False])
+def test_llama_attention(use_flash):
     import torch
     from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 
-    config = _get_llama_config()
+    config = _get_llama_config(use_flash=use_flash)
 
     attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
 
@@ -277,7 +279,7 @@ def test_llama_roundtrip():
         assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
-def _get_llama_config() -> LlamaConfig:
+def _get_llama_config(use_flash=False) -> LlamaConfig:
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
@@ -288,6 +290,7 @@ def _get_llama_config() -> LlamaConfig:
         num_heads=4,
         rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
+        use_flash_attention=use_flash,
     )
 
 
@@ -307,3 +310,13 @@ def test_llama_configs(config_file):
     config_class = TrainLmConfig
 
     check_load_config(config_class, config_file)
+
+
+def test_pass_different_length_seq():
+    config = LlamaConfig(
+        seq_len=32,
+        hidden_dim=16,
+        intermediate_dim=32,
+        num_heads=2,
+    )
+    check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
