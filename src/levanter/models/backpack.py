@@ -187,6 +187,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         QPos = q.resolve_axis("position")
         KPos = k.resolve_axis("key_position")
 
+        mask = materialize_mask(mask, q.resolve_axis("position"), k.resolve_axis("key_position"))
+
         attn_weights = hnn.attention.dot_product_attention_weights(
             "head_dim",
             "key_position",
