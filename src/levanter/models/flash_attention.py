@@ -203,8 +203,10 @@ def _flash_attention_forward(
             # Step 10: Compute O_i = diag(exp(m_i^{j-1} - m_i^j) O_i + P_i^j V_j
             o_i = exp_diff * o_i + hax.dot(KPos.name, P_ij, v_j)
 
+            print(i, j + 1, o_i, q_i, sumexp_i, max_i)
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
+        print(i, 0, o_i, q_i, sumexp_i, max_i)
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
             lambda state: state[1] < Tc, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
         )

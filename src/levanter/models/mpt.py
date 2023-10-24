@@ -111,7 +111,7 @@ class MptConfig(HFCompatConfig):
     n_layers: int = 12
     expansion_ratio: int = 4
     max_seq_len: int = 2048
-    learned_pos_emb: bool = True
+    learned_pos_emb: bool = False
     attn_config: MptAttentionConfig = field(default_factory=MptAttentionConfig)
     logit_scale: Optional[Union[float, str]] = None
     use_bias: bool = True
@@ -178,6 +178,8 @@ class MptConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
+        attn_config = self.attn_config.to_hf()
+
         return HfMptConfig(
             d_model=self.d_model,
             n_heads=self.n_heads,
@@ -187,7 +189,7 @@ class MptConfig(HFCompatConfig):
             resid_pdrop=self.resid_pdrop,
             emb_pdrop=self.emb_pdrop,
             learned_pos_emb=self.learned_pos_emb,
-            attn_config=self.attn_config.to_hf(),
+            attn_config=attn_config,
             no_bias=not self.use_bias,
             embedding_fraction=self.embedding_fraction,
             logit_scale=self.logit_scale,

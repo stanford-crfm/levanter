@@ -173,18 +173,15 @@ class _CompositeBatchProcessor(BatchProcessor):
         is_soa_form = False
         for transform in self.transforms:
             if is_soa_form:
-                print(f"de-soa-ing {batch}")
                 batch = as_record_batch(batch)
                 batch = batch.to_pylist()
                 is_soa_form = False
-            print(f"applying transform {transform} to {batch}")
 
             match transform:
                 case _MapTransform(fn=fn):
                     batch = map(fn, batch)
                 case _BatchMapTransform(fn=fn):
                     batch = fn(batch)
-                    print("got batch", batch)
                     is_soa_form = isinstance(batch, dict) or isinstance(batch, pa.RecordBatch)
                 case _DatasetTransform():
                     raise ValueError(f"Unknown transform {transform}")

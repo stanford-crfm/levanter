@@ -86,8 +86,8 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
-      - "Replicating-Alpaca.md"
-      - "Alpaca-LoRA.md"
+      - "Fine-Tuning.md"
+      - "LoRA.md"
   - 'Developer Guide':
       - 'Port-Models.md'
   - Other:
