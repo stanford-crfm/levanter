@@ -10,7 +10,7 @@ import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.utils.tree_utils import inference_mode
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
 @skip_if_no_torch
@@ -108,3 +108,13 @@ def test_mpt_configs(config_file):
     config_class = TrainLmConfig
 
     check_load_config(config_class, config_file)
+
+
+def test_pass_different_length_seq():
+    config = MptConfig(
+        max_seq_len=32,
+        d_model=16,
+        n_layers=4,
+        n_heads=2,
+    )
+    check_model_works_with_seqlen(MptLmHeadModel, config, 16)

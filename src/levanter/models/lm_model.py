@@ -72,7 +72,9 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @abc.abstractmethod
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, key=None) -> NamedArray:
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
         pass
 
     @abc.abstractmethod
@@ -97,7 +99,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
         logits = self(example.tokens, example.attn_mask, key=key)
-        targets = hax.roll(example.tokens, -1, axis=self.Pos)
+        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
