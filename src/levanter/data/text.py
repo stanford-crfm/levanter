@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -468,6 +468,8 @@ class LMDatasetConfig:
 
     # config for the tokenizer
     tokenizer: str = "gpt2"
+    plaintext: bool = False
+    vocab_size: Optional[int] = None
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     # config related to caching
@@ -478,8 +480,11 @@ class LMDatasetConfig:
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.tokenizer)
+    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+        if self.tokenizer == "passthrough":
+            return PassthroughTokenizer(self.vocab_size)
+        else:
+            return load_tokenizer(self.tokenizer)
 
     def token_seq_dataset(self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
         cache = self.build_or_load_cache(split, monitors=monitors)
@@ -549,3 +554,30 @@ class LMDatasetConfig:
             )
         else:
             return TextUrlDataset(self.urls_for_split(split), self.text_key)
+
+
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        self._vocab = {i: i for i in range(vocab_size)}
+        self._vocab_size = vocab_size
+        super().__init__(**kwargs)
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    def get_vocab(self):
+        return self._vocab
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
+
+    def _tokenize(self, text, **kwargs):
+        tokens = np.fromstring(text, dtype=int, sep=" ")
+        return tokens
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)
