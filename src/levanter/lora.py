@@ -51,6 +51,7 @@ from typing import Dict, List, Optional, Tuple, TypeVar, Union
 import equinox as eqx
 import jax
 from jaxtyping import PyTree
+from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 import haliax.nn as hnn
@@ -311,6 +312,8 @@ def save_peft_pretrained(
     config: LoraConfig,
     base_model_name_or_path,
     path: str,
+    tokenizer: Optional[PreTrainedTokenizerBase] = None,
+    *,
     prefix: Optional[str] = DEFAULT_DICT_PREFIX,
     upload_to: Optional[Union[bool, str, RepoRef]] = None,
     **upload_kwargs,
@@ -321,6 +324,7 @@ def save_peft_pretrained(
     Args:
         lora_model: the LoRA model to save
         path: the path to save the model to. May be a url, in which case we will use fsspec to save to that url.
+        tokenizer: if provided, will save the tokenizer to the checkpoint
         prefix: the prefix to use for the LoRA parameters. Defaults to "base_model.model.transformer", which is what
             Peft seems to expect.
         upload_to: if provided, will upload the saved model to the given hf hub repo. If a string, will be interpreted
@@ -336,6 +340,9 @@ def save_peft_pretrained(
         with open(f"{local_path}/{CONFIG_NAME}", "w") as f:
             json.dump(hf_config, f)
 
+        if tokenizer is not None:
+            tokenizer.save_pretrained(local_path)
+
         if upload_to is True:
             upload_to = RepoRef.from_string(base_model_name_or_path)
 
@@ -348,6 +355,7 @@ def save_peft_checkpoint_callback(
     base_path,
     config: LoraConfig,
     base_model_name_or_path,
+    tokenizer: Optional[PreTrainedTokenizerBase] = None,
     upload_to_hf: Optional[Union[bool, str, RepoRef]] = False,
     **hf_upload_kwargs,
 ):
@@ -355,11 +363,14 @@ def save_peft_checkpoint_callback(
     If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
     any additional kwargs to the huggingface_hub.upload_folder function.
 
-    :param base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
-    may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
-    :param upload_to_hf:
-    :param hf_upload_kwargs:
-    :return:
+    Args
+    base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
+               may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
+    config: the LoRA config to use
+    base_model_name_or_path: the name or path of the base model
+    tokenizer: If provided, will save the tokenizer to the checkpoint
+    upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
+    hf_upload_kwargs: kwargs to pass to the upload function
     """
 
     def cb(step: StepInfo):
@@ -379,6 +390,7 @@ def save_peft_checkpoint_callback(
             config,
             base_model_name_or_path,
             os.path.join(base_path, f"step-{step.step}"),
+            tokenizer,
             upload_to=upload_to_hf,
             **my_upload_kwargs,
         )

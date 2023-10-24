@@ -1,39 +1,100 @@
-import abc
-import dataclasses
-import functools as ft
-from typing import Optional, Tuple, TypeAlias, Union, overload
+from typing import Optional, Union, overload
 
 import equinox as eqx
+import jax.numpy as jnp
+from jaxtyping import PRNGKeyArray
 
 import haliax
-from haliax import Axis, AxisSelector, NamedArray
-from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or, prefix_lm_mask
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray
+from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
+from haliax.types import PrecisionLike
 
 
-AttnMask: TypeAlias = Union[NamedArray, "AttentionMask"]
-
-
-@overload
-def materialize_mask(mask: AttnMask) -> NamedArray:
-    ...
-
-
-@overload
-def materialize_mask(mask: Optional[AttnMask]) -> Optional[NamedArray]:
-    ...
-
-
-def materialize_mask(mask: Optional[AttnMask]) -> Optional[NamedArray]:
+def dot_product_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union["AttentionMask", NamedArray]] = None,
+    bias: Optional[NamedArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    use_flash: bool = False,
+    flash_block_size: Optional[int] = None,
+    dropout: float = 0.0,
+    *,
+    inference: bool = True,
+    prng: Optional[PRNGKeyArray] = None,
+):
     """
-    Materialize an attention mask if it is an AttentionMask. Otherwise, just return it.
+    This method is similar to [haliax.nn.attention.dot_product_attention][] but uses the [AttentionMask][] class,
+    which we might move to haliax.nn.attention in the future.
+
+    Unlike the Haliax version, it requires that the Q and K already be different.
+
+    Args:
+        Key: Size of key dimension
+        QPos: Axis of query sequence length. Can be an AxisSpec to attend along more than one axis.
+        KPos: Axis of key sequence length. Can be an AxisSpec to attend along more than one axis.
+        query: shape at least {QPos, KeySize}
+        key: shape at least {KPos, KeySize}
+        value: shape at least {KPos, ValueSize}
+        mask: attention mask
+        bias: Optional[NamedArray] broadcast compatible with (KeySize, QPos, KPos). Should be float
+        attention_dtype: Optional dtype to use for attention
+        precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
+        use_flash: whether to use flash attention
+        flash_block_size: block size for flash attention. If None, will use an appropriate default
+        dropout: dropout rate
+        inference: whether to use inference mode
+        prng: PRNGKeyArray for dropout
+    Returns:
+        NamedArray of shape (value.axes - KPos + QPos)
     """
-    if isinstance(mask, AttentionMask):
-        mask = mask.materialize()
-    return mask
+    if QPos == KPos:
+        raise ValueError("QPos and KPos must be different")
+
+    if use_flash:
+        from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
+
+        if flash_block_size is None:
+            flash_block_size = BLOCK_SIZE
+
+        return flash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            block_size=flash_block_size,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            key=prng,
+            dtype=attention_dtype,
+            precision=precision,
+        )
+    else:
+        QPos = query.resolve_axis(QPos)
+        KPos = key.resolve_axis(KPos)
+        m = materialize_mask(mask, QPos, KPos)
+        weights = haliax.nn.attention.dot_product_attention_weights(
+            Key, KPos, query, key, mask=m, bias=bias, precision=precision, attention_dtype=attention_dtype
+        )
+        weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+        return haliax.dot(KPos, weights, value)
 
 
-class AttentionMask(eqx.Module, abc.ABC):
+class AttentionMask(eqx.Module):
     """
+
+    !!! warning
+        This class is still experimental. I'm not super happy with it yet.
+
     Represents an attention mask in a structured way to make it easier to optimize attention for particular use cases
     (causal, prefix, etc.). It is anticipated that this will be extended with new types of masks as needed.
 
@@ -44,189 +105,104 @@ class AttentionMask(eqx.Module, abc.ABC):
     well as something like flash attention.
 
     A mask can be materialized, in which case it returns the mask as a NamedArray.
-    We can also ask for slices of a mask along a particular axis, or for a blocked version of the mask.
-
-    The blocked version of the mask is basically a projection of the mask onto a smaller mask, where each position
-    in the smaller mask is the max of the corresponding positions in the larger mask. This is useful for
-    blockwise attention mechanisms, like flash or longformer.
     """
 
-    @abc.abstractmethod
-    def materialize(self) -> Optional[NamedArray]:
+    is_causal: bool = eqx.static_field()
+    explicit_mask: Optional[NamedArray] = None
+    # TODO: add sequence packing
+    # TODO: add prefixlm
+    # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
+
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
         """
         Materialize the mask as a NamedArray. This is useful for attention functions that don't support masks,
         or for the inner loop
         """
-        raise NotImplementedError
+        if q_slice is None:
+            q_slice = haliax.dslice(0, QPos.size)
+        if k_slice is None:
+            k_slice = haliax.dslice(0, KPos.size)
 
-    @abc.abstractmethod
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        """
-        Slice the mask along a particular axis. This is useful for extracting a particular slice of a mask
-        for use in blocked attention.
-        """
-        raise NotImplementedError
+        if self.is_causal:
+            causal = causal_mask(QPos.resize(q_slice.size), KPos.resize(k_slice.size), q_slice.start, k_slice.start)
+        else:
+            causal = None
 
-    @abc.abstractmethod
-    def blocked(self, axis: AxisSelector, block_size: int) -> "AttentionMask":
-        """
-        Return a blocked version of the mask. This is useful for blockwise attention mechanisms, like flash or longformer.
-        :param axis:
-        :param block_size:
-        :return:
-        """
-        raise NotImplementedError
+        if self.explicit_mask is not None:
+            explicit = self.explicit_mask[QPos, q_slice, KPos, k_slice]
+        else:
+            explicit = None
+
+        return combine_masks_and(causal, explicit)
+
+    @staticmethod
+    def causal() -> "AttentionMask":
+        return AttentionMask(is_causal=True)
+
+    @staticmethod
+    def explicit(mask: NamedArray) -> "AttentionMask":
+        return AttentionMask(is_causal=False, explicit_mask=mask)
 
     def __and__(self, other) -> "AttentionMask":
-        if isinstance(self, AndAttentionMask):
-            conjuncts = list(self.conjuncts)
-        else:
-            conjuncts = [self]
-
-        if isinstance(other, AndAttentionMask):
-            conjuncts.extend(other.conjuncts)
-        else:
-            conjuncts.append(other)
-
-        return AndAttentionMask(conjuncts)
+        is_causal = self.is_causal and other.is_causal
+        explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
 
     def __or__(self, other) -> "AttentionMask":
-        if isinstance(self, OrAttentionMask):
-            disjuncts = list(self.disjuncts)
-        else:
-            disjuncts = [self]
-
-        if isinstance(other, OrAttentionMask):
-            disjuncts.extend(other.disjuncts)
-        else:
-            disjuncts.append(other)
-
-        return OrAttentionMask(disjuncts)
+        is_causal = self.is_causal or other.is_causal
+        explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
 
 
-class CausalMask(AttentionMask):
-    Pos: Axis = eqx.field(static=True)
-    KeyPos: Axis = eqx.field(static=True)
-    pos_start: int = eqx.field(static=True, default=0)
-    kpos_start: int = eqx.field(static=True, default=0)
-
-    def materialize(self) -> Optional[NamedArray]:
-        return causal_mask(self.Pos, self.KeyPos, self.pos_start, self.kpos_start)
-
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        if haliax.selects_axis(axis, self.Pos):
-            return dataclasses.replace(self, Pos=self.Pos.resize(length), pos_start=self.pos_start + start)
-        elif haliax.selects_axis(axis, self.KeyPos):
-            return dataclasses.replace(self, KeyPos=self.KeyPos.resize(length), kpos_start=self.kpos_start + start)
-        else:
-            raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
-
-    def blocked(self, axis: AxisSelector, block_size: int) -> "CausalMask":
-        # a blocked causal mask is just a smaller causal mask
-        if haliax.selects_axis(axis, self.Pos):
-            if self.Pos.size % block_size != 0:
-                raise ValueError(f"Cannot block mask of size {self.Pos.size} with block size {block_size}")
-            new_size = self.Pos.size // block_size
-            return dataclasses.replace(self, Pos=self.Pos.resize(new_size), pos_start=self.pos_start // block_size)
-        elif haliax.selects_axis(axis, self.KeyPos):
-            if self.KeyPos.size % block_size != 0:
-                raise ValueError(f"Cannot block mask of size {self.KeyPos.size} with block size {block_size}")
-            new_size = self.KeyPos.size // block_size
-            return dataclasses.replace(
-                self, KeyPos=self.KeyPos.resize(new_size), kpos_start=self.kpos_start // block_size
-            )
-        else:
-            raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
+@overload
+def materialize_mask(
+    mask: NamedArray | AttentionMask,
+    QPos: Axis,
+    KPos: Axis,
+    q_slice: Optional[haliax.dslice] = None,
+    k_slice: Optional[haliax.dslice] = None,
+) -> NamedArray:
+    ...
 
 
-class PrefixAttentionMask(AttentionMask):
-    Pos: Axis = eqx.field(static=True)
-    KeyPos: Axis = eqx.field(static=True)
-    # TODO: prefix size needs to be dynamic
-    prefix_size: int = eqx.field(static=True)
-    pos_start: int = eqx.field(static=True, default=0)
-    kpos_start: int = eqx.field(static=True, default=0)
-
-    def materialize(self) -> Optional[NamedArray]:
-        return prefix_lm_mask(self.Pos, self.KeyPos, self.prefix_size, self.pos_start, self.kpos_start)
-
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        if haliax.selects_axis(axis, self.Pos):
-            return dataclasses.replace(self, Pos=self.Pos.resize(length), pos_start=self.pos_start + start)
-        elif haliax.selects_axis(axis, self.KeyPos):
-            return dataclasses.replace(self, KeyPos=self.KeyPos.resize(length), kpos_start=self.kpos_start + start)
-        else:
-            raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
-
-    def blocked(self, axis: AxisSelector, block_size: int) -> "AttentionMask":
-        if haliax.selects_axis(axis, self.Pos):
-            if self.Pos.size % block_size != 0:
-                raise ValueError(f"Cannot block mask of size {self.Pos.size} with block size {block_size}")
-            new_size = self.Pos.size // block_size
-            return dataclasses.replace(self, Pos=self.Pos.resize(new_size), pos_start=self.pos_start // block_size)
-        elif haliax.selects_axis(axis, self.KeyPos):
-            if self.KeyPos.size % block_size != 0:
-                raise ValueError(f"Cannot block mask of size {self.KeyPos.size} with block size {block_size}")
-            new_size = self.KeyPos.size // block_size
-            return dataclasses.replace(
-                self, KeyPos=self.KeyPos.resize(new_size), kpos_start=self.kpos_start // block_size
-            )
-        else:
-            raise ValueError(f"Invalid axis {axis}. Valid axes are {self.Pos} and {self.KeyPos}")
+@overload
+def materialize_mask(
+    mask: Optional[NamedArray | AttentionMask],
+    QPos: Axis,
+    KPos: Axis,
+    q_slice: Optional[haliax.dslice] = None,
+    k_slice: Optional[haliax.dslice] = None,
+) -> Optional[NamedArray]:
+    ...
 
 
-class ExplicitMask(AttentionMask):
-    mask: NamedArray
+def materialize_mask(
+    mask: Optional[NamedArray | AttentionMask],
+    QPos: Axis,
+    KPos: Axis,
+    q_slice: Optional[haliax.dslice] = None,
+    k_slice: Optional[haliax.dslice] = None,
+) -> Optional[NamedArray]:
+    """
+    Materialize an attention mask if it is an AttentionMask. Otherwise, just return it.
+    """
+    if isinstance(mask, AttentionMask):
+        mask = mask.materialize(QPos, KPos, q_slice=q_slice, k_slice=k_slice)
+        return mask
+    elif isinstance(mask, NamedArray):
+        if q_slice is not None or k_slice is not None:
+            if q_slice is None:
+                q_slice = haliax.dslice(0, QPos.size)
+            if k_slice is None:
+                k_slice = haliax.dslice(0, KPos.size)
+            mask = mask[QPos, q_slice, KPos, k_slice]
 
-    def materialize(self) -> Optional[NamedArray]:
-        return self.mask
-
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        if haliax.selects_axis(self.mask.axes, axis):
-            return dataclasses.replace(self, mask=self.mask.slice(axis, start=start, length=length))
-        else:
-            raise ValueError(f"Invalid axis {axis}. Valid axes are {self.mask}")
-
-    def blocked(self, axis: AxisSelector, block_size: int) -> "AttentionMask":
-        # we have to do blocked ourselves, and it's a bit messy
-        axis = self.mask.resolve_axis(axis)
-
-        if axis.size % block_size != 0:
-            raise ValueError(f"Cannot block mask axis of size {axis.size} with block size {block_size}")
-
-        new_size = self.mask.size // block_size
-
-        block_axis = axis.alias(axis.name + "__block").resize(block_size)
-        unflattened = self.mask.unflatten_axis(axis, (axis.resize(new_size), block_axis))
-        blocked = haliax.any(unflattened, axis=block_axis)
-
-        return dataclasses.replace(self, mask=blocked)
-
-
-class AndAttentionMask(AttentionMask):
-    conjuncts: Tuple[AttentionMask, ...]
-
-    def materialize(self) -> Optional[NamedArray]:
-        return ft.reduce(combine_masks_and, (conj.materialize() for conj in self.conjuncts))
-
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        return dataclasses.replace(self, conjuncts=tuple(conj.slice(axis, start, length) for conj in self.conjuncts))
-
-    def blocked(self, axis: AxisSelector, block_size: int) -> "AttentionMask":
-        return dataclasses.replace(self, conjuncts=tuple(conj.blocked(axis, block_size) for conj in self.conjuncts))
-
-
-class OrAttentionMask(AttentionMask):
-    disjuncts: Tuple[AttentionMask, ...]
-
-    def materialize(self) -> Optional[NamedArray]:
-        return ft.reduce(combine_masks_or, (disj.materialize() for disj in self.disjuncts))
-
-    def slice(self, axis: AxisSelector, start: int, length: int) -> "AttentionMask":
-        return dataclasses.replace(self, disjuncts=tuple(disj.slice(axis, start, length) for disj in self.disjuncts))
-
-    def blocked(self, axis: AxisSelector, block_size: int) -> "AttentionMask":
-        return dataclasses.replace(self, disjuncts=tuple(disj.blocked(axis, block_size) for disj in self.disjuncts))
+        return mask
+    else:
+        assert mask is None
+        return None
 
 
 # TODO: padding mask

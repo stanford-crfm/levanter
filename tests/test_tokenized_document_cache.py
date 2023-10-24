@@ -6,10 +6,10 @@ import ray
 from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.shard_cache import build_cache
-from levanter.data.shard_source import ShardedDataSource
+from levanter.data.sharded_dataset import ShardedDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
-from test_utils import IdentityProcessor, ShardsDataSource, SingleShardDocumentSource
+from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -57,7 +57,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     num_docs = 10
     docs = [doc_i(j) for j in range(num_docs)]
 
-    class OneDocPerShardSource(ShardedDataSource[T]):
+    class OneDocPerShardSource(ShardedDataset[T]):
         def __init__(self, docs: List[T]):
             self.docs = docs
 
@@ -94,7 +94,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
     num_docs = 10
     batches = [batch_docs([j, j + 1]) for j in range(0, num_docs, batch_size)]
 
-    source = ShardsDataSource([[b] for b in batches])
+    source = ShardsDataset([[b] for b in batches])
     with tempfile.TemporaryDirectory() as tmpdir:
         build_cache(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=True)
@@ -131,7 +131,7 @@ def test_doc_cache_sharding():
     doc_shards = [docs[i : i + num_docs // num_shards] for i in range(0, num_docs, num_docs // num_shards)]
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        source = ShardsDataSource(doc_shards)
+        source = ShardsDataset(doc_shards)
         build_cache(f"{tmpdir}/cache", source, IdentityProcessor())
 
         # must evenly divide num_shards
