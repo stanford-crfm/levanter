@@ -4,7 +4,7 @@ import ray
 from transformers import BatchEncoding
 
 from levanter.data.shard_cache import build_cache
-from levanter.data.text import ALL_STOP_STRATEGY, FIRST_STOP_STRATEGY, MixtureDataset, TokenizedDocumentCache
+from levanter.data.text import MixtureDataset, StopStrategy, TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, SingleShardDocumentSource
 
@@ -45,7 +45,7 @@ def test_mixture_dataset():
         # test mixture with all weights on one dataset
         mixture_1_only = MixtureDataset(
             weights={"1": 1.0, "2": 0.0},
-            stop_strategy=FIRST_STOP_STRATEGY,
+            stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
             **mixture_data_config,
         )
         counter = 0
@@ -57,14 +57,14 @@ def test_mixture_dataset():
         # compare mixture with different strategies
         mixture_balanced_first = MixtureDataset(
             weights={"1": 0.5, "2": 0.5},
-            stop_strategy=FIRST_STOP_STRATEGY,
+            stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
             **mixture_data_config,
         )
         counter_first = sum([1 for _ in mixture_balanced_first])
 
         mixture_balanced_all = MixtureDataset(
             weights={"1": 0.5, "2": 0.5},
-            stop_strategy=ALL_STOP_STRATEGY,
+            stop_strategy=StopStrategy.ALL_STOP_STRATEGY,
             **mixture_data_config,
         )
         counter_all = sum([1 for _ in mixture_balanced_all])
@@ -73,7 +73,7 @@ def test_mixture_dataset():
         # test normalized weights
         mixture_normalized = MixtureDataset(
             weights={"1": 2.0, "2": 2.0},
-            stop_strategy=FIRST_STOP_STRATEGY,
+            stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
             **mixture_data_config,
         )
-        mixture_normalized.weights["1"] == mixture_normalized.weights["2"] == 0.5
+        assert mixture_normalized.weights["1"] == mixture_normalized.weights["2"] == 0.5
