@@ -65,7 +65,7 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 
-class StopStrategy(StringHolderEnum):
+class StopStrategy(metaclass=StringHolderEnum):
     FIRST_STOP_STRATEGY = "first_exhausted"
     ALL_STOP_STRATEGY = "all_exhausted"
 
@@ -225,34 +225,22 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
     ):
         self.doc_caches = doc_caches
         self.seq_len = seq_len
-        self.set_token_seq_iterators()
-        self.weights = self.normalize_weights(weights)
+        self.weights = self._normalize_weights(weights)
 
-        match stop_strategy:
-            case StopStrategy.FIRST_STOP_STRATEGY:
-                self.stop_strategy_func = lambda x: len(x) > 0
-            case StopStrategy.ALL_STOP_STRATEGY:
-                self.stop_strategy_func = lambda x: len(x) == len(self.doc_caches)
-            case _:
-                raise ValueError(f"Unknown stopping strategy {stop_strategy}")
+        if stop_strategy not in [StopStrategy.FIRST_STOP_STRATEGY, StopStrategy.ALL_STOP_STRATEGY]:
+            raise ValueError(f"Stop strategy {stop_strategy} is not supported.")
+
+        self.stop_strategy = stop_strategy
 
         self.rng = np.random.default_rng(key)
-        self.exhausted_datasets: set = set()
 
     @staticmethod
-    def normalize_weights(weights: Dict[str, float]):
+    def _normalize_weights(weights: Dict[str, float]):
         """Normalize the weights to sum to 1"""
         total = sum(weights.values())
         if total == 0:
             raise ValueError("Datasets' Weights cannot sum to 0")
         return {name: weight / total for name, weight in weights.items()}
-
-    def set_token_seq_iterators(self):
-        # we save the token_seq_datasets to avoid re-creating them when restarting an iterator
-        self.token_seq_datasets = {
-            name: TokenSeqDataset(doc_cache, self.seq_len) for name, doc_cache in self.doc_caches.items()
-        }
-        self.token_seq_iterators = {name: iter(dataset) for name, dataset in self.token_seq_datasets.items()}
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded doc_caches."""
@@ -266,27 +254,28 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
         the weights and call __iter__() function from corresponding TokenSeqDataset.
         """
 
-        while len(self.token_seq_iterators) > 0 and sum(self.weights.values()) > 0:
-            dataset_name = self.sample_index()
+        token_seq_datasets = {
+            name: TokenSeqDataset(doc_cache, self.seq_len) for name, doc_cache in self.doc_caches.items()
+        }
+
+        token_seq_iterators = {name: iter(dataset) for name, dataset in token_seq_datasets.items()}
+        current_weights = {name: weight for name, weight in self.weights.items() if weight > 0}
+
+        while True:
+            dataset_name = self.rng.choice(list(current_weights.keys()), p=list(current_weights.values()))
             try:
-                item = next(self.token_seq_iterators[dataset_name])
+                item = next(token_seq_iterators[dataset_name])
                 yield item
             except StopIteration:
-                #  TODO: handle StopIteration
-                self.exhausted_datasets.add(dataset_name)
-                if self.stop_strategy_func(self.exhausted_datasets):
-                    break
-                else:
-                    # restart the iterator
-                    self.token_seq_iterators[dataset_name] = iter(self.token_seq_datasets[dataset_name])
-
-    def sample_index(self) -> str:
-        """Sample a dataset according to their weights"""
-        return self.rng.choice(list(self.weights.keys()), p=list(self.weights.values()))
-
-    @property
-    def item_shape(self):
-        return ShapeSpec((self.seq_len,), np.int32)
+                match self.stop_strategy:
+                    case StopStrategy.FIRST_STOP_STRATEGY:
+                        break
+                    case StopStrategy.ALL_STOP_STRATEGY:
+                        del token_seq_iterators[dataset_name]
+                        del current_weights[dataset_name]
+                        if len(current_weights) == 0:
+                            break
+                        current_weights = self._normalize_weights(current_weights)
 
 
 def _load_old_ledger(cache_dir):
