@@ -231,8 +231,7 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
             raise ValueError(f"Stop strategy {stop_strategy} is not supported.")
 
         self.stop_strategy = stop_strategy
-
-        self.rng = np.random.default_rng(key)
+        self.key = key
 
     @staticmethod
     def _normalize_weights(weights: Dict[str, float]):
@@ -260,9 +259,10 @@ class MixtureDataset(ShardableDataset[np.ndarray]):
 
         token_seq_iterators = {name: iter(dataset) for name, dataset in token_seq_datasets.items()}
         current_weights = {name: weight for name, weight in self.weights.items() if weight > 0}
+        rng = np.random.default_rng(self.key)
 
         while True:
-            dataset_name = self.rng.choice(list(current_weights.keys()), p=list(current_weights.values()))
+            dataset_name = rng.choice(list(current_weights.keys()), p=list(current_weights.values()))
             try:
                 item = next(token_seq_iterators[dataset_name])
                 yield item
