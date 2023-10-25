@@ -1,3 +1,4 @@
+import abc
 import contextlib
 import dataclasses
 import logging as pylogging
@@ -7,7 +8,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import draccus
 import jax
@@ -21,6 +22,92 @@ from levanter.utils.jax_utils import jnp_to_python
 
 
 logger = pylogging.getLogger(__name__)
+
+class LoggerSink(abc.ABC):
+
+    @abc.abstractmethod
+    def init(self, run_id: Optional[str]):
+        pass
+
+    @abc.abstractmethod
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        pass
+
+
+    @abc.abstractmethod
+    def log(self, metrics: dict[str, Any], *, step):
+        """
+        Log metrics to the logger. Step is always required.
+        """
+        pass
+
+    @abc.abstractmethod
+    def log_summary(self, metrics: dict[str, Any]):
+        pass
+
+    @abc.abstractmethod
+    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        pass
+
+class WandbLoggerSink(LoggerSink):
+    def __init__(self, config: 'WandbConfig'):
+        self.config = config
+        self._run = None
+
+    def init(self, run_id: Optional[str]):
+        self._run = self.config.init(run_id)
+
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        if self._run is None:
+            raise RuntimeError("Must call init before logging hyperparameters")
+        self._run.config.update(hparams)
+
+    def log(self, metrics: dict[str, Any], *, step):
+        if self._run is None:
+            raise RuntimeError("Must call init before logging metrics")
+        self._run.log(metrics, step=step)
+
+    def log_summary(self, metrics: dict[str, Any]):
+        if self._run is None:
+            raise RuntimeError("Must call init before logging summary")
+        self._run.summary.update(metrics)
+
+    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        if self._run is None:
+            raise RuntimeError("Must call init before logging artifacts")
+        self._run.log_artifact(artifact, name=name, type=type)
+
+
+class TensorboardLoggerSink(LoggerSink):
+
+    def __init__(self, logdir: Union[str, Path]):
+        self.logdir = logdir
+        self.writer = None
+
+    def init(self, run_id: Optional[str]):
+        from tensorboardX import SummaryWriter
+        dir_to_write = self.logdir
+        if run_id is not None:
+            dir_to_write = os.path.join(dir_to_write, run_id)
+        self.writer = SummaryWriter(dir_to_write)
+
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        self.writer.add_hparams(hparams, {"dummy": 0})
+
+    def log(self, metrics: dict[str, Any], *, step):
+        for k, v in metrics.items():
+            self.writer.add_scalar(k, v, step)
+
+    def log_summary(self, metrics: dict[str, Any]):
+        for k, v in metrics.items():
+            self.writer.add_scalar(k, v, 0)
+
+
+    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        pass
+
+
+
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
@@ -259,6 +346,8 @@ class WandbConfig:
         wandb.summary["num_devices"] = jax.device_count()
         wandb.summary["num_hosts"] = jax.process_count()
         wandb.summary["backend"] = jax.default_backend()
+
+        return r
 
     @staticmethod
     def _infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
