@@ -6,7 +6,9 @@
 <a href="https://levanter.readthedocs.io/en/latest/?badge=latest">
     <img alt="Documentation Status" src="https://readthedocs.org/projects/levanter/badge/?version=latest">
 </a>
+<a href="">
 <img alt="License" src="https://img.shields.io/github/license/stanford-crfm/levanter?color=blue" />
+</a>
 <a href="https://https://pypi.org/project/levanter/">
     <img alt="PyPI" src="https://img.shields.io/pypi/v/levanter?color=blue" />
 </a>
