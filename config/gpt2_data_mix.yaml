@@ -8,8 +8,8 @@ data:
     wikitext:
       id: dlwh/wikitext_103_detokenized
   weights:
-    pile: 0.6
-    redpajama: 0.4
+    owt: 0.6
+    wikitext: 0.4
   tokenizer: gpt2
   cache_dir: "gs://levanter-data/tokenized/data_mix"
 model:
