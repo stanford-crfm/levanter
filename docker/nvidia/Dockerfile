@@ -24,3 +24,5 @@ RUN PYTHONPATH=/opt/levanter/tests pytest
 FROM base as prepare_cache
 
 RUN python -m levanter.main.cache_dataset --id dlwh/wikitext_103_detokenized --cache_dir cache/
+
+FROM base as release
