@@ -81,7 +81,7 @@ nav:
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
-      - 'Getting-Started-CUDA.md'
+      - 'Getting-Started-GPU.md'
   - 'User Guide':
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
