@@ -192,9 +192,7 @@ def auto_ray_cluster(
                 address = f"{host}:{ray_port}"
 
                 # Explicitly setting the number of CPUs on ray init stops init errors
-                num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
-                if num_cpus is None:
-                    num_cpus = logical_cpu_core_count()
+                num_cpus = logical_cpu_core_count()
 
                 if cluster_type.get_process_id() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
