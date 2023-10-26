@@ -1,4 +1,4 @@
-FROM ghcr.io/nvidia/jax:nightly-2023-10-25-linux-amd64
+FROM ghcr.io/nvidia/jax:nightly-2023-10-25-linux-amd64 as base
 LABEL authors="dlwh"
 
 # copy everything from the repo into the container
@@ -14,3 +14,13 @@ EOF
 WORKDIR /opt/levanter
 
 RUN pip install -e .
+
+FROM base as test
+
+RUN pip install pytest
+
+RUN PYTHONPATH=/opt/levanter/tests pytest
+
+FROM base as prepare_cache
+
+RUN python -m levanter.main.cache_dataset --id dlwh/wikitext-103-detokenized --cache_dir cache/
