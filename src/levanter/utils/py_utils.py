@@ -4,7 +4,11 @@ from typing import Callable, TypeVar
 
 
 def logical_cpu_core_count():
-    """Returns the number of logical CPU cores in the system."""
+    """Returns the number of logical CPU cores available to the process."""
+    num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
+    if num_cpus is not None:
+        return int(num_cpus)
+
     try:
         return os.cpu_count()
     except NotImplementedError:
