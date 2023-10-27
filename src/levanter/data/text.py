@@ -617,7 +617,7 @@ class LMTaskConfig(abc.ABC):
     @abc.abstractmethod
     def token_seq_dataset(
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> TokenSeqDataset:
+    ) -> ShardableDataset[str]:
         pass
 
 
@@ -694,20 +694,18 @@ class PassthroughTokenizer(PreTrainedTokenizer):
 
 
 @dataclass
-class LMMixtureDatasetConfig:
-    """This class represents a mixture of datasets with their associated weights.
-    configs: specify the configuration of each dataset sources (urls, hf dataset id, etc.)
-    weights: pecify the weights for each dataset sources. They will be normalized to sum to 1.
-    tokenizer: we use a same tokenizer for all the datasets.
-    """
+class LMMixtureDatasetConfig(LMTaskConfig):
+    """This class represents a mixture of datasets with their associated weights."""
 
     # data source configs and weights
     configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
+    """
+   specify the configuration of each dataset sources (urls, hf dataset id, etc.)
+    """
     train_weights: Dict[str, float] = field(default_factory=dict)
-
-    # tokenizer and cache_dir
-    tokenizer: str = "gpt2"
-    cache_dir: str = "cache/"
+    """
+    weights: specify the weights for each dataset source. They will be normalized to sum to 1.
+    """
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -718,10 +716,6 @@ class LMMixtureDatasetConfig:
                 f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
                 f" {self.train_weights.keys()}"
             )
-
-    @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.tokenizer)
 
     def token_seq_dataset(
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
