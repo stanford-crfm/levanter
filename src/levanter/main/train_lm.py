@@ -14,7 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
