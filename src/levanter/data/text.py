@@ -23,7 +23,8 @@ from pyarrow._parquet import FileMetaData
 
 import haliax as hax
 from haliax import Axis
-from haliax.util import StringHolderEnum
+
+from levanter.data.mixture import MixtureDataset
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -63,11 +64,6 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
-
-
-class StopStrategy(metaclass=StringHolderEnum):
-    FIRST_STOP_STRATEGY = "first_exhausted"
-    ALL_STOP_STRATEGY = "all_exhausted"
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -198,84 +194,6 @@ class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
             batch_size = 1
         cache = ShardCache.load(cache_dir, batch_size=batch_size)
         return BatchEncodingDataset(cache, return_batches=return_batches)
-
-
-class MixtureDataset(ShardableDataset[np.ndarray]):
-    """MixtureDataset supports loading data from multiple datasets.
-    It takes a list of TokenizedDocumentCache and yield token sequences from them with
-    their associated weights.
-    We leverage the implementation of TokenSeqDataset on sharding and iterating over the data.
-
-    :param doc_caches: TokenizedDocumentCache of each dataset to draw from
-    :param seq_len: The max length of sequences to emit
-    :param weights: weights for each dataset
-    :param stop_strategy: strategy for stopping the iteration, by default FIRST_STOP_STRATEGY
-        - FIRST_STOP_STRATEGY: stop when one dataset has been exhausted
-        - ALL_STOP_STRATEGY: stop when all datasets have been exhausted
-    :param key: random key for datasets sampling
-    """
-
-    def __init__(
-        self,
-        doc_caches: dict,
-        seq_len: int,
-        weights: Dict[str, float],
-        stop_strategy: str = StopStrategy.FIRST_STOP_STRATEGY,
-        key: int = 0,
-    ):
-        self.doc_caches = doc_caches
-        self.seq_len = seq_len
-        self.weights = self._normalize_weights(weights)
-
-        if stop_strategy not in [StopStrategy.FIRST_STOP_STRATEGY, StopStrategy.ALL_STOP_STRATEGY]:
-            raise ValueError(f"Stop strategy {stop_strategy} is not supported.")
-
-        self.stop_strategy = stop_strategy
-        self.key = key
-
-    @staticmethod
-    def _normalize_weights(weights: Dict[str, float]):
-        """Normalize the weights to sum to 1"""
-        total = sum(weights.values())
-        if total == 0:
-            raise ValueError("Datasets' Weights cannot sum to 0")
-        return {name: weight / total for name, weight in weights.items()}
-
-    def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
-        """Return a MixtureDataset with the sharded doc_caches."""
-        sharded_doc_caches = {name: cache.shard(shard_id, num_shards) for name, cache in self.doc_caches.items()}
-        return MixtureDataset(sharded_doc_caches, self.seq_len, self.weights)
-
-    def __iter__(self) -> Iterator[np.ndarray]:
-        """TokenSeqDataset has a non-trivial implementation of __iter__() that iterates
-        docs from doc_cache and yield batches of token sequences. We leverage this
-        implementation of iteration. This function mainly samples a dataset according to
-        the weights and call __iter__() function from corresponding TokenSeqDataset.
-        """
-
-        token_seq_datasets = {
-            name: TokenSeqDataset(doc_cache, self.seq_len) for name, doc_cache in self.doc_caches.items()
-        }
-
-        token_seq_iterators = {name: iter(dataset) for name, dataset in token_seq_datasets.items()}
-        current_weights = {name: weight for name, weight in self.weights.items() if weight > 0}
-        rng = np.random.default_rng(self.key)
-
-        while True:
-            dataset_name = rng.choice(list(current_weights.keys()), p=list(current_weights.values()))
-            try:
-                item = next(token_seq_iterators[dataset_name])
-                yield item
-            except StopIteration:
-                match self.stop_strategy:
-                    case StopStrategy.FIRST_STOP_STRATEGY:
-                        break
-                    case StopStrategy.ALL_STOP_STRATEGY:
-                        del token_seq_iterators[dataset_name]
-                        del current_weights[dataset_name]
-                        if len(current_weights) == 0:
-                            break
-                        current_weights = self._normalize_weights(current_weights)
 
 
 def _load_old_ledger(cache_dir):
@@ -717,7 +635,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> MixtureDataset:
         doc_caches = self.build_caches(split, monitors=monitors)
-        return MixtureDataset(doc_caches=doc_caches, seq_len=seq_len, weights=self.train_weights)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True

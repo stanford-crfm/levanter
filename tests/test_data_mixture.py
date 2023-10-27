@@ -3,8 +3,9 @@ import tempfile
 import ray
 from transformers import BatchEncoding
 
+from levanter.data.mixture import MixtureDataset, StopStrategy
 from levanter.data.shard_cache import build_cache
-from levanter.data.text import MixtureDataset, StopStrategy, TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, SingleShardDocumentSource
 
@@ -26,7 +27,7 @@ def test_mixture_dataset():
 
     num_docs_1, num_docs_2 = 10, 20
     docs_1 = [doc_i(j) for j in range(num_docs_1)]
-    docs_2 = [doc_i(j) for j in range(num_docs_2)]
+    docs_2 = [doc_i(j) for j in range(num_docs_1, num_docs_1 + num_docs_2)]
 
     with tempfile.TemporaryDirectory() as tmpdir:
         source_1 = SingleShardDocumentSource(docs_1)
@@ -37,16 +38,16 @@ def test_mixture_dataset():
         build_cache(f"{tmpdir}/cache_2", source_2, IdentityProcessor())
         cache_2 = TokenizedDocumentCache.load(f"{tmpdir}/cache_2", flatten_docs=False)
 
+        ds1 = TokenSeqDataset(cache_1, seq_len)
+        ds2 = TokenSeqDataset(cache_2, seq_len)
+
         # set reuseable config
-        mixture_data_config = {
-            "doc_caches": {"1": cache_1, "2": cache_2},
-            "seq_len": seq_len,
-        }
+        datasets = {"1": ds1, "2": ds2}
         # test mixture with all weights on one dataset
         mixture_1_only = MixtureDataset(
+            datasets=datasets,
             weights={"1": 1.0, "2": 0.0},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
-            **mixture_data_config,
         )
         counter = 0
         for batch in mixture_1_only:
@@ -56,24 +57,24 @@ def test_mixture_dataset():
 
         # compare mixture with different strategies
         mixture_balanced_first = MixtureDataset(
+            datasets=datasets,
             weights={"1": 0.5, "2": 0.5},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
-            **mixture_data_config,
         )
         counter_first = sum([1 for _ in mixture_balanced_first])
 
         mixture_balanced_all = MixtureDataset(
+            datasets=datasets,
             weights={"1": 0.5, "2": 0.5},
             stop_strategy=StopStrategy.ALL_STOP_STRATEGY,
-            **mixture_data_config,
         )
         counter_all = sum([1 for _ in mixture_balanced_all])
         assert counter_first < counter_all
 
         # test normalized weights
         mixture_normalized = MixtureDataset(
+            datasets=datasets,
             weights={"1": 2.0, "2": 2.0},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
-            **mixture_data_config,
         )
         assert mixture_normalized.weights["1"] == mixture_normalized.weights["2"] == 0.5
