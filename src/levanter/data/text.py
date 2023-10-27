@@ -1,3 +1,4 @@
+import abc
 import copy
 import functools
 import json
@@ -6,7 +7,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -22,6 +23,8 @@ from pyarrow._parquet import FileMetaData
 
 import haliax as hax
 from haliax import Axis
+
+from levanter.data.mixture import MixtureDataset
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -117,7 +120,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
 
     :param doc_cache: the TokenizedDocumentCache to draw from
-    :param Pos: the axis to use for the sequences. Sequences will be a NamedArray with axis Pos
+    :param seq_len: The max length of sequences to emit
     """
 
     def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
@@ -147,7 +150,6 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                 else:
                     extra_tokens = None
                     ids = encoded_slice["input_ids"]
-                    # yield hax.named(ids, self.Pos)
                     yield ids
 
     @staticmethod
@@ -456,67 +458,32 @@ def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
 
 
 @dataclass
-class LMDatasetConfig:
-    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+class LMDatasetSourceConfig:
+    """This class represents a dataset source with URLs or hf name/id."""
 
     id: Optional[str] = None  # id (or path) for hf dataset
     name: Optional[str] = None  # name for hf dataset
+
+    plaintext: bool = False
     stream: bool = True  # whether to use streaming when doing hf
+    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    # config for the tokenizer
-    tokenizer: str = "gpt2"
-    plaintext: bool = False
-    vocab_size: Optional[int] = None
-    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
+    def get_shard_source(self, split) -> Optional[ShardedDataset[str]]:
+        if self.id is not None:
+            ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
 
-    # config related to caching
-    cache_dir: str = "cache/"
+            if len(ds.shard_names) == 0:
+                return None
 
-    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
-    splits: List[str] = field(default_factory=lambda: ["train", "validation"])
-    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
-
-    @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerBase:
-        if self.tokenizer == "passthrough":
-            return PassthroughTokenizer(self.vocab_size)
+            return ds.map(lambda x: x[self.text_key])
         else:
-            return load_tokenizer(self.tokenizer)
-
-    def token_seq_dataset(self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
-        cache = self.build_or_load_cache(split, monitors=monitors)
-        return TokenSeqDataset(cache, seq_len)
-
-    def build_or_load_cache(self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True):
-        source = self.get_shard_source(split)
-        split_cache_dir = os.path.join(self.cache_dir, split)
-        try:
-            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
-        except FileNotFoundError:
-            logger.info(f"Building cache for {split}...")
-
-        if monitors is True:
-            monitors = [
-                WandbMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
-                LoggerMetricsMonitor(f"preprocessing.{split}"),
-            ]
-        elif monitors is False:
-            monitors = []
-
-        return TokenizedDocumentCache.build_or_load(
-            split_cache_dir,
-            source,
-            self.the_tokenizer,
-            enforce_eos=self.enforce_eos,
-            flatten_docs=True,
-            rows_per_chunk=self.rows_per_chunk,
-            monitors=monitors,
-            # TODO: it would be better if we could just prioritize validation higher (we typically want it after the first grad step)
-            await_finished=(split == "validation"),
-        )
+            split_urls = self.urls_for_split(split)
+            if len(split_urls) == 0:
+                return None
+            return TextUrlDataset(split_urls, self.text_key)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -547,13 +514,74 @@ class LMDatasetConfig:
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
 
-    def get_shard_source(self, split) -> ShardedDataset[str]:
-        if self.id is not None:
-            return WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream).map(
-                lambda x: x[self.text_key]
-            )
+
+@dataclass
+class LMTaskConfig(abc.ABC):
+    tokenizer: str = "gpt2"
+    vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
+
+    # config related to caching
+    cache_dir: str = "cache/"
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+
+    @cached_property
+    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+        if self.tokenizer == "passthrough":
+            return PassthroughTokenizer(self.vocab_size)
         else:
-            return TextUrlDataset(self.urls_for_split(split), self.text_key)
+            return load_tokenizer(self.tokenizer)
+
+    @abc.abstractmethod
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> ShardableDataset[str]:
+        pass
+
+
+@dataclass
+class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> TokenSeqDataset:
+        cache = self.build_or_load_cache(split, monitors=monitors)
+        return TokenSeqDataset(cache, seq_len)
+
+    def build_or_load_cache(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenizedDocumentCache]:
+        source = self.get_shard_source(split)
+        if source is None:
+            logger.warning(f"Skipping {split} because no source was provided")
+            return None
+
+        split_cache_dir = os.path.join(self.cache_dir, split)
+        try:
+            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+        except FileNotFoundError:
+            logger.info(f"Building cache for {split}...")
+
+        if monitors is True:
+            monitors = [
+                WandbMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{split}"),
+            ]
+        elif monitors is False:
+            monitors = []
+
+        return TokenizedDocumentCache.build_or_load(
+            split_cache_dir,
+            source,
+            self.the_tokenizer,
+            enforce_eos=self.enforce_eos,
+            flatten_docs=True,
+            rows_per_chunk=self.rows_per_chunk,
+            monitors=monitors,
+            # TODO: it would be better if we could just prioritize validation higher (we typically want it after the first grad step)
+            await_finished=(split == "validation"),
+        )
 
 
 class PassthroughTokenizer(PreTrainedTokenizer):
@@ -581,3 +609,54 @@ class PassthroughTokenizer(PreTrainedTokenizer):
 
     def _convert_id_to_token(self, index: int) -> str:
         return str(index)
+
+
+@dataclass
+class LMMixtureDatasetConfig(LMTaskConfig):
+    """This class represents a mixture of datasets with their associated weights."""
+
+    # data source configs and weights
+    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
+    """ configuration of each dataset source (urls, hf dataset id, etc.) """
+    train_weights: Dict[str, float] = field(default_factory=dict)
+    """ weights for each dataset source. They will be normalized to sum to 1. """
+
+    def __post_init__(self):
+        if len(self.configs) == 0:
+            raise ValueError("At least one dataset must be provided")
+
+        if set(self.configs.keys()) != set(self.train_weights.keys()):
+            raise ValueError(
+                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
+                f" {self.train_weights.keys()}"
+            )
+
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> MixtureDataset:
+        doc_caches = self.build_caches(split, monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
+
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Dict[str, TokenizedDocumentCache]:
+        caches = {}
+        for name, source_config in self.configs.items():
+            weight = self.train_weights.get(name, 0)
+            if weight == 0:
+                continue
+
+            source_config_dict = source_config.__dict__
+            dataset = LMDatasetConfig(
+                tokenizer=self.tokenizer,
+                cache_dir=os.path.join(self.cache_dir, name),
+                **source_config_dict,
+            )
+            cache = dataset.build_or_load_cache(split, monitors)
+            # drop the data source and corresponding weight if the cache is not built
+            if cache is None:
+                self.train_weights.pop(name)
+            else:
+                caches[name] = cache
+        return caches
