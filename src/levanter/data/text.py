@@ -699,13 +699,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     # data source configs and weights
     configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
-    """
-   specify the configuration of each dataset sources (urls, hf dataset id, etc.)
-    """
+    """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
-    """
-    weights: specify the weights for each dataset source. They will be normalized to sum to 1.
-    """
+    """ weights for each dataset source. They will be normalized to sum to 1. """
 
     def __post_init__(self):
         if len(self.configs) == 0:
