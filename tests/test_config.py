@@ -86,7 +86,7 @@ def test_lm_mixture_dataset_config():
                     - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
             wikitext:
                 id: dlwh/wikitext_103_detokenized
-        weights:
+        train_weights:
             owt: 0.6
             wikitext: 0.4
         tokenizer: gpt2
