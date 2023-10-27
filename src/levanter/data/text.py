@@ -724,6 +724,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> Dict[str, TokenizedDocumentCache]:
         caches = {}
         for name, source_config in self.configs.items():
+            weight = self.train_weights.get(name, 0)
+            if weight == 0:
+                continue
+
             source_config_dict = source_config.__dict__
             dataset = LMDatasetConfig(
                 tokenizer=self.tokenizer,
