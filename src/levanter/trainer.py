@@ -379,8 +379,9 @@ class Trainer:
             # if we need to do second order optimization, we need to do it here
             # TODO: support "grad accumulation" for second order optimization
             if isinstance(self.optimizer, SecondOrderTransformation):
-                opt_state = self.optimizer.hessian_update(opt_state, self.loss_fn, split_loss_fn,
-                                                          *batch, **batch_kwargs, hess_key=hess_key)
+                opt_state = self.optimizer.hessian_update(
+                    opt_state, self.loss_fn, split_loss_fn, *batch, **batch_kwargs, hess_key=hess_key
+                )
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
@@ -665,4 +666,3 @@ class TrainerConfig:
 
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
-

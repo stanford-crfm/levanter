@@ -715,7 +715,6 @@ def inject_hyperparams(
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
             hparams.update(schedule_fn(state.count, dtype))
             new_inner_state = inner_factory(**other_hps, **hparams).hessian_update(
-                # hessian, state.inner_state, model, *batch, hess_key=hess_key, **batch_kwargs
                 state.inner_state,
                 fn,
                 model,
