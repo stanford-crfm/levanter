@@ -239,12 +239,9 @@ class BaseSophiaConfig(HessianOptConfig):
                     b2=self.beta2,
                     eps=self.epsilon,
                     gamma=gamma,
+                    clip_threshold=self.clip_threshold,
                 )
             )
-
-            # Algorithm 3, step 12
-            if self.clip_threshold:
-                components.append(optax.clip(self.clip_threshold))
 
             # Algorithm 3, step 11 (Note, this comes after clipping b/c it's not supposed to be clipped)
             # In the paper, it comes as a prior step, but doesn't get clipped
@@ -397,18 +394,15 @@ def sophia_h(
     b1: float = 0.965,
     b2: float = 0.99,
     eps: float = 1e-8,
-    gamma: float = 0.01,
+    gamma: float = GAMMA_SOPHIA_H,
     weight_decay: float = 0.0,
-    max_update: Optional[float] = 1.0,
+    clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
 
-    components.append(scale_by_sophia_h(b1, b2, eps, gamma, update_interval))
-
-    if max_update:
-        components.append(optax.clip(max_update))
+    components.append(scale_by_sophia_h(b1, b2, eps, gamma, clip_threshold, update_interval))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -418,7 +412,9 @@ def sophia_h(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, update_interval=10):
+def scale_by_sophia_h(
+    b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, clip_threshold: Optional[float] = 1.0, update_interval=10
+):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_hessian_diagonal,
@@ -427,6 +423,7 @@ def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, update_
         b2=b2,
         eps=eps,
         gamma=gamma,
+        clip_threshold=clip_threshold,
     )
 
 
@@ -436,18 +433,15 @@ def sophia_g(
     b1: float = 0.99,
     b2: float = 0.99,
     eps: float = 1e-8,
-    gamma: float = 0.02,
+    gamma: float = GAMMA_SOPHIA_G,
     weight_decay: float = 0.0,
-    max_update: Optional[float] = 1.0,
+    clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
 
-    components.append(scale_by_sophia_g(b1, b2, eps, gamma, update_interval))
-
-    if max_update:
-        components.append(optax.clip(max_update))
+    components.append(scale_by_sophia_g(b1, b2, eps, gamma, clip_threshold, update_interval))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -457,7 +451,14 @@ def sophia_g(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_g(b1: float = 0.99, b2: float = 0.99, eps: float = 1e-8, gamma: float = 200, update_interval=10):
+def scale_by_sophia_g(
+    b1: float = 0.99,
+    b2: float = 0.99,
+    eps: float = 1e-8,
+    gamma: float = GAMMA_SOPHIA_G,
+    clip_threshold: Optional[float] = 1.0,
+    update_interval=10,
+):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_diag_gauss_newton,
@@ -466,6 +467,7 @@ def scale_by_sophia_g(b1: float = 0.99, b2: float = 0.99, eps: float = 1e-8, gam
         b2=b2,
         eps=eps,
         gamma=gamma,
+        clip_threshold=clip_threshold,
     )
 
 
@@ -476,6 +478,7 @@ def _sophia_gradient_transform(
     b2: float,
     eps: float,
     gamma: float,
+    clip_threshold: Optional[float],
     mu_dtype: Optional[Any] = None,
 ) -> SecondOrderTransformation:
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
@@ -495,38 +498,32 @@ def _sophia_gradient_transform(
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
         h_leaves = jax.tree_util.tree_leaves(h_hat)
 
+        stats: dict[str, Any] = {
+            "optim/param_norm": jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params))),
+            "optim/momentum_norm": jnp.sqrt(sum(jnp.sum(m**2) for m in mu_leaves)),
+            "optim/hessian_norm": jnp.sqrt(sum(jnp.sum(h**2) for h in h_leaves)),
+        }
+
         # with sophia-g the max(h, 0) is not needed but no harm
-        unclipped_count = sum(
-            jnp.sum(jnp.abs(mu / jnp.maximum(gamma * h, eps)) < 1) for (mu, h) in zip(mu_leaves, h_leaves)
-        )
-
-        param_count = parameter_count(updates)
-        unclipped_fraction = unclipped_count / param_count
-
-        param_norm = jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params)))
-        momentum_norm = jnp.sqrt(sum(jnp.sum(m**2) for m in mu_leaves))
-        hessian_norm = jnp.sqrt(sum(jnp.sum(h**2) for h in h_leaves))
-
-        # this doesn't work well on CPU, so skip if cpu
-        if jax.lib.xla_bridge.get_backend().platform != "cpu":
-            jittable_wandb_log(
-                {
-                    "optim/unclipped_fraction": unclipped_fraction,
-                    "optim/param_norm": param_norm,
-                    "optim/momentum_norm": momentum_norm,
-                    "optim/hessian_norm": hessian_norm,
-                },
-                step=state.count,
-            )
-
         updates = jax.tree_util.tree_map(
             # lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
             lambda m, h: m / jnp.maximum(gamma * h, eps),
             mu_hat,
             h_hat,
         )
+
+        if clip_threshold is not None:
+            unclipped_count = sum(jnp.sum(jnp.abs(u) < clip_threshold) for u in jax.tree_util.tree_leaves(updates))
+            updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
+            stats["optim/unclipped_fraction"] = unclipped_count / parameter_count(updates)
+
+        # this doesn't work well on CPU, so skip if cpu
+        if jax.lib.xla_bridge.get_backend().platform != "cpu":
+            jittable_wandb_log(stats, step=state.count)
+
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
+
         return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat)
 
     def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
