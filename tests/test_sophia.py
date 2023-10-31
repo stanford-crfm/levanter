@@ -7,14 +7,13 @@ import jax.numpy as jnp
 import numpy as np
 
 import levanter
-from levanter.optim import stochastic_hessian_diagonal
 
 
 def test_sophia_h():
     key = jax.random.PRNGKey(0)
     model = nn.Linear(4, 4, use_bias=False, key=key)
     data = np.load(f"{os.path.dirname(__file__)}/data/hero_data.npy").astype("float32")
-    optimizer = levanter.optim.sophia_h(lr=1, b1=0, b2=0.99, gamma=2, weight_decay=0.0)
+    optimizer = levanter.optim.sophia_h(lr=1, b1=0, b2=0.99, gamma=2, weight_decay=0.0, max_grad_norm=None)
     model = jax.tree_util.tree_map(lambda x: jnp.ones_like(x), model)
 
     opt_state = optimizer.init(model)
@@ -35,21 +34,20 @@ def test_sophia_h():
     grad_loss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn))
 
     loss, grad = grad_loss_fn(model, data)
-    print(model.weight)
-    model, opt_state = optimizer.update(grad, opt_state)
+    model_updates, opt_state = optimizer.update(grad, opt_state)
+    model = eqx.apply_updates(model, model_updates)
 
-    print("Initial Loss:", loss.item())
     # loss should be 15.74834156036377
     assert jnp.allclose(loss, 15.74834156036377)
 
     # print("Test-model param after 1 step: most coordinates should be very loosely 0.5")
-    print(model.weight)
     assert jnp.allclose(model.weight, 0.5, rtol=0.2, atol=0.1)  # this is very approximate
 
     # print("Test-loss: loss should shrink by approximately 75% after each iteration")
     for i in range(10):
         loss, grad = grad_loss_fn(model, data)
-        model, opt_state = optimizer.update(grad, opt_state)
+        model_updates, opt_state = optimizer.update(grad, opt_state)
+        model = eqx.apply_updates(model, model_updates)
 
         # print('Step:', i , "Loss:", loss.item())
         assert loss < 15.74834156036377 * 0.75 ** (i + 1)

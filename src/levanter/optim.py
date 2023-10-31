@@ -4,7 +4,7 @@ import inspect
 import typing
 import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Union, TypeVar, runtime_checkable
+from typing import Any, Callable, Iterable, List, NamedTuple, Optional, TypeVar, Union, runtime_checkable
 
 import chex
 import draccus
@@ -20,6 +20,7 @@ from optax._src.transform import bias_correction, update_moment
 
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
+
 
 T = TypeVar("T")
 M = TypeVar("M")
@@ -37,21 +38,21 @@ class SophiaGObjective(typing.Protocol):
     that are trained with "typical" losses.
     """
 
-    def logits(self, parameters: M, example: Ex, *args, **kwargs) -> T:
+    def logits(self, parameters: M, example: Ex, *args, **kwargs) -> Any:
         """
         Returns the logits/activations of the model for the given example,
         or just sufficient statistics for the example for non-categorical models.
         """
         ...
 
-    def sample(self, logits: T, example: Ex, *, key: PRNGKey) -> Ex:
+    def sample(self, logits, example: Ex, *, key: PRNGKey) -> Ex:
         """
         Samples a new example with the same shape as the original example, but with
         the "labels" replaced with some sampled values
         """
         ...
 
-    def loss(self, logits: T, example: Ex):
+    def loss(self, logits, example: Ex):
         """
         Just computes the loss, e.g. cross entropy.
 
@@ -165,7 +166,6 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
     state_update_interval: int = 10
 
 
-
 @OptimizerConfig.register_subclass("adam")
 @dataclass
 class AdamConfig(OptimizerConfig):
@@ -230,10 +230,16 @@ class BaseSophiaConfig(HessianOptConfig):
         def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
             components = []
 
-            components.append(_sophia_gradient_transform(
-                sophia_hess_fn=self.compute_hessian,
-                state_update_interval=self.state_update_interval,
-                b1=self.beta1, b2=self.beta2, eps=self.epsilon, gamma=gamma))
+            components.append(
+                _sophia_gradient_transform(
+                    sophia_hess_fn=self.compute_hessian,
+                    state_update_interval=self.state_update_interval,
+                    b1=self.beta1,
+                    b2=self.beta2,
+                    eps=self.epsilon,
+                    gamma=gamma,
+                )
+            )
 
             # Algorithm 3, step 12
             if self.max_grad_norm:
@@ -264,21 +270,16 @@ class BaseSophiaConfig(HessianOptConfig):
 class SophiaGConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_G
 
-    def compute_hessian(
-        self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
-    ):
-        return stochastic_diag_gauss_newton(
-            fn, model, *batch, **batch_kwargs, hess_key=hess_key
-        )
+    def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        return stochastic_diag_gauss_newton(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
+
 
 @OptimizerConfig.register_subclass("sophia-h")
 @dataclass
 class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
 
-    def compute_hessian(
-        self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
-    ):
+    def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         return stochastic_hessian_diagonal(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
 
 
@@ -292,8 +293,7 @@ class ScaleByHessianState(NamedTuple):
 
 
 class HessianUpdateFn(typing.Protocol):
-    """A callable type for the
-    """
+    """A callable type for the"""
 
     def __call__(
         self,
@@ -348,9 +348,7 @@ def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
 
 
 # use this for Sophia-G
-def stochastic_diag_gauss_newton(
-    fn: SophiaGObjective, model, example, *args, hess_key: PRNGKey, **kwargs
-):
+def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, example, *args, hess_key: PRNGKey, **kwargs):
     """
 
     Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
@@ -391,6 +389,7 @@ def tree_gaussian(key, tree):
 
     return g
 
+
 def sophia_h(
     lr: float = 1e-3,
     *,
@@ -418,16 +417,16 @@ def sophia_h(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_h(b1=0.965,
-                      b2=0.99,
-                      eps=1e-8,
-                      gamma=0.01,
-                      state_update_interval=10):
+def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=0.01, state_update_interval=10):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_hessian_diagonal,
         state_update_interval=state_update_interval,
-        b1=b1, b2=b2, eps=eps, gamma=gamma)
+        b1=b1,
+        b2=b2,
+        eps=eps,
+        gamma=gamma,
+    )
 
 
 def sophia_g(
@@ -457,16 +456,18 @@ def sophia_g(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_g(b1: float=0.99,
-                      b2: float=0.99,
-                      eps: float=1e-8,
-                      gamma: float=200,
-                      state_update_interval=10):
+def scale_by_sophia_g(
+    b1: float = 0.99, b2: float = 0.99, eps: float = 1e-8, gamma: float = 200, state_update_interval=10
+):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_diag_gauss_newton,
         state_update_interval=state_update_interval,
-        b1=b1, b2=b2, eps=eps, gamma=gamma)
+        b1=b1,
+        b2=b2,
+        eps=eps,
+        gamma=gamma,
+    )
 
 
 def _sophia_gradient_transform(
@@ -526,9 +527,9 @@ def _sophia_gradient_transform(
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
         return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat)
 
-    def update_hessian(state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         def _do_update():
-            new_hess = sophia_hess_fn(model, *batch, hess_key=hess_key, **batch_kwargs)
+            new_hess = sophia_hess_fn(fn, model, *batch, hess_key=hess_key, **batch_kwargs)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
@@ -542,7 +543,7 @@ def _sophia_gradient_transform(
             jnp.equal(state.count % state_update_interval, 0),
             lambda _: _do_update(),
             lambda _: _dont_update(),
-            state.count
+            state.count,
         )
 
     return SecondOrderTransformation(init_fn, update_fn, update_hessian)
@@ -583,18 +584,18 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             new_state.append(new_s)
         return updates, tuple(new_state)
 
-    def hessian_update_fn(state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update_fn(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         if len(hessian_update_fns) != len(state):
             raise ValueError(
                 "The number of updates and states has to be the same in chain! Make sure you have called init first!"
             )
 
         new_state = []
-        for s, fn in zip(state, hessian_update_fns):
-            if fn is None:
+        for s, update_fn in zip(state, hessian_update_fns):
+            if update_fn is None:
                 new_state.append(s)
             else:
-                new_s = fn(s, model, *batch, hess_key=hess_key, **batch_kwargs)
+                new_s = update_fn(s, fn, model, *batch, hess_key=hess_key, **batch_kwargs)
                 new_state.append(new_s)
         return tuple(new_state)
 
@@ -706,15 +707,21 @@ def inject_hyperparams(
             return updates, InjectHyperparamsState(count_inc, hparams, inner_state)
             # pylint:enable=too-many-function-args
 
-        def update_hessian(hessian, state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
             if hyperparam_dtype is None:
-                dtype = getattr(next(iter(jax.tree_util.tree_leaves(hessian)), None), "dtype", None)
+                dtype = getattr(next(iter(jax.tree_util.tree_leaves(state)), None), "dtype", None)
             else:
                 dtype = hyperparam_dtype
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
             hparams.update(schedule_fn(state.count, dtype))
             new_inner_state = inner_factory(**other_hps, **hparams).hessian_update(
-                hessian, state.inner_state, model, *batch, hess_key=hess_key, **batch_kwargs
+                # hessian, state.inner_state, model, *batch, hess_key=hess_key, **batch_kwargs
+                state.inner_state,
+                fn,
+                model,
+                *batch,
+                hess_key=hess_key,
+                **batch_kwargs,
             )
 
             # pylint:disable=too-many-function-args
