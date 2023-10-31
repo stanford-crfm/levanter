@@ -210,10 +210,10 @@ class BaseSophiaConfig(HessianOptConfig):
     """Base class for sophia variants. Doesn't implement the state update"""
 
     weight_decay: float = 0.1
-    beta1: float = 0.965
+    beta1: float = 0.96
     beta2: float = 0.99
 
-    epsilon: float = 1e-8
+    epsilon: float = 1e-12
     clip_threshold: Optional[float] = 1.0
 
     @abc.abstractmethod
@@ -529,6 +529,7 @@ def _sophia_gradient_transform(
     def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         def _do_update():
             new_hess = sophia_hess_fn(fn, model, *batch, hess_key=hess_key, **batch_kwargs)
+            new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -10, 10), new_hess)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
