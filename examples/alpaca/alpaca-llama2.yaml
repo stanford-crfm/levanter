@@ -11,5 +11,6 @@ trainer:
   # if using model parallelism, this is useful:
   tensor_parallel_axes: ["mlp", "heads"]
 optimizer:
+  type: adam
   learning_rate: 2e-5
   weight_decay: 0.0
