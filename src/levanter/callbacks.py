@@ -45,7 +45,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
         loss_time = time.time() - time_in - load_time
         total_loss_time += loss_time
 
-        pbar.set_postfix(loss=total_loss / n, load_time=total_load_time / n, loss_time=total_loss_time / n)
+        pbar.set_postfix(loss=total_loss / n)
 
         if max_batches is not None and n >= max_batches:
             break
