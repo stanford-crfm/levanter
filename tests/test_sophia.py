@@ -10,11 +10,11 @@ import levanter
 from levanter.optim import stochastic_hessian_diagonal
 
 
-def test_hessian_optimizer():
+def test_sophia_h():
     key = jax.random.PRNGKey(0)
     model = nn.Linear(4, 4, use_bias=False, key=key)
     data = np.load(f"{os.path.dirname(__file__)}/data/hero_data.npy").astype("float32")
-    optimizer = levanter.optim.sophia(lr=1, b1=0, b2=0.99, gamma=2)
+    optimizer = levanter.optim.sophia_h(lr=1, b1=0, b2=0.99, gamma=2, weight_decay=0.0)
     model = jax.tree_util.tree_map(lambda x: jnp.ones_like(x), model)
 
     opt_state = optimizer.init(model)
@@ -23,10 +23,10 @@ def test_hessian_optimizer():
         out = eqx.filter_vmap(model)(data)
         return jnp.mean(out**2) * 4
 
-    jit_diag = eqx.filter_jit(stochastic_hessian_diagonal)
+    jit_update = eqx.filter_jit(optimizer.hessian_update)
+
     for i, k_i in enumerate(jax.random.split(key, 10000)):
-        hessian = jit_diag(loss_fn, model, data, h_key=k_i)
-        opt_state = optimizer.hessian_update(hessian, opt_state)
+        opt_state = jit_update(opt_state, loss_fn, model, data, hess_key=k_i)
 
     # print('Test-estimated hessian: most coordinates should be approximately 2')
     # print('Estimated hessian:', opt_state[0].h.weight)
@@ -35,6 +35,7 @@ def test_hessian_optimizer():
     grad_loss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn))
 
     loss, grad = grad_loss_fn(model, data)
+    print(model.weight)
     model, opt_state = optimizer.update(grad, opt_state)
 
     print("Initial Loss:", loss.item())
@@ -42,6 +43,7 @@ def test_hessian_optimizer():
     assert jnp.allclose(loss, 15.74834156036377)
 
     # print("Test-model param after 1 step: most coordinates should be very loosely 0.5")
+    print(model.weight)
     assert jnp.allclose(model.weight, 0.5, rtol=0.2, atol=0.1)  # this is very approximate
 
     # print("Test-loss: loss should shrink by approximately 75% after each iteration")

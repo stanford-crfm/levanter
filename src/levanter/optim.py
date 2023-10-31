@@ -2,8 +2,9 @@ import abc
 import functools
 import inspect
 import typing
+import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Union
+from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Union, TypeVar, runtime_checkable
 
 import chex
 import draccus
@@ -17,23 +18,80 @@ from optax._src import numerics
 from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
-import haliax
-
 from levanter.logging import jittable_wandb_log
 from levanter.utils.jax_utils import parameter_count
 
+T = TypeVar("T")
+M = TypeVar("M")
+Ex = TypeVar("Ex")
 
-class SophiaLossFn(typing.Protocol):
-    def __call__(self, logits: jaxtyping.PyTree, targets: Optional[jaxtyping.PyTree] = None) -> jnp.ndarray:
+
+@runtime_checkable
+class SophiaGObjective(typing.Protocol):
+    """
+    Class for objective functions that can be used with Sophia-G
+
+    Sophia-G is a second order optimizer that uses the Gauss-Newton-Bartlett approximation to the Hessian
+    to compute the second order update. This requires the objective function be of the form loss(logits(x))
+    where logits(x) is the activation of the model for the given example x. This is the case for most models
+    that are trained with "typical" losses.
+    """
+
+    def logits(self, parameters: M, example: Ex, *args, **kwargs) -> T:
+        """
+        Returns the logits/activations of the model for the given example,
+        or just sufficient statistics for the example for non-categorical models.
+        """
         ...
+
+    def sample(self, logits: T, example: Ex, *, key: PRNGKey) -> Ex:
+        """
+        Samples a new example with the same shape as the original example, but with
+        the "labels" replaced with some sampled values
+        """
+        ...
+
+    def loss(self, logits: T, example: Ex):
+        """
+        Just computes the loss, e.g. cross entropy.
+
+        Should return the mean loss over the batch, not the sum.
+
+        TODO: should we reconsider this?
+        """
+        ...
+
+    def __call__(self, parameters: M, example: Ex, *args, **kwargs):
+        """
+        Just a convenience method for invoking the objective for "normal" training w/o sophia-g
+        """
+        logits = self.logits(parameters, example, *args, **kwargs)
+        return self.loss(logits, example)
+
+    def num_data_points(self, example: Ex) -> int:
+        """
+        Returns the number of data points in the example. This should take into account the loss mask
+        or any other masking that might be applied to the example.
+
+        By default, we just return 1, and you can just pull the term into the hyperparams of Sophia if you want.
+
+        Returns:
+               The number of data points in the example
+        """
+        return 1
 
 
 @dataclass
 class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     learning_rate: float = 6e-4
+    weight_decay: float = 0.0
 
-    min_lr_ratio: float = 0.0
-    warmup_ratio: float = 0.01  # fraction of training steps to use as warmup
+    min_lr_ratio: float = 0.1
+    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
+    warmup: float = 0.01
+    """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
+    cooldown: float = 0.0
+    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
     @abc.abstractmethod
@@ -41,43 +99,71 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         raise NotImplementedError
 
     def lr_scheduler(self, num_train_steps):
-        warmup_steps = int(self.warmup_ratio * num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps
+        warmup_steps = self._convert_warmup(num_train_steps)
+        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
+        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
         min_lr = self.learning_rate * self.min_lr_ratio
 
-        if self.lr_schedule == "constant":
-            schedule = optax.constant_schedule(self.learning_rate)
-        elif self.lr_schedule == "cosine":
-            schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-        elif self.lr_schedule == "linear":
-            schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+        match self.lr_schedule:
+            case "constant":
+                schedule = optax.constant_schedule(self.learning_rate)
+            case "cosine":
+                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+            case "linear":
+                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+            case "inv_sqrt":
+                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
+            case _:
+                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+
+        schedules = []
+        boundaries = []
 
         if warmup_steps != 0:
             warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedule = optax.join_schedules([warmup, schedule], [warmup_steps])
+            schedules.append(warmup)
+            boundaries.append(warmup_steps)
+
+        schedules.append(schedule)
+
+        if cooldown_steps != 0:
+            final_main_lr = schedule(lr_decay_steps)
+            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
+            schedules.append(cooldown)
+            boundaries.append(num_train_steps - cooldown_steps)
+
+        if len(schedules) > 1:
+            schedule = optax.join_schedules(schedules, boundaries)
 
         return schedule
+
+    def _convert_warmup(self, num_train_steps: int):
+        if self.warmup_ratio is not None:
+            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
+            return int(self.warmup_ratio * num_train_steps)
+        else:
+            return _convert_ratio_or_steps(self.warmup, num_train_steps)
+
+
+def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
+    def schedule(count):
+        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
+        return jnp.maximum(lr * decay, min_lr)
+
+    return schedule
+
+
+def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
+    if ratio_or_steps < 1.0:
+        return int(ratio_or_steps * num_train_steps)
+    else:
+        return int(ratio_or_steps)
 
 
 @dataclass
 class HessianOptConfig(OptimizerConfig, abc.ABC):
     state_update_interval: int = 10
 
-    @abc.abstractmethod
-    def hessian_update(
-        self,
-        optimizer,
-        opt_state,
-        loss_fn: SophiaLossFn,
-        logits_fn: Callable,
-        model,
-        *batch,
-        hess_key: PRNGKey,
-        **batch_kwargs,
-    ):
-        raise NotImplementedError
 
 
 @OptimizerConfig.register_subclass("adam")
@@ -129,15 +215,32 @@ class BaseSophiaConfig(HessianOptConfig):
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
+    @abc.abstractmethod
+    def compute_hessian(
+        self,
+        fn,
+        model,
+        *batch,
+        hess_key: PRNGKey,
+        **batch_kwargs,
+    ):
+        raise NotImplementedError
+
     def build(self, num_train_steps: int):
         def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
             components = []
 
+            components.append(_sophia_gradient_transform(
+                sophia_hess_fn=self.compute_hessian,
+                state_update_interval=self.state_update_interval,
+                b1=self.beta1, b2=self.beta2, eps=self.epsilon, gamma=gamma))
+
+            # Algorithm 3, step 12
             if self.max_grad_norm:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
-            components.append(scale_by_sophia(b1=self.beta1, b2=self.beta2, eps=self.epsilon, gamma=gamma))
-
+            # Algorithm 3, step 11 (Note, this comes after clipping b/c it's not supposed to be clipped)
+            # In the paper, it comes as a prior step, but doesn't get clipped
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay))
 
@@ -160,40 +263,23 @@ class BaseSophiaConfig(HessianOptConfig):
 @dataclass
 class SophiaGConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_G
-    logit_axis: str = "vocab"  # axis to sample from, from logits
 
-    def hessian_update(
-        self, optimizer, opt_state, loss_fn, logits_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    def compute_hessian(
+        self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
     ):
-        hess = stochastic_diag_gauss_newton(
-            loss_fn, logits_fn, model, *batch, **batch_kwargs, h_key=hess_key, Vocab=self.logit_axis
+        return stochastic_diag_gauss_newton(
+            fn, model, *batch, **batch_kwargs, hess_key=hess_key
         )
-
-        # distribute gradients across the mesh and apply them
-        opt_state = optimizer.hessian_update(hess, opt_state)
-
-        return opt_state
-
 
 @OptimizerConfig.register_subclass("sophia-h")
 @dataclass
 class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
 
-    def hessian_update(
-        self, optimizer, opt_state, loss_fn: SophiaLossFn, logits_fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
+    def compute_hessian(
+        self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs
     ):
-        def hess_fn(params, *args, **kwargs):
-            logits = logits_fn(params, *args, **kwargs)
-            loss = loss_fn(logits, None)
-            return loss
-
-        hess = stochastic_hessian_diagonal(hess_fn, model, *batch, **batch_kwargs, h_key=hess_key)
-
-        # distribute gradients across the mesh and apply them
-        opt_state = optimizer.hessian_update(hess, opt_state)
-
-        return opt_state
+        return stochastic_hessian_diagonal(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
 
 
 class ScaleByHessianState(NamedTuple):
@@ -206,26 +292,24 @@ class ScaleByHessianState(NamedTuple):
 
 
 class HessianUpdateFn(typing.Protocol):
-    """A callable type for the `update` step of a `GradientTransformation`.
-
-    The `update` step takes a tree of candidate parameter `updates` (e.g. their
-    gradient with respect to some loss), an arbitrary structured `state`, and the
-    current `params` of the model being optimised. The `params` argument is
-    optional, it must however be provided when using transformations that require
-    access to the current values of the parameters.
+    """A callable type for the
     """
 
     def __call__(
         self,
-        hessian: optax.Updates,
-        state: optax.OptState,
+        state,
+        fn,
+        model,
+        *batch,
+        hess_key: PRNGKey,
+        **batch_kwargs,
     ) -> optax.OptState:
         """Returns the updated `state` given the `hessian` and `state`."""
         pass
 
 
 class SecondOrderTransformation(NamedTuple):
-    """A pair of pure functions implementing a second order gradient transformation."""
+    """A triple of pure functions that together define a second-order optimizer."""
 
     init: optax.TransformInitFn
     update: optax.TransformUpdateFn
@@ -242,19 +326,21 @@ def hvp(f, x, v):
 
 
 # Use this for Sophia-H
-def stochastic_hessian_diagonal(fn, model, *args, h_key: PRNGKey, **kwargs):
+def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
+
+    https://arxiv.org/pdf/2305.14342.pdf Algorithm 1
 
     Args:
         fn: function to compute the Hessian of
         model: model to compute the Hessian of
-        h_key: key for the normal distribution
+        hess_key: key for the normal distribution
     """
     # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
     # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
     # https://arxiv.org/pdf/2208.03268.pdf
-    g = tree_gaussian(h_key, model)
-    # TODO: consider allowing for n > 1 gaussians
+    g = tree_gaussian(hess_key, model)
+    # TODO: consider allowing for n > 1 gaussians?
     product = hvp(lambda m: fn(m, *args, **kwargs), model, g)
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
 
@@ -263,29 +349,34 @@ def stochastic_hessian_diagonal(fn, model, *args, h_key: PRNGKey, **kwargs):
 
 # use this for Sophia-G
 def stochastic_diag_gauss_newton(
-    loss_fn: SophiaLossFn, logits_fn, model, *args, h_key: PRNGKey, Vocab: haliax.AxisSelector, **kwargs
+    fn: SophiaGObjective, model, example, *args, hess_key: PRNGKey, **kwargs
 ):
-    """Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
+    """
+
+    Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
+    This is Algorithm 2 of https://arxiv.org/pdf/2305.14342.pdf
 
     Args:
-        loss_fn: loss function
-        logits_fn: function to compute logits from model
+        fn (SophiaGObjective): objective function
         model: model whose Hessian to compute
-        h_key: key for sampling
-        Vocab: axis to sample from
-        *args, **kwargs: passed to `logits_fn`
+        hess_key: key for sampling
+        *args, **kwargs: passed to fn's logits
     """
-    logits, model_backward = eqx.filter_vjp(lambda model: logits_fn(model, *args, **kwargs), model)
-    hat_y = haliax.random.categorical(h_key, logits, Vocab)
+    if not isinstance(fn, SophiaGObjective):
+        raise ValueError("objective must be a SophiaGObjective")
 
-    grad_loss_logits = eqx.filter_grad(loss_fn)(logits, hat_y)
+    # Step 3
+    logits, model_backward = eqx.filter_vjp(lambda model: fn.logits(model, example, *args, **kwargs), model)
+
+    # Step 4
+    y_hat = fn.sample(logits, example, key=hess_key)
+
+    # Step 5
+    grad_loss_logits = eqx.filter_grad(fn.loss)(logits, y_hat)
     pseudo_g = model_backward(grad_loss_logits)[0]
 
-    # TODO: not bothering to do gamma for this
-    # technically we should probably factor in the loss mask, but it's probably fine
-    # bs = hat_y.size
-    bs = 1
-
+    # Step 6
+    bs = fn.num_data_points(example)
     h = jax.tree_util.tree_map(lambda x: x**2 * bs, pseudo_g)
 
     return h
@@ -300,12 +391,91 @@ def tree_gaussian(key, tree):
 
     return g
 
-
-def scale_by_sophia(
-    b1: float = 0.96,
+def sophia_h(
+    lr: float = 1e-3,
+    *,
+    b1: float = 0.965,
     b2: float = 0.99,
-    eps: float = 1e-12,
+    eps: float = 1e-8,
     gamma: float = 0.01,
+    weight_decay: float = 0.0,
+    max_grad_norm: Optional[float] = 1.0,
+    state_update_interval: int = 10,
+) -> SecondOrderTransformation:
+    """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
+    components = []
+
+    components.append(scale_by_sophia_h(b1, b2, eps, gamma, state_update_interval))
+
+    if max_grad_norm:
+        components.append(optax.clip_by_global_norm(max_grad_norm))
+
+    if weight_decay > 0:
+        components.append(optax.add_decayed_weights(weight_decay))
+
+    components.append(optax.scale(-lr))
+
+    return chain_second_order(*components)
+
+
+def scale_by_sophia_h(b1=0.965,
+                      b2=0.99,
+                      eps=1e-8,
+                      gamma=0.01,
+                      state_update_interval=10):
+
+    return _sophia_gradient_transform(
+        sophia_hess_fn=stochastic_hessian_diagonal,
+        state_update_interval=state_update_interval,
+        b1=b1, b2=b2, eps=eps, gamma=gamma)
+
+
+def sophia_g(
+    lr: float = 1e-3,
+    *,
+    b1: float = 0.99,
+    b2: float = 0.99,
+    eps: float = 1e-8,
+    gamma: float = 200,
+    weight_decay: float = 0.0,
+    max_grad_norm: Optional[float] = 1.0,
+    state_update_interval: int = 10,
+) -> SecondOrderTransformation:
+    """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
+    components = []
+
+    components.append(scale_by_sophia_g(b1, b2, eps, gamma, state_update_interval))
+
+    if max_grad_norm:
+        components.append(optax.clip_by_global_norm(max_grad_norm))
+
+    if weight_decay > 0:
+        components.append(optax.add_decayed_weights(weight_decay))
+
+    components.append(optax.scale(-lr))
+
+    return chain_second_order(*components)
+
+
+def scale_by_sophia_g(b1: float=0.99,
+                      b2: float=0.99,
+                      eps: float=1e-8,
+                      gamma: float=200,
+                      state_update_interval=10):
+
+    return _sophia_gradient_transform(
+        sophia_hess_fn=stochastic_diag_gauss_newton,
+        state_update_interval=state_update_interval,
+        b1=b1, b2=b2, eps=eps, gamma=gamma)
+
+
+def _sophia_gradient_transform(
+    sophia_hess_fn,
+    state_update_interval: int,
+    b1: float,
+    b2: float,
+    eps: float,
+    gamma: float,
     mu_dtype: Optional[Any] = None,
 ) -> SecondOrderTransformation:
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
@@ -356,24 +526,26 @@ def scale_by_sophia(
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
         return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat)
 
-    def update_hessian(hessian, state, params=None):
-        del params
-        hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
-        nu = update_moment(hessian, state.h, b2, 1)
-        return ScaleByHessianState(count=state.count, hessian_count=hessian_count_inc, mu=state.mu, h=nu)
+    def update_hessian(state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        def _do_update():
+            new_hess = sophia_hess_fn(model, *batch, hess_key=hess_key, **batch_kwargs)
+
+            # EMAs of hessian
+            hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
+            nu = update_moment(new_hess, state.h, b2, 1)
+            return ScaleByHessianState(count=state.count, hessian_count=hessian_count_inc, mu=state.mu, h=nu)
+
+        def _dont_update():
+            return state
+
+        return jax.lax.cond(
+            jnp.equal(state.count % state_update_interval, 0),
+            lambda _: _do_update(),
+            lambda _: _dont_update(),
+            state.count
+        )
 
     return SecondOrderTransformation(init_fn, update_fn, update_hessian)
-
-
-def sophia(
-    lr: float,
-    b1: float = 0.95,
-    b2: float = 0.99,
-    eps: float = 1e-12,
-    gamma: float = 0.1,
-    mu_dtype: Optional[Any] = None,
-) -> SecondOrderTransformation:
-    return chain_second_order(scale_by_sophia(b1, b2, eps, gamma, mu_dtype), optax.scale(lr))
 
 
 # what follows are "second order" versions of optax functions
@@ -411,7 +583,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             new_state.append(new_s)
         return updates, tuple(new_state)
 
-    def hessian_update_fn(new_hessian, state, params=None):
+    def hessian_update_fn(state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         if len(hessian_update_fns) != len(state):
             raise ValueError(
                 "The number of updates and states has to be the same in chain! Make sure you have called init first!"
@@ -422,7 +594,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             if fn is None:
                 new_state.append(s)
             else:
-                new_s = fn(new_hessian, s, params)
+                new_s = fn(s, model, *batch, hess_key=hess_key, **batch_kwargs)
                 new_state.append(new_s)
         return tuple(new_state)
 
@@ -534,14 +706,16 @@ def inject_hyperparams(
             return updates, InjectHyperparamsState(count_inc, hparams, inner_state)
             # pylint:enable=too-many-function-args
 
-        def update_hessian(hessian, state):
+        def update_hessian(hessian, state, model, *batch, hess_key: PRNGKey, **batch_kwargs):
             if hyperparam_dtype is None:
                 dtype = getattr(next(iter(jax.tree_util.tree_leaves(hessian)), None), "dtype", None)
             else:
                 dtype = hyperparam_dtype
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
             hparams.update(schedule_fn(state.count, dtype))
-            new_inner_state = inner_factory(**other_hps, **hparams).hessian_update(hessian, state.inner_state)
+            new_inner_state = inner_factory(**other_hps, **hparams).hessian_update(
+                hessian, state.inner_state, model, *batch, hess_key=hess_key, **batch_kwargs
+            )
 
             # pylint:disable=too-many-function-args
             return InjectHyperparamsState(state.count, hparams, new_inner_state)

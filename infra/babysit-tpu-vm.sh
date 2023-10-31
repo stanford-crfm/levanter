@@ -8,13 +8,13 @@
 
 # Syntax: babysit-tpu-vm.sh <args to spin-up-vm.sh> -- command to run on the vm
 
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 # first extract the args for just spin-up-vm.sh and pass them to the helper
 
 CREATION_ARGS=()
 
-# just take until we get the --
 while [[ $# -gt 0 ]]; do
   key="$1"
   case $key in
@@ -29,6 +29,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "$SCRIPT_DIR"/helpers/parse-tpu-creation-args.sh "${CREATION_ARGS[@]}"
+
+if [ -z "$VM_NAME" ]; then
+  echo "Error: VM name not set"
+  exit 1
+fi
+
+if [ -z "$SSH_AUTH_SOCK" ]; then
+  echo "Error: ssh-agent not running. This script needs to be run from a machine with ssh-agent running. Please run ssh-add ~/.ssh/google_compute_engine and try again"
+  exit 1
+fi
+
+if [ -z "$RUN_ID" ]; then
+  RUN_ID=$(bash "${SCRIPT_DIR}"/helpers/gen-id.sh)
+  echo "RUN_ID not set, setting to $RUN_ID"
+fi
+
 # set the cmd args. We want to be sure everything is fully quoted when we pass it to the gcloud ssh command
 # in case there are spaces in the command (or embedded quotes)
 CMD_ARGS=()
@@ -40,21 +57,7 @@ done
 # Now turn CMD_ARGS into a single string we can pass
 CMD_ARGS_STR=$(printf ' %s' "${CMD_ARGS[@]}")
 CMD_ARGS_STR=${CMD_ARGS_STR:1}
-
-# now source the helper
-source "$SCRIPT_DIR"/helpers/parse-tpu-creation-args.sh "${CREATION_ARGS[@]}"
-
-# error out if we didn't set a name
-if [ -z "$VM_NAME" ]; then
-  echo "Error: VM name not set"
-  exit 1
-fi
-
-# if ssh-agent isn't running, complain
-if [ -z "$SSH_AUTH_SOCK" ]; then
-  echo "Error: ssh-agent not running. This script needs to be run from a machine with ssh-agent running. Please run ssh-add ~/.ssh/google_compute_engine and try again"
-  exit 1
-fi
+CMD_ARGS_STR="RUN_ID=${RUN_ID} ${CMD_ARGS_STR}"
 
 # check if the VM is running
 # if not, spin it up

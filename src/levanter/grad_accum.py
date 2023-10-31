@@ -1,10 +1,11 @@
-from typing import Optional, Protocol, Tuple, TypeVar
+import functools
+from typing import Tuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
-from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
@@ -12,20 +13,12 @@ from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
+from levanter.types import M, ValAndGradFn, ValFn, X
 from levanter.utils.jax_utils import reduce
 
 
-M = TypeVar("M")  # Model
-X = TypeVar("X", contravariant=True)  # Input
-
-
-class GradAndValFn(Protocol[M, X]):
-    def __call__(self, model: M, *inputs: X) -> Tuple[float, M]:
-        ...
-
-
 @named_call
-def accumulate_gradients(f: GradAndValFn, model: M, *inputs: X) -> Tuple[float, M]:
+def accumulate_gradients(f: ValAndGradFn, model: M, *inputs: X) -> Tuple[float, M]:
     """Simple gradient accumulation that just loops over the inputs."""
     zero = (jnp.zeros(()), jax.tree_util.tree_map(lambda m: jnp.zeros_like(m), model), 0)
 
@@ -42,21 +35,17 @@ def accumulate_gradients(f: GradAndValFn, model: M, *inputs: X) -> Tuple[float, 
 # cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
 @named_call
 def accumulate_gradients_sharded(
-    f: GradAndValFn,
+    f: ValFn[M, X],
     Batch: Axis,
-    model: M,
-    *inputs: X,
-    key: Optional[PRNGKeyArray] = None,
     per_device_parallelism: int,
     parameter_axis_mapping,
-    **kwargs,
-) -> Tuple[float, M]:
+) -> ValAndGradFn[M, X]:
     """
     Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
      parallel axis. (If the model is not sharded, then a copy of the gradient is on each individual device.)
 
      Parameters:
-        f: a function that takes a model and a batch of inputs and returns a tuple of (loss, gradient)
+        f: a function whose gradients are to be accumulated
         per_device_parallelism: how many examples to process at once on each device
         inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
         parameter_axis_mapping: the axis mapping for the model parameters
@@ -82,47 +71,54 @@ def accumulate_gradients_sharded(
 
     Microbatch = Axis(Batch.name, microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
-
-    if key is not None:
-        key = jax.random.split(key, num_micro_steps)
-
     assert num_micro_steps * microbatch_size == batch_size
 
-    # first things first, we want a copy of our gradient sharded like our model, along with a loss value
-    loss = jnp.zeros(())
-    with jax.named_scope("zeros"):
-        grad = jax.tree_util.tree_map(jnp.zeros_like, model)
-        grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
+    grad_fn = eqx.filter_value_and_grad(f, has_aux=False)
 
-    # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
-    inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs, parameter_axis_mapping)
+    @functools.wraps(grad_fn)
+    def fn(model, *inputs, key=None, **batch_kwargs):
+        if key is not None:
+            key = jax.random.split(key, num_micro_steps)
 
-    # third, we want to do compute.
-    def loop(acc, microbatch_key):
-        loss, grad = acc
-        microbatch, microbatch_kwargs, key = microbatch_key
-        with jax.named_scope("grad"):
-            kwargs = microbatch_kwargs.copy()
-            if key is not None:
-                kwargs["key"] = key
-            this_loss, this_grad = f(model, *microbatch, **kwargs)
-            this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
-
-        with jax.named_scope("accum"):
-            loss += this_loss
-            grad = jax.tree_map(jnp.add, grad, this_grad)
+        # first things first, we want a copy of our gradient sharded like our model, along with a loss value
+        loss = jnp.zeros(())
+        with jax.named_scope("zeros"):
+            grad = jax.tree_util.tree_map(jnp.zeros_like, eqx.filter(model, eqx.is_inexact_array_like))
             grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
 
-        return loss, grad
+        # second, we want to reshape our data to (num_micro_steps, micro_batch_size, ...), sharded along the data axis
+        inputs = _reshape_for_microbatch(Batch, Microbatch, AccumStep, inputs, parameter_axis_mapping)
 
-    loss, grad = hax.fold(loop, AccumStep)((loss, grad), (inputs, kwargs, key))
+        # third, we want to do compute.
+        def loop(acc, microbatch_and_key):
+            loss, grad = acc
+            microbatch, microbatch_kwargs, key = microbatch_and_key
+            with jax.named_scope("grad"):
+                microbatch_kwargs = microbatch_kwargs.copy()
+                if key is not None:
+                    microbatch_kwargs["key"] = key
+                this_loss, this_grad = grad_fn(model, *microbatch, **microbatch_kwargs)
+                this_grad = hax.shard_with_axis_mapping(this_grad, parameter_axis_mapping)
 
-    return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
+            with jax.named_scope("accum"):
+                loss += this_loss
+                grad = eqx.apply_updates(grad, this_grad)
+                grad = hax.shard_with_axis_mapping(grad, parameter_axis_mapping)
+
+            return loss, grad
+
+        loss, grad = hax.fold(loop, AccumStep)((loss, grad), (inputs, batch_kwargs, key))
+
+        return loss / num_micro_steps, jax.tree_map(lambda x: x / num_micro_steps, grad)
+
+    return fn
 
 
 def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs, axis_mapping):
     def _reshape(x):
         if isinstance(x, hax.NamedArray):
+            if not x.has_axis(Batch.name):
+                return x
             x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
             return hax.shard_with_axis_mapping(x, axis_mapping)
         elif isinstance(x, jnp.ndarray):

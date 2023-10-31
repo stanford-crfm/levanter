@@ -6,11 +6,10 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Iterator, List, Optional, Sequence, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
-import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
@@ -19,35 +18,37 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
-from jaxtyping import PyTree
+from pyarrow._parquet import FileMetaData
 
 import haliax as hax
 from haliax import Axis
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
-from levanter.utils.py_utils import logical_cpu_core_count
+from levanter.models.attention import AttentionMask
+from levanter.models.lm_model import LmExample
+from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
-from transformers import BatchEncoding, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
+from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
+from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import CacheLedger  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
 from levanter.data.shard_cache import (  # noqa
-    BatchProcessor,
     ChunkMetadata,
     LoggerMetricsMonitor,
     MetricsMonitor,
     ShardCache,
-    ShardedDataSource,
     WandbMetricsMonitor,
     _serialize_json_and_commit,
-    cache_dataset,
+    build_cache,
 )
+from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -60,13 +61,6 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
-
-
-class LmExample(eqx.Module):
-    tokens: hax.NamedArray
-    targets: hax.NamedArray
-    attn_mask: hax.NamedArray
-    loss_mask: hax.NamedArray
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -99,7 +93,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     @functools.partial(jax.jit, static_argnums=(0))
     def _create_lm_example(self, tokens, key):
-        attn_mask = hax.nn.attention.causal_mask(self.QPos, self.KPos)
+        attn_mask = AttentionMask.causal()
         if self.fcm_prob > 0:
             # masks for attention
             # We support forgetful causal masking (FCM) which is a technique that improves training speed by
@@ -108,24 +102,14 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             assert self.key is not None
             this_key, key = jax.random.split(key)
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = hax.nn.attention.combine_masks_and(attn_mask, fcm_mask)
+            attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
 
         tokens = hax.named(tokens, self.QPos)
-        targets = hax.roll(tokens, -1, self.QPos)
 
         loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
 
-        example = LmExample(tokens=tokens, targets=targets, attn_mask=attn_mask, loss_mask=loss_mask)
+        example = LmExample(tokens=tokens, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return LmExample(
-            tokens=NamedShapeSpec((self.QPos,), jnp.int32),
-            targets=NamedShapeSpec((self.QPos,), jnp.int32),
-            attn_mask=NamedShapeSpec((self.QPos, self.KPos), jnp.bool_),
-            loss_mask=NamedShapeSpec((self.QPos,), jnp.bool_),
-        )
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
@@ -166,14 +150,48 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
                     # yield hax.named(ids, self.Pos)
                     yield ids
 
-    @property
-    def item_shape(self) -> PyTree:
-        return ShapeSpec((self.seq_len,), np.int32)
-
     @staticmethod
     def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
         return TokenSeqDataset(doc_cache, seq_len, stride)
+
+
+class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
+    """
+    A Dataset that yields HF BatchEncodings from a ShardCache.
+    This basically yields a dict-of-arrays, just the HF BatchEncoding class version of dict.
+    """
+
+    def __init__(self, cache: ShardCache, return_batches: bool = False):
+        self.cache = cache
+        self.return_batches = return_batches
+
+    def __iter__(self) -> Iterator[BatchEncoding]:
+        for batch in self.cache:
+            encoding = _batch_encoding_from_record_batch(batch, flatten_docs=False)
+            if self.return_batches:
+                yield encoding
+            else:
+                batch_size = 0
+                for v in encoding.values():
+                    batch_size = len(v)
+                    break
+
+                for i in range(batch_size):
+                    # this doesn't work for reconstituted batches, so we have to do this
+                    # I have no idea why this is the case
+                    #     yield encoding[i]
+                    yield BatchEncoding({k: v[i] for k, v in encoding.items()})
+
+    def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
+        return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
+
+    @staticmethod
+    def load(cache_dir: str, return_batches: bool = False, batch_size: Optional[int] = None) -> "BatchEncodingDataset":
+        if batch_size is None:
+            batch_size = 1
+        cache = ShardCache.load(cache_dir, batch_size=batch_size)
+        return BatchEncodingDataset(cache, return_batches=return_batches)
 
 
 def _load_old_ledger(cache_dir):
@@ -212,11 +230,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
     """
 
-    def __init__(self, chunk_cache: ShardCache, flatten_docs, shard_chunk_offset=0, shard_chunk_stride=1):
+    def __init__(self, chunk_cache: ShardCache, flatten_docs):
         self.chunk_cache = chunk_cache
         self.flatten_docs = flatten_docs
-        self.shard_chunk_offset = shard_chunk_offset
-        self.shard_chunk_stride = shard_chunk_stride
 
     def __iter__(self):
         """Reads the cache files produced by cache_and_group and yields tokenized sequences.
@@ -227,12 +243,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             yield _batch_encoding_from_record_batch(batch, self.flatten_docs)
 
     def _chunks(self):
-        return self.chunk_cache.iter_batches_from_chunks(self.shard_chunk_offset, self.shard_chunk_stride)
+        return self.chunk_cache.iter_batches_from_chunks()
 
     @staticmethod
     def build_or_load(
         cache_dir,
-        source: ShardedDataSource[str],
+        source: ShardedDataset[str],
         tokenizer: PreTrainedTokenizerBase,
         flatten_docs=True,
         enforce_eos=True,
@@ -243,7 +259,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     ) -> "TokenizedDocumentCache":
         bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos)
         monitors = monitors or []
-        cache = cache_dataset(
+        cache = build_cache(
             cache_dir,
             source,
             bt,
@@ -304,43 +320,12 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         if num_shards == 1:
             return self
 
-        combined_offset = self.shard_chunk_offset + shard_index * self.shard_chunk_stride
-        combined_stride = self.shard_chunk_stride * num_shards
-
-        return TokenizedDocumentCache(
-            self.chunk_cache,
-            self.flatten_docs,
-            shard_chunk_offset=combined_offset,
-            shard_chunk_stride=combined_stride,
-        )
-
-    @property
-    def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
-        return {  # type: ignore
-            "input_ids": ShapeSpec((None,), dtype=np.int32),
-        }
+        return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
 
 
-def _open_arrow_table(path) -> pa.Table:
+def _open_arrow_table(path) -> FileMetaData:
     fs, _, paths = fsspec.get_fs_token_paths(path)
-    return pq.read_table(path, filesystem=fs)
-
-
-def _as_record_batch(doc: BatchEncoding) -> pa.RecordBatch:
-    """Converts a document to an arrow-compatible record batch."""
-
-    # for dumb reasons, pa.array doesn't support ndarrays with ndim > 1
-    def _as_array(x):
-        if isinstance(x, np.ndarray) and x.ndim > 1:
-            return [_as_array(y) for y in x]
-        elif isinstance(x, np.ndarray):
-            return list(x)
-        else:
-            return pa.array(x)
-
-    names, columns = zip(*[(k, _as_array(v)) for k, v in doc.items()])
-
-    return pa.RecordBatch.from_arrays(list(columns), names)
+    return pq.read_metadata(path, filesystem=fs)
 
 
 def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
@@ -351,13 +336,9 @@ def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
                 b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
                 for i in range(b.num_columns)
             },
-            n_sequences=1,
         )
     else:
-        return BatchEncoding(
-            {b.field(i).name: b.column(i).to_numpy(zero_copy_only=False) for i in range(b.num_columns)},
-            n_sequences=b.num_rows,
-        )
+        return BatchEncoding(dict_from_record_batch(b))
 
 
 def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
@@ -368,6 +349,11 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
 
 
 class BatchTokenizer(BatchProcessor[str]):
+    """
+    A batch processor that tokenizes a batch of strings using a tokenizer.
+    By default, this will append eos to the end of the string, even if the tokenizer doesn't.
+    """
+
     def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
@@ -383,18 +369,18 @@ class BatchTokenizer(BatchProcessor[str]):
 
         self._need_to_add_eos = should_append_eos
 
-    def __call__(self, batch: Sequence[str]) -> pa.RecordBatch:
+    def __call__(self, batch: Sequence[str]) -> BatchEncoding:
         if self._need_to_add_eos:
             encoding = self.tokenizer(
                 [d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False, verbose=False
             )
         else:
             encoding = self.tokenizer(batch, return_attention_mask=False, verbose=False)  # type: ignore
-        return _as_record_batch(encoding)
+        return encoding
 
     @property
     def num_cpus(self) -> int:
-        return max(1, logical_cpu_core_count() - 2)
+        return num_cpus_used_by_tokenizer(self.tokenizer)
 
 
 def concatenate_and_group_texts(
@@ -482,6 +468,8 @@ class LMDatasetConfig:
 
     # config for the tokenizer
     tokenizer: str = "gpt2"
+    plaintext: bool = False
+    vocab_size: Optional[int] = None
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
     # config related to caching
@@ -492,8 +480,11 @@ class LMDatasetConfig:
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerFast:
-        return load_tokenizer(self.tokenizer)
+    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+        if self.tokenizer == "passthrough":
+            return PassthroughTokenizer(self.vocab_size)
+        else:
+            return load_tokenizer(self.tokenizer)
 
     def token_seq_dataset(self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
         cache = self.build_or_load_cache(split, monitors=monitors)
@@ -535,19 +526,8 @@ class LMDatasetConfig:
                 yield doc[self.text_key]
         else:
             urls = self.urls_for_split(split)
-            yield from self.generate_texts_from_urls(urls)
 
-    def generate_texts_from_urls(self, urls: Sequence[str], skip_to_doc: int = 0) -> Iterator[str]:
-        files = fsspec.open_files(urls, "r", compression="infer")
-        row = 0
-        for file in files:
-            with file as f:
-                # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
-                # which is not nothing, but not ideal.
-                for line in f.readlines():
-                    if row >= skip_to_doc:
-                        yield json.loads(line)[self.text_key]
-                    row += 1
+            yield from TextUrlDataset(urls, self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -567,91 +547,37 @@ class LMDatasetConfig:
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
 
-    def get_shard_source(self, split) -> ShardedDataSource[str]:
+    def get_shard_source(self, split) -> ShardedDataset[str]:
         if self.id is not None:
-            return HFDatasetDataSource(self, split)
-        return TextDataSource(self, split)
+            return WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream).map(
+                lambda x: x[self.text_key]
+            )
+        else:
+            return TextUrlDataset(self.urls_for_split(split), self.text_key)
 
 
-class HFDatasetDataSource(ShardedDataSource[str]):
-    """
-    This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
-    Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
-    for all other datasets.
-    """
-
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-        self._shard_names = self._compute_shard_names()
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        self._vocab = {i: i for i in range(vocab_size)}
+        self._vocab_size = vocab_size
+        super().__init__(**kwargs)
 
     @property
-    def shard_names(self) -> Sequence[str]:
-        return self._shard_names
+    def vocab_size(self) -> int:
+        return self._vocab_size
 
-    def _compute_shard_names(self):
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset):
-            try:
-                return [str(i) for i in range(dataset.n_shards)]
-            except NotImplementedError:
-                return ["data"]
-        else:
-            return ["data"]
+    def get_vocab(self):
+        return self._vocab
 
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
-        dataset = self._load_dataset()
-        if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
-            shard = dataset._ex_iterable.shard_data_sources([int(shard_name)])
-        else:
-            shard = dataset
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
 
-        idx = 0
-        for _, doc in shard:
-            if idx >= row:
-                yield doc[self.config.text_key]
-            idx += 1
+    def _tokenize(self, text, **kwargs):
+        tokens = np.fromstring(text, dtype=int, sep=" ")
+        return tokens
 
-    def _load_dataset(self):
-        # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing and stuff
-        # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(
-            self.config.id, split=self.split, name=self.config.name, streaming=self.config.stream
-        )
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
 
-
-class TextDataSource(ShardedDataSource[str]):
-    def __init__(self, config: LMDatasetConfig, split: str):
-        self.config = config
-        self.split = split
-
-        self._shard_name_to_url_mapping = {}
-
-        urls = config.urls_for_split(split)
-
-        # remove common prefix
-        if len(urls) == 1:
-            common_prefix = os.path.dirname(urls[0])
-        else:
-            common_prefix = os.path.commonprefix(urls)
-
-        for url in urls:
-            # escape the url for the shard name
-            shard_name = url
-            if common_prefix:
-                shard_name = url[len(common_prefix) :]
-                if shard_name.startswith("/"):
-                    shard_name = shard_name[1:]
-
-            shard_name = shard_name.replace(".", "_")
-
-            self._shard_name_to_url_mapping[shard_name] = url
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
-        url = self._shard_name_to_url_mapping[shard_name]
-        return self.config.generate_texts_from_urls([url], row)
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)
