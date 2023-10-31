@@ -529,7 +529,7 @@ def _sophia_gradient_transform(
     def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         def _do_update():
             new_hess = sophia_hess_fn(fn, model, *batch, hess_key=hess_key, **batch_kwargs)
-            new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -10, 10), new_hess)
+            new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -1, 1), new_hess)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
