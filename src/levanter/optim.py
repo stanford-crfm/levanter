@@ -200,7 +200,7 @@ class AdamConfig(OptimizerConfig):
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
 
-GAMMA_SOPHIA_G = 200
+GAMMA_SOPHIA_G = 0.05
 GAMMA_SOPHIA_H = 0.01
 
 
@@ -213,7 +213,7 @@ class BaseSophiaConfig(HessianOptConfig):
     beta2: float = 0.99
 
     epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
+    clip_threshold: Optional[float] = 1.0
 
     @abc.abstractmethod
     def compute_hessian(
@@ -242,8 +242,8 @@ class BaseSophiaConfig(HessianOptConfig):
             )
 
             # Algorithm 3, step 12
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
+            if self.clip_threshold:
+                components.append(optax.clip(self.clip_threshold))
 
             # Algorithm 3, step 11 (Note, this comes after clipping b/c it's not supposed to be clipped)
             # In the paper, it comes as a prior step, but doesn't get clipped
@@ -391,14 +391,14 @@ def tree_gaussian(key, tree):
 
 
 def sophia_h(
-    lr: float = 1e-3,
+    lr: float = 0.85e-3,
     *,
     b1: float = 0.965,
     b2: float = 0.99,
     eps: float = 1e-8,
     gamma: float = 0.01,
     weight_decay: float = 0.0,
-    max_grad_norm: Optional[float] = 1.0,
+    max_update: Optional[float] = 1.0,
     state_update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
@@ -406,8 +406,8 @@ def sophia_h(
 
     components.append(scale_by_sophia_h(b1, b2, eps, gamma, state_update_interval))
 
-    if max_grad_norm:
-        components.append(optax.clip_by_global_norm(max_grad_norm))
+    if max_update:
+        components.append(optax.clip(max_update))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -417,7 +417,7 @@ def sophia_h(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=0.01, state_update_interval=10):
+def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, state_update_interval=10):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_hessian_diagonal,
@@ -435,9 +435,9 @@ def sophia_g(
     b1: float = 0.99,
     b2: float = 0.99,
     eps: float = 1e-8,
-    gamma: float = 200,
+    gamma: float = 0.02,
     weight_decay: float = 0.0,
-    max_grad_norm: Optional[float] = 1.0,
+    max_update: Optional[float] = 1.0,
     state_update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
@@ -445,8 +445,8 @@ def sophia_g(
 
     components.append(scale_by_sophia_g(b1, b2, eps, gamma, state_update_interval))
 
-    if max_grad_norm:
-        components.append(optax.clip_by_global_norm(max_grad_norm))
+    if max_update:
+        components.append(optax.clip(max_update))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -497,12 +497,12 @@ def _sophia_gradient_transform(
         h_leaves = jax.tree_util.tree_leaves(h_hat)
 
         # with sophia-g the max(h, 0) is not needed but no harm
-        hessian_use_count = sum(
-            jnp.sum(jnp.abs(mu) < gamma * jnp.maximum(h, 0)) for (mu, h) in zip(mu_leaves, h_leaves)
+        unclipped_count = sum(
+            jnp.sum(jnp.abs(mu / jnp.maximum(gamma * h, eps)) < 1) for (mu, h) in zip(mu_leaves, h_leaves)
         )
 
         param_count = parameter_count(updates)
-        hessian_use_ratio = hessian_use_count / param_count
+        unclipped_fraction = unclipped_count / param_count
 
         param_norm = jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params)))
         momentum_norm = jnp.sqrt(sum(jnp.sum(m**2) for m in mu_leaves))
@@ -512,7 +512,7 @@ def _sophia_gradient_transform(
         if jax.lib.xla_bridge.get_backend().platform != "cpu":
             jittable_wandb_log(
                 {
-                    "optim/hessian_use_ratio": hessian_use_ratio,
+                    "optim/unclipped_fraction": unclipped_fraction,
                     "optim/param_norm": param_norm,
                     "optim/momentum_norm": momentum_norm,
                     "optim/hessian_norm": hessian_norm,
@@ -521,7 +521,10 @@ def _sophia_gradient_transform(
             )
 
         updates = jax.tree_util.tree_map(
-            lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
+            # lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
+            lambda m, h: m / jnp.maximum(gamma * h, eps),
+            mu_hat,
+            h_hat,
         )
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)

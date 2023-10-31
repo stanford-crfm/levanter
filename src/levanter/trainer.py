@@ -380,7 +380,7 @@ class Trainer:
             # TODO: support "grad accumulation" for second order optimization
             if isinstance(self.optimizer, SecondOrderTransformation):
                 opt_state = self.optimizer.hessian_update(
-                    # TODO: tbis doesn't quite work for sophia-g. split_loss_fn needs to be a SophiaGObjective
+                    # TODO: this doesn't quite work for sophia-g. split_loss_fn needs to be a SophiaGObjective
                     opt_state,
                     split_loss_fn,
                     trainable_model,
