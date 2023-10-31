@@ -163,7 +163,8 @@ def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
 
 @dataclass
 class HessianOptConfig(OptimizerConfig, abc.ABC):
-    state_update_interval: int = 10
+    update_interval: int = 10
+    """How often to update the hessian approximation."""
 
 
 @OptimizerConfig.register_subclass("adam")
@@ -233,7 +234,7 @@ class BaseSophiaConfig(HessianOptConfig):
             components.append(
                 _sophia_gradient_transform(
                     sophia_hess_fn=self.compute_hessian,
-                    state_update_interval=self.state_update_interval,
+                    update_interval=self.update_interval,
                     b1=self.beta1,
                     b2=self.beta2,
                     eps=self.epsilon,
@@ -399,12 +400,12 @@ def sophia_h(
     gamma: float = 0.01,
     weight_decay: float = 0.0,
     max_update: Optional[float] = 1.0,
-    state_update_interval: int = 10,
+    update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
 
-    components.append(scale_by_sophia_h(b1, b2, eps, gamma, state_update_interval))
+    components.append(scale_by_sophia_h(b1, b2, eps, gamma, update_interval))
 
     if max_update:
         components.append(optax.clip(max_update))
@@ -417,11 +418,11 @@ def sophia_h(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, state_update_interval=10):
+def scale_by_sophia_h(b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, update_interval=10):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_hessian_diagonal,
-        state_update_interval=state_update_interval,
+        update_interval=update_interval,
         b1=b1,
         b2=b2,
         eps=eps,
@@ -438,12 +439,12 @@ def sophia_g(
     gamma: float = 0.02,
     weight_decay: float = 0.0,
     max_update: Optional[float] = 1.0,
-    state_update_interval: int = 10,
+    update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
 
-    components.append(scale_by_sophia_g(b1, b2, eps, gamma, state_update_interval))
+    components.append(scale_by_sophia_g(b1, b2, eps, gamma, update_interval))
 
     if max_update:
         components.append(optax.clip(max_update))
@@ -456,13 +457,11 @@ def sophia_g(
     return chain_second_order(*components)
 
 
-def scale_by_sophia_g(
-    b1: float = 0.99, b2: float = 0.99, eps: float = 1e-8, gamma: float = 200, state_update_interval=10
-):
+def scale_by_sophia_g(b1: float = 0.99, b2: float = 0.99, eps: float = 1e-8, gamma: float = 200, update_interval=10):
 
     return _sophia_gradient_transform(
         sophia_hess_fn=stochastic_diag_gauss_newton,
-        state_update_interval=state_update_interval,
+        update_interval=update_interval,
         b1=b1,
         b2=b2,
         eps=eps,
@@ -472,7 +471,7 @@ def scale_by_sophia_g(
 
 def _sophia_gradient_transform(
     sophia_hess_fn,
-    state_update_interval: int,
+    update_interval: int,
     b1: float,
     b2: float,
     eps: float,
@@ -543,7 +542,7 @@ def _sophia_gradient_transform(
             return state
 
         return jax.lax.cond(
-            jnp.equal(state.count % state_update_interval, 0),
+            jnp.equal(state.count % update_interval, 0),
             lambda _: _do_update(),
             lambda _: _dont_update(),
             state.count,
