@@ -2,6 +2,7 @@ from typing import Optional, Union, overload
 
 import equinox as eqx
 import jax.numpy as jnp
+from jax.lib import xla_bridge
 from jaxtyping import PRNGKeyArray
 
 import haliax
@@ -57,27 +58,44 @@ def dot_product_attention(
         raise ValueError("QPos and KPos must be different")
 
     if use_flash:
-        from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
+        accelerator_type = xla_bridge.get_backend().platform
 
-        if flash_block_size is None:
-            flash_block_size = BLOCK_SIZE
+        # Use native JAX implemention if on TPU
+        if accelerator_type == "TPU" or accelerator_type == "CPU":
+            from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
 
-        return flash_attention(
-            QPos,
-            KPos,
-            Key,
-            query,
-            key,
-            value,
-            block_size=flash_block_size,
-            mask=mask,
-            bias=bias,
-            dropout=dropout,
-            inference=inference,
-            key=prng,
-            dtype=attention_dtype,
-            precision=precision,
-        )
+            if flash_block_size is None:
+                flash_block_size = BLOCK_SIZE
+
+            return flash_attention(
+                QPos,
+                KPos,
+                Key,
+                query,
+                key,
+                value,
+                block_size=flash_block_size,
+                mask=mask,
+                bias=bias,
+                dropout=dropout,
+                inference=inference,
+                key=prng,
+                dtype=attention_dtype,
+                precision=precision,
+            )
+
+        # Use Triton implemention if on GPU
+        elif accelerator_type == "GPU":
+            from levanter.models.triton_flash_attention import triton_flash_attention
+
+            if bias is not None:
+                raise Warning(
+                    "The current Triton implementation of FlashAttention does not include a bias term.                "
+                    "             Bias will not be used for this attention computation."
+                )
+
+            return triton_flash_attention(q=query, k=key, v=value)
+
     else:
         QPos = query.resolve_axis(QPos)
         KPos = key.resolve_axis(KPos)
