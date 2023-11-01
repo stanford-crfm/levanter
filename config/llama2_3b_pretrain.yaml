@@ -18,7 +18,7 @@ trainer:
     tags: ["openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 256  # set for v3-128 TPU
+  train_batch_size: 256  # set for v3 TPU
   num_train_steps: 1000000
   steps_per_eval: 100
   tensor_parallel_axes: ["mlp", "heads"]
