@@ -215,6 +215,7 @@ class BaseSophiaConfig(HessianOptConfig):
 
     epsilon: float = 1e-8
     clip_threshold: Optional[float] = 1.0
+    max_grad_norm: Optional[float] = 1.0
 
     @abc.abstractmethod
     def compute_hessian(
@@ -230,6 +231,9 @@ class BaseSophiaConfig(HessianOptConfig):
     def build(self, num_train_steps: int):
         def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
             components = []
+
+            if self.max_grad_norm:
+                components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
             components.append(
                 _sophia_gradient_transform(
@@ -396,6 +400,7 @@ def sophia_h(
     eps: float = 1e-8,
     gamma: float = GAMMA_SOPHIA_H,
     weight_decay: float = 0.0,
+    max_grad_norm: Optional[float] = 1.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
 ) -> SecondOrderTransformation:
@@ -493,10 +498,9 @@ def _sophia_gradient_transform(
         # nu = update_moment_per_elem_norm(updates, state.nu, b2, 2)
         count_inc = numerics.safe_int32_increment(state.count)
         mu_hat = bias_correction(mu, b1, count_inc)
-        h_hat = state.h
         # track how often hessian is used
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
-        h_leaves = jax.tree_util.tree_leaves(h_hat)
+        h_leaves = jax.tree_util.tree_leaves(state.h)
 
         stats: dict[str, Any] = {
             "optim/param_norm": jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params))),
@@ -509,7 +513,7 @@ def _sophia_gradient_transform(
             # lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
             lambda m, h: m / jnp.maximum(gamma * h, eps),
             mu_hat,
-            h_hat,
+            state.h,
         )
 
         if clip_threshold is not None:
@@ -524,7 +528,7 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
 
-        return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat)
+        return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=(state.h))
 
     def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         def _do_update():
