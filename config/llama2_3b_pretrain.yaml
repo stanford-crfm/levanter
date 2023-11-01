@@ -1,0 +1,30 @@
+data:
+  id: togethercomputer/RedPajama-Data-1T
+  cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama/
+  splits:
+    - train
+  rows_per_chunk: 4096
+  tokenizer: "meta-llama/Llama-2-7b-hf"
+model:
+  type: llama
+  seq_len: 4096
+  hidden_size: 3200
+  intermediate_dim: 8640
+  num_layers: 26
+  num_heads: 32
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["openwebtext", "llama"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 256  # set for v3-128 TPU
+  num_train_steps: 1000000
+  steps_per_eval: 100
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  learning_rate: 1.2E-5  # set low for fine-tuning
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
