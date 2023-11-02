@@ -310,7 +310,7 @@ def named_jit(
 # With pjit we also have "donated" arguments, which are arguments that we promise not to use after the function
 # returns. This is useful for conserving memory, but we also have to splice them back in.
 # Also recall that a "pytree" can split into leaves and a "treedef", which can then be reconstructed.
-@compile_cache
+# @compile_cache
 def _named_pjit_cache(fun, **jitkwargs):
     def fun_wrapped(dynamic_donated, dynamic_reserved, static):
         dynamic = eqx.combine(dynamic_donated, dynamic_reserved)
