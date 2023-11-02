@@ -12,7 +12,7 @@ from jax import lax
 from jax import numpy as jnp
 from jax import random as jrandom
 from jax.sharding import PartitionSpec
-from jaxtyping import PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like, shaped_rng_split
 from haliax.util import ensure_tuple
@@ -195,18 +195,31 @@ def _isnamedtupleinstance(x):
     return all(type(n) == str for n in f)
 
 
-def leaf_key_paths(pytree, prefix: str = ""):
+def leaf_key_paths(
+    pytree,
+    prefix: Optional[str] = "",
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+    use_state_dict_keys: bool = False,
+):
     """Creates unique, hopefully meaningful key paths for each leaf in a pytree. This is useful for
     serialization mostly. This functions knows about dicts, lists, NamedTuples, tuples, and equinox-style modules"""
-    if isinstance(pytree, dict):
-        return {k: leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in pytree.items()}
+    # TODO: jax now has a tree_flatten_with_path function. We should use that instead
+    rec = lambda x, p: leaf_key_paths(  # noqa: E731
+        x, prefix=join_key(prefix, p), is_leaf=is_leaf, use_state_dict_keys=use_state_dict_keys
+    )
+
+    if is_leaf is not None and is_leaf(pytree):
+        return prefix
+    elif isinstance(pytree, dict):
+        return {k: rec(v, k) for k, v in pytree.items()}
     elif _isnamedtupleinstance(pytree):
-        d = {k: leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in pytree._asdict().items()}
+        d = {k: rec(v, k) for k, v in pytree._asdict().items()}
         return pytree.__class__(**d)
     elif isinstance(pytree, list):
-        return [leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree)]
+        return [rec(v, str(i)) for i, v in enumerate(pytree)]
     elif isinstance(pytree, tuple):
-        return tuple(leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree))
+        return tuple(rec(v, str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
         names = []
         rec_values = []
@@ -216,19 +229,31 @@ def leaf_key_paths(pytree, prefix: str = ""):
             field_name = field.name
             field = getattr(pytree, field_name)
             names.append(field_name)
-        
-            if hasattr(pytree, "_state_dict_key_map"):
+
+            if use_state_dict_keys and hasattr(pytree, "_state_dict_key_map"):
                 field_name = pytree._state_dict_key_map().get(field_name, field_name)
-        
+
             rec_value = rec(field, field_name)
             rec_values.append(rec_value)
         return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
-        leaves, treedef = jax.tree_util.tree_flatten(pytree)
+        leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
         if len(leaves) == 1:
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
-            return jax.tree_util.tree_unflatten(treedef, [f"{prefix}.{i}" for i in range(len(leaves))])
+            return jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
+
+
+def join_key(prefix, k):
+    if k is None:
+        return prefix
+    return f"{prefix}.{k}" if prefix else k
+
+
+def key_iterator(key: PRNGKeyArray):
+    while True:
+        key, subkey = jax.random.split(key)
+        yield subkey
 
 
 # from https://github.com/google/jax/issues/4285

@@ -241,7 +241,7 @@ class LocalBatchDataset(Dataset[Ex]):
         def _shard_leaf(leaf):
             pspec = self._pspec_for(leaf)
             with self.mesh:
-                return pjit(lambda x: x, in_axis_resources=None, out_axis_resources=pspec)(leaf)
+                return pjit(lambda x: x, in_shardings=None, out_shardings=pspec)(leaf)
 
         return jax.tree_map(_shard_leaf, batch, is_leaf=is_named_array)
 
