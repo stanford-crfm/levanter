@@ -220,8 +220,8 @@ def named_jit(
         return functools.partial(
             named_jit,
             axis_resources=axis_resources,
-            in_axis_resources=in_axis_resources,
-            out_axis_resources=out_axis_resources,
+            in_shardings=in_axis_resources,
+            out_shardings=out_axis_resources,
             donate_args=donate_args,
             donate_kwargs=donate_kwargs,
             **pjit_args,
