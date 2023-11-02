@@ -417,7 +417,6 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         """Initialize global jax config with settings we like, based on config"""
         jax_utils.set_hardware_rng_ops(self.use_hardware_rng)
-        jax.config.update("jax_array", self.use_jax_array)
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
