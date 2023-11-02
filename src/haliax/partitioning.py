@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
 from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from jax.lax import with_sharding_constraint
 from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
 from jaxtyping import PyTree
