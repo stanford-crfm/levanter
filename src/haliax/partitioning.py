@@ -9,7 +9,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from equinox._compile_utils import compile_cache, hashable_combine, hashable_partition
-from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
 from jax.sharding import PartitionSpec
 from jax.lax import with_sharding_constraint
@@ -183,7 +182,7 @@ def infer_resource_partitions(
             elif sharding is not None:
                 return sharding
             else:
-                return AUTO
+                return None
 
     return jax.tree_util.tree_map(partition_spec, tree, is_leaf=is_named_array)
 
