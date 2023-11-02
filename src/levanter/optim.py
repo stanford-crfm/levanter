@@ -407,6 +407,9 @@ def sophia_h(
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
 
+    if max_grad_norm is not None:
+        components.append(optax.clip_by_global_norm(max_grad_norm))
+
     components.append(scale_by_sophia_h(b1, b2, eps, gamma, clip_threshold, update_interval))
 
     if weight_decay > 0:
@@ -440,11 +443,15 @@ def sophia_g(
     eps: float = 1e-8,
     gamma: float = GAMMA_SOPHIA_G,
     weight_decay: float = 0.0,
+    max_grad_norm: Optional[float] = 1.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
 ) -> SecondOrderTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
+
+    if max_grad_norm is not None:
+        components.append(optax.clip_by_global_norm(max_grad_norm))
 
     components.append(scale_by_sophia_g(b1, b2, eps, gamma, clip_threshold, update_interval))
 
@@ -508,7 +515,6 @@ def _sophia_gradient_transform(
             "optim/hessian_norm": jnp.sqrt(sum(jnp.sum(h**2) for h in h_leaves)),
         }
 
-        # with sophia-g the max(h, 0) is not needed but no harm
         updates = jax.tree_util.tree_map(
             # lambda m, v: m / jnp.maximum(jnp.maximum(jnp.abs(m), gamma * jnp.maximum(v, 0)), eps), mu_hat, h_hat
             lambda m, h: m / jnp.maximum(gamma * h, eps),
@@ -516,10 +522,12 @@ def _sophia_gradient_transform(
             state.h,
         )
 
+        param_count = parameter_count(updates)
+
         if clip_threshold is not None:
             unclipped_count = sum(jnp.sum(jnp.abs(u) < clip_threshold) for u in jax.tree_util.tree_leaves(updates))
             updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
-            stats["optim/unclipped_fraction"] = unclipped_count / parameter_count(updates)
+            stats["optim/unclipped_fraction"] = unclipped_count / param_count
 
         # this doesn't work well on CPU, so skip if cpu
         if jax.lib.xla_bridge.get_backend().platform != "cpu":
@@ -533,6 +541,8 @@ def _sophia_gradient_transform(
     def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
         def _do_update():
             new_hess = sophia_hess_fn(fn, model, *batch, hess_key=hess_key, **batch_kwargs)
+            # NB: trying clipping
+            new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, 0, 100), new_hess)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
