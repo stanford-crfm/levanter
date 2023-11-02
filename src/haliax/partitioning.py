@@ -8,7 +8,7 @@ from typing import Mapping, Optional, Sequence, TypeVar, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from equinox.compile_utils import compile_cache, get_fun_names, hashable_combine, hashable_partition
+from equinox._compile_utils import compile_cache, hashable_combine, hashable_partition
 from jax._src.sharding_impls import AUTO
 from jax.experimental.pjit import pjit
 from jax.sharding import PartitionSpec
@@ -289,7 +289,7 @@ def named_jit(
             cmanager = contextlib.nullcontext()
 
         with cmanager:
-            cached_pjitted_fun = _named_pjit_cache(get_fun_names(fn), **my_pjit_args)
+            cached_pjitted_fun = _named_pjit_cache(fn, **my_pjit_args)
             return cached_pjitted_fun(dynamic_donated, dynamic_reserved, static)
 
     return f
@@ -311,7 +311,7 @@ def named_jit(
 # returns. This is useful for conserving memory, but we also have to splice them back in.
 # Also recall that a "pytree" can split into leaves and a "treedef", which can then be reconstructed.
 @compile_cache
-def _named_pjit_cache(fun_names, **jitkwargs):
+def _named_pjit_cache(fun, **jitkwargs):
     def fun_wrapped(dynamic_donated, dynamic_reserved, static):
         dynamic = eqx.combine(dynamic_donated, dynamic_reserved)
         dynamic_fun, dynamic_spec = dynamic
@@ -322,7 +322,7 @@ def _named_pjit_cache(fun_names, **jitkwargs):
         out = fun(*args, **kwargs)
         return out
 
-    fun_name, fun_qualname = fun_names
+    fun_name, fun_qualname = fun.__name__, fun.__qualname__
     fun_wrapped.__name__ = fun_name
     fun_wrapped.__qualname__ = fun_qualname
 
@@ -360,7 +360,7 @@ def physical_axis_size(axis: AxisSelector, mapping: Optional[ResourceMapping] = 
     """Get the physical axis size for a logical axis. This is the product of the size of all physical axes
     that this logical axis is mapped to."""
     # TODO: shouldn't be accessing this internal api, but...
-    from jax.experimental.maps import thread_resources
+    from jax._src.maps import thread_resources
 
     try:
         mesh_shape = thread_resources.env.shape
@@ -393,7 +393,7 @@ def round_axis_for_partitioning(axis: Axis, mapping: Optional[ResourceMapping] =
 
 
 def _get_mesh():
-    from jax.experimental.maps import thread_resources
+    from jax._src.maps import thread_resources
 
     return thread_resources.env.physical_mesh
 

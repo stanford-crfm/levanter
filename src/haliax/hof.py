@@ -6,7 +6,6 @@ from typing import Any, Callable, Tuple, TypeVar, Union
 import equinox as eqx
 import jax
 import jax.lax as lax
-from equinox.custom_types import BoolAxisSpec
 from jaxtyping import PyTree
 
 from .core import NamedArray, selects_axis
@@ -16,6 +15,7 @@ from .types import Axis, AxisSelector
 from .util import index_where, is_jax_or_hax_array_like, is_named_array
 
 
+BoolAxisSpec = Union[bool, Callable[[Any], bool]]
 Carry = TypeVar("Carry")
 X = TypeVar("X")
 Y = TypeVar("Y")

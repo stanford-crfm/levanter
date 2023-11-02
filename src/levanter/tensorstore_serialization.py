@@ -5,12 +5,11 @@ import logging
 from functools import partial
 
 import jax
-import jax.experimental.gda_serialization.serialization as gda_ser
+import jax.experimental.array_serialization.serialization as gda_ser
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 import tensorstore
-from jax.interpreters.pxla import ShardedDeviceArray
 from tensorstore import TensorStore
 
 from levanter.utils import jax_utils
@@ -60,7 +59,7 @@ async def _serialize_one_leaf(x, spec):
 async def save_array_to_tensorstore(x, spec):
     # TODO: to support ShardedDeviceArray, we have to figure out how to identify what slice of the array
     # we have.
-    assert not isinstance(x, ShardedDeviceArray), "ShardedDeviceArray not supported currently"
+    # assert not isinstance(x, ShardedDeviceArray), "ShardedDeviceArray not supported currently"
     if jax.process_index() == 0:
         if x.dtype == jnp.bfloat16:
             # Tensorstore uses 'bfloat16', not '<V2'.

@@ -3,8 +3,8 @@ from typing import Sequence, Union
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh
 import numpy as np
-from jax.experimental.maps import Mesh
 from jaxtyping import PyTree
 from test_utils import skip_if_not_enough_devices
 

@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import pxla
-from jax.interpreters.pxla import PartitionSpec
+from jax.sharding import PartitionSpec
 from jax.sharding import Mesh, NamedSharding, SingleDeviceSharding
 from jaxtyping import Array
 from test_utils import skip_if_not_enough_devices

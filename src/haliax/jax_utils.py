@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import numpy as np
 from chex import PRNGKey
-from equinox.module import Static
+from equinox._module import Static
 from jax import numpy as jnp
 from jax import random as jrandom
 from jaxtyping import PyTree
