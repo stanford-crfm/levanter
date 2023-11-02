@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import functools as ft
 import json
@@ -207,11 +208,21 @@ def leaf_key_paths(pytree, prefix: str = ""):
     elif isinstance(pytree, tuple):
         return tuple(leaf_key_paths(v, prefix=f"{prefix}.{i}" if prefix else str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
-        values, aux = pytree.tree_flatten()
-        field_names = aux[0]
-        rec_values = [leaf_key_paths(v, prefix=f"{prefix}.{k}" if prefix else k) for k, v in zip(field_names, values)]
-
-        return pytree.tree_unflatten(aux, rec_values)
+        names = []
+        rec_values = []
+        for field in dataclasses.fields(pytree):
+            if field.metadata.get("static", False):
+                continue
+            field_name = field.name
+            field = getattr(pytree, field_name)
+            names.append(field_name)
+        
+            if hasattr(pytree, "_state_dict_key_map"):
+                field_name = pytree._state_dict_key_map().get(field_name, field_name)
+        
+            rec_value = rec(field, field_name)
+            rec_values.append(rec_value)
+        return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree)
         if len(leaves) == 1:
