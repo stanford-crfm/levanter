@@ -1,8 +1,8 @@
 import atexit
+import itertools
 import logging
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
@@ -97,18 +97,14 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # now we can figure out which node we are on. This is also annoying because the node list
         # is a comma separated list of nodes, but they collapse the list if there are multiple nodes
         # with the same name e.g. node001,node002,node003,node004,node007 -> node[001-004,007]
-        # thankfully slurm exposes a command to expand this list for us
+        #  slurm exposes a command to expand this list for us, but it's not always available
         node_list = LevanterSlurmCluster._node_list()
         if node_list is None:
             raise ValueError(
                 "Could not find node list in environment variables. You must set coordinator_address manually."
             )
 
-        node_list = (
-            subprocess.check_output(["scontrol", "show", "hostnames", node_list], input=b"")
-            .decode("utf-8")
-            .splitlines()
-        )
+        node_list = _square_brace_expand(node_list)
 
         # finally, we can figure out which node we are on
         local_node = os.environ[_NODE_NAME]
@@ -131,6 +127,38 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # select contiguous devices for this process
         begin = local_process_id * num_devices_per_local_process
         return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+
+def _square_brace_expand(node_list):
+    # Find all parts of the sequence including text and number ranges
+    parts = re.findall(r"(\[.*?\]|[^\[\]]+)", node_list)
+
+    # This function will generate numbers from a range or a single number string
+    def generate_numbers(number_string):
+        if "-" in number_string:  # it's a range
+            start, end = map(int, number_string.split("-"))
+            return [str(i).zfill(len(number_string.split("-")[0])) for i in range(start, end + 1)]
+        else:  # it's a single number
+            return [number_string.zfill(len(number_string))]
+
+    # This function will process each part and return a list of strings or a list of lists of strings
+    # Process each part to create lists of possible variations
+    processed_parts = []
+    for part in parts:
+        if part.startswith("[") and part.endswith("]"):
+            # Extract the number sequences and expand each one
+            number_sequences = part.strip("[]").split(",")
+            processed_parts.append(
+                list(itertools.chain.from_iterable(generate_numbers(seq) for seq in number_sequences))
+            )
+        else:
+            processed_parts.append([part])
+
+    # Compute the Cartesian product of all parts to generate all combinations
+    expanded_nodes = ["".join(combination) for combination in itertools.product(*processed_parts)]
+
+    # Join the nodes with commas
+    return expanded_nodes
 
 
 def _choose_port(id):
