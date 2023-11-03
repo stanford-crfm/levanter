@@ -101,8 +101,8 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_f50efdc6-f88e-4fa6-9ef6-dd1d8314bb36.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_f7680c03-70df-4781-a98d-c88695f92f04.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_fbc62949-624d-4943-9731-f5c46242ba55.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_fd572627-cce7-4667-a684-fef096dfbeb7.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/book/book.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00001-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00002-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00003-of-01024.jsonl
@@ -1125,6 +1125,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01020-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01021-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01022-of-01024.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01023-of-01024.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0000.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0001.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0002.json.gz.dedup.classifier.jsonl.zst
@@ -1180,6 +1181,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0052.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0053.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0054.json.gz.dedup.classifier.jsonl.zst
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0055.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0000.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0001.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0002.json.gz.dedup.classifier.jsonl.zst
@@ -1244,6 +1246,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0061.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0062.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0063.json.gz.dedup.classifier.jsonl.zst
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0064.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0065.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0066.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0067.json.gz.dedup.classifier.jsonl.zst
@@ -1541,6 +1544,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0064.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0065.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0066.json.gz.dedup.classifier.jsonl.zst
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0067.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0068.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0069.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0070.json.gz.dedup.classifier.jsonl.zst
@@ -1941,6 +1945,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0062.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0063.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0064.json.gz.dedup.classifier.jsonl.zst
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0065.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0066.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0067.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0068.json.gz.dedup.classifier.jsonl.zst
@@ -1980,7 +1985,6 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0102.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0103.json.gz.dedup.classifier.jsonl.zst
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0104.json.gz.dedup.classifier.jsonl.zst
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_0f27d10d846a473b96070c3394832f32.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_0f979046c8e64e0fb5843d2634a9957d.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_10f129bfd0af45caa9cd72aa9d863ec5.sampled.jsonl
@@ -2024,6 +2028,7 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_6adcf92fb2ee48059cb60579f2e931f7.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_70f0aa43987643a7874286bca4faa66b.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_7462f1a34f594e9f8334d9a0cbbf80e7.sampled.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_78a13a25258f4d24923702c07445e20e.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_78e3afc1cfee41fbb7eaae2e5bfaa17b.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_791ed086a57f4879bb1596bed6d37bb3.sampled.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_7b5cc18857a34a0981b54f082de55cf8.sampled.jsonl
@@ -2080,10 +2085,6 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/stackexchange/stackexchange.jsonl
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/wikipedia/wiki.jsonl
 validation_urls:
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_fd572627-cce7-4667-a684-fef096dfbeb7.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01023-of-01024.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_head_0055.json.gz.dedup.classifier.jsonl.zst
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2019-30/en_middle_0064.json.gz.dedup.classifier.jsonl.zst
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2021-04/en_head_0067.json.gz.dedup.classifier.jsonl.zst
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0065.json.gz.dedup.classifier.jsonl.zst
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_78a13a25258f4d24923702c07445e20e.sampled.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
+ - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
