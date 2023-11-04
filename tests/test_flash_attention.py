@@ -21,7 +21,7 @@ def test_flash_attention_acausal():
     v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
     flash_out = flash_attention(QPos, KPos, Key, q, k, v, inference=True)
-    hax_out = hnn.attention.dot_product_attention(QPos, KPos, Key, q, k, v)
+    hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v)
 
     assert hax_out.axes == flash_out.axes
     assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-5, rtol=1e-5)
@@ -39,7 +39,7 @@ def test_flash_attention_causal_mask():
     v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
     flash_out = flash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask)
-    hax_out = hnn.attention.dot_product_attention(QPos, KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+    hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
 
     assert hax_out.axes == flash_out.axes
     assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-5, rtol=1e-5)
@@ -59,11 +59,11 @@ def test_grad_attention():
     @equinox.filter_value_and_grad
     def d_attn(qkv, fn):
         q, k, v = qkv
-        x_out = fn(QPos, KPos, Key, q, k, v, mask=mask)
+        x_out = fn(KPos, Key, q, k, v, mask=mask)
         return (x_out * x_out).sum().scalar()
 
     hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
-    fa_val, (fa_dq, fa_dk, fa_dv) = d_attn((q, k, v), functools.partial(flash_attention, inference=True))
+    fa_val, (fa_dq, fa_dk, fa_dv) = d_attn((q, k, v), functools.partial(flash_attention, QPos, inference=True))
 
     assert jnp.allclose(hax_val, fa_val, atol=1e-4, rtol=1e-4)
     assert hax_dq.axes == fa_dq.axes
