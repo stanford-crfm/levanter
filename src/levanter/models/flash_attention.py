@@ -331,7 +331,7 @@ _flash_attention.def_bwd(_flash_attention_backward)
 
 
 def _infer_attention_output_block_shape(QPos, KPos, Key, q_i, k, v):
-    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, QPos, KPos, Key, q_i, k, v)
+    out_shape = filter_eval_shape(hnn.attention.dot_product_attention, KPos, Key, q_i, k, v)
     return out_shape.axes
 
 
