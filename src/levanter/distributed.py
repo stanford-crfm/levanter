@@ -263,13 +263,13 @@ class DistributedConfig:
             device_ids = self.local_device_ids
             coordinator_address = self.coordinator_address
 
-            if LevanterSlurmCluster.is_env_present():
-                if device_ids is None:
-                    device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
-
-                if coordinator_address is None:
-                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
-
+            # if LevanterSlurmCluster.is_env_present():
+            #     if device_ids is None:
+            #         device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
+            #
+            #     if coordinator_address is None:
+            #         coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+            #
             jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
             logger.info(
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
