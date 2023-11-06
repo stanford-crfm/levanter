@@ -199,7 +199,7 @@ class WandbConfig:
                 repo = Repo(code_dir)
                 other_settings["git_commit"] = repo.head.commit.hexsha
                 hparams_to_save["git_commit"] = repo.head.commit.hexsha
-            except (NoSuchPathError, InvalidGitRepositoryError):
+            except (NoSuchPathError, InvalidGitRepositoryError, ValueError):
                 logger.warning(f"Could not find git repo at {code_dir}")
                 pass
 

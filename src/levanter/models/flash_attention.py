@@ -1,6 +1,7 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
+# cf https://github.com/samuela/torch2jax/tree/main
 from typing import Optional, Tuple
 
 import equinox
