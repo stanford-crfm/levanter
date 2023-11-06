@@ -139,7 +139,7 @@ def _square_brace_expand(node_list):
             start, end = map(int, number_string.split("-"))
             return [str(i).zfill(len(number_string.split("-")[0])) for i in range(start, end + 1)]
         else:  # it's a single number
-            return [number_string.zfill(len(number_string))]
+            return [number_string]
 
     # This function will process each part and return a list of strings or a list of lists of strings
     # Process each part to create lists of possible variations
