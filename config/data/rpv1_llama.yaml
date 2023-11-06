@@ -2086,5 +2086,5 @@ train_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/wikipedia/wiki.jsonl
 validation_urls:
  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
+#  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
+#  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
