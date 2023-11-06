@@ -8,7 +8,7 @@ from typing import List, Optional, Union
 
 import jax
 import ray
-from jax._src import clusters
+from jax._src import clusters, distributed
 from jax._src.clusters import SlurmCluster, TpuCluster
 
 from levanter.utils.py_utils import logical_cpu_core_count
@@ -200,20 +200,13 @@ def auto_ray_cluster(
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
         else:
-            cluster_types = [LevanterSlurmCluster, TpuCluster]
-            found = False
-            for cluster_type in cluster_types:
-                if cluster_type.is_env_present():
-                    found = True
-                    break
+            coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
-            if not found:
+            if coord_address is None:
                 logger.info("No auto-discovered ray address found. Using default ray.init()")
                 address = None
             else:
-                logger.info(f"Auto-discovered ray address using {cluster_type.__name__}")
-
-                coord_address = cluster_type.get_coordinator_address()
+                logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
 
                 ray_port = _choose_port(port + 10234)
@@ -222,7 +215,7 @@ def auto_ray_cluster(
                 # Explicitly setting the number of CPUs on ray init stops init errors
                 num_cpus = logical_cpu_core_count()
 
-                if cluster_type.get_process_id() == 0:
+                if jax.process_index() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
@@ -230,8 +223,7 @@ def auto_ray_cluster(
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
                     logger.info(
-                        f"Starting ray worker and connecting to {address}."
-                        f" We are process {cluster_type.get_process_id()}."
+                        f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
                     )
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     os.system(f"ray start --address {address} --num-cpus {num_cpus}")
