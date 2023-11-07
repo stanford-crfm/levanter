@@ -245,7 +245,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
 
+        print("\n\nCALIING ATTENTION!\n\n")
         attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
+        print("\n\nreturned from attention call!!\n\n")
         attn_output = self.resid_dropout(attn_output, key=k2)
         x = x + attn_output
 
