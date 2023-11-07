@@ -99,6 +99,7 @@ def dot_product_attention(
             return triton_flash_attention(q=query, k=key, v=value)
 
     else:
+        print("\n\n NOT USING FLASH ATTENTION AT ALL")
         QPos = query.resolve_axis(QPos)
         KPos = key.resolve_axis(KPos)
         m = materialize_mask(mask, QPos, KPos)
