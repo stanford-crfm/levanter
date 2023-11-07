@@ -5,6 +5,7 @@ import logging as pylogging
 import os
 import tempfile
 import time
+import typing
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,6 @@ from typing import Any, List, Optional, Union
 
 import draccus
 import jax
-import wandb
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
@@ -21,10 +21,73 @@ from levanter.utils import jax_utils
 from levanter.utils.jax_utils import jnp_to_python
 
 
-logger = pylogging.getLogger(__name__)
+pylogger = pylogging.getLogger(__name__)
 
-class LoggerSink(abc.ABC):
+_global_logger: Optional["MetricsLogger"] = None
 
+
+def log_metrics(metrics: dict[str, Any], *, step):
+    """
+    Log metrics to the global logger.
+
+    :param metrics: Metrics to log
+    :param step: Step to log metrics at
+    """
+    global _global_logger
+    if _global_logger is None:
+        raise RuntimeError("No global logger set")
+
+    _global_logger.log(metrics, step=step)
+
+
+def jit_log_metrics(metrics, *, step=None):
+    """uses jax effect callback to log to wandb from the host"""
+    jax.debug.callback(log_metrics, metrics, step=step)
+
+
+def log_summary(metrics: dict[str, Any]):
+    """
+    Log summary metrics to the global logger.
+
+    :param metrics: Metrics to log
+    """
+    global _global_logger
+    if _global_logger is None:
+        raise RuntimeError("No global logger set")
+    _global_logger.log_summary(metrics)
+
+@typing.overload
+def global_logger() -> "MetricsLogger":
+    ...
+
+
+@typing.overload
+def global_logger(logger: "MetricsLogger") -> contextlib.AbstractContextManager:
+    """Context manager for setting the global logger"""
+    ...
+
+
+def global_logger(logger: Optional["MetricsLogger"] = None) -> Union["MetricsLogger", contextlib.AbstractContextManager]:
+    """
+    Get or set the global logger.
+
+    :param logger: If provided, sets the global logger to this value.
+    :return: The global logger, or a context manager for setting the global logger.
+    """
+    global _global_logger
+    if logger is None:
+        if _global_logger is None:
+            raise RuntimeError("No global logger set")
+        return _global_logger
+    else:
+        return _GlobalLoggerContextManager(logger)
+
+
+class MetricsLogger(abc.ABC):
+    """
+    A logger for logging metrics to some backend(s).
+    Meant to be used with the [global_logger][] context manager, but can also be used directly.
+    """
     @abc.abstractmethod
     def init(self, run_id: Optional[str]):
         pass
@@ -32,7 +95,6 @@ class LoggerSink(abc.ABC):
     @abc.abstractmethod
     def log_hyperparameters(self, hparams: dict[str, Any]):
         pass
-
 
     @abc.abstractmethod
     def log(self, metrics: dict[str, Any], *, step):
@@ -49,7 +111,47 @@ class LoggerSink(abc.ABC):
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
 
-class WandbLoggerSink(LoggerSink):
+
+class CompositeLogger(MetricsLogger):
+    def __init__(self, loggers: List[MetricsLogger]):
+        self.loggers = loggers
+
+    def init(self, run_id: Optional[str]):
+        for logger in self.loggers:
+            logger.init(run_id)
+
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        for logger in self.loggers:
+            logger.log_hyperparameters(hparams)
+
+    def log(self, metrics: dict[str, Any], *, step):
+        for logger in self.loggers:
+            logger.log(metrics, step=step)
+
+    def log_summary(self, metrics: dict[str, Any]):
+        for logger in self.loggers:
+            logger.log_summary(metrics)
+
+    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        for logger in self.loggers:
+            logger.log_artifact(artifact, name=name, type=type)
+
+
+class _GlobalLoggerContextManager(contextlib.AbstractContextManager):
+    def __init__(self, logger: "MetricsLogger"):
+        self.logger = logger
+
+    def __enter__(self):
+        global _global_logger
+        self.old_logger = _global_logger
+        _global_logger = self.logger
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global _global_logger
+        _global_logger = self.old_logger
+
+
+class WandbLogger(MetricsLogger):
     def __init__(self, config: 'WandbConfig'):
         self.config = config
         self._run = None
@@ -78,7 +180,7 @@ class WandbLoggerSink(LoggerSink):
         self._run.log_artifact(artifact, name=name, type=type)
 
 
-class TensorboardLoggerSink(LoggerSink):
+class TensorboardLogger(MetricsLogger):
 
     def __init__(self, logdir: Union[str, Path]):
         self.logdir = logdir
@@ -102,12 +204,9 @@ class TensorboardLoggerSink(LoggerSink):
         for k, v in metrics.items():
             self.writer.add_scalar(k, v, 0)
 
-
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        pylogger.warning("TensorboardLoggerSink does not support logging artifacts yet")
         pass
-
-
-
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
@@ -121,10 +220,10 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
 
     if hasattr(opt_state, "hyperparams"):
         params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
-        wandb.log(params, step=step)
+        log_metrics(params, step=step)
 
 
-def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
+def init_logging(path: Union[str, Path], level: int = pylogging.INFO) -> None:
     """
     Initialize logging.Logger with the appropriate name, console, and file handlers.
 
@@ -147,6 +246,11 @@ def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
 
 def save_xla_dumps_to_wandb(initial_time: float):
     import os
+    if not is_wandb_available():
+        pylogger.warning("Wandb is not available, so we can't save XLA dumps")
+        return
+
+    import wandb
 
     # attempt to parse xla_flags to see if we're dumping assembly files
     flags = os.getenv("XLA_FLAGS", None)
@@ -154,7 +258,7 @@ def save_xla_dumps_to_wandb(initial_time: float):
         # parse the path
         # this isn't robust to quotes
         path = flags.split("xla_dump_to=")[1].split(" ")[0]
-        logger.info(f"Found xla_dump_to={path}, logging to wandb")
+        pylogger.info(f"Found xla_dump_to={path}, logging to wandb")
         if wandb.run:
             # only want to save the files that were generated during this run
             # XLA_FLAGS has to be set before the first jax call, so we can't just set it in the middle of the run
@@ -166,7 +270,7 @@ def save_xla_dumps_to_wandb(initial_time: float):
 
             wandb.run.log_code(root=path, name="xla_dumps", include_fn=include_file)
     else:
-        logger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
+        pylogger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
 
 
 @contextlib.contextmanager
@@ -184,20 +288,14 @@ def capture_time():
     end = time.time()
 
 
-@contextlib.contextmanager
-def log_time_to_wandb(name: str, *, step=None):
-    with capture_time() as fn:
-        yield fn
-    wandb.log({name: fn()}, step=step)
 
-
-def jittable_wandb_log(data, *, step=None):
-    """uses jax effect callback to log to wandb from the host"""
-    if is_wandb_available():
-        jax.debug.callback(wandb.log, data, step=step)
 
 
 def is_wandb_available():
+    try:
+        import wandb
+    except ImportError:
+        return False
     return wandb is not None and wandb.run is not None
 
 
@@ -278,7 +376,7 @@ class WandbConfig:
 
         other_settings = dict()
         if code_dir is not None:
-            logger.info(f"Setting wandb code_dir to {code_dir}")
+            pylogger.info(f"Setting wandb code_dir to {code_dir}")
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
             # for some reason, wandb isn't populating the git commit, so we do it here
@@ -287,7 +385,7 @@ class WandbConfig:
                 other_settings["git_commit"] = repo.head.commit.hexsha
                 hparams_to_save["git_commit"] = repo.head.commit.hexsha
             except (NoSuchPathError, InvalidGitRepositoryError):
-                logger.warning(f"Could not find git repo at {code_dir}")
+                pylogger.warning(f"Could not find git repo at {code_dir}")
                 pass
 
         r = wandb.init(
@@ -324,7 +422,7 @@ class WandbConfig:
                 for k, v in metadata_to_share.items():
                     setattr(r, k, v)
 
-            logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
+            pylogger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
 
         if dataclasses.is_dataclass(hparams):
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -370,7 +468,7 @@ class WandbConfig:
                 top_git_root = repo.working_dir
                 break
             except (NoSuchPathError, InvalidGitRepositoryError):
-                logger.debug(f"Skipping {dirname} since it's not a git root")
+                pylogger.debug(f"Skipping {dirname} since it's not a git root")
                 pass
         return top_git_root
 

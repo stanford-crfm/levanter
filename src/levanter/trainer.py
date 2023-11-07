@@ -608,7 +608,7 @@ class TrainerConfig:
 
     def _initialize_logging(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
+        levanter.logging.init_logging(self.log_dir / f"{self.id}.log")
 
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right

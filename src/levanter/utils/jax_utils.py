@@ -41,6 +41,11 @@ def use_cpu_device():
         yield
 
 
+def is_inside_jit():
+    """Returns True if we're currently inside a jit"""
+    return isinstance(jnp.zeros(()), jax.core.Tracer)
+
+
 def flops_estimate(fn, *args):
     """Estimates the flop count of a function using XLA/HLO fanciness. See
     https://github.com/google/flax/discussions/1854"""

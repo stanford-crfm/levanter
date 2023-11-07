@@ -8,7 +8,7 @@ import levanter
 from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, build_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
-from levanter.logging import init_logger
+from levanter.logging import init_logging
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logger("cache_dataset.log")
+    init_logging("cache_dataset.log")
     args.initialize()
 
     tokenizer = args.the_tokenizer
