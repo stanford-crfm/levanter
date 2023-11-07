@@ -34,10 +34,6 @@ def triton_flash_attention(
     Returns:
         _type_: _description_
     """
-    print(q)
-    print(q.shape)
-    print(tuple(q.shape.values()))
-
     outshape = tuple(q.shape.values())
 
     return jt.triton_call(
@@ -49,4 +45,5 @@ def triton_flash_attention(
         sm_scale=softmax_scale,
         kernel=attention,
         out_shape=outshape,
+        grid=None,
     )
