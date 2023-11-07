@@ -555,7 +555,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return self.token_seq_dataset("train", seq_len, monitors)
 
     def validation_set(self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
-        return self.token_seq_dataset("validation", seq_len, monitors)
+        if self.validation_urls:
+            return self.token_seq_dataset("validation", seq_len, monitors)
+        else:
+            return None
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
