@@ -31,7 +31,7 @@ Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a 
 ## Data Preparation
 
 They key ingredient for training an LM is a lot of plain-text data.
-We have two top-level ways of consuming training data: a [**single source**](#single-source) and [**mixture of sources**](#mixture-of-sources).
+We have two top-level ways of consuming training data: a [**single source**](#single-data-source) and [**mixture of sources**](#mixture-of-sources).
 Single source is simpler and probably closer to what you're used to, while multiple
 source allows you to have multiple evaluation sets or use techniques like [DoReMi](https://arxiv.org/abs/2305.10429).
 
@@ -56,7 +56,7 @@ Once you have done so, you can create the `data` section of your training config
     train_urls:
       - "gs://path/to/train_web_{1..32}.jsonl.gz"
       - "gs://path/to/train_web_crawl2.jsonl.gz"
-    validation_urls: 
+    validation_urls:
       - "gs://path/to/valid_web.jsonl.gz"
 ```
 
@@ -87,7 +87,7 @@ This will be passed to `datasets.load_dataset`. If the dataset supports streamin
 the data instead of loading it all into memory. If a streaming dataset is sharded, we will attempt to exploit the
 sharded structure to preprocess more efficiently.
 
-### Single Source
+### Single Data Source
 
 If you have a single source of data, you can use the `data` section of your training configuration to specify it:
 
@@ -108,7 +108,7 @@ data:
 
     This feature is experimental and may change in the future.
 
-If you have multiple sources of data, you can use the `data` section of your training configuration to specify them:
+If you have multiple sources of data (e.g., multiple domains, or distinct subsets of data), you can use the `data` section of your training configuration to specify them:
 
 ```yaml
 data:
@@ -118,7 +118,7 @@ data:
     web:
       train_urls:
         - "gs://path/to/train_web_{1..32}.jsonl.gz"
-      validation_urls: 
+      validation_urls:
         - "gs://path/to/valid_web.jsonl.gz"
   train_weights:
     wikitext: 0.1
@@ -136,7 +136,7 @@ validation data.
 
 !!! tip
 
-        If you only have one training source, but you want to use multiple evaluation sources, you can use the 
+        If you only have one training source, but you want to use multiple evaluation sources, you can use the
         the mixture of sources mechanism with a single source. Just set the weight of the training source to 1.0
         and the weights of the evaluation sources to 0.0.
 
