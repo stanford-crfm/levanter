@@ -535,6 +535,8 @@ class TrainerConfig:
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name/id in the process"""
+        # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
+        pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
         self._maybe_set_id()
         self.ray.initialize()
