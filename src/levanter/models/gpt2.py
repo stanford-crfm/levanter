@@ -177,6 +177,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         if self.config.scale_attn_by_inverse_layer_idx:
             q = q / (layer_idx + 1.0)
 
+        print("\n\nCALLING DOT PRODICT ATTENTION")
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -191,6 +192,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
+        print("RETURNED FROM DOT PRODUCT ATTENTION")
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:

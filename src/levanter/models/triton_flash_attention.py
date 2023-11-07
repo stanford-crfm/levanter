@@ -36,6 +36,7 @@ def triton_flash_attention(
     """
     outshape = jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.dtype)
 
+    print("\n\n MAKING CALL TO KERNAL NOW!\n\n")
     return jt.triton_call(
         q=q,
         k=k,
