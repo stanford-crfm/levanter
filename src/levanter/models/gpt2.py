@@ -193,6 +193,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
         print("RETURNED FROM DOT PRODUCT ATTENTION")
+        print(attn_output)
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
