@@ -35,9 +35,10 @@ def triton_flash_attention(
         _type_: _description_
     """
     print(q)
-    print(q.shape())
+    print(q.shape)
+    print(tuple(q.shape.values()))
 
-    outshape = tuple(q.values())
+    outshape = tuple(q.shape.values())
 
     return jt.triton_call(
         q=q,
