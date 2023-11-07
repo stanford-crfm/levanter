@@ -19,7 +19,6 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
-from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -100,11 +99,8 @@ def main(config: TrainLmConfig):
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
-    eval_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
-    eval_loader = trainer.replicated_loader(eval_dataset, EvalBatch)
-
-    train_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
-    train_loader = trainer.sharded_loader(train_dataset, Batch)
+    eval_datasets = config.data.validation_sets(Pos.size)
+    train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
 
     with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -136,7 +132,15 @@ def main(config: TrainLmConfig):
         wandb.summary["parameter_count"] = parameter_count(state.model)
 
         # boilerplate hooks and such
-        trainer.add_default_hooks(eval_loader)
+        trainer.add_default_hooks()
+
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        for name, eval_dataset in eval_datasets.items():
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            trainer.add_eval_hook(eval_dataset, name=name)
+
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
@@ -167,7 +171,7 @@ def main(config: TrainLmConfig):
         # )
         #
         # data loader. may need to seek to the right place if we're resuming
-        iter_data = non_caching_cycle(train_loader)
+        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
         if state.step > 0:
             # step is after the batch, so we need to seek to step
@@ -175,10 +179,10 @@ def main(config: TrainLmConfig):
             import tqdm
 
             for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
-                next(iter_data)
+                next(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, iter_data)
+        trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
 
 

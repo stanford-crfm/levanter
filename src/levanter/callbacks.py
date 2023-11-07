@@ -23,11 +23,16 @@ from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 logger = logging.getLogger(__name__)
 
 
-def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
+def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
 
-    pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+
+    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         loss = loss_fn(model, batch)
         total_loss += loss.item()
@@ -47,14 +52,21 @@ def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
     dataset: Iterable,
     max_batches: Optional[int] = None,
+    name: Optional[str] = None,
 ):
     def compute_loss(info: StepInfo):
-        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches)
+        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches, name=name)
 
         if wandb.run is not None:
-            wandb.log({"eval/loss": loss}, step=info.step)
+            prefix = "eval"
+            if name:
+                prefix += "/" + name
+            wandb.log({f"{prefix}/loss": loss}, step=info.step)
 
-        logger.info(f"validation loss: {loss:.3f}")
+        if name:
+            logger.info(f"{name} validation loss: {loss:.3f}")
+        else:
+            logger.info(f"validation loss: {loss:.3f}")
 
         return loss
 
@@ -63,7 +75,7 @@ def compute_validation_loss(
 
 def log_to_wandb(step: StepInfo):
     wandb.log({"train/loss": step.loss, "global_step": step.step}, step=step.step)
-    log_optimizer_hyperparams(step.opt_state, step=step.step)
+    log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
 
 
 def wandb_xla_logger(config: WandbConfig):

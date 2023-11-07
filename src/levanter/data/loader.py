@@ -243,6 +243,7 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
         axis_resources: Optional[ResourceMapping] = None,
         max_capacity: Optional[int] = 10,
     ):
+        assert item_dataset is not None
         self.item_dataset = item_dataset
         self.mesh = mesh
         self.Batch = Batch

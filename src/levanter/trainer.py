@@ -304,19 +304,22 @@ class Trainer:
 
         return info
 
-    def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
+    def add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_to_wandb, every=1)
-        self.add_eval_hook(eval_loader)
+        if eval_dataset is not None:
+            self.add_eval_hook(eval_dataset)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
-    def add_eval_hook(self, eval_loader):
+    def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
+
+        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -326,7 +329,9 @@ class Trainer:
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
-                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
+                callbacks.compute_validation_loss(
+                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                ),
                 every=self.config.steps_per_eval,
             )
 
