@@ -62,6 +62,7 @@ def dot_product_attention(
 
         # Use native JAX implemention if on TPU
         if accelerator_type == "TPU" or accelerator_type == "CPU":
+            print("\n\nTPU or CPU DETECTED! USING IN JOUSE JAX IMPLEMNATION\n\n")
             from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
 
             if flash_block_size is None:
@@ -86,6 +87,7 @@ def dot_product_attention(
 
         # Use Triton implemention if on GPU
         elif accelerator_type == "GPU":
+            print("\n\nGPU DETECTED, USING TRITON IMPLMEN\n\n")
             from levanter.models.triton_flash_attention import triton_flash_attention
 
             if bias is not None:
