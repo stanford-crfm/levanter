@@ -64,7 +64,6 @@ def main(config: LoraLmConfig):
 
     # some axes we need
     Batch = config.trainer.TrainBatch
-    EvalBatch = config.trainer.EvalBatch
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
@@ -103,14 +102,13 @@ def main(config: LoraLmConfig):
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
         # data loaders
-        eval_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
-        eval_loader = trainer.replicated_loader(eval_dataset, EvalBatch)
+        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
 
-        train_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
-        trainer.add_default_hooks(eval_loader)
+        trainer.add_default_hooks(eval_dataset)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
