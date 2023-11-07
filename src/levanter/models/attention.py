@@ -29,7 +29,7 @@ def dot_product_attention(
     inference: bool = True,
     prng: Optional[PRNGKeyArray] = None,
 ):
-    print("\n\nINSIDE DOT PRODUCT ATTENTION")
+    print("\n\nINSIDE DOT PRODUCT ATTENTION\n\n")
     """
     This method is similar to [haliax.nn.attention.dot_product_attention][] but uses the [AttentionMask][] class,
     which we might move to haliax.nn.attention in the future.
@@ -58,8 +58,11 @@ def dot_product_attention(
     if QPos == KPos:
         raise ValueError("QPos and KPos must be different")
 
+    print(f"\n\nCHECKING IF SHOULD USE FLASH ATTENTION, ITS SET TO {use_flash}\n\n")
+
     if use_flash:
         accelerator_type = xla_bridge.get_backend().platform
+        print(f"\n\nACCELERATOR TYPE IS {accelerator_type}\n\n")
 
         # Use native JAX implemention if on TPU
         if accelerator_type == "TPU" or accelerator_type == "CPU":
