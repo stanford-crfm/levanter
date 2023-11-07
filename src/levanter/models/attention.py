@@ -29,6 +29,7 @@ def dot_product_attention(
     inference: bool = True,
     prng: Optional[PRNGKeyArray] = None,
 ):
+    print("\n\nINSIDE DOT PRODUCT ATTENTION")
     """
     This method is similar to [haliax.nn.attention.dot_product_attention][] but uses the [AttentionMask][] class,
     which we might move to haliax.nn.attention in the future.
