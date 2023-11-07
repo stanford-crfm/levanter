@@ -1,7 +1,7 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import asyncio
 import dataclasses
-import logging
+import logging as pylogging
 import os
 import sys
 import threading
@@ -30,7 +30,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
 import tblib
-import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -45,6 +44,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .. import logging
 from . import ShardableDataset
 from ._preprocessor import BatchProcessor, as_record_batch, dict_from_record_batch
 from .sharded_dataset import ShardedDataset
@@ -54,7 +54,7 @@ T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
-logger = logging.getLogger(__name__)
+logger = pylogging.getLogger(__name__)
 
 DEFAULT_ROWS_PER_CHUNK = 1024 * 32
 LEDGER_FILE_NAME = "cache_ledger.json"
@@ -205,7 +205,7 @@ def _produce_cache_for_shard(
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
     # TODO: thread logging level through calls
-    logging.basicConfig(level=logging.INFO)
+    pylogging.basicConfig(level=pylogging.INFO)
     # load or create shard metadata (for recovery)
     try:
         shard_name = source.shard_names[shard_idx]
@@ -415,7 +415,7 @@ class RichMetricsMonitor(MetricsMonitor):
         self.progress.start()
 
 
-class WandbMetricsMonitor(MetricsMonitor):
+class LoggingMetricsMonitor(MetricsMonitor):
     last_metrics: Optional[InProgressCacheMetrics]
     last_time: Optional[float]
 
@@ -457,16 +457,16 @@ class WandbMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        wandb.log(to_log, commit=self.commit)
+        logging.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.INFO):
+    def __init__(self, logger: Optional[Union[pylogging.Logger, str]] = None, level=pylogging.INFO):
         if isinstance(logger, str):
-            logger = logging.getLogger(logger)
-        self.logger = logger or logging.getLogger(__name__)
+            logger = pylogging.getLogger(logger)
+        self.logger = logger or pylogging.getLogger(__name__)
         self.level = level
 
     def __call__(self, metrics: InProgressCacheMetrics):
@@ -510,7 +510,7 @@ class _ShardStatus:
 def _mk_process_task(processor: BatchProcessor[T]):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         return processor(batch)
 
     return process_task
@@ -519,7 +519,7 @@ def _mk_process_task(processor: BatchProcessor[T]):
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         ray.get(queue.task_running.remote())
         result = processor(batch)
         del batch
@@ -614,7 +614,7 @@ class ChunkCacheBuilder:
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         self.broker_ref = broker_ref
         self.shard_status: Dict[str, _ShardStatus] = dict()
         self._current_round_robin = []
@@ -753,7 +753,7 @@ class ChunkCacheBroker:
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False

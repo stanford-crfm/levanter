@@ -99,10 +99,10 @@ def main(config: TrainLmConfig):
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
-    eval_datasets = config.data.validation_sets(Pos.size)
-    train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+    with trainer:
+        eval_datasets = config.data.validation_sets(Pos.size)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
 
-    with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.

@@ -18,7 +18,11 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from optax import MultiStepsState
 
 from levanter.utils import jax_utils
-from levanter.utils.jax_utils import jnp_to_python
+from levanter.utils.jax_utils import is_inside_jit, jnp_to_python
+
+
+if typing.TYPE_CHECKING:
+    import wandb
 
 
 pylogger = pylogging.getLogger(__name__)
@@ -26,7 +30,7 @@ pylogger = pylogging.getLogger(__name__)
 _global_logger: Optional["MetricsLogger"] = None
 
 
-def log_metrics(metrics: dict[str, Any], *, step):
+def log_metrics(metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
     """
     Log metrics to the global logger.
 
@@ -37,7 +41,14 @@ def log_metrics(metrics: dict[str, Any], *, step):
     if _global_logger is None:
         raise RuntimeError("No global logger set")
 
-    _global_logger.log(metrics, step=step)
+    if is_inside_jit():
+        # we're inside a jit, so we need to log from the host
+        if commit:
+            raise ValueError("Cannot commit from inside a jit")
+        jit_log_metrics(metrics, step=step)
+    else:
+        # TODO: do we need to coerce to np here?
+        _global_logger.log(metrics, step=step)
 
 
 def jit_log_metrics(metrics, *, step=None):
@@ -56,6 +67,7 @@ def log_summary(metrics: dict[str, Any]):
         raise RuntimeError("No global logger set")
     _global_logger.log_summary(metrics)
 
+
 @typing.overload
 def global_logger() -> "MetricsLogger":
     ...
@@ -67,7 +79,9 @@ def global_logger(logger: "MetricsLogger") -> contextlib.AbstractContextManager:
     ...
 
 
-def global_logger(logger: Optional["MetricsLogger"] = None) -> Union["MetricsLogger", contextlib.AbstractContextManager]:
+def global_logger(
+    logger: Optional["MetricsLogger"] = None,
+) -> Union["MetricsLogger", contextlib.AbstractContextManager]:
     """
     Get or set the global logger.
 
@@ -88,6 +102,7 @@ class MetricsLogger(abc.ABC):
     A logger for logging metrics to some backend(s).
     Meant to be used with the [global_logger][] context manager, but can also be used directly.
     """
+
     @abc.abstractmethod
     def init(self, run_id: Optional[str]):
         pass
@@ -97,9 +112,12 @@ class MetricsLogger(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def log(self, metrics: dict[str, Any], *, step):
+    def log(self, metrics: dict[str, typing.Any], *, step, commit: Optional[bool] = None):
         """
         Log metrics to the logger. Step is always required.
+
+        Args:
+            commit:
         """
         pass
 
@@ -124,9 +142,9 @@ class CompositeLogger(MetricsLogger):
         for logger in self.loggers:
             logger.log_hyperparameters(hparams)
 
-    def log(self, metrics: dict[str, Any], *, step):
+    def log(self, metrics: dict[str, Any], *, step, commit=None):
         for logger in self.loggers:
-            logger.log(metrics, step=step)
+            logger.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
         for logger in self.loggers:
@@ -152,7 +170,9 @@ class _GlobalLoggerContextManager(contextlib.AbstractContextManager):
 
 
 class WandbLogger(MetricsLogger):
-    def __init__(self, config: 'WandbConfig'):
+    _run: Optional["wandb.sdk.wandb_run.Run"]
+
+    def __init__(self, config: "WandbConfig"):
         self.config = config
         self._run = None
 
@@ -164,10 +184,10 @@ class WandbLogger(MetricsLogger):
             raise RuntimeError("Must call init before logging hyperparameters")
         self._run.config.update(hparams)
 
-    def log(self, metrics: dict[str, Any], *, step):
+    def log(self, metrics: dict[str, Any], *, step, commit=None):
         if self._run is None:
             raise RuntimeError("Must call init before logging metrics")
-        self._run.log(metrics, step=step)
+        self._run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
         if self._run is None:
@@ -181,31 +201,41 @@ class WandbLogger(MetricsLogger):
 
 
 class TensorboardLogger(MetricsLogger):
-
     def __init__(self, logdir: Union[str, Path]):
         self.logdir = logdir
         self.writer = None
 
     def init(self, run_id: Optional[str]):
         from tensorboardX import SummaryWriter
+
         dir_to_write = self.logdir
         if run_id is not None:
             dir_to_write = os.path.join(dir_to_write, run_id)
         self.writer = SummaryWriter(dir_to_write)
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
+        if self.writer is None:
+            raise RuntimeError("Must call init before logging metrics")
+
         self.writer.add_hparams(hparams, {"dummy": 0})
 
-    def log(self, metrics: dict[str, Any], *, step):
+    def log(self, metrics: dict[str, Any], *, step, commit=None):
+        del commit
+        if self.writer is None:
+            raise RuntimeError("Must call init before logging metrics")
+
         for k, v in metrics.items():
             self.writer.add_scalar(k, v, step)
 
     def log_summary(self, metrics: dict[str, Any]):
+        if self.writer is None:
+            raise RuntimeError("Must call init before logging metrics")
+
         for k, v in metrics.items():
             self.writer.add_scalar(k, v, 0)
 
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        pylogger.warning("TensorboardLoggerSink does not support logging artifacts yet")
+        pylogger.warning("TensorboardLogger does not support logging artifacts yet")
         pass
 
 
@@ -246,6 +276,7 @@ def init_logging(path: Union[str, Path], level: int = pylogging.INFO) -> None:
 
 def save_xla_dumps_to_wandb(initial_time: float):
     import os
+
     if not is_wandb_available():
         pylogger.warning("Wandb is not available, so we can't save XLA dumps")
         return
@@ -286,9 +317,6 @@ def capture_time():
 
     yield fn
     end = time.time()
-
-
-
 
 
 def is_wandb_available():

@@ -30,6 +30,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
+from levanter import logging
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
@@ -114,8 +115,10 @@ class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
     hooks: TrainerHooks
+    _logger: logging.MetricsLogger
     is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
+    _cmanagers: List[typing.ContextManager] = []
 
     def __init__(
         self,
@@ -141,6 +144,10 @@ class Trainer:
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
+        self._logger = logging.WandbLogger(self.config.wandb)
+        # TODO: hacky hack
+        self._logger._run = wandb.run
+        self._cmanagers = []
 
     @cached_property
     def loss_fn(self):
@@ -202,6 +209,34 @@ class Trainer:
     def EvalBatch(self):
         return self.config.EvalBatch
 
+    def __enter__(self):
+        if len(self._cmanagers) > 0:
+            raise RuntimeError("Trainer is already entered")
+
+        self._cmanagers = [
+            logging.global_logger(self._logger),
+            self.device_mesh,
+            hax.axis_mapping(self.parameter_axis_mapping),
+        ]
+
+        for cmanager in self._cmanagers:
+            cmanager.__enter__()
+
+        return self
+
+    def __exit__(self, *args):
+        problems = []
+        for cmanager in reversed(self._cmanagers):
+            try:
+                cmanager.__exit__(*args)
+            except Exception as e:
+                problems.append(e)
+
+        self._cmanagers = []
+
+        if len(problems) > 0:
+            raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
+
     def initial_state(
         self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
     ) -> TrainerState:
@@ -211,51 +246,51 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
+        with logging.global_logger(self._logger):
+            if model is not None and model_init is not None:
+                raise ValueError("only one of model and model_init should be specified")
+            elif model is None and model_init is None:
+                raise ValueError("one of model and model_init must be specified")
 
-        if model is not None and model_init is not None:
-            raise ValueError("only one of model and model_init should be specified")
-        elif model is None and model_init is None:
-            raise ValueError("one of model and model_init must be specified")
-
-        if model is not None:
-            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
-            # We can't use plain partials because they aren't pytrees
-            model_init = jax.tree_util.Partial(lambda m: m, model)
-
-        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
-
-        # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
-        trainable_model_shape = self.trainable_params_only(model_shape)
-
-        ckpt = self.maybe_load_checkpoint(
-            trainable_model_shape,
-            (opt_state_shape, training_key),
-            axis_mapping=self.parameter_axis_mapping,
-            mesh=self.device_mesh,
-        )
-
-        if ckpt is not None:
-            trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
-                model = eqx.combine(trainable_model, model)
-            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
-                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-                model = eqx.combine(trainable_model, non_trainable)
-            else:
-                model = trainable_model
-            step = completed_step + 1
-        else:
-            model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
-            step = 0
+                # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
+                # We can't use plain partials because they aren't pytrees
+                model_init = jax.tree_util.Partial(lambda m: m, model)
 
-        return TrainerState(step, model, opt_state, training_key)
+            model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+
+            # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
+            trainable_model_shape = self.trainable_params_only(model_shape)
+
+            ckpt = self.maybe_load_checkpoint(
+                trainable_model_shape,
+                (opt_state_shape, training_key),
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+            )
+
+            if ckpt is not None:
+                trainable_model, (opt_state, training_key), completed_step = ckpt
+                if model is not None:
+                    model = eqx.combine(trainable_model, model)
+                elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
+                    # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                    non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+                    model = eqx.combine(trainable_model, non_trainable)
+                else:
+                    model = trainable_model
+                step = completed_step + 1
+            else:
+                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
+                step = 0
+
+            return TrainerState(step, model, opt_state, training_key)
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
-        with capture_time() as step_time:
+        with capture_time() as step_time, logging.global_logger(self._logger):
             key, new_key = jax.random.split(state.training_key)
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
@@ -272,24 +307,24 @@ class Trainer:
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
+        with logging.global_logger(self._logger):
+            while state.step < self.config.num_train_steps:
+                with capture_time() as loading_time:
+                    example = next(iter_data)
 
-        while state.step < self.config.num_train_steps:
-            with capture_time() as loading_time:
-                example = next(iter_data)
+                # TODO: refactor logging
+                logging.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
-            # TODO: refactor logging
-            wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
+                info = self.train_step(state, example)
+                state = info.state
 
-            info = self.train_step(state, example)
-            state = info.state
+                if run_hooks:
+                    with capture_time() as hook_time:
+                        self.run_hooks(info)
 
-            if run_hooks:
-                with capture_time() as hook_time:
-                    self.run_hooks(info)
+                    logging.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
-                wandb.log({"throughput/hook_time": hook_time()}, step=state.step)
-
-            yield info
+                yield info
 
     def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
@@ -308,7 +343,7 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_to_wandb, every=1)
+        self.add_hook(callbacks.log_step_info, every=1)
         if eval_dataset is not None:
             self.add_eval_hook(eval_dataset)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
