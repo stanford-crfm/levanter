@@ -63,7 +63,7 @@ def compute_validation_loss(
                 prefix += "/" + name
             wandb.log({f"{prefix}/loss": loss}, step=info.step)
 
-        if name is not None:
+        if name:
             logger.info(f"{name} validation loss: {loss:.3f}")
         else:
             logger.info(f"validation loss: {loss:.3f}")

@@ -30,7 +30,7 @@ Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a 
 
 ## Data Preparation
 
-They key ingredient for training an LM is a lot of plain-text data.
+The key ingredient for training an LM is a lot of plain-text data.
 We have two top-level ways of consuming training data: a [**single source**](#single-data-source) and [**mixture of sources**](#mixture-of-sources).
 Single source is simpler and probably closer to what you're used to, while multiple
 source allows you to have multiple evaluation sets or use techniques like [DoReMi](https://arxiv.org/abs/2305.10429).
