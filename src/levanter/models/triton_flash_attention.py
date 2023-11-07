@@ -34,7 +34,7 @@ def triton_flash_attention(
     Returns:
         _type_: _description_
     """
-    outshape = jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.dtype)
+    outshape = jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.array.dtype)
 
     return jt.triton_call(
         q=q,
