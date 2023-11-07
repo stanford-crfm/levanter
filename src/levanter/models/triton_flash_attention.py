@@ -34,6 +34,7 @@ def triton_flash_attention(
     Returns:
         _type_: _description_
     """
+    print(q)
 
     outshape = tuple(q.shape().values())
 

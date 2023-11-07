@@ -102,6 +102,9 @@ def dot_product_attention(
 
             return triton_flash_attention(q=query, k=key, v=value)
 
+        else:
+            raise ValueError("There was an issue checking the accelorator backend.")
+
     else:
         print("\n\n NOT USING FLASH ATTENTION AT ALL")
         QPos = query.resolve_axis(QPos)
