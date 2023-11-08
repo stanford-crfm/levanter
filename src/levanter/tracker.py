@@ -235,7 +235,7 @@ class TensorboardTracker(Tracker):
             raise RuntimeError("Must call init before logging metrics")
 
         for k, v in metrics.items():
-            self.writer.add_scalar(k, v, 0)
+            self.writer.add_scalar(k, v, global_step=None)
 
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
         pylogger.warning("TensorboardLogger does not support logging artifacts yet")

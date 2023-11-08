@@ -5,14 +5,13 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
-import wandb
 
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
-from levanter import callbacks
+from levanter import callbacks, tracker
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -131,7 +130,11 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        wandb.summary["parameter_count"] = parameter_count(state.model)
+        tracker.log_summary(
+            {
+                "parameter_count": parameter_count(state.model),
+            }
+        )
 
         # boilerplate hooks and such
         trainer.add_default_hooks()
