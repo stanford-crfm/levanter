@@ -21,28 +21,30 @@ from levanter.utils import jax_utils
 from levanter.utils.jax_utils import is_inside_jit, jnp_to_python
 
 
-_global_logger: Optional["MetricsLogger"] = None
+_global_tracker: Optional["Tracker"] = None
 
 
 def log_metrics(metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
     """
-    Log metrics to the global logger.
+    Log metrics to the global tracker.
 
-    :param metrics: Metrics to log
-    :param step: Step to log metrics at
+    Args
+        metrics: Metrics to log
+        step: Step to log at
+        commit: Whether to commit the metrics. If None, uses the default for the tracker.
     """
-    global _global_logger
-    if _global_logger is None:
-        raise RuntimeError("No global logger set")
+    global _global_tracker
+    if _global_tracker is None:
+        raise RuntimeError("No global tracker set")
 
     if is_inside_jit():
         # we're inside a jit, so we need to log from the host
         if commit:
-            raise ValueError("Cannot commit from inside a jit")
+            raise ValueError("Cannot commit from inside jit")
         jit_log_metrics(metrics, step=step)
     else:
         # TODO: do we need to coerce to np here?
-        _global_logger.log(metrics, step=step)
+        _global_tracker.log(metrics, step=step)
 
 
 def jit_log_metrics(metrics, *, step=None):
@@ -52,58 +54,57 @@ def jit_log_metrics(metrics, *, step=None):
 
 def log_summary(metrics: dict[str, Any]):
     """
-    Log summary metrics to the global logger.
+    Log summary metrics to the global tracker.
 
     :param metrics: Metrics to log
     """
-    global _global_logger
-    if _global_logger is None:
-        raise RuntimeError("No global logger set")
-    _global_logger.log_summary(metrics)
+    global _global_tracker
+    if _global_tracker is None:
+        raise RuntimeError("No global tracker set")
+    _global_tracker.log_summary(metrics)
 
 
 @typing.overload
-def global_logger() -> "MetricsLogger":
+def current_tracker() -> "Tracker":
     ...
 
 
 @typing.overload
-def global_logger(logger: "MetricsLogger") -> contextlib.AbstractContextManager:
-    """Context manager for setting the global logger"""
+def current_tracker(tracker: "Tracker") -> contextlib.AbstractContextManager:
+    """Context manager for setting the global tracker"""
     ...
 
 
-def global_logger(
-    logger: Optional["MetricsLogger"] = None,
-) -> Union["MetricsLogger", contextlib.AbstractContextManager]:
+def current_tracker(
+    tracker: Optional["Tracker"] = None,
+) -> Union["Tracker", contextlib.AbstractContextManager]:
     """
-    Get or set the global logger.
+    Get or set the global tracker.
 
-    :param logger: If provided, sets the global logger to this value.
-    :return: The global logger, or a context manager for setting the global logger.
+    :param tracker: If provided, returns a context manager that sets the global tracker to the provided tracker when used.
+    :return: The global tracker, or a context manager for setting the global tracker.
     """
-    global _global_logger
-    if logger is None:
-        if _global_logger is None:
-            raise RuntimeError("No global logger set")
-        return _global_logger
+    global _global_tracker
+    if tracker is None:
+        if _global_tracker is None:
+            raise RuntimeError("No global tracker set")
+        return _global_tracker
     else:
-        return _GlobalLoggerContextManager(logger)
+        return _GlobalLoggerContextManager(tracker)
 
 
-class MetricsLogger(abc.ABC):
+class Tracker(abc.ABC):
     """
-    A logger for logging metrics to some backend(s).
-    Meant to be used with the [global_logger][] context manager, but can also be used directly.
+    A tracker is responsible for logging metrics, hyperparameters, and artifacts.
+    Meant to be used with the [current_tracker][] context manager, but can also be used directly.
 
-    We call it a "metrics" logger because it's meant to be used for logging metrics, but it can also be used for
-    logging artifacts and such. We're mostly trying to distinguish it from python's built-in logging module.
+    The name is borrowed from Accelerate.
     """
 
     @abc.abstractmethod
     def init(self, run_id: Optional[str]):
         """
-        Initialize the logger with a run id.
+        Initialize the tracker with a run id.
         """
         pass
 
@@ -114,10 +115,12 @@ class MetricsLogger(abc.ABC):
     @abc.abstractmethod
     def log(self, metrics: dict[str, typing.Any], *, step, commit: Optional[bool] = None):
         """
-        Log metrics to the logger. Step is always required.
+        Log metrics to the tracker. Step is always required.
 
         Args:
-            commit:
+            metrics: Metrics to log
+            step: Step to log at
+            commit: Whether to commit the metrics. If None, uses the default for the tracker.
         """
         pass
 
@@ -130,46 +133,46 @@ class MetricsLogger(abc.ABC):
         pass
 
 
-class CompositeLogger(MetricsLogger):
-    def __init__(self, loggers: List[MetricsLogger]):
+class CompositeTracker(Tracker):
+    def __init__(self, loggers: List[Tracker]):
         self.loggers = loggers
 
     def init(self, run_id: Optional[str]):
-        for logger in self.loggers:
-            logger.init(run_id)
+        for tracker in self.loggers:
+            tracker.init(run_id)
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        for logger in self.loggers:
-            logger.log_hyperparameters(hparams)
+        for tracker in self.loggers:
+            tracker.log_hyperparameters(hparams)
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
-        for logger in self.loggers:
-            logger.log(metrics, step=step, commit=commit)
+        for tracker in self.loggers:
+            tracker.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
-        for logger in self.loggers:
-            logger.log_summary(metrics)
+        for tracker in self.loggers:
+            tracker.log_summary(metrics)
 
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        for logger in self.loggers:
-            logger.log_artifact(artifact, name=name, type=type)
+        for tracker in self.loggers:
+            tracker.log_artifact(artifact, name=name, type=type)
 
 
 class _GlobalLoggerContextManager(contextlib.AbstractContextManager):
-    def __init__(self, logger: "MetricsLogger"):
-        self.logger = logger
+    def __init__(self, tracker: "Tracker"):
+        self.tracker = tracker
 
     def __enter__(self):
-        global _global_logger
-        self.old_logger = _global_logger
-        _global_logger = self.logger
+        global _global_tracker
+        self.old_tracker = _global_tracker
+        _global_tracker = self.tracker
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        global _global_logger
-        _global_logger = self.old_logger
+        global _global_tracker
+        _global_tracker = self.old_tracker
 
 
-class WandbLogger(MetricsLogger):
+class WandbTracker(Tracker):
     _run: Optional["wandb.sdk.wandb_run.Run"]
 
     def __init__(self, config: "WandbConfig"):
@@ -200,7 +203,7 @@ class WandbLogger(MetricsLogger):
         self._run.log_artifact(artifact, name=name, type=type)
 
 
-class TensorboardLogger(MetricsLogger):
+class TensorboardTracker(Tracker):
     def __init__(self, logdir: Union[str, Path]):
         self.logdir = logdir
         self.writer = None

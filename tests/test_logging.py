@@ -3,7 +3,7 @@ import pathlib
 import pytest
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
-from levanter.metrics import WandbConfig
+from levanter.tracker import WandbConfig
 
 
 def test_infer_experiment_git_root():

@@ -30,7 +30,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 
 import levanter.logging
-import levanter.metrics
+import levanter.tracker
 from levanter import logging
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
@@ -38,7 +38,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time
-from levanter.metrics import WandbConfig
+from levanter.tracker import WandbConfig
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
@@ -117,7 +117,7 @@ class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
     hooks: TrainerHooks
-    _logger: levanter.metrics.MetricsLogger
+    _tracker: levanter.tracker.Tracker
     is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
     _cmanagers: List[typing.ContextManager] = []
@@ -146,9 +146,9 @@ class Trainer:
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
-        self._logger = levanter.metrics.WandbLogger(self.config.wandb)
+        self._tracker = levanter.tracker.WandbTracker(self.config.wandb)
         # TODO: hacky hack
-        self._logger._run = wandb.run
+        self._tracker._run = wandb.run
         self._cmanagers = []
 
     @cached_property
@@ -216,7 +216,7 @@ class Trainer:
             raise RuntimeError("Trainer is already entered")
 
         self._cmanagers = [
-            levanter.metrics.global_logger(self._logger),
+            levanter.tracker.current_tracker(self._tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
@@ -248,7 +248,7 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
-        with levanter.metrics.global_logger(self._logger):
+        with levanter.tracker.current_tracker(self._tracker):
             if model is not None and model_init is not None:
                 raise ValueError("only one of model and model_init should be specified")
             elif model is None and model_init is None:
@@ -292,7 +292,7 @@ class Trainer:
         """
         Performs a single training step.
         """
-        with capture_time() as step_time, levanter.metrics.global_logger(self._logger):
+        with capture_time() as step_time, levanter.tracker.current_tracker(self._tracker):
             key, new_key = jax.random.split(state.training_key)
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
@@ -309,13 +309,13 @@ class Trainer:
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
-        with levanter.metrics.global_logger(self._logger):
+        with levanter.tracker.current_tracker(self._tracker):
             while state.step < self.config.num_train_steps:
                 with capture_time() as loading_time:
                     example = next(iter_data)
 
                 # TODO: refactor logging
-                levanter.metrics.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
                 info = self.train_step(state, example)
                 state = info.state
@@ -324,7 +324,7 @@ class Trainer:
                     with capture_time() as hook_time:
                         self.run_hooks(info)
 
-                    levanter.metrics.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
                 yield info
 

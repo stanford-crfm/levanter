@@ -44,7 +44,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-import levanter.metrics
+import levanter.tracker
 
 from .. import logging
 from . import ShardableDataset
@@ -459,7 +459,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        levanter.metrics.log_metrics(to_log, step=None, commit=self.commit)
+        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):
