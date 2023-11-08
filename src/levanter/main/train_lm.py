@@ -97,9 +97,11 @@ def main(config: TrainLmConfig):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
-
-    with trainer:
+    # Using the trainer as a context manager does 3 things:
+    # 1. Sets the device mesh
+    # 2. Sets the axis mapping (for fsdp)
+    # 3. Sets the global metrics logger
+    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
         eval_datasets = config.data.validation_sets(Pos.size)
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
 

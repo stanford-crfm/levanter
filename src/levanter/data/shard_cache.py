@@ -44,6 +44,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+import levanter.metrics
+
 from .. import logging
 from . import ShardableDataset
 from ._preprocessor import BatchProcessor, as_record_batch, dict_from_record_batch
@@ -457,7 +459,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        logging.log_metrics(to_log, step=None, commit=self.commit)
+        levanter.metrics.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):

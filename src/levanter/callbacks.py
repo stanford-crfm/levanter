@@ -14,8 +14,9 @@ import jax
 import wandb
 from tqdm import tqdm
 
-from levanter import logging
-from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
+import levanter.metrics
+from levanter.logging import save_xla_dumps_to_wandb
+from levanter.metrics import WandbConfig, log_optimizer_hyperparams
 from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
@@ -62,7 +63,7 @@ def compute_validation_loss(
             prefix = "eval"
             if name:
                 prefix += "/" + name
-            logging.log_metrics({f"{prefix}/loss": loss}, step=info.step)
+            levanter.metrics.log_metrics({f"{prefix}/loss": loss}, step=info.step)
 
         if name:
             logger.info(f"{name} validation loss: {loss:.3f}")
@@ -75,7 +76,7 @@ def compute_validation_loss(
 
 
 def log_step_info(step: StepInfo):
-    logging.log_metrics({"train/loss": step.loss, "global_step": step.step}, step=step.step)
+    levanter.metrics.log_metrics({"train/loss": step.loss, "global_step": step.step}, step=step.step)
     log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
 
 
@@ -109,14 +110,14 @@ def log_performance_stats(
 
         # log these totals because it's useful for comparing different seqlens, batch sizes, etc
         total_tokens = tokens_per_example * batch_size * step_info.step
-        logging.log_metrics({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
+        levanter.metrics.log_metrics({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
 
         if flops_per_example:
             total_flops = flops_per_example * batch_size * step_info.step
-            logging.log_metrics({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
+            levanter.metrics.log_metrics({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
 
         if step_info.step_duration != 0.0:
-            logging.log_metrics(
+            levanter.metrics.log_metrics(
                 {
                     wrap_key("examples_per_second"): float(batch_size) / step_info.step_duration,
                     wrap_key("tokens_per_second"): float(tokens_per_example) / step_info.step_duration * batch_size,
@@ -126,7 +127,7 @@ def log_performance_stats(
             )
 
             if flops_per_example is not None:
-                logging.log_metrics(
+                levanter.metrics.log_metrics(
                     {
                         wrap_key("gflops_per_second"): flops_per_example / 1e9 / step_info.step_duration * batch_size,
                     },
@@ -219,7 +220,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
         match = regex.search(by_kind)
         if match:
             memory_usage = humanfriendly.parse_size(match.group(1))
-            logging.log_metrics({"memory/total": memory_usage / 1e6}, step=step.step)
+            levanter.metrics.log_metrics({"memory/total": memory_usage / 1e6}, step=step.step)
 
         # this works for the "kind" and the individual devices
         regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
@@ -230,14 +231,14 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             for match in regex.finditer(per_device):
                 memory_usage = humanfriendly.parse_size(match.group(1))
                 device_name = match.group(3)
-                logging.log_metrics({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+                levanter.metrics.log_metrics({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
 
         # now, get the memory usage per kind.
         # same regex as above
         for match in regex.finditer(by_kind):
             memory_usage = match.group(1)
             memory_usage = humanfriendly.parse_size(memory_usage)
-            logging.log_metrics({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
+            levanter.metrics.log_metrics({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
 
