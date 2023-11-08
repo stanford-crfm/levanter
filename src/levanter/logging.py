@@ -34,7 +34,7 @@ def init_logging(path: Union[str, Path], level: int = pylogging.INFO) -> None:
 def save_xla_dumps_to_wandb(initial_time: float):
     import os
 
-    from levanter.tracker import is_wandb_available
+    from levanter.tracker.wandb import is_wandb_available
 
     if not is_wandb_available():
         pylogger.warning("Wandb is not available, so we can't save XLA dumps")
