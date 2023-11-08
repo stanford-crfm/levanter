@@ -2,7 +2,7 @@ cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama_dev/
 rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 train_urls:
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_024de5df-1b7f-447c-8c3a-51407d8d6732.jsonl
+ - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_03232e26-be3f-4a28-a5d2-ee1d8c0e9831.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_034e819a-cfcb-43c6-ad25-0232ad48823c.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_077ae8de-a68e-47e7-95a6-6d82f8f4eeb9.jsonl
@@ -2081,9 +2081,9 @@ train_urls:
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_f9bbe6a065004a4c8e018c6ad63063b2.sampled.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_fbfc552e48164acda6605fa31fc2f563.sampled.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_fc817e4c16494957bcb89b166e91434f.sampled.jsonl
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/stackexchange/stackexchange.jsonl
+# - https://data.together.xyz/redpajama-data-1T/v1.0.0/stackexchange/stackexchange.jsonl
 # - https://data.together.xyz/redpajama-data-1T/v1.0.0/wikipedia/wiki.jsonl
 validation_urls:
- - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
+ - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
 #  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
