@@ -275,6 +275,11 @@ class DistributedConfig:
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
                 f", coordinator_address={coordinator_address}, process_id={self.process_id}"
             )
+        else:
+            logger.info(
+                "Not initializing jax.distributed because no distributed config "
+                "was provided, and no cluster was detected."
+            )
 
 
 @dataclass
