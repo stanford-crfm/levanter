@@ -59,12 +59,10 @@ def _triton_flash_attention(
     Returns:
         _type_: _description_
     """
-    q, k, v = qkv
 
     return _triton_flash_attention_forward(
-        q,
-        k,
-        v,
+        None,
+        qkv,
         output_shape=output_shape,
         softmax_scale=softmax_scale,
         causal=causal,
@@ -73,9 +71,8 @@ def _triton_flash_attention(
 
 
 def _triton_flash_attention_forward(
-    q: NamedArray,
-    k: NamedArray,
-    v: NamedArray,
+    ignore,
+    qkv,
     output_shape: jax.ShapeDtypeStruct,
     softmax_scale: float = 1.0,
     causal: bool = True,
@@ -95,6 +92,8 @@ def _triton_flash_attention_forward(
     Returns:
         _type_: _description_
     """
+    del ignore
+    q, k, v = qkv
 
     jax.debug.print("\n\n MAKING CALL TO KERNEL NOW!\n\n")
     attn_output = jt.triton_call(
@@ -108,7 +107,7 @@ def _triton_flash_attention_forward(
         out_shape=output_shape,
         grid=None,
     )
-    return hax.named(attn_output, q.axes)
+    return hax.named(attn_output[0], q.axes)
 
 
 def _triton_flash_attention_backward(
