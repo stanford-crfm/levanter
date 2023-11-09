@@ -11,7 +11,6 @@ from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
-import wandb
 from tqdm import tqdm
 
 import levanter.tracker
@@ -60,11 +59,10 @@ def compute_validation_loss(
     def compute_loss(info: StepInfo):
         loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches, name=name)
 
-        if wandb.run is not None:
-            prefix = "eval"
-            if name:
-                prefix += "/" + name
-            levanter.log_metrics({f"{prefix}/loss": loss}, step=info.step)
+        prefix = "eval"
+        if name:
+            prefix += "/" + name
+        levanter.log_metrics({f"{prefix}/loss": loss}, step=info.step)
 
         if name:
             logger.info(f"{name} validation loss: {loss:.3f}")
@@ -82,6 +80,8 @@ def log_step_info(step: StepInfo):
 
 
 def wandb_xla_logger(config: WandbConfig):
+    import wandb
+
     last_mtime = wandb.run and wandb.run.start_time or time.time()
 
     def log_xla_to_wandb(step: StepInfo):
@@ -155,7 +155,7 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
 
 def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool = False):
     """
-    Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.
+    Logs memory usage. This runs a loop that samples memory usage every `sample_interval` seconds.
     We only log when hooks are invoked, so there's not much point in running this much more frequently than you invoke
     the hook.
 
@@ -266,6 +266,8 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
 
         viz_probs(path, model, tokenizer, log_prob_fn, test_data, max_docs=max_docs)
         # TODO: convert to generic logging
+        import wandb
+
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs

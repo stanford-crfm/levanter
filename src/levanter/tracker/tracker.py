@@ -160,3 +160,22 @@ class _GlobalLoggerContextManager(AbstractContextManager):
     def __exit__(self, exc_type, exc_val, exc_tb):
         global _global_tracker
         _global_tracker = self.old_tracker
+
+
+class NullTracker(Tracker):
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        pass
+
+    def log(self, metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
+        pass
+
+    def log_summary(self, metrics: dict[str, Any]):
+        pass
+
+    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+        pass
+
+
+class NullTrackerConfig(TrackerConfig):
+    def init(self, run_id: Optional[str], hparams=None) -> Tracker:
+        return NullTracker()

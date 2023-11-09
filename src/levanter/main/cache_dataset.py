@@ -1,14 +1,14 @@
 import logging
 import os
-from dataclasses import dataclass
-
-import wandb
+from dataclasses import dataclass, field
 
 import levanter
 from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor, build_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
+from levanter.tracker import TrackerConfig
+from levanter.tracker.tracker import NullTrackerConfig
 
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
-    pass
+    tracker: TrackerConfig = field(default_factory=NullTrackerConfig)
 
 
 @levanter.config.main()
@@ -26,8 +26,6 @@ def main(args: RayCachedLMDatasetConfig):
     args.initialize()
 
     tokenizer = args.the_tokenizer
-
-    wandb.init(mode="offline")
 
     for split in ["train", "validation"]:
         print(f"Caching {split} to {args.cache_dir}.")
