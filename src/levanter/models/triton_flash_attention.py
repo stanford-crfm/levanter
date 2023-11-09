@@ -39,7 +39,7 @@ def triton_flash_attention(
 
 @equinox.filter_custom_vjp
 def _triton_flash_attention(
-    qkv: Tuple[hax.NamedArray, hax.NamedArray, hax.NamedArray],
+    vjp_arg: Tuple[hax.NamedArray, hax.NamedArray, hax.NamedArray],
     output_shape: jax.ShapeDtypeStruct,
     softmax_scale: float = 1.0,
     causal: bool = True,
@@ -59,7 +59,7 @@ def _triton_flash_attention(
     Returns:
         _type_: _description_
     """
-    q, k, v = qkv
+    q, k, v = vjp_arg
 
     return _triton_flash_attention_forward(
         q=q,
