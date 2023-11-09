@@ -594,7 +594,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     ) -> Optional[TokenizedDocumentCache]:
         source = self.get_shard_source(split)
         if source is None:
-            logger.warning(f"Skipping {split} because no source was provided")
             return None
 
         split_cache_dir = os.path.join(self.cache_dir, split)
@@ -691,7 +690,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         caches = {}
         for name, source_config in self.configs.items():
             weight = self.train_weights.get(name, 0)
-            print(f"weight for {name} is {weight}")
+
             if weight == 0 and split == "train":
                 continue
 
@@ -704,8 +703,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             cache = dataset.build_or_load_cache(split, monitors)
             # drop the data source and corresponding weight if the cache is not built
             if cache is None:
-                print(f"Skipping {name} for split {split} because no source was provided")
-                self.train_weights.pop(name)
+                logger.warning(f"Skipping {name} for split {split} because no source was provided")
             else:
                 caches[name] = cache
         return caches
