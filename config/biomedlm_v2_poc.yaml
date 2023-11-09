@@ -1,0 +1,61 @@
+data:
+  train_weights:
+    shuffled: 1.0
+    wikiversity: 0.0
+    pubmed_abstracts: 0.0
+    pmc: 0.0
+    pubmed_patients_par: 0.0
+    pubmed_patients_ppr: 0.0
+    nih: 0.0
+    wiki_en: 0.0
+  configs:
+      shuffled:
+        train_urls:
+          - gs://levanter-data/biomedlmv2/poc-shuffle/train-{00000..00031}-of-00032.jsonl.gz
+      wikiversity:
+        validation_urls:
+          - gs://pubmed-mosaic/lumia-data/wikiversity_en/valid.jsonl.gz
+      pmc:
+        validation_urls:
+          - gs://pubmed-mosaic/lumia-data/pmc/europe_pmc.val.jsonl.gz
+          - gs://pubmed-mosaic/lumia-data/pmc/pubmed_central_comm.val.jsonl.gz
+          - gs://pubmed-mosaic/lumia-data/pmc/pubmed_central_noncomm.val.jsonl.gz
+      pubmed_abstracts:
+        validation_urls:
+          - gs://pubmed-mosaic/lumia-data/pmc/pubmed_abstracts.val.jsonl.gz
+      pubmed_patients_par:
+        validation_urls:
+            - gs://pubmed-mosaic/lumia-data/pmc_patients_par/valid.jsonl.gz
+      pubmed_patients_ppr:
+        validation_urls:
+            - gs://pubmed-mosaic/lumia-data/pmc_patients_ppr/valid.jsonl.gz
+      nih:
+        validation_urls:
+          - gs://pubmed-mosaic/nih/validation.jsonl.zst
+      wiki_en:
+        validation_urls:
+          - gs://pubmed-mosaic/wiki_en/validation.jsonl.zst
+  tokenizer: meta-llama/Llama-2-7b-hf
+  cache_dir: gs://levanter-data/tokenized/biomedlmv2/poc-shuffle/cache
+model:
+  type: llama
+initialize_from_hf: true
+use_hf_model_config: true
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["biomedlmv2", "llama2"]
+
+  mp: p=f32,c=bfloat16
+
+  model_axis_size: 1
+  per_device_parallelism: 4
+  per_device_eval_parallelism: 4
+
+  train_batch_size: 1024
+  num_train_steps: 5000
+  steps_per_eval: 500
+  max_eval_batches: 64
+optimizer:
+  learning_rate: 1.2e-4
+  weight_decay: 0.0

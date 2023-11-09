@@ -704,7 +704,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             cache = dataset.build_or_load_cache(split, monitors)
             # drop the data source and corresponding weight if the cache is not built
             if cache is None:
-                print(f"Skipping {name} because no source was provided")
+                print(f"Skipping {name} for split {split} because no source was provided")
                 self.train_weights.pop(name)
             else:
                 caches[name] = cache
