@@ -1,7 +1,7 @@
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.tracker import (
     CompositeTracker,
-    NullTrackerConfig,
+    NoopTracker,
     Tracker,
     TrackerConfig,
     current_tracker,
@@ -20,5 +20,5 @@ __all__ = [
     "current_tracker",
     "jit_log_metrics",
     "log_optimizer_hyperparams",
-    "NullTrackerConfig",
+    "NoopTracker",
 ]

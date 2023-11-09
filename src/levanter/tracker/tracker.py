@@ -1,4 +1,5 @@
 import abc
+import dataclasses
 import typing
 from contextlib import AbstractContextManager
 from typing import Any, List, Optional
@@ -162,7 +163,7 @@ class _GlobalLoggerContextManager(AbstractContextManager):
         _global_tracker = self.old_tracker
 
 
-class NullTracker(Tracker):
+class NoopTracker(Tracker):
     def log_hyperparameters(self, hparams: dict[str, Any]):
         pass
 
@@ -176,6 +177,8 @@ class NullTracker(Tracker):
         pass
 
 
-class NullTrackerConfig(TrackerConfig):
+@TrackerConfig.register_subclass("noop")
+@dataclasses.dataclass
+class NoopTrackerConfig(TrackerConfig):
     def init(self, run_id: Optional[str], hparams=None) -> Tracker:
-        return NullTracker()
+        return NoopTracker()

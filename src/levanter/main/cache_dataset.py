@@ -8,7 +8,7 @@ from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
 from levanter.tracker import TrackerConfig
-from levanter.tracker.tracker import NullTrackerConfig
+from levanter.tracker.tracker import NoopTrackerConfig
 
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
-    tracker: TrackerConfig = field(default_factory=NullTrackerConfig)
+    tracker: TrackerConfig = field(default_factory=NoopTrackerConfig)
 
 
 @levanter.config.main()
