@@ -2083,6 +2083,5 @@ train_urls:
   - gs://levanter-data/dev/redpajama/github/filtered_f9bbe6a065004a4c8e018c6ad63063b2.sampled.jsonl
   - gs://levanter-data/dev/redpajama/github/filtered_fbfc552e48164acda6605fa31fc2f563.sampled.jsonl
   - gs://levanter-data/dev/redpajama/github/filtered_fc817e4c16494957bcb89b166e91434f.sampled.jsonl
-
 validation_urls:
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
