@@ -62,13 +62,13 @@ def _triton_flash_attention(
     q, k, v = qkv
 
     return _triton_flash_attention_forward(
-        q=q,
-        k=k,
-        v=v,
+        q,
+        k,
+        v,
+        output_shape=output_shape,
         softmax_scale=softmax_scale,
         causal=causal,
         sequence_parallel=sequence_parallel,
-        output_shape=output_shape,
     )
 
 
