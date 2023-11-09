@@ -30,10 +30,10 @@ def triton_flash_attention(
 
     return _triton_flash_attention(
         qkv,
+        output_shape=output_shape,
         softmax_scale=softmax_scale,
         causal=causal,
         sequence_parallel=sequence_parallel,
-        output_shape=output_shape,
     )
 
 
@@ -72,7 +72,6 @@ def _triton_flash_attention(
     )
 
 
-@named_call
 def _triton_flash_attention_forward(
     q: NamedArray,
     k: NamedArray,
@@ -112,7 +111,6 @@ def _triton_flash_attention_forward(
     return hax.named(attn_output, q.axes)
 
 
-@named_call
 def _triton_flash_attention_backward(
     d_out: NamedArray,
 ):
