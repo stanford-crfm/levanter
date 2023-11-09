@@ -97,14 +97,14 @@ def _triton_flash_attention_forward(
         _type_: _description_
     """
 
-    print("\n\n MAKING CALL TO KERNEL NOW!\n\n")
+    jax.debug.print("\n\n MAKING CALL TO KERNEL NOW!\n\n")
     attn_output = jt.triton_call(
-        q=q.array,
-        k=k.array,
-        v=v.array,
-        causal=causal,
-        sequence_parallel=sequence_parallel,
-        sm_scale=softmax_scale,
+        q.array,
+        k.array,
+        v.array,
+        causal,
+        sequence_parallel,
+        softmax_scale,
         kernel=attention,
         out_shape=output_shape,
         grid=None,
@@ -118,7 +118,7 @@ def _triton_flash_attention_backward(
 ):
     outshape = jax.ShapeDtypeStruct(shape=d_out.shape.values(), dtype=d_out.dtype)
 
-    print("\n\nCALLING TRITON FLASH ATTEN BACKWARD\n\n")
+    jax.debug.print("\n\nCALLING TRITON FLASH ATTEN BACKWARD\n\n")
     backward_out = jt.triton_call(
         do=d_out.array,
         kernel=attention.backward,

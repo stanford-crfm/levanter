@@ -4,6 +4,7 @@ from functools import partial
 from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
@@ -177,7 +178,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         if self.config.scale_attn_by_inverse_layer_idx:
             q = q / (layer_idx + 1.0)
 
-        print("\n\nCALLING DOT PRODICT ATTENTION")
+        jax.debug.print("\n\nCALLING DOT PRODICT ATTENTION")
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -192,10 +193,10 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
-        print("RETURNED FROM DOT PRODUCT ATTENTION")
-        print(attn_output)
-        print(attn_output.shape)
-        print(attn_output.dtype)
+        jax.debug.print("RETURNED FROM DOT PRODUCT ATTENTION")
+        jax.debug.print(attn_output)
+        jax.debug.print(attn_output.shape)
+        jax.debug.print(attn_output.dtype)
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
@@ -250,9 +251,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
 
-        print("\n\nCALIING ATTENTION!\n\n")
+        jax.debug.print("\n\nCALIING ATTENTION!\n\n")
         attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
-        print("\n\nreturned from attention call!!\n\n")
+        jax.debug.print("\n\nRETURNED FROM ATTENTION CALL!!\n\n")
         attn_output = self.resid_dropout(attn_output, key=k2)
         x = x + attn_output
 
@@ -260,6 +261,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         ff_output = self.resid_dropout(ff_output, key=k4)
         x = x + ff_output
 
+        jax.debug.print("\n\nRETURNING FROM FULL FOWARD BLOCK\n\n")
         return x
 
 
