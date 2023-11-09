@@ -107,7 +107,7 @@ def _triton_flash_attention_forward(
         out_shape=output_shape,
         grid=None,
     )
-    return hax.named(attn_output[0], q.axes)
+    return hax.named(attn_output, q.axes)
 
 
 def _triton_flash_attention_backward(
