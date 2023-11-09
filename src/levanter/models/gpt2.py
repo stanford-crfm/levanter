@@ -194,9 +194,9 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
         jax.debug.print("RETURNED FROM DOT PRODUCT ATTENTION")
-        jax.debug.print(attn_output)
-        jax.debug.print(attn_output.shape)
-        jax.debug.print(attn_output.dtype)
+        print(attn_output)
+        print(attn_output.shape)
+        print(attn_output.dtype)
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
