@@ -195,7 +195,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         print("RETURNED FROM DOT PRODUCT ATTENTION")
         print(attn_output)
         print(attn_output.shape)
-        print(attn_output.type)
+        print(attn_output.dtype)
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
