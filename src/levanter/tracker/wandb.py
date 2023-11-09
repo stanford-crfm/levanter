@@ -84,7 +84,7 @@ class WandbConfig(TrackerConfig):
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
     group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
     mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be whatever W&B decides.
-    resume: Optional[Union[bool, str]] = None  #
+    resume: Optional[Union[bool, str]] = None
     """
     Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
     By default, if the new run has the same ID as a previous run, this run overwrites that data.
