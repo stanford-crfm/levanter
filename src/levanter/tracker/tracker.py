@@ -75,7 +75,7 @@ _global_tracker: Optional["Tracker"] = None
 class TrackerConfig(draccus.PluginRegistry):
     discover_packages_path = "levanter.tracker"
 
-    def init(self, run_id: Optional[str], hparams=None, **extra_hparams) -> Tracker:
+    def init(self, run_id: Optional[str], hparams=None) -> Tracker:
         raise NotImplementedError
 
 

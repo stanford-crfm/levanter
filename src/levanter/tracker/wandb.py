@@ -83,7 +83,7 @@ class WandbConfig(TrackerConfig):
     tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
     group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
-    mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be online.
+    mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be whatever W&B decides.
     resume: Optional[Union[bool, str]] = None  #
     """
     Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
@@ -99,7 +99,7 @@ class WandbConfig(TrackerConfig):
     save_xla_dumps: bool = False
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
-    def init(self, run_id: Optional[str], hparams=None, **extra_hparams) -> WandbTracker:
+    def init(self, run_id: Optional[str], hparams=None) -> WandbTracker:
         import wandb
 
         if run_id is not None and self.id is not None and run_id != self.id:
@@ -112,12 +112,13 @@ class WandbConfig(TrackerConfig):
         if id is None:
             id = run_id
 
-        hparams_to_save = hparams_to_dict(hparams, **extra_hparams)
+        hparams_to_save = hparams_to_dict(hparams)
 
         # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
         # however, we do share information about the run id, so that we can link to it from the other workers
-        mode = self.mode
-        if jax.process_index() != 0:
+        if is_rank_0:
+            mode = self.mode
+        else:
             mode = "disabled"
 
         git_settings = self._git_settings()
