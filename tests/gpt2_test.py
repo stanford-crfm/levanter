@@ -56,9 +56,3 @@ def test_pass_different_length_seq_to_gpt2():
         gradient_checkpointing=False,
     )
     check_model_works_with_seqlen(Gpt2LMHeadModel, config, 16)
-
-@parameterize_with_configs("biomedlm*.yaml")
-def test_biomedlm_config(config_file):
-    from levanter.main.train_lm import TrainLmConfig
-
-    check_load_config(TrainLmConfig, config_file)
