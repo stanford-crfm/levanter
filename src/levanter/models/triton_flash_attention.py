@@ -105,7 +105,7 @@ def _triton_flash_attention_forward(
         causal=causal,
         sequence_parallel=sequence_parallel,
         sm_scale=softmax_scale,
-        kernel=attention.forward,
+        kernel=attention,
         out_shape=output_shape,
         grid=None,
     )
