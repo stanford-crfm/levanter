@@ -37,6 +37,7 @@ data:
           - gs://pubmed-mosaic/wiki_en/validation.jsonl.zst
   tokenizer: meta-llama/Llama-2-7b-hf
   cache_dir: gs://levanter-data/tokenized/biomedlmv2/poc-shuffle/cache
+  rows_per_chunk: 1024
 model:
   type: llama
 initialize_from_hf: true
