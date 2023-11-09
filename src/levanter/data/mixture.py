@@ -57,7 +57,7 @@ class MixtureDataset(ShardableDataset[T]):
         """Normalize the weights to sum to 1"""
         total = sum(weights.values())
         if total == 0:
-            raise ValueError("Datasets' Weights cannot sum to 0")
+            raise ValueError(f"Datasets' weights cannot sum to 0, got {weights}")
         return {name: weight / total for name, weight in weights.items() if weight > 0}
 
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
