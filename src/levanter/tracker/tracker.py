@@ -73,9 +73,10 @@ class CompositeTracker(Tracker):
 _global_tracker: Optional["Tracker"] = None
 
 
-class TrackerConfig(draccus.PluginRegistry):
+class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     discover_packages_path = "levanter.tracker"
 
+    @abc.abstractmethod
     def init(self, run_id: Optional[str], hparams=None) -> Tracker:
         raise NotImplementedError
 
