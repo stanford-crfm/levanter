@@ -12,7 +12,8 @@ trainer:
     tags: ["redpajama", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 128  # set for v3 TPU
+  train_batch_size: 1024
+  per_device_parallelism: 4  # set for v3 TPU
   num_train_steps: 1000000
   steps_per_eval: 100
   tensor_parallel_axes: ["mlp", "heads"]
