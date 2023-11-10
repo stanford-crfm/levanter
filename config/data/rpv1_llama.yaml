@@ -2,7 +2,6 @@ cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama_dev/
 rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 train_urls:
-  - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
   - gs://levanter-data/dev/redpajama/2019-30/en_head_0000.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2019-30/en_head_0001.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2019-30/en_head_0002.json.gz.dedup.classifier.jsonl.zst
@@ -962,6 +961,7 @@ train_urls:
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_f7680c03-70df-4781-a98d-c88695f92f04.jsonl
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_fbc62949-624d-4943-9731-f5c46242ba55.jsonl
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_fd572627-cce7-4667-a684-fef096dfbeb7.jsonl
+  - gs://levanter-data/dev/redpajama/book/book.jsonl
   - gs://levanter-data/dev/redpajama/c4/c4-train.00000-of-01024.jsonl
   - gs://levanter-data/dev/redpajama/c4/c4-train.00001-of-01024.jsonl
   - gs://levanter-data/dev/redpajama/c4/c4-train.00002-of-01024.jsonl
@@ -2084,5 +2084,6 @@ train_urls:
   - gs://levanter-data/dev/redpajama/github/filtered_f9bbe6a065004a4c8e018c6ad63063b2.sampled.jsonl
   - gs://levanter-data/dev/redpajama/github/filtered_fbfc552e48164acda6605fa31fc2f563.sampled.jsonl
   - gs://levanter-data/dev/redpajama/github/filtered_fc817e4c16494957bcb89b166e91434f.sampled.jsonl
+  - gs://levanter-data/dev/redpajama/wikipedia/wiki.jsonl
 validation_urls:
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
