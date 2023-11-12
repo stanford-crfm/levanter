@@ -510,6 +510,7 @@ class LMDatasetSourceConfig:
                 return fs.glob(url)
             else:
                 return [url]
+
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
 

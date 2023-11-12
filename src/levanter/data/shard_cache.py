@@ -228,7 +228,7 @@ def _produce_cache_for_shard(
     except Exception as e:
         logger.exception(f"Error while processing shard {shard_name}")
         ray.get(sink.shard_failed.remote(shard_name, _exc_info()))
-        # raise e
+        raise e
 
 
 class _ShardWriter:
