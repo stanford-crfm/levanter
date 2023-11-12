@@ -200,10 +200,12 @@ class TextUrlDataset(ShardedDataset[str]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
+        print(f"open_shard_at_row: {url}")
         with fsspec.open(url, "r", compression="infer") as f:
             format = _sniff_format(url)
             match format:
                 case ".jsonl":
+                    print(f"format: {format}")
                     # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
                     # which is not nothing, but not ideal.
                     for line in f:
@@ -245,6 +247,7 @@ class JsonlDataset(ShardedDataset[dict]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
+        print(f"open_shard_at_row: {url}")
         with fsspec.open(url, "r", compression="infer") as f:
             # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
             # which is not nothing, but not ideal.
@@ -266,6 +269,7 @@ class TextDataset(ShardedDataset[dict]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
+        print(f"open_shard_at_row: {url}")
         with fsspec.open(url, "r", compression="infer") as f:
             for line in f:
                 if i >= row:
@@ -301,6 +305,7 @@ def _mk_shard_name_mapping(urls):
     missing_urls: List[str] = []
 
     for url in urls:
+        print(f"Checking {url} in _mk_shard_name_mapping")
         if not fsspec_utils.exists(url):
             missing_urls.append(url)
             continue
