@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -532,15 +532,55 @@ class LMTaskConfig(abc.ABC):
             return load_tokenizer(self.tokenizer)
 
     @abc.abstractmethod
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> ShardableDataset[str]:
+    def train_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> ShardableDataset[np.ndarray]:
+        pass
+
+    @abc.abstractmethod
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
         pass
 
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    def train_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> ShardableDataset[np.ndarray]:
+        return self.token_seq_dataset("train", seq_len, monitors)
+
+    def validation_set(self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
+        if self._has_validation_set:
+            return self.token_seq_dataset("validation", seq_len, monitors)
+        else:
+            return None
+
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+        if self._has_validation_set:
+            return {"": self.validation_set(seq_len, monitors)}
+        else:
+            return {}
+
+    @cached_property
+    def _has_validation_set(self):
+        if len(self.validation_urls) > 0:
+            return True
+
+        if self.id is not None:
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            try:
+                next(iter(dataset))
+                return True
+            except StopIteration:
+                return False
+
+        return False
 
     def token_seq_dataset(
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -553,7 +593,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     ) -> Optional[TokenizedDocumentCache]:
         source = self.get_shard_source(split)
         if source is None:
-            logger.warning(f"Skipping {split} because no source was provided")
             return None
 
         split_cache_dir = os.path.join(self.cache_dir, split)
@@ -630,12 +669,19 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 f" {self.train_weights.keys()}"
             )
 
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> MixtureDataset:
-        doc_caches = self.build_caches(split, monitors=monitors)
+    def train_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> ShardableDataset[np.ndarray]:
+        doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
         return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
+
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+        doc_caches = self.build_caches("validation", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        return token_datasets
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -643,7 +689,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         caches = {}
         for name, source_config in self.configs.items():
             weight = self.train_weights.get(name, 0)
-            if weight == 0:
+
+            if weight == 0 and split == "train":
                 continue
 
             source_config_dict = source_config.__dict__
@@ -655,7 +702,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             cache = dataset.build_or_load_cache(split, monitors)
             # drop the data source and corresponding weight if the cache is not built
             if cache is None:
-                self.train_weights.pop(name)
+                logger.warning(f"Skipping {name} for split {split} because no source was provided")
             else:
                 caches[name] = cache
         return caches

@@ -8,7 +8,7 @@ The code is released on GitHub: [Levanter repository](https://github.com/stanfor
 
 To get started, please refer to the User Guide's chapters:
 
-- [Getting Started with CUDA](Getting-Started-CUDA.md)
+- [Getting Started with CUDA](Getting-Started-GPU.md)
 - [Getting Started with TPU](Getting-Started-TPU-VM.md)
 - [Getting Started Training](Getting-Started-Training.md)
 

@@ -91,7 +91,7 @@ cd ../levanter
 
 Please refer to the [Installation Guide](docs/Installation.md) for more information on how to install Levanter.
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-GPU.md).
 
 <!--levanter-user-guide-start-->
 
@@ -191,7 +191,7 @@ Please see the [TPU Getting Started](docs/Getting-Started-TPU-VM.md) guide for m
 
 ### Training with CUDA
 
-Please see the [CUDA Getting Started](docs/Getting-Started-CUDA.md) guide for more information on how to set up a CUDA environment and run Levanter there.
+Please see the [CUDA Getting Started](docs/Getting-Started-GPU.md) guide for more information on how to set up a CUDA environment and run Levanter there.
 
 <!--levanter-user-guide-end-->
 
