@@ -3,9 +3,9 @@ rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 train_urls:
   - gs://levanter-data/dev/redpajama/2019-30/en_head_0000.json.gz.dedup.classifier.jsonl.zst
-  # - gs://levanter-data/dev/redpajama/2019-30/en_head_0001.json.gz.dedup.classifier.jsonl.zst
-  # - gs://levanter-data/dev/redpajama/2019-30/en_head_0002.json.gz.dedup.classifier.jsonl.zst
-  # - gs://levanter-data/dev/redpajama/2019-30/en_head_0003.json.gz.dedup.classifier.jsonl.zst
+  - gs://levanter-data/dev/redpajama/2019-30/en_head_0001.json.gz.dedup.classifier.jsonl.zst
+  - gs://levanter-data/dev/redpajama/2019-30/en_head_0002.json.gz.dedup.classifier.jsonl.zst
+  - gs://levanter-data/dev/redpajama/2019-30/en_head_0003.json.gz.dedup.classifier.jsonl.zst
   # - gs://levanter-data/dev/redpajama/2019-30/en_head_0004.json.gz.dedup.classifier.jsonl.zst
   # - gs://levanter-data/dev/redpajama/2019-30/en_head_0005.json.gz.dedup.classifier.jsonl.zst
   # - gs://levanter-data/dev/redpajama/2019-30/en_head_0006.json.gz.dedup.classifier.jsonl.zst
