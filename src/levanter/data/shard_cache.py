@@ -235,7 +235,6 @@ class _ShardWriter:
     def __init__(self, metadata_path):
         self.metadata_path = metadata_path
         try:
-            print(f"Loading shard metadata from {self.metadata_path}")
             with fsspec.open(self.metadata_path, "r") as file:
                 self.metadata = ShardMetadata.from_json(file.read())  # type: ignore
         except FileNotFoundError:
@@ -1196,7 +1195,6 @@ class _ChunkReader:
 
     @staticmethod
     def from_name(cache_dir, name: str, batch_size: int) -> "_ChunkReader":
-        print(f"_ChunkReader.from_name({cache_dir}, {name}, {batch_size})")
         fs, path = fsspec.core.url_to_fs(cache_dir)
         with fs.open(os.path.join(path, f"{name}.json"), "r") as f:
             metadata = ChunkMetadata.from_json(f.read())  # type: ignore
@@ -1204,7 +1202,6 @@ class _ChunkReader:
 
     @staticmethod
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int) -> "_ChunkReader":
-        print(f"_ChunkReader.from_metadata({cache_dir}, {metadata}, {batch_size})")
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
 
