@@ -465,6 +465,7 @@ class LMDatasetSourceConfig:
     name: Optional[str] = None  # name for hf dataset
 
     plaintext: bool = False
+    vocab_size: Optional[int] = None
     stream: bool = True  # whether to use streaming when doing hf
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 

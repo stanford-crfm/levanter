@@ -1,0 +1,48 @@
+data:
+  train_urls:
+      - "gs://levanter-data/audio-data-mm/train.txt"
+  validation_urls:
+      - "gs://levanter-data/audio-data-mm/valid.txt"
+  cache_dir: "gs://levanter-data/audio-data-mm/cache/"
+  tokenizer: "passthrough"
+  plaintext: True
+  vocab_size: 6117
+  enforce_eos: False
+model:
+  type: gpt2
+  hidden_dim: 768
+  num_heads: 12
+  num_layers: 12
+  seq_len: 8192
+  scale_attn_by_inverse_layer_idx: true
+  gradient_checkpointing: true
+  use_flash_attention: true
+  flash_attention_block_size: 2048
+trainer:
+  wandb:
+    project: "levanter"
+    tags: [ "audio", "gpt2"]
+
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: 1
+  num_train_steps: 100000
+  train_batch_size: 64
+
+  checkpointer:
+    base_path: gs://levanter-data/audio-checkpoints/
+    save_interval: 30m
+
+  # load_checkpoint_path:  gs://levanter-data/audio-checkpoints/mgwkvk9s/step-13811/
+
+  axis_resources:
+    batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"
+  parameter_axis_resources:
+    embed: "data"
+optimizer:
+  learning_rate: 6E-4
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
