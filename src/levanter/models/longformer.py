@@ -35,7 +35,6 @@ def causal_sliding_window_attention(
         # which doesn't actually get executed but does get traced
         K = Pos.alias("K")
         return hax.nn.attention.dot_product_attention(
-            Pos,
             K,
             Head,
             query,
@@ -83,7 +82,7 @@ def causal_sliding_window_attention(
             bias_block = None
 
         return hax.nn.attention.dot_product_attention(
-            Q, K, Head, query_block, key_block, value_block, attn_mask, bias_block, attention_dtype, precision
+            K, Head, query_block, key_block, value_block, attn_mask, bias_block, attention_dtype, precision
         )
 
     # for the 0th block, we have to worry about the out-of-bounds. just use a causal mask and do normal causal attention
@@ -100,7 +99,7 @@ def causal_sliding_window_attention(
         else:
             bias_block = None
         return hax.nn.attention.dot_product_attention(
-            Q, K0, Head, query_block, key_block, value_block, attn_mask_0, bias_block, attention_dtype, precision
+            K0, Head, query_block, key_block, value_block, attn_mask_0, bias_block, attention_dtype, precision
         )
 
     # extra arg/return for dummy scan accumulator
