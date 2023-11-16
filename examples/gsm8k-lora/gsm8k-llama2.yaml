@@ -18,6 +18,6 @@ optimizer:
   lr_schedule: "constant"
 lora:
   # These are the defaults, but just so you can see them
-  r: int = 8  # rank of LoRA transform
-  alpha: float = 8.0  # scaling factor for LoRA transform
-  dropout: float = 0.0  # dropout probability for LoRA layers
+  r: 8  # rank of LoRA transform
+  alpha: 8.0  # scaling factor for LoRA transform
+  dropout: 0.0  # dropout probability for LoRA layers
