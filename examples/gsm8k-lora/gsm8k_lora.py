@@ -1,5 +1,5 @@
 # Modified version of [alpaca.py] to use LoRA instead of full finetuning.
-
+import copy
 import logging
 import os
 from dataclasses import dataclass
@@ -127,11 +127,13 @@ def train(config: TrainArgs):
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
     converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=config.trust_remote_code)
     model_config = converter.default_config
-    tokenizer = converter.tokenizer
 
+    tokenizer = copy.deepcopy(converter.tokenizer)
     # if we don't have a pad token, just use the first token in the vocab, which is usually <unk>
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.convert_ids_to_tokens(0)
+
+    tokenizer.model_max_length = config.max_tune_length
 
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
     training_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
