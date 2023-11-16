@@ -1,9 +1,9 @@
 data:
   train_urls:
-      - "gs://levanter-data/audio-data-mm/train.txt"
+   - "gs://levanter-data/audio-data-mm/sharded/train.shard-{0..31}.txt"
   validation_urls:
-      - "gs://levanter-data/audio-data-mm/valid.txt"
-  cache_dir: "gs://levanter-data/audio-data-mm/cache/"
+   - "gs://levanter-data/audio-data-mm/valid-small.txt"
+  cache_dir: "gs://levanter-data/audio-data-mm/cache-sharded/"
   tokenizer: "passthrough"
   plaintext: True
   vocab_size: 6117
@@ -33,7 +33,7 @@ trainer:
     base_path: gs://levanter-data/audio-checkpoints/
     save_interval: 30m
 
-  # load_checkpoint_path:  gs://levanter-data/audio-checkpoints/mgwkvk9s/step-13811/
+  load_checkpoint_path:  gs://levanter-data/audio-checkpoints/og4alv1z/step-57000/
 
   axis_resources:
     batch: "data"
