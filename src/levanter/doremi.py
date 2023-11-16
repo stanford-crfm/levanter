@@ -1,31 +1,32 @@
 from typing import Iterator, TypeVar
 
-import jax.lax
-import jax.random as jrandom
+import equinox as eqx
 import jax.numpy as jnp
+import jax.random as jrandom
 import optax
 from jaxtyping import PRNGKeyArray
 
-
 import haliax as hax
 from haliax.types import IntScalar
+
 from levanter.data import Dataset, ShardableDataset
 from levanter.data.mixture import MixtureDataset
-from levanter.trainer import Trainer, TrainerConfig
+
 
 T = TypeVar("T")
 
+
 def estimate_mixture_weights(
-        optimizer: optax.GradientTransformation,
-        loss_fn,
-        initial_proxy,
-        ref,
-        data_sources: dict[str, ShardableDataset[T]],
-        ref_weights: dict[str, float],
-        domain_weight_step: float = 1.0,
-        smoothing: float = 1e-3,
-        *,
-        key: PRNGKeyArray,
+    optimizer: optax.GradientTransformation,
+    loss_fn,
+    initial_proxy,
+    ref,
+    data_sources: dict[str, ShardableDataset[T]],
+    ref_weights: dict[str, float],
+    domain_weight_step: float = 1.0,
+    smoothing: float = 1e-3,
+    *,
+    key: PRNGKeyArray,
 ) -> dict[str, float]:
     """
     Estimate the mixture weights for the data sources using DoReMi.
@@ -36,9 +37,7 @@ def estimate_mixture_weights(
     domain_to_index = {domain: index for index, domain in enumerate(domain_indices)}
     tagged_mixture = domain_tagged_mixture(data_sources, ref_weights, domain_to_index, key=data_key)
 
-
     state = trainer.initial_state(training_key, model=initial_proxy)
-
 
     del initial_proxy
 
@@ -46,53 +45,55 @@ def estimate_mixture_weights(
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    def doremi_step(opt_state, proxy, alpha, batch, domains):
-        # calculate per-elem losses for proxy and ref
+    # calculate per-token losses for proxy and ref
+    def compute_excess_loss(proxy, ref, batch):
         proxy_losses = TODO
         ref_losses = TODO
         # calculate excess losses
-        excess_losses = hax.max(proxy_losses - ref_losses, 0)
-        def total_losses_per_domain(excess_losses, domain):
-            return jax.lax.cond(
-                hax.sum(domains == domain) == 0,
-                lambda: hax.zeros(()),
-                lambda: hax.mean(excess_losses, where=domains == domain),
-            )
+        excess_losses = proxy_losses - ref_losses
+        return excess_losses
 
-        per_domain_losses = hax.vmap(total_losses_per_domain, Domain)(excess_losses, hax.arange(Domain))
-        # Update domain weights (exp is entrywise): α ← α exp(ηλt)
+    # Loss is alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
+    def proxy_model_loss(excess_losses, domains, alpha):
+        one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+        # basically einsum(" * -> ", alpha, one_hot_domains, excess_losses)
+        loss = hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses).scalar()
+
+        return loss
+
+    def doremi_step(opt_state, proxy, alpha, batch, domains):
+        # this is one of those times when PyTorch's backward() is nice
+        excess_losses, excess_backward = eqx.filter_vjp(lambda proxy: compute_excess_loss(proxy, ref, batch), proxy)
+
+        # Update domain weights
+        ## Compute per-domain excess losses
+        clipped_losses = hax.maximum(excess_losses, 0)
+        one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+        per_domain_losses = hax.dot(excess_losses.axes, one_hot_domains, clipped_losses)
+
+        old_alpha = alpha
         alpha = alpha * hax.exp(domain_weight_step * per_domain_losses)
-        # Renormalize and smooth domain weights: α ← (1 − c) αPk i=1 α′ t[i] + cu
         alpha /= hax.sum(alpha)
         alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
+
+        alpha_distance = hax.sum(hax.abs(alpha - old_alpha))
+
         # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
-        optimizer.update()
+        val, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
+        grad = excess_backward(grad_loss)
 
+        updates, new_state = optimizer.update(opt_state, grad, params=proxy)
+        proxy = optax.apply_updates(proxy, updates)
 
-
-
-
-
-    def update_one_domain(per_token_losses, domains, target_domain):
-        total_in_domain = jnp.sum(domains == target_domain)
-
-
-    loader = trainer.sharded_loader(tagged_mixture, trainer.TrainBatch)
-    for batch, tags in loader:
-        state = trainer.train_step(state, batch)
-        trainer.run_hooks(state)
-
-        # Compute per-domain excess losses for each domain i ∈ {1, 2, ..., k} (ℓ_ο_j(x) is j-th token-level loss):
-        # λ_t[i] ← (1 / |B\cap D_i|) * Σ_(x ∈ B\cap D_i) (1 / |x|) * Σ_(x ∈ BD_i) Σ_(j=1)^|x| max{ℓ_(t-1,j)(x) - ℓ_ref,j(x), 0}
-
+        return new_state, proxy, alpha
 
 
 def domain_tagged_mixture(
-        data_sources: dict[str, ShardableDataset[T]],
-        weights: dict[str, float],
-        domain_to_index: dict[str, int],
-        *,
-        key: PRNGKeyArray,
+    data_sources: dict[str, ShardableDataset[T]],
+    weights: dict[str, float],
+    domain_to_index: dict[str, int],
+    *,
+    key: PRNGKeyArray,
 ) -> MixtureDataset[(T, IntScalar)]:
     """
     Domain tagged mixture dataset. This dataset will yield from the datasets according to the weights,
@@ -107,11 +108,10 @@ def domain_tagged_mixture(
 
 
 class DomainTaggedDataset(ShardableDataset[(T, hax.NamedArray)]):  # named array is a scalar int
-
     def __init__(
-            self,
-            dataset: ShardableDataset[T],
-            domain_index: int|hax.NamedArray,
+        self,
+        dataset: ShardableDataset[T],
+        domain_index: int | hax.NamedArray,
     ):
         self.dataset = dataset
 
@@ -126,11 +126,3 @@ class DomainTaggedDataset(ShardableDataset[(T, hax.NamedArray)]):  # named array
     def __iter__(self) -> Iterator[(T, IntScalar)]:
         for item in self.dataset:
             yield item, self.domain_index
-
-
-
-
-
-
-
-
