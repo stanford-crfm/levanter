@@ -29,7 +29,8 @@ WandbRun = Union["wandb.sdk.wandb_run.Run", "wandb.sdk.lib.disabled.RunDisabled"
 
 
 class WandbTracker(Tracker):
-    _run: Optional[WandbRun]
+    name: str = "wandb"
+    run: WandbRun
 
     def __init__(self, run: Optional[WandbRun]):
         import wandb
@@ -37,29 +38,34 @@ class WandbTracker(Tracker):
         if run is None:
             if wandb.run is None:
                 logger.warning("Wandb run is not initialized. Initializing a new run.")
-                run = wandb.init()
-
-        self._run = run
+                runx = wandb.init()
+                if runx is None:
+                    raise RuntimeError("Wandb run is not initialized.")
+                self.run = runx
+            else:
+                self.run = wandb.run
+        else:
+            self.run = run
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        if self._run is None:
+        if self.run is None:
             raise RuntimeError("Must call init before logging hyperparameters")
-        self._run.config.update(hparams)
+        self.run.config.update(hparams)
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
-        if self._run is None:
+        if self.run is None:
             raise RuntimeError("Must call init before logging metrics")
-        self._run.log(metrics, step=step, commit=commit)
+        self.run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
-        if self._run is None:
+        if self.run is None:
             raise RuntimeError("Must call init before logging summary")
-        self._run.summary.update(metrics)
+        self.run.summary.update(metrics)
 
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        if self._run is None:
+        if self.run is None:
             raise RuntimeError("Must call init before logging artifacts")
-        self._run.log_artifact(artifact, name=name, type=type)
+        self.run.log_artifact(artifact, name=name, type=type)
 
 
 def is_wandb_available():

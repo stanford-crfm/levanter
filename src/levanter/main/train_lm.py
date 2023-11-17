@@ -11,7 +11,7 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
-from levanter import callbacks, tracker
+from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -130,7 +130,7 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        tracker.log_summary(
+        levanter.tracker.log_summary(
             {
                 "parameter_count": parameter_count(state.model),
             }

@@ -519,7 +519,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        levanter.log_metrics(to_log, step=None, commit=self.commit)
+        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):

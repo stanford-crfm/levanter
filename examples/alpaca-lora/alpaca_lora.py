@@ -12,7 +12,6 @@ import transformers
 import haliax as hax
 
 import levanter
-from levanter import tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import (
     LoraConfig,
@@ -113,7 +112,7 @@ def train(config: TrainArgs):
             all_param_count = parameter_count(state.model)
             just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
-            tracker.log_summary(
+            levanter.tracker.log_summary(
                 {
                     "parameter_count": all_param_count,
                     "trainable_parameter_count": just_lora_params,

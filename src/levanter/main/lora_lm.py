@@ -8,7 +8,7 @@ import jax.random as jrandom
 import haliax.random
 
 import levanter
-from levanter import callbacks, tracker
+from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
 from levanter.lora import (
@@ -94,7 +94,7 @@ def main(config: LoraLmConfig):
         all_param_count = parameter_count(state.model)
         just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
-        tracker.log_summary(
+        levanter.tracker.log_summary(
             {
                 "parameter_count": all_param_count,
                 "trainable_parameter_count": just_lora_params,

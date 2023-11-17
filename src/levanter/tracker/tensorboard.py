@@ -14,6 +14,8 @@ if typing.TYPE_CHECKING:
 
 
 class TensorboardTracker(Tracker):
+    name: str = "tensorboard"
+
     def __init__(self, writer: "SummaryWriter"):
         self.writer = writer
 

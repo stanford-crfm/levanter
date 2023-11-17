@@ -12,7 +12,8 @@ model:
   use_bias: false
 fcm_prob: 0.15
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: ["pile", "gpt2"]
 

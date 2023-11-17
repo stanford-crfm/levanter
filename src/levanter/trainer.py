@@ -315,7 +315,7 @@ class Trainer:
                 with capture_time() as loading_time:
                     example = next(iter_data)
 
-                levanter.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
                 info = self.train_step(state, example)
                 state = info.state
@@ -324,7 +324,7 @@ class Trainer:
                     with capture_time() as hook_time:
                         self.run_hooks(info)
 
-                    levanter.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
                 yield info
 
