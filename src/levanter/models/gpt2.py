@@ -309,7 +309,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
 
     token_embeddings: NamedArray
-    #position_embeddings: NamedArray
+    position_embeddings: NamedArray
     dropout: hnn.Dropout
 
     token_out_embeddings_0: NamedArray
@@ -319,10 +319,10 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
-        k_wte, k_out = jrandom.split(key, 2) # k_wpe, 
+        k_wte, k_wpe, k_out = jrandom.split(key, 3) 
 
         token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
-        #position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
+        position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
         token_out_embeddings_0 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
@@ -330,14 +330,14 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         token_out_embeddings_2 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
         token_out_embeddings_3 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
 
-        return Gpt2Embeddings(Vocab, config, token_embeddings, dropout, token_out_embeddings_0, token_out_embeddings_1, token_out_embeddings_2, token_out_embeddings_3) #, position_embeddings
+        return Gpt2Embeddings(Vocab, config, token_embeddings, dropout, position_embeddings, token_out_embeddings_0, token_out_embeddings_1, token_out_embeddings_2, token_out_embeddings_3)
 
     @named_call
     def embed(self, input_ids, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
-        # position_embeds = self.position_embeddings
+        position_embeds = self.position_embeddings
 
-        x = input_embeds #+ position_embeds
+        x = input_embeds + position_embeds
         x = self.dropout(x, key=key)
 
         return x
@@ -358,7 +358,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return hax.dot("embed", x, self.token_out_embeddings_3)  
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "wte.weight", "token_out_embeddings_0": "lm_head0.weight", "token_out_embeddings_1": "lm_head1.weight", "token_out_embeddings_2": "lm_head2.weight", "token_out_embeddings_3": "lm_head3.weight"} #, "position_embeddings": "wpe.weight"}
+        return {"token_embeddings": "wte.weight", "token_out_embeddings_0": "lm_head0.weight", "token_out_embeddings_1": "lm_head1.weight", "token_out_embeddings_2": "lm_head2.weight", "token_out_embeddings_3": "lm_head3.weight", "position_embeddings": "wpe.weight"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
