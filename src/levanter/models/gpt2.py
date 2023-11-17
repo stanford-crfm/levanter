@@ -330,14 +330,15 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         token_out_embeddings_2 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
         token_out_embeddings_3 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
 
-        return Gpt2Embeddings(Vocab, config, token_embeddings, dropout, position_embeddings, token_out_embeddings_0, token_out_embeddings_1, token_out_embeddings_2, token_out_embeddings_3)
+        return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout, token_out_embeddings_0, token_out_embeddings_1, token_out_embeddings_2, token_out_embeddings_3)
 
     @named_call
     def embed(self, input_ids, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
 
-        x = input_embeds + position_embeds
+        input_len = input_ids.resolve_axis("position").size
+        x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
         x = self.dropout(x, key=key)
 
         return x
