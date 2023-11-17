@@ -50,13 +50,13 @@ class Tracker(abc.ABC):
         import levanter.tracker.tracker_fns as tracker_fns
 
         if hasattr(self, "_tracker_cm"):
-            raise RuntimeError("Tracker already set")
+            raise RuntimeError("This tracker is already set as the global tracker")
         setattr(self, "_tracker_cm", tracker_fns.current_tracker(self))
         self._tracker_cm.__enter__()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not hasattr(self, "_tracker_cm"):
-            raise RuntimeError("Tracker not set")
+            raise RuntimeError("This tracker is not set as the global tracker")
         self._tracker_cm.__exit__(exc_type, exc_val, exc_tb)
         delattr(self, "_tracker_cm")
 

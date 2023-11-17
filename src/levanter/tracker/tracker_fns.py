@@ -68,10 +68,22 @@ def current_tracker(
     tracker: Optional[Tracker] = None,
 ) -> Tracker | typing.ContextManager:
     """
-    Get or set the global tracker.
+    Get or set the global tracker. Note that setting the global tracker is not thread-safe,
+    and using a tracker from multiple threads is only supported if the tracker itself is thread-safe.
 
-    :param tracker: If provided, returns a context manager that sets the global tracker to the provided tracker when used.
-    :return: The global tracker, or a context manager for setting the global tracker.
+    Args
+      tracker: If provided, returns a context manager that sets the global tracker to the provided tracker when used.
+
+    Returns
+        If no tracker is provided, returns the current global tracker.
+        If a tracker is provided, returns a context manager that sets the global tracker to the provided tracker when used.
+
+    Examples
+        >>> from levanter.tracker import current_tracker, log_metrics
+        >>> from levanter.tracker.wandb import WandbTracker
+        >>> with current_tracker(WandbTracker()):
+        ...     log_metrics({"foo": 1}, step=0)
+        ...     current_tracker().log_metrics({"foo": 2}, step=1)
     """
     global _global_tracker
     if tracker is None:
