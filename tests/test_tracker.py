@@ -5,7 +5,8 @@ from typing import Tuple
 import pytest
 import yaml
 
-from levanter.tracker import TrackerConfig
+import levanter.tracker
+from levanter.tracker import CompositeTracker, TrackerConfig
 
 
 def test_tracker_plugin_stuff_works():
@@ -39,3 +40,21 @@ def test_tracker_plugin_multi_parsing_work():
     parsed = yaml.safe_load(config)
     decoded = draccus.decode(ConfigHolder, parsed).tracker
     assert decoded == (NoopTrackerConfig(), TrackerConfig.get_choice_class("wandb")())
+
+
+def test_get_tracker_by_name():
+    wandb_config = TrackerConfig.get_choice_class("wandb")
+    if wandb_config is None:
+        pytest.skip("wandb not installed")
+
+    from levanter.tracker import NoopTracker
+
+    wandb1 = wandb_config(mode="disabled").init(None)
+    tracker = CompositeTracker([wandb1, NoopTracker()])
+
+    with tracker:
+        assert levanter.tracker.get_tracker("wandb") is wandb1
+        assert levanter.tracker.get_tracker("noop") is not None
+
+        with pytest.raises(KeyError):
+            levanter.tracker.get_tracker("foo")

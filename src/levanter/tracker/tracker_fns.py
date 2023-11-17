@@ -4,8 +4,7 @@ from typing import Any, Literal, Optional
 
 import jax
 
-from levanter.tracker import Tracker
-from levanter.tracker.composite import CompositeTracker
+from levanter.tracker import CompositeTracker, Tracker
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
@@ -113,7 +112,7 @@ def get_tracker(name: str) -> Tracker:
     elif tracker.name == name:
         return tracker
 
-    raise ValueError(f"Tracker with name {name} not found")
+    raise KeyError(f"Tracker with name {name} not found")
 
 
 class _GlobalLoggerContextManager(AbstractContextManager):

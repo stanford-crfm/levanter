@@ -7,8 +7,7 @@ from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor,
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
-from levanter.tracker import TrackerConfig
-from levanter.tracker.tracker import NoopTrackerConfig
+from levanter.tracker import NoopTrackerConfig, TrackerConfig
 
 
 logger = logging.getLogger(__name__)

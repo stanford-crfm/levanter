@@ -46,6 +46,20 @@ class Tracker(abc.ABC):
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
 
+    def __enter__(self):
+        import levanter.tracker.tracker_fns as tracker_fns
+
+        if hasattr(self, "_tracker_cm"):
+            raise RuntimeError("Tracker already set")
+        setattr(self, "_tracker_cm", tracker_fns.current_tracker(self))
+        self._tracker_cm.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not hasattr(self, "_tracker_cm"):
+            raise RuntimeError("Tracker not set")
+        self._tracker_cm.__exit__(exc_type, exc_val, exc_tb)
+        delattr(self, "_tracker_cm")
+
 
 class CompositeTracker(Tracker):
     def __init__(self, loggers: List[Tracker]):
