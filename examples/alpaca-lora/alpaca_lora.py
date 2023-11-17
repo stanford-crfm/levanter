@@ -100,10 +100,9 @@ def train(config: TrainArgs):
         def compute_loss(model: LmHeadModel, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
 
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
+        # end major difference from Alpaca
 
-        with trainer:
-            # end major difference from Alpaca
+        with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
 
             trainer.add_default_hooks()
             state = trainer.initial_state(training_key, model=model)
@@ -112,7 +111,7 @@ def train(config: TrainArgs):
             all_param_count = parameter_count(state.model)
             just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
-            levanter.tracker.log_summary(
+            levanter.log_summary(
                 {
                     "parameter_count": all_param_count,
                     "trainable_parameter_count": just_lora_params,
