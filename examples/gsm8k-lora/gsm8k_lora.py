@@ -98,8 +98,13 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         def format_example(ex):
             return f"Q: {ex[config.input_key]}\nA: "
 
+        def format_output(ex):
+            # this is what helm does
+            answer_text = ex[config.output_key].replace("####", "The answer is").replace("\n", " ") + "."
+            return f"{answer_text}\n{tokenizer.eos_token}"
+
         sources = [format_example(example) for example in batch]
-        targets = [f"{example[config.output_key]}\n{tokenizer.eos_token}" for example in batch]
+        targets = [format_output(example) for example in batch]
         # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
         examples = [s + t for s, t in zip(sources, targets)]
         sources_tokenized = tokenizer(sources, return_tensors="np", padding=False, truncation=True)
