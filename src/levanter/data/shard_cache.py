@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from queue import PriorityQueue
 from typing import (
@@ -48,7 +49,7 @@ import levanter.tracker
 
 from .. import logging
 from . import ShardableDataset
-from ._preprocessor import BatchProcessor, as_record_batch, dict_from_record_batch
+from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
 from .sharded_dataset import ShardedDataset
 
 
@@ -145,6 +146,65 @@ class CacheLedger:
     """Written at the end of the cache build process. Contains the global chunk order."""
 
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
+
+
+class SerialCacheWriter(AbstractContextManager):
+    """
+    Writes ShardCache-compatible caches to disk. This is a serial version of ShardCacheWriter that doesn't use Ray.
+    Mostly for scripts and debugging.
+
+    Examples:
+        >>> with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
+        ...     for batch in process_batches():
+        ...         writer.write_batch(batch)
+    """
+
+    def __init__(self, cache_dir: str, rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK):
+        if rows_per_chunk <= 0:
+            raise ValueError("rows_per_chunk must be positive")
+        self.cache_dir = cache_dir
+        self._rows_per_chunk = rows_per_chunk
+        self._chunks: List[ChunkMetadata] = []
+        self._current_chunk_writer: Optional[_ChunkWriter] = None
+        self._is_closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # if successful, write the ledger
+        if self._current_chunk_writer is not None:
+            self._current_chunk_writer.__exit__(exc_type, exc_val, exc_tb)
+            self._chunks.append(self._current_chunk_writer.get_metadata())
+            self._current_chunk_writer = None
+
+        if exc_type is None:
+            _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks))
+            logger.info(f"Cache ledger written to {self.cache_dir}")
+            self._is_closed = True
+
+    def result(self, batch_size: int = 1) -> "ShardCache":
+        if not self._is_closed:
+            raise RuntimeError("Cannot get result until ShardCacheWriter is closed")
+        return ShardCache.load(self.cache_dir, batch_size=batch_size)
+
+    def write_batch(self, batch: BatchResult):
+        rb = as_record_batch(batch)
+
+        while rb.num_rows > 0:
+            if self._current_chunk_writer is None:
+                self._current_chunk_writer = _ChunkWriter(
+                    self.cache_dir, f"chunk-{len(self._chunks)}", rb.schema
+                ).__enter__()
+
+            slice = rb.slice(0, min(rb.num_rows, self._rows_per_chunk - self._current_chunk_writer.num_rows))
+            self._current_chunk_writer.write_batch(slice)
+            rb = rb.slice(slice.num_rows)
+
+            if self._current_chunk_writer.num_rows >= self._rows_per_chunk:
+                self._current_chunk_writer.__exit__(None, None, None)
+                self._chunks.append(self._current_chunk_writer.get_metadata())
+                self._current_chunk_writer = None
 
 
 class _ChunkWriter:
