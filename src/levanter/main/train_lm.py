@@ -16,7 +16,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 
@@ -91,13 +91,10 @@ def main(config: TrainLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
+    trainer = Trainer(config.trainer, optimizer)
 
     eval_datasets = config.data.validation_sets(Pos.size)
     train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)

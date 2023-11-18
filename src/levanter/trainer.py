@@ -36,7 +36,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
-from levanter.types import FilterSpec
+from levanter.types import FilterSpec, LossFunction, ModuleLoss
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
@@ -121,7 +121,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Callable,
+        loss_fn: Optional[LossFunction] = None,
         *,
         is_trainable: PyTree[FilterSpec] = True,
     ):
@@ -138,9 +138,9 @@ class Trainer:
         """
         self.hooks = TrainerHooks()
         self.config = config
-        self._raw_loss_function = loss_fn
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
+        self._raw_loss_function = loss_fn or ModuleLoss()
 
     @cached_property
     def loss_fn(self):
@@ -153,7 +153,7 @@ class Trainer:
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return self._raw_loss_function(model, *batch, **batch_kwargs)
+                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs))
 
         return fn
 
@@ -766,3 +766,10 @@ def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
         return int(ratio_or_steps * num_train_steps)
     else:
         return int(ratio_or_steps)
+
+
+def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
+    if isinstance(x, hax.NamedArray):
+        return x.scalar()
+    else:
+        return x
