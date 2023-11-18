@@ -206,9 +206,6 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
     trainer = Trainer(config.trainer, optimizer)
 
     with trainer.device_mesh:

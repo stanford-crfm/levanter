@@ -92,8 +92,6 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-    # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     trainer = Trainer(config.trainer, optimizer)
 
     eval_datasets = config.data.validation_sets(Pos.size)
