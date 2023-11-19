@@ -1,10 +1,5 @@
-data:
-  train_urls:
-    - "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
-  validation_urls:
-    - "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_val.jsonl"
-  cache_dir: "gs://levanter-data/tokenized/GEM_viggo_llama/"
-  tokenizer: "meta-llama/Llama-2-70b-hf"
+data: "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
+data_cache_dir: "gs://levanter-data/tokenized/GEM_viggo_llama/"
 trainer:
   wandb:
     project: "levanter"
