@@ -27,7 +27,12 @@ is kept, otherwise it is filtered out.
 """
 
 
-class LossFunction(Protocol[M_con, X]):
+class ComputeLossFunction(Protocol[M_con, X]):
+    """
+    Function signature for "compute_loss" functions in Levanter: these
+    couple the computation of the logits and the evaluation of the loss
+    """
+
     def __call__(
         self,
         model: M_con,
@@ -39,7 +44,7 @@ class LossFunction(Protocol[M_con, X]):
         ...
 
 
-class ModuleLoss(LossFunction[M, X]):
+class ModuleComputeLoss(ComputeLossFunction[M, X]):
     """
     Loss that just delegates to the model's compute_loss method.
     """

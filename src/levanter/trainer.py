@@ -36,7 +36,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
-from levanter.types import FilterSpec, LossFunction, ModuleLoss
+from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
@@ -121,7 +121,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Optional[LossFunction] = None,
+        loss_fn: Optional[ComputeLossFunction] = None,
         *,
         is_trainable: PyTree[FilterSpec] = True,
     ):
@@ -140,7 +140,7 @@ class Trainer:
         self.config = config
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
-        self._raw_loss_function = loss_fn or ModuleLoss()
+        self._raw_loss_function = loss_fn or ModuleComputeLoss()
 
     @cached_property
     def loss_fn(self):
@@ -167,6 +167,10 @@ class Trainer:
     def mp(self) -> jmp.Policy:
         """Returns the mixed precision policy"""
         return self.config.mp
+
+    @property
+    def num_train_steps(self) -> int:
+        return self.config.num_train_steps
 
     @typing.overload
     def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
@@ -273,7 +277,7 @@ class Trainer:
         """
         iter_data = iter(train_loader)
 
-        while state.step < self.config.num_train_steps:
+        while state.step < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
