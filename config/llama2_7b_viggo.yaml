@@ -1,0 +1,29 @@
+data:
+  train_urls:
+    - "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
+  validation_urls:
+    - "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_val.jsonl"
+  cache_dir: "gs://levanter-data/tokenized/GEM_viggo_llama/"
+  tokenizer: "meta-llama/Llama-2-70b-hf"
+model:
+  type: llama
+# TODO: uncomment this once we resolve the resource exhaustion issue
+# initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+# use_hf_model_config: true
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["viggo", "llama", "finetune"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 128
+  num_train_steps: 200  # 5103 / 128 * 5
+  steps_per_eval: 20
+  max_eval_batches: 100
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  learning_rate: 1E-5  # set low for fine-tuning
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
