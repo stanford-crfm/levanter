@@ -110,6 +110,10 @@ class TrainerHooks:
             return decorator(fn)
 
 
+# A note on subclassing Trainer.
+# Trainer wasn't explicitly designed to be subclassed, though we are working on extending it in this direction
+
+
 class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
