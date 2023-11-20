@@ -135,7 +135,7 @@ def _get_data_source(path_or_id):
             return JsonDataset([path_or_id])
         else:
             raise ValueError(
-                f"We only support HF Dataset or local files with .json or .jsonl extensions, not {path_or_id}!"
+                f"We only support HF Dataset or a data file with .json or .jsonl extensions, not {path_or_id}!"
             )
     else:
         return WrappedHFDataset(path_or_id, split="train")
