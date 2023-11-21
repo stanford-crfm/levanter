@@ -235,6 +235,7 @@ We have two configs for Alpaca: one for Llama 1 and one for Llama 2. The only di
 
 ```yaml
 # cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
+data: tatsu-lab/alpaca
 model_name_or_path: huggyllama/llama-7b
 trainer:
   mp: p=f32,c=bfloat16
@@ -268,6 +269,14 @@ to the TPU VM as an environment variable. (We'll show you how to do this later.)
 If you have your own dataset, you'll want to change the `data` field in the config to point to your dataset.
 You'll also want to change the `model_name_or_path` field to point to the model you want to use.
 Currently, Levanter supports GPT-2, Llama, MPT, and Backpack checkpoints.
+
+```yaml
+data: <Your Data Path>  # Path to the training data, or huggingface dataset name.
+data_cache_dir: <Your Data Cache Path>
+model_name_or_path: "meta-llama/Llama-2-7b-chat-hf"
+trainer:
+    ...
+```
 
 
 #### \[TPU\] Using a Modified Config
