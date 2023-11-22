@@ -129,6 +129,7 @@ class Trainer:
         loss_fn: Callable,
         *,
         is_trainable: PyTree[FilterSpec] = True,
+        add_default_hooks: bool = True,
     ):
         """
 
@@ -151,6 +152,9 @@ class Trainer:
         else:
             self.tracker = config.tracker.init(self.run_id)
         self._cmanagers = []
+
+        if add_default_hooks:
+            self._add_default_hooks()
 
     @cached_property
     def loss_fn(self):
@@ -341,7 +345,7 @@ class Trainer:
 
         return info
 
-    def add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)

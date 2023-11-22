@@ -88,62 +88,68 @@ def main(config: LoraLmConfig):
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
         # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
-        state = trainer.initial_state(training_key, model=model)
+        with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
+            eval_datasets = config.data.validation_sets(Pos.size)
 
-        all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+            state = trainer.initial_state(training_key, model=model)
 
-        levanter.tracker.log_summary(
-            {
-                "parameter_count": all_param_count,
-                "trainable_parameter_count": just_lora_params,
-                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
-            }
-        )
+            all_param_count = parameter_count(state.model)
+            just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
-        logger.info(f"Total parameter count: {all_param_count}")
-        logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
-
-        # data loaders
-        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
-
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
-
-        # boilerplate hooks and such
-        trainer.add_default_hooks(eval_dataset)
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
-        if config.peft_save_path is not None:
-            full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
-            trainer.add_hook(
-                save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.initialize_from_hf, tokenizer, config.peft_hf_upload
-                ),
-                every=config.hf_save_steps,
+            levanter.tracker.log_summary(
+                {
+                    "parameter_count": all_param_count,
+                    "trainable_parameter_count": just_lora_params,
+                    "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+                }
             )
 
-        if config.merged_hf_save_path is not None:
-            full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
-            trainer.add_hook(
-                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
-                every=config.hf_save_steps,
-            )
+            logger.info(f"Total parameter count: {all_param_count}")
+            logger.info(f"Trainable parameter count: {just_lora_params}")
+            logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
-        # data loader. may need to seek to the right place if we're resuming
-        iter_data = non_caching_cycle(train_loader)
+            # data loaders
+            if len(eval_datasets) == 0:
+                logger.warning("No evaluation datasets provided.")
 
-        if state.step > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
+            for name, eval_dataset in eval_datasets.items():
+                eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+                trainer.add_eval_hook(eval_dataset, name=name)
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
-                next(iter_data)
+            train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+            train_loader = trainer.sharded_loader(train_dataset, Batch)
 
-        ## OK, actually run training!
-        trainer.train(state, iter_data)
+            # boilerplate hooks and such
+            trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+            if config.peft_save_path is not None:
+                full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
+                trainer.add_hook(
+                    save_peft_checkpoint_callback(
+                        full_save_path, config.lora, config.initialize_from_hf, tokenizer, config.peft_hf_upload
+                    ),
+                    every=config.hf_save_steps,
+                )
+
+            if config.merged_hf_save_path is not None:
+                full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
+                trainer.add_hook(
+                    save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
+                    every=config.hf_save_steps,
+                )
+
+            # data loader. may need to seek to the right place if we're resuming
+            iter_data = non_caching_cycle(train_loader)
+
+            if state.step > 0:
+                # step is after the batch, so we need to seek to step
+                # TODO: implement iter_data.seek(resume_step +1)
+                import tqdm
+
+                for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+                    next(iter_data)
+
+            ## OK, actually run training!
+            trainer.train(state, iter_data)
 
 
 if __name__ == "__main__":
