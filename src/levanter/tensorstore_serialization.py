@@ -31,8 +31,6 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
     specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
 
     # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    # array_ser only supports saving sharded arrays, so we can't use its top-level function run_serialization.
-    # however we're inspired by its implementation, meaning we'll make a tree of futures and wait on them.
     async def _do_serialize():
         futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=is_named_array)
         return await asyncio.gather(*jtu.tree_leaves(futures))

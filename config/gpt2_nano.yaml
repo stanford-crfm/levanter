@@ -1,5 +1,5 @@
-data:
-  id: dlwh/wikitext_103_detokenized
+#data:
+#  id: dlwh/wikitext_103_detokenized
 model:
   type: gpt2
   hidden_dim: 32

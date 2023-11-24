@@ -107,7 +107,7 @@ def train(config: TrainArgs):
 
             # log some info about the model
             all_param_count = parameter_count(state.model)
-            just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+            just_lora_params = parameter_count(trainer._trainable_params_only(state.model))
 
             levanter.log_summary(
                 {
