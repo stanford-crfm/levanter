@@ -1,5 +1,6 @@
 import atexit
 import copy
+import dataclasses
 import functools
 import logging as pylogging
 import os
@@ -49,35 +50,33 @@ logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
 M = TypeVar("M", bound=PyTree)
-S = TypeVar("S", bound=PyTree)
 
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
 
-# A note on the semantics of "step" vs "next_step":
-# The "step" of a TrainerState is the state after `step` steps have been taken.
-# A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 
-
-@dataclass
-class TrainerState(Generic[M]):
+# TODO: figure out how to get Generic[M] back
+class TrainerState(eqx.Module):
     step: int
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
+    is_trainable: PyTree[FilterSpec] = eqx.field(static=True)
 
 
+# A note on the semantics of "step" vs "next_step":
+# The "step" of a TrainerState is the state after `step` steps have been taken.
+# A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 @dataclass
-class StepInfo(Generic[M]):
-    state: TrainerState[M]
+class StepInfo:
+    state: TrainerState
     loss: float
     step_duration: float
 
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
-    next_key = property(lambda self: self.state.training_key)
 
     step = property(lambda self: self.state.step - 1)
     """
@@ -118,7 +117,6 @@ class Trainer:
     optimizer: GradientTransformation
     hooks: TrainerHooks
     tracker: levanter.tracker.Tracker
-    is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
     _cmanagers: List[typing.ContextManager] = []
 
@@ -128,7 +126,6 @@ class Trainer:
         optimizer: GradientTransformation,
         loss_fn: Callable,
         *,
-        is_trainable: PyTree[FilterSpec] = True,
         add_default_hooks: bool = True,
     ):
         """
@@ -138,15 +135,11 @@ class Trainer:
             optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
             loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
                 scalar loss. It should be jit-able and should not have any side effects.
-            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
-                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
-                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
         """
         self.hooks = TrainerHooks()
         self.config = config
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
-        self.is_trainable_param = is_trainable
         if isinstance(config.tracker, Sequence):
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
@@ -245,10 +238,18 @@ class Trainer:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
 
     def initial_state(
-        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
+        self, training_key: PRNGKeyArray,
+            model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None,
+            *,
+            is_trainable: PyTree[FilterSpec] = True,
     ) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+
+        Args
+            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
+                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
+                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
 
         Returns:
             model, opt_state, key, resume_step
@@ -260,55 +261,56 @@ class Trainer:
                 raise ValueError("one of model and model_init must be specified")
 
             if model is not None:
-                # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
-                # We can't use plain partials because they aren't pytrees
+                # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
                 model_init = jax.tree_util.Partial(lambda m: m, model)
 
-            model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+            model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init, is_trainable)
 
             # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
-            trainable_model_shape = self.trainable_params_only(model_shape)
+            trainable_model_shape = _trainable_params_only(model_shape, is_trainable)
 
-            ckpt = self.maybe_load_checkpoint(
-                trainable_model_shape,
-                (opt_state_shape, training_key),
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-            )
+            trainer_state_shape = TrainerState(0,
+                                               trainable_model_shape,
+                                               opt_state_shape,
+                                               training_key,
+                                               is_trainable=is_trainable)
+
+            ckpt = self._maybe_load_checkpoint(trainer_state_shape)
 
             if ckpt is not None:
-                trainable_model, (opt_state, training_key), completed_step = ckpt
+                opt_state = ckpt.opt_state
+                training_key = ckpt.training_key
+                step = ckpt.step
+
                 if model is not None:
-                    model = eqx.combine(trainable_model, model)
+                    model = eqx.combine(ckpt.model, model)
                 elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
                     # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
                     non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
                     model = eqx.combine(trainable_model, non_trainable)
                 else:
                     model = trainable_model
-                step = completed_step + 1
             else:
-                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
+                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init, is_trainable)
                 step = 0
 
-            return TrainerState(step, model, opt_state, training_key)
+            return TrainerState(step, model, opt_state, training_key, is_trainable)
 
-    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
+    def train_step(self, state: TrainerState, *batch: X, **batch_kwargs) -> StepInfo:
         """
         Performs a single training step.
         """
         with capture_time() as step_time, levanter.current_tracker(self.tracker):
-            key, new_key = jax.random.split(state.training_key)
-            loss, new_model, new_optstate = self._train_step_fn(
-                state.model, state.opt_state, *batch, **batch_kwargs, key=key
+            loss, new_state = self._train_step_fn(
+                state, *batch, **batch_kwargs, key=key
             )
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
-        return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
+        return StepInfo(new_state, loss, step_time())
 
     def training_steps(
-        self, state: TrainerState[M], train_loader, run_hooks: bool = True
+        self, state: TrainerState, train_loader, run_hooks: bool = True
     ) -> typing.Iterator[StepInfo]:
         """
         Generator that yields training steps and runs hooks.
@@ -332,7 +334,7 @@ class Trainer:
 
                 yield info
 
-    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+    def train(self, state: TrainerState, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo:
         """
         Performs training until the number of steps is reached.
         """
@@ -353,7 +355,7 @@ class Trainer:
         if eval_dataset is not None:
             self.add_eval_hook(eval_dataset)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
+        checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
@@ -406,10 +408,12 @@ class Trainer:
         @named_jit(
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
-            donate_args=(True, True),
+            donate_args=(True,),
         )
-        def train_step(model, opt_state, *batch, **batch_kwargs):
-            model = inference_mode(model, False)
+        def train_step(state, *batch, **batch_kwargs):
+            key, new_key = jax.random.split(state.training_key)
+            opt_state = state.opt_state
+            model = inference_mode(state.model, False)
 
             # we do this so that we only take the gradients of the trainable parameters
             trainable_model, rest_model = self.partition_trainable_params(model)
@@ -425,14 +429,22 @@ class Trainer:
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
 
-            return loss, model, opt_state
+            new_state = dataclasses.replace(
+                state,
+                step=state.step + 1,
+                model=model,
+                opt_state=opt_state,
+                training_key=new_key
+            )
+
+            return loss, new_state
 
         return train_step
 
-    def _init_model_and_opt_state(self, model_init):
+    def _init_model_and_opt_state(self, model_init, is_trainable):
         model = model_init()
         # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = self.partition_trainable_params(model)
+        trainable, non_trainable = _partition_trainable_params(model, is_trainable)
         trainable = self.mp.cast_to_param(trainable)
         non_trainable = self.mp.cast_to_compute(non_trainable)
         model = eqx.combine(trainable, non_trainable)
@@ -446,58 +458,29 @@ class Trainer:
         non_trainable = self.mp.cast_to_compute(non_trainable)
         return non_trainable
 
-    def trainable_params_only(self, model: M) -> M:
-        """
-        Filters out non-trainable parameters from the model. This is used internally to
-        for the optimizer state and to compute gradients, but you can also use it to filter out
-        params for logging or something.
-        """
-        return self.partition_trainable_params(model)[0]
 
-    def partition_trainable_params(self, model):
-        """
-        Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
-        or something.
-
-        Returns:
-            trainable, non-trainable
-        """
-
-        def trainable_and_diffable(pred):
-            if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish(x)
-            elif pred is True:
-                return is_inexact_arrayish
-            else:
-                return pred
-
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
-        return eqx.partition(model, combined_mask)
-
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
+    def _maybe_load_checkpoint(self, state: TrainerState) -> Optional[TrainerState]:
         """Loads a checkpoint if one exists and we're supposed to load it,
         otherwise returns the model and training state as is"""
-        if self.config.load_checkpoint is not False:
-            # TODO: don't remake the checkpointer every time
-            checkpointer = self.config.checkpointer.create(self.run_id)
-            load_checkpoint_path = self.config.load_checkpoint_path
+        with self.device_mesh:
+            if self.config.load_checkpoint is not False:
+                # TODO: don't remake the checkpointer every time
+                checkpointer = self.config.checkpointer.create(self.run_id)
+                load_checkpoint_path = self.config.load_checkpoint_path
 
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+                if load_checkpoint_path is None:
+                    load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
+                ckpt = checkpointer.load_checkpoint(
+                    state, load_checkpoint_path, axis_mapping=self.parameter_axis_mapping, mesh=self.device_mesh
+                )
 
-            if ckpt is None and self.config.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
+                if ckpt is None and self.config.load_checkpoint is True:
+                    raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
 
-            return ckpt
-        else:
-            return None
+                return ckpt
+            else:
+                return None
 
 
 @dataclass
@@ -804,3 +787,28 @@ def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
         return int(ratio_or_steps * num_train_steps)
     else:
         return int(ratio_or_steps)
+
+
+def _trainable_params_only(model: M, filter: PyTree[FilterSpec]) -> M:
+    return _partition_trainable_params(model, filter)[0]
+
+def _partition_trainable_params(model, filter):
+    """
+    Partitions the model into trainable and non-trainable parameters. This is used internally
+    for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
+    or something.
+
+    Returns:
+        trainable, non-trainable
+    """
+
+    def trainable_and_diffable(pred):
+        if callable(pred):
+            return lambda x: pred(x) and is_inexact_arrayish(x)
+        elif pred is True:
+            return is_inexact_arrayish
+        else:
+            return pred
+
+    combined_mask = jax.tree_util.tree_map(trainable_and_diffable, filter)
+    return eqx.partition(model, combined_mask)

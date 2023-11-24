@@ -94,7 +94,7 @@ def main(config: LoraLmConfig):
             state = trainer.initial_state(training_key, model=model)
 
             all_param_count = parameter_count(state.model)
-            just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+            just_lora_params = parameter_count(trainer._trainable_params_only(state.model))
 
             levanter.tracker.log_summary(
                 {
