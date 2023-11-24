@@ -552,19 +552,22 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> ShardableDataset[np.ndarray]:
-        return self.token_seq_dataset("train", seq_len, monitors)
+        ds = self.token_seq_dataset("train", seq_len, monitors)
+        if ds is None:
+            raise ValueError("No training set!")
+        return ds
 
-    def validation_set(self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True):
-        if self._has_validation_set:
-            return self.token_seq_dataset("validation", seq_len, monitors)
-        else:
-            return None
+    def validation_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        return self.token_seq_dataset("validation", seq_len, monitors)
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, ShardableDataset[np.ndarray]]:
-        if self._has_validation_set:
-            return {"": self.validation_set(seq_len, monitors)}
+        validation_set = self.validation_set(seq_len, monitors)
+        if validation_set is not None:
+            return {"": validation_set}
         else:
             return {}
 
@@ -585,22 +588,27 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def token_seq_dataset(
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> TokenSeqDataset:
+    ) -> Optional[TokenSeqDataset]:
         cache = self.build_or_load_cache(split, monitors=monitors)
+        if cache is None:
+            return None
         return TokenSeqDataset(cache, seq_len)
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TokenizedDocumentCache]:
-        source = self.get_shard_source(split)
-        if source is None:
-            return None
-
         split_cache_dir = os.path.join(self.cache_dir, split)
         try:
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
         except FileNotFoundError:
-            logger.info(f"Building cache for {split}...")
+            pass
+
+        source = self.get_shard_source(split)
+        if source is None:
+            logger.info(f"No data for {split}")
+            return None
+
+        logger.info(f"Building cache for {split}...")
 
         if monitors is True:
             monitors = [
