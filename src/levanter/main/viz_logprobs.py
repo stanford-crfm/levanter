@@ -51,10 +51,6 @@ def main(config: VizGpt2Config):
         EvalBatch,
     )
 
-    # some axes we use outside the model proper
-    Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
-
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
