@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
+import wandb
 
 import haliax as hax
 from haliax import Axis
@@ -181,12 +182,14 @@ def main(config: TrainLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(train_loader)
 
         ## OK, actually run training!
+        trainer.add_hook(lambda s: print(s.loss), every=20)
         trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
+        wandb.finish()
 
 
 if __name__ == "__main__":

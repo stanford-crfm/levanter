@@ -243,7 +243,12 @@ def leaf_key_paths(
 
             rec_value = rec(field, field_name)
             rec_values.append(rec_value)
-        return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
+
+        _, tree_def = eqx.tree_flatten_one_level(pytree)
+        out = jax.tree_util.tree_unflatten(tree_def, rec_values)
+        return out
+        # this doesn't work reliably because tree_at doesn't like none values
+        # return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values, is_leaf=lambda x: x is None)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
         if len(leaves) == 1:
