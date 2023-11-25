@@ -56,13 +56,13 @@ class Checkpointer:
     _last_temporary_checkpoint: Optional[str] = None
 
     def __init__(
-            self,
-            base_path: PathLike,
-            save_interval: Optional[datetime.timedelta],
-            step_policies: Sequence[CheckpointInterval],
-            *,
-            keep_params: PyTree[FilterSpec] = True,
-            dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
+        self,
+        base_path: PathLike,
+        save_interval: Optional[datetime.timedelta],
+        step_policies: Sequence[CheckpointInterval],
+        *,
+        keep_params: PyTree[FilterSpec] = True,
+        dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
     ):
         """
         Class for managing checkpoints. Saves checkpoints according to two policies: time and step.
@@ -102,38 +102,36 @@ class Checkpointer:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
     def load_checkpoint(
-            self,
-            state: M,
-            path: Optional[PathLike] = None,
-            *,
-            discover_latest: bool = True,
-            axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-            mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, int]]:
+        self,
+        state: M,
+        path: Optional[PathLike] = None,
+        *,
+        discover_latest: bool = True,
+        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+        mesh: Optional[haliax.partitioning.Mesh] = None,
+    ) -> Optional[M]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(
-            state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
-        )
+        return load_checkpoint(state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh)
 
     def load_model(
-            self,
-            model: M,
-            path: Optional[str] = None,
-            *,
-            discover_latest: bool = True,
-            axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-            mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, int]]:
+        self,
+        model: M,
+        path: Optional[str] = None,
+        *,
+        discover_latest: bool = True,
+        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+        mesh: Optional[haliax.partitioning.Mesh] = None,
+    ) -> Optional[M]:
         """
-         Convenience method/holdover from  previous API for loading checkpoints.
-         Loads just the model assuming the model is in the `model` subdir of the discovered checkpoint.
+        Convenience method/holdover from  previous API for loading checkpoints.
+        Loads just the model assuming the model is in the `model` subdir of the discovered checkpoint.
         """
-        ret_dict = self.load_checkpoint({"model": model},
-                                        path,
-                                        discover_latest=discover_latest,
-                                        axis_mapping=axis_mapping,
-                                        mesh=mesh)
+        ret_dict = self.load_checkpoint(
+            {"model": model}, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
+        )
+        if ret_dict is None:
+            return None
         return ret_dict["model"]
 
     def on_step(self, info, force: bool = False):
@@ -219,7 +217,7 @@ class Checkpointer:
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = equinox.partition(info.state, info.state.is_trainable)
+        state = equinox.filter(info.state, info.state.is_trainable)
         save_checkpoint(
             state,
             step=info.step,
@@ -275,13 +273,13 @@ def save_metadata(checkpoint_path, fs, step):
 
 
 def load_checkpoint(
-        tree: M,
-        checkpoint_path: PathLike,
-        *,
-        discover_latest=True,
-        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-        mesh: Optional[jax.sharding.Mesh] = None,
-) -> Optional[tuple[M, int]]:
+    tree: M,
+    checkpoint_path: PathLike,
+    *,
+    discover_latest=True,
+    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+    mesh: Optional[jax.sharding.Mesh] = None,
+) -> Optional[M]:
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
 
@@ -298,8 +296,10 @@ def load_checkpoint(
 
     try:
         tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
+        return tree
     except:  # noqa
         from levanter.trainer import TrainerState
+
         if not isinstance(tree, TrainerState):
             raise
         else:
@@ -315,30 +315,29 @@ def load_checkpoint(
                 key = None
             else:
                 training_state = tree_deserialize_leaves_tensorstore(
-                    os.path.join(checkpoint_path, "training_state"), training_state, axis_mapping=axis_mapping, mesh=mesh
+                    os.path.join(checkpoint_path, "training_state"),
+                    training_state,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
                 )
                 opt_state, key = training_state
 
             # TODO: pretty sure this is right, but should verify
             step = metadata["step"]
             new_state = dataclasses.replace(
-                tree,  # type: ignore
-                step=step + 1,
-                model=model,
-                opt_state=opt_state,
-                training_key=key)
-            return new_state, step
-
+                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+            )
+            return new_state
 
 
 def _old_load_checkpoint(
-        model: M,
-        training_state: S,
-        checkpoint_path: PathLike,
-        *,
-        discover_latest=True,
-        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-        mesh: Optional[jax.sharding.Mesh] = None,
+    model: M,
+    training_state: S,
+    checkpoint_path: PathLike,
+    *,
+    discover_latest=True,
+    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+    mesh: Optional[jax.sharding.Mesh] = None,
 ) -> Optional[Tuple[M, S, int]]:
     """
     Load a checkpoint from a given path.
@@ -422,10 +421,10 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
 
 
 def tree_serialise_leaves(
-        path: PathLike,
-        pytree: PyTree,
-        filter_spec=default_serialise_filter_spec,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
+    path: PathLike,
+    pytree: PyTree,
+    filter_spec=default_serialise_filter_spec,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> None:
     """Analog to `equinox.tree_serialise_leaves`, but saves the leaves of a PyTree using fsspec."""
 
@@ -443,11 +442,11 @@ def tree_serialise_leaves(
 
 
 def tree_deserialise_leaves(
-        path: PathLike,
-        like: PyTree,
-        filter_spec=default_deserialise_filter_spec,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        fs=None,
+    path: PathLike,
+    like: PyTree,
+    filter_spec=default_deserialise_filter_spec,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+    fs=None,
 ) -> PyTree:
     """
     Analog to `equinox.tree_deserialise_leaves`, but loads the leaves of a PyTree using fsspec.
@@ -521,6 +520,6 @@ class CheckpointerConfig:
             if prev_interval is not None:
                 assert prev_interval["until"] is not None, "Only the last checkpoint interval can be None"
                 assert (
-                        interval["until"] is None or interval["until"] > prev_interval["until"]
+                    interval["until"] is None or interval["until"] > prev_interval["until"]
                 ), "Checkpoint intervals must be monotonic"
             prev_interval = interval

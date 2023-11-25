@@ -57,8 +57,7 @@ DEFAULT_JAX_CONFIG = {
 }
 
 
-# TODO: figure out how to get Generic[M] back
-class TrainerState(eqx.Module):
+class TrainerState(eqx.Module, Generic[M]):
     step: int
     model: M
     opt_state: OptState
@@ -70,8 +69,8 @@ class TrainerState(eqx.Module):
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 @dataclass
-class StepInfo:
-    state: TrainerState
+class StepInfo(Generic[M]):
+    state: TrainerState[M]
     loss: float
     step_duration: float
 
@@ -238,11 +237,13 @@ class Trainer:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
 
     def initial_state(
-        self, training_key: PRNGKeyArray,
-            model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None,
-            *,
-            is_trainable: PyTree[FilterSpec] = True,
-    ) -> TrainerState:
+        self,
+        training_key: PRNGKeyArray,
+        model: Optional[M] = None,
+        model_init: Optional[Callable[[], M]] = None,
+        *,
+        is_trainable: PyTree[FilterSpec] = True,
+    ) -> TrainerState[M]:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
 
@@ -264,20 +265,21 @@ class Trainer:
                 # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
                 model_init = jax.tree_util.Partial(lambda m: m, model)
 
-            model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init, is_trainable)
+            model_shape, opt_state_shape = eqx.filter_eval_shape(
+                self._init_model_and_opt_state, model_init, is_trainable
+            )
 
             # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
             trainable_model_shape = _trainable_params_only(model_shape, is_trainable)
 
-            trainer_state_shape = TrainerState(0,
-                                               trainable_model_shape,
-                                               opt_state_shape,
-                                               training_key,
-                                               is_trainable=is_trainable)
+            trainer_state_shape: TrainerState = TrainerState(
+                0, trainable_model_shape, opt_state_shape, training_key, is_trainable=is_trainable
+            )
 
             ckpt = self._maybe_load_checkpoint(trainer_state_shape)
 
             if ckpt is not None:
+                trainable_model = ckpt.model
                 opt_state = ckpt.opt_state
                 training_key = ckpt.training_key
                 step = ckpt.step
@@ -291,27 +293,27 @@ class Trainer:
                 else:
                     model = trainable_model
             else:
-                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init, is_trainable)
+                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(
+                    model_init, is_trainable
+                )
                 step = 0
 
             return TrainerState(step, model, opt_state, training_key, is_trainable)
 
-    def train_step(self, state: TrainerState, *batch: X, **batch_kwargs) -> StepInfo:
+    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
         with capture_time() as step_time, levanter.current_tracker(self.tracker):
-            loss, new_state = self._train_step_fn(
-                state, *batch, **batch_kwargs, key=key
-            )
+            loss, new_state = self._train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
         return StepInfo(new_state, loss, step_time())
 
     def training_steps(
-        self, state: TrainerState, train_loader, run_hooks: bool = True
-    ) -> typing.Iterator[StepInfo]:
+        self, state: TrainerState[M], train_loader, run_hooks: bool = True
+    ) -> typing.Iterator[StepInfo[M]]:
         """
         Generator that yields training steps and runs hooks.
         """
@@ -334,7 +336,7 @@ class Trainer:
 
                 yield info
 
-    def train(self, state: TrainerState, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo:
+    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
         Performs training until the number of steps is reached.
         """
@@ -410,17 +412,17 @@ class Trainer:
             out_axis_resources=self.parameter_axis_mapping,
             donate_args=(True,),
         )
-        def train_step(state, *batch, **batch_kwargs):
+        def train_step(state: TrainerState, *batch, **batch_kwargs):
             key, new_key = jax.random.split(state.training_key)
             opt_state = state.opt_state
             model = inference_mode(state.model, False)
 
             # we do this so that we only take the gradients of the trainable parameters
-            trainable_model, rest_model = self.partition_trainable_params(model)
+            trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
 
             def split_loss_fn(trainable_model, *batch, **batch_kwargs):
                 model = eqx.combine(trainable_model, rest_model)
-                return self.loss_fn(model, *batch, **batch_kwargs)
+                return self.loss_fn(model, *batch, **batch_kwargs, key=key)
 
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
@@ -430,11 +432,7 @@ class Trainer:
             model = eqx.apply_updates(model, updates)
 
             new_state = dataclasses.replace(
-                state,
-                step=state.step + 1,
-                model=model,
-                opt_state=opt_state,
-                training_key=new_key
+                state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
             )
 
             return loss, new_state
@@ -457,7 +455,6 @@ class Trainer:
         trainable, non_trainable = self.partition_trainable_params(model)
         non_trainable = self.mp.cast_to_compute(non_trainable)
         return non_trainable
-
 
     def _maybe_load_checkpoint(self, state: TrainerState) -> Optional[TrainerState]:
         """Loads a checkpoint if one exists and we're supposed to load it,
@@ -791,6 +788,7 @@ def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
 
 def _trainable_params_only(model: M, filter: PyTree[FilterSpec]) -> M:
     return _partition_trainable_params(model, filter)[0]
+
 
 def _partition_trainable_params(model, filter):
     """
