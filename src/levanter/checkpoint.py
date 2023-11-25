@@ -276,6 +276,7 @@ def load_checkpoint(
     tree: M,
     checkpoint_path: PathLike,
     *,
+    subpath: Optional[str] = None,
     discover_latest=True,
     axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
     mesh: Optional[jax.sharding.Mesh] = None,
@@ -293,6 +294,9 @@ def load_checkpoint(
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
+
+    if subpath:
+        checkpoint_path = os.path.join(checkpoint_path, subpath)
 
     try:
         tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
