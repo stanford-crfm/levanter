@@ -46,7 +46,7 @@ def main(config: VizGpt2Config):
     KeyPos = config.model.KeyPos
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
         config.trainer.device_mesh,
         EvalBatch,
     )
@@ -83,7 +83,7 @@ def main(config: VizGpt2Config):
         with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-            ckpt = load_checkpoint(model, None, config.checkpoint_path)
+            ckpt = load_checkpoint(model, config.checkpoint_path)
 
         assert ckpt is not None
         model, _, _ = ckpt
