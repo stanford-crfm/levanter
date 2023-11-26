@@ -1,4 +1,5 @@
-from typing import Iterator, TypeVar
+import dataclasses
+from typing import Callable, Iterator, TypeVar
 
 import equinox as eqx
 import jax
@@ -12,12 +13,30 @@ from haliax.types import IntScalar
 
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
-from levanter.logging import capture_time
-from levanter.trainer import StepInfo, Trainer, TrainerState
+from levanter.trainer import M, StepInfo, Trainer, TrainerState
 from levanter.types import ComputeLossFunction
 
 
 T = TypeVar("T")
+
+class DoremiState(TrainerState):
+    alpha: hax.NamedArray
+    average_alpha: hax.NamedArray
+
+    def __init__(self, step: int, model, opt_state, training_key, alpha):
+        super().__init__(step, model, opt_state, training_key)
+        self.alpha = alpha
+
+    def update_alpha(self, alpha):
+        # make it stable
+        average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self.step + 1)
+        return dataclasses.replace(self, alpha=alpha, average_alpha=average_alpha)
+
+
+# class DoReMiTrainer(Trainer):
+#     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
+#         base_state = super()._initialize_state_from_scratch(model_init, training_key, is_trainable)
+#
 
 
 def estimate_mixture_weights(
