@@ -34,7 +34,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig
+from levanter.checkpoint import CheckpointerConfig, load_checkpoint
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
@@ -283,14 +283,12 @@ class Trainer:
                     self._initialize_state_from_scratch, model_init, training_key, is_trainable
                 )
 
-                # TODO: don't remake the checkpointer every time
-                checkpointer = self.config.checkpointer.create(self.run_id)
                 load_checkpoint_path = self.config.load_checkpoint_path
 
                 if load_checkpoint_path is None:
                     load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-                ckpt = checkpointer.load_checkpoint(
+                ckpt = load_checkpoint(
                     trainer_state_shape,
                     load_checkpoint_path,
                     axis_mapping=self.parameter_axis_mapping,
@@ -440,13 +438,13 @@ class Trainer:
         # we do this so that we only take the gradients of the trainable parameters
         trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
 
-        def split_loss_fn(trainable_model, *batch, **batch_kwargs):
+        def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
             model = eqx.combine(trainable_model, rest_model)
             return self.loss_fn(model, *batch, **batch_kwargs, key=key)
 
         loss, grads = accumulate_gradients_sharded(
             split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-        )(trainable_model, *batch, **batch_kwargs)
+        )(trainable_model, rest_model, *batch, **batch_kwargs)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
         model = eqx.apply_updates(model, updates)
