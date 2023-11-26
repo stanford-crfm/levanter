@@ -84,7 +84,7 @@ def current_tracker(
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
         ...     log_metrics({"foo": 1}, step=0)
-        ...     current_tracker().log_metrics({"foo": 2}, step=1)
+        ...     current_tracker().log({"foo": 2}, step=1)
     """
     global _global_tracker
     if tracker is None:
@@ -146,6 +146,8 @@ class _GlobalLoggerContextManager(AbstractContextManager):
         global _global_tracker
         self.old_tracker = _global_tracker
         _global_tracker = self.tracker
+
+        return self.tracker
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         global _global_tracker
