@@ -10,7 +10,8 @@ model:
   num_senses: 16
   sense_intermediate_scale: 4
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: [ "openwebtext", "backpack" ]
 

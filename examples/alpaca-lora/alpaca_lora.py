@@ -6,9 +6,9 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
+import equinox as eqx
 import jax.random as jrandom
 import transformers
-import wandb
 
 import haliax as hax
 
@@ -80,7 +80,9 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with config.trainer.device_mesh:
+    # end major difference from Alpaca
+
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -98,19 +100,20 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
-
-        # end major difference from Alpaca
-
-        trainer.add_default_hooks()
-        state = trainer.initial_state(training_key, model=model)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         # log some info about the model
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
+        levanter.log_summary(
+            {
+                "parameter_count": all_param_count,
+                "trainable_parameter_count": just_lora_params,
+                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+            }
+        )
+
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")

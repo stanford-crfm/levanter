@@ -1,5 +1,5 @@
-#data:
-#  id: dlwh/wikitext_103_detokenized
+data:
+  id: dlwh/wikitext_103_detokenized
 model:
   type: gpt2
   hidden_dim: 32
@@ -21,3 +21,6 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
+  tracker:
+    type: tensorboard
+    logdir: tb_logs/

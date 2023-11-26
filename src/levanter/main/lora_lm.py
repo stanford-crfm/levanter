@@ -3,8 +3,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+import equinox as eqx
 import jax.random as jrandom
-import wandb
 
 import haliax.random
 
@@ -67,7 +67,9 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
-    with config.trainer.device_mesh:
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
+
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -83,28 +85,38 @@ def main(config: LoraLmConfig):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
+        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
+        eval_datasets = config.data.validation_sets(Pos.size)
 
-        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
-        state = trainer.initial_state(training_key, model=model)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
+        levanter.tracker.log_summary(
+            {
+                "parameter_count": all_param_count,
+                "trainable_parameter_count": just_lora_params,
+                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+            }
+        )
+
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
         # data loaders
-        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        for name, eval_dataset in eval_datasets.items():
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            trainer.add_eval_hook(eval_dataset, name=name)
 
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
-        trainer.add_default_hooks(eval_dataset)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
@@ -130,7 +142,7 @@ def main(config: LoraLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(iter_data)
 
         ## OK, actually run training!

@@ -7,7 +7,7 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Optional, Sequence, TypeVar, Union
 
 import equinox
 import fsspec
@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 
 PathLike = Union[str, pathlib.Path]
 
-M = TypeVar("M")
-S = TypeVar("S")
+M = TypeVar("M", bound=PyTree)
 
 
 @dataclass(frozen=True)
@@ -103,19 +102,16 @@ class Checkpointer:
 
     def load_checkpoint(
         self,
-        model: M,
-        training_state: S,
+        state: M,
         path: Optional[PathLike] = None,
         *,
         discover_latest: bool = True,
         axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
         mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, S, int]]:
+    ) -> Optional[M]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(
-            model, training_state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
-        )
+        return load_checkpoint(state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh)
 
     def load_model(
         self,
@@ -125,16 +121,17 @@ class Checkpointer:
         discover_latest: bool = True,
         axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
         mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, int]]:
-        if path is None:
-            path = self.base_path
-        ckpt = load_checkpoint(
-            model, None, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
+    ) -> Optional[M]:
+        """
+        Convenience method/holdover from  previous API for loading checkpoints.
+        Loads just the model assuming the model is in the `model` subdir of the discovered checkpoint.
+        """
+        ret_dict = self.load_checkpoint(
+            {"model": model}, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
         )
-        if ckpt is None:
+        if ret_dict is None:
             return None
-        model, _, step = ckpt
-        return model, step
+        return ret_dict["model"]
 
     def on_step(self, info, force: bool = False):
         step = info.step
@@ -213,17 +210,15 @@ class Checkpointer:
             cp_path = os.path.join(plain_path, checkpoint)
             logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
             fs.rm(cp_path, recursive=True)
-        # don't let this take down a run
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint", exc_info=True)
 
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        model = equinox.filter(info.model, self.keep_params)
+        state = equinox.filter(info.state, info.state.is_trainable)
         save_checkpoint(
-            model=model,
-            training_state=(info.opt_state, info.next_key),
+            state,
             step=info.step,
             checkpoint_path=path,
         )
@@ -237,7 +232,7 @@ class Checkpointer:
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
-def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
+def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
     """
     Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
     will be saved even if a checkpoint already exists at the given path.
@@ -255,10 +250,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=exist_ok)
 
-    tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model)
-    if training_state is not None:
-        tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "training_state"), training_state)
-
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree)
     save_metadata(checkpoint_path, fs, step)
 
     logger.info(f"Saved checkpoint for step {step}")
@@ -280,22 +272,30 @@ def save_metadata(checkpoint_path, fs, step):
 
 
 def load_checkpoint(
-    model: M,
-    training_state: S,
+    tree: M,
     checkpoint_path: PathLike,
     *,
+    subpath: Optional[str] = None,
     discover_latest=True,
     axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
     mesh: Optional[jax.sharding.Mesh] = None,
-) -> Optional[Tuple[M, S, int]]:
+) -> Optional[M]:
     """
-    Load a checkpoint from a given path.
+    Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
+    in a subdirectory of the given path will be loaded. If subpath is not None, then the checkpoint
+    loads only that subpath of the checkpoint. This is useful for loading, e.g., just the model and not
+    the entire training state.
 
-    Returns the loaded model state, training state, and step. If discover_latest is True,
-    the latest checkpoint in the given path will be loaded. Otherwise, the checkpoint at
-    the given path will be loaded. If no checkpoint is found, returns None
+    Args:
+        tree: an exemplar of the tree to load. Can be a PyTree[ShapeDTypeStruct] instead of a PyTree[Any]
+        checkpoint_path: the path to load the checkpoint from
+        subpath: the subpath to load from the checkpoint
+        discover_latest: whether to discover the latest checkpoint in the given path
+        axis_mapping: the axis mapping to use for loading the checkpoint
+        mesh: the mesh to use for loading the checkpoint
+    Returns:
+        the loaded checkpoint, with the same structure as the exemplar tree
 
-    If training_state is None, no training state will be loaded.
     """
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
@@ -311,18 +311,43 @@ def load_checkpoint(
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
 
-    model = tree_deserialize_leaves_tensorstore(
-        os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
-    )
+    if subpath:
+        checkpoint_path = os.path.join(checkpoint_path, subpath)
 
-    if training_state is None:
-        training_state = None
-    else:
-        training_state = tree_deserialize_leaves_tensorstore(
-            os.path.join(checkpoint_path, "training_state"), training_state, axis_mapping=axis_mapping, mesh=mesh
-        )
+    try:
+        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
+        return tree
+    except:  # noqa
+        from levanter.trainer import TrainerState
 
-    return model, training_state, metadata["step"]
+        if not isinstance(tree, TrainerState):
+            raise
+        else:
+            logger.warning("Attempting to load old-style checkpoint")
+            model, training_state = tree.model, (tree.opt_state, tree.training_key)
+
+            model = tree_deserialize_leaves_tensorstore(
+                os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
+            )
+
+            if training_state is None:
+                opt_state = None
+                key = None
+            else:
+                training_state = tree_deserialize_leaves_tensorstore(
+                    os.path.join(checkpoint_path, "training_state"),
+                    training_state,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                )
+                opt_state, key = training_state
+
+            # TODO: pretty sure this is right, but should verify
+            step = metadata["step"]
+            new_state = dataclasses.replace(
+                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+            )
+            return new_state
 
 
 def load_metadata(checkpoint_path, fs=None):
@@ -451,13 +476,12 @@ class CheckpointerConfig:
     def expanded_path(self, run_id):
         return os.path.expanduser(os.path.join(self.base_path, run_id))
 
-    def create(self, run_id, keep_params: PyTree[FilterSpec] = True) -> Checkpointer:
+    def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
             base_path=self.expanded_path(run_id),
             save_interval=self.save_interval,
             step_policies=keeps,
-            keep_params=keep_params,
         )
 
     def __post_init__(self):

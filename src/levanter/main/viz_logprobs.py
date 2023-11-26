@@ -46,14 +46,10 @@ def main(config: VizGpt2Config):
     KeyPos = config.model.KeyPos
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
         config.trainer.device_mesh,
         EvalBatch,
     )
-
-    # some axes we use outside the model proper
-    Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -83,10 +79,9 @@ def main(config: VizGpt2Config):
         with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-            ckpt = load_checkpoint(model, None, config.checkpoint_path)
+            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
-        assert ckpt is not None
-        model, _, _ = ckpt
+        assert model is not None
 
         model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 

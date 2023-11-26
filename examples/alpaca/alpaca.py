@@ -206,9 +206,7 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    trainer = Trainer(config.trainer, optimizer)
-
-    with trainer.device_mesh:
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
@@ -225,7 +223,6 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        trainer.add_default_hooks()
         state = trainer.initial_state(training_key, model=model)
 
         if state.step != 0:
