@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 PathLike = Union[str, pathlib.Path]
 
 M = TypeVar("M", bound=PyTree)
-S = TypeVar("S")
 
 
 @dataclass(frozen=True)
