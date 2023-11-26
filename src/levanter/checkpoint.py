@@ -7,7 +7,7 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Optional, Sequence, TypeVar, Union
 
 import equinox
 import fsspec
@@ -332,52 +332,6 @@ def load_checkpoint(
                 tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
             )
             return new_state
-
-
-def _old_load_checkpoint(
-    model: M,
-    training_state: S,
-    checkpoint_path: PathLike,
-    *,
-    discover_latest=True,
-    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-    mesh: Optional[jax.sharding.Mesh] = None,
-) -> Optional[Tuple[M, S, int]]:
-    """
-    Load a checkpoint from a given path.
-
-    Returns the loaded model state, training state, and step. If discover_latest is True,
-    the latest checkpoint in the given path will be loaded. Otherwise, the checkpoint at
-    the given path will be loaded. If no checkpoint is found, returns None
-
-    If training_state is None, no training state will be loaded.
-    """
-    fs: AbstractFileSystem
-    fs, _ = _get_fs_and_plain_path(checkpoint_path)
-
-    checkpoint_path = str(checkpoint_path)
-
-    if discover_latest:
-        checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
-
-    if checkpoint_path is None or not fs.exists(checkpoint_path):
-        return None
-
-    logger.info(f"Loading checkpoint from {checkpoint_path}")
-    metadata = load_metadata(checkpoint_path, fs)
-
-    model = tree_deserialize_leaves_tensorstore(
-        os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
-    )
-
-    if training_state is None:
-        training_state = None
-    else:
-        training_state = tree_deserialize_leaves_tensorstore(
-            os.path.join(checkpoint_path, "training_state"), training_state, axis_mapping=axis_mapping, mesh=mesh
-        )
-
-    return model, training_state, metadata["step"]
 
 
 def load_metadata(checkpoint_path, fs=None):

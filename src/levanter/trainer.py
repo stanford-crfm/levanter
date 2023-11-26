@@ -32,7 +32,7 @@ from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
-from levanter import logging, tracker
+from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
@@ -63,6 +63,9 @@ class TrainerState(eqx.Module, Generic[M]):
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec] = eqx.field(static=True)
+
+
+S = TypeVar("S", bound=TrainerState)
 
 
 # A note on the semantics of "step" vs "next_step":
@@ -209,29 +212,27 @@ class Trainer:
         return self.config.EvalBatch
 
     def __enter__(self):
-        if len(self._cmanagers) > 0:
-            raise RuntimeError("Trainer is already entered")
-
-        self._cmanagers = [
+        this_managers = [
             levanter.current_tracker(self.tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
+        self._cmanagers.append(this_managers)
 
-        for cmanager in self._cmanagers:
+        for cmanager in this_managers:
             cmanager.__enter__()
 
         return self
 
     def __exit__(self, *args):
+        assert len(self._cmanagers) > 0, "Trainer.__exit__ called without corresponding Trainer.__enter__"
+        cur_managers = self._cmanagers.pop()
         problems = []
-        for cmanager in reversed(self._cmanagers):
+        for cmanager in reversed(cur_managers):
             try:
                 cmanager.__exit__(*args)
             except Exception as e:
                 problems.append(e)
-
-        self._cmanagers = []
 
         if len(problems) > 0:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
@@ -255,50 +256,56 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
-        with levanter.tracker.current_tracker(self.tracker):
-            if model is not None and model_init is not None:
-                raise ValueError("only one of model and model_init should be specified")
-            elif model is None and model_init is None:
-                raise ValueError("one of model and model_init must be specified")
+        if model is not None and model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+        elif model is None and model_init is None:
+            raise ValueError("one of model and model_init must be specified")
 
-            if model is not None:
-                # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
-                model_init = jax.tree_util.Partial(lambda m: m, model)
+        if model is not None:
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
+            model_init = jax.tree_util.Partial(lambda m: m, model)
 
-            model_shape, opt_state_shape = eqx.filter_eval_shape(
-                self._init_model_and_opt_state, model_init, is_trainable
-            )
-
-            # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
-            trainable_model_shape = _trainable_params_only(model_shape, is_trainable)
-
-            trainer_state_shape: TrainerState = TrainerState(
-                0, trainable_model_shape, opt_state_shape, training_key, is_trainable=is_trainable
-            )
-
-            ckpt = self._maybe_load_checkpoint(trainer_state_shape)
-
-            if ckpt is not None:
-                trainable_model = ckpt.model
-                opt_state = ckpt.opt_state
-                training_key = ckpt.training_key
-                step = ckpt.step
-
-                if model is not None:
-                    model = eqx.combine(ckpt.model, model)
-                elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
-                    # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                    non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-                    model = eqx.combine(trainable_model, non_trainable)
-                else:
-                    model = trainable_model
-            else:
-                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(
-                    model_init, is_trainable
+        with self:
+            if self.config.load_checkpoint is not False:
+                trainer_state_shape = eqx.filter_eval_shape(
+                    self._initialize_state_from_scratch, model_init, training_key, is_trainable
                 )
-                step = 0
 
-            return TrainerState(step, model, opt_state, training_key, is_trainable)
+                # TODO: don't remake the checkpointer every time
+                checkpointer = self.config.checkpointer.create(self.run_id)
+                load_checkpoint_path = self.config.load_checkpoint_path
+
+                if load_checkpoint_path is None:
+                    load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+
+                ckpt = checkpointer.load_checkpoint(
+                    trainer_state_shape,
+                    load_checkpoint_path,
+                    axis_mapping=self.parameter_axis_mapping,
+                    mesh=self.device_mesh,
+                )
+
+                if ckpt is None:
+                    if self.config.load_checkpoint is True:
+                        raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
+                else:
+                    if model is not None:
+                        model = eqx.combine(ckpt.model, model)
+                    elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt.model)):
+                        # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                        # TODO: do we want to extend this to non-model things that don't get initialized from a ckpt?
+                        non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(
+                            model_init
+                        )
+                        model = eqx.combine(ckpt.model, non_trainable)
+                    else:
+                        model = ckpt.model
+
+                    return dataclasses.replace(ckpt, model=model)
+
+            return named_jit(self._initialize_state_from_scratch, self.parameter_axis_mapping)(
+                model_init, training_key, is_trainable
+            )
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
@@ -439,15 +446,20 @@ class Trainer:
 
         return train_step
 
-    def _init_model_and_opt_state(self, model_init, is_trainable):
+    def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
         model = model_init()
+
         # only force trainable params to param precision. Other params are cast to compute precision
         trainable, non_trainable = _partition_trainable_params(model, is_trainable)
         trainable = self.mp.cast_to_param(trainable)
         non_trainable = self.mp.cast_to_compute(non_trainable)
         model = eqx.combine(trainable, non_trainable)
+
         opt_state = self.optimizer.init(trainable)
-        return model, opt_state
+
+        trainer_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable=is_trainable)
+
+        return trainer_state
 
     def _init_non_trainable_params(self, model_init):
         model = model_init()
@@ -455,29 +467,6 @@ class Trainer:
         trainable, non_trainable = self.partition_trainable_params(model)
         non_trainable = self.mp.cast_to_compute(non_trainable)
         return non_trainable
-
-    def _maybe_load_checkpoint(self, state: TrainerState) -> Optional[TrainerState]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        with self.device_mesh:
-            if self.config.load_checkpoint is not False:
-                # TODO: don't remake the checkpointer every time
-                checkpointer = self.config.checkpointer.create(self.run_id)
-                load_checkpoint_path = self.config.load_checkpoint_path
-
-                if load_checkpoint_path is None:
-                    load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-                ckpt = checkpointer.load_checkpoint(
-                    state, load_checkpoint_path, axis_mapping=self.parameter_axis_mapping, mesh=self.device_mesh
-                )
-
-                if ckpt is None and self.config.load_checkpoint is True:
-                    raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-
-                return ckpt
-            else:
-                return None
 
 
 @dataclass
