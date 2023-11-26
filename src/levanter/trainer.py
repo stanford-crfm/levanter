@@ -28,6 +28,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.types import Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -112,6 +113,17 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
+
+
+# A note on extending Trainer:
+# First, consider whether you can do what you want with hooks. Hooks can cover a lot of use cases.
+# Sometimes, however, you need to do something more complicated. In that case, you can extend Trainer.
+# In order to do that, you need to:
+# * Extend TrainerState to add your additional state
+# * Override `_train_step` to add your additional logic
+# * Override `initial_state` or `_initialize_state_from_scratch` to initialize your additional state. (The latter is
+# simpler and means you don't need to handle the checkpointing logic yourself.)
+# * You might also need to override `training_steps` if you want to make the type checker happy.
 
 
 class Trainer:
@@ -414,37 +426,36 @@ class Trainer:
 
     @cached_property
     def _train_step_fn(self):
-        @named_jit(
+        return named_jit(
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
             donate_args=(True,),
+        )(self._train_step)
+
+    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
+        key, new_key = jax.random.split(state.training_key)
+        opt_state = state.opt_state
+        model = inference_mode(state.model, False)
+
+        # we do this so that we only take the gradients of the trainable parameters
+        trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
+
+        def split_loss_fn(trainable_model, *batch, **batch_kwargs):
+            model = eqx.combine(trainable_model, rest_model)
+            return self.loss_fn(model, *batch, **batch_kwargs, key=key)
+
+        loss, grads = accumulate_gradients_sharded(
+            split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+        )(trainable_model, *batch, **batch_kwargs)
+
+        updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+        model = eqx.apply_updates(model, updates)
+
+        new_state = dataclasses.replace(
+            state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
         )
-        def train_step(state: TrainerState, *batch, **batch_kwargs):
-            key, new_key = jax.random.split(state.training_key)
-            opt_state = state.opt_state
-            model = inference_mode(state.model, False)
 
-            # we do this so that we only take the gradients of the trainable parameters
-            trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
-
-            def split_loss_fn(trainable_model, *batch, **batch_kwargs):
-                model = eqx.combine(trainable_model, rest_model)
-                return self.loss_fn(model, *batch, **batch_kwargs, key=key)
-
-            loss, grads = accumulate_gradients_sharded(
-                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(trainable_model, *batch, **batch_kwargs)
-
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
-            model = eqx.apply_updates(model, updates)
-
-            new_state = dataclasses.replace(
-                state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
-            )
-
-            return loss, new_state
-
-        return train_step
+        return loss, new_state
 
     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
         model = model_init()
@@ -457,9 +468,7 @@ class Trainer:
 
         opt_state = self.optimizer.init(trainable)
 
-        trainer_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable=is_trainable)
-
-        return trainer_state
+        return TrainerState(0, model, opt_state, training_key, is_trainable)
 
     def _init_non_trainable_params(self, model_init):
         model = model_init()
