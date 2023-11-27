@@ -2,22 +2,24 @@
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Type, Union
+from typing import Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jax.random import PRNGKey
 from transformers import AutoModelForCausalLM
+from transformers.models.mpt.configuration_mpt import MptAttentionConfig as HfMptAttentionConfig
+from transformers.models.mpt.configuration_mpt import MptConfig as HfMptConfig
 
 import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax.jax_utils import named_call, shaped_rng_split
+from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
+import levanter.models.attention
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
@@ -28,31 +30,10 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
+from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import cached_classproperty
-
-
-init_config_defaults: Dict = {
-    "emb_init_std": None,
-    "emb_init_uniform_lim": None,
-    "fan_mode": "fan_in",
-    "init_div_is_residual": True,
-    "init_gain": 0.0,
-    "init_nonlinearity": "relu",
-    "init_std": None,
-    "name": "kaiming_normal_",
-    "verbose": 0,
-}
-
-LazyHfMPTConfig: Optional[Type] = None
-
-
-def _load_hf_mpt_config():
-    global LazyHfMPTConfig
-    from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
-    LazyHfMPTConfig = get_class_from_dynamic_module("modeling_mpt.MPTConfig", "mosaicml/mpt-7b", "modeling_mpt.py")
 
 
 @dataclass
@@ -65,11 +46,13 @@ class MptAttentionConfig:
     clip_qkv: Optional[float] = None
     softmax_scale: Optional[float] = None
     qk_ln: bool = False
-    alibi: bool = False
+    alibi: bool = True
     alibi_bias_max: Optional[int] = 8
+    flash_attention_block_size: Optional[int] = None
 
     def __post_init__(self):
-        assert self.attn_impl in ["torch"], f"attn_impl={self.attn_impl} not implemented yet."
+        assert self.attn_type in ["multihead_attention"], f"attention_type={self.attn_type} not implemented yet."
+        assert self.attn_impl in ["torch", "flash"], f"attn_impl={self.attn_impl} not implemented yet."
         assert self.attn_pdrop == 0.0, f"attn_pdrop={self.attn_pdrop} not implemented yet."
         assert (
             not self.attn_uses_sequence_id
@@ -80,9 +63,41 @@ class MptAttentionConfig:
         assert not self.softmax_scale, f"softmax_scale={self.softmax_scale} not implemented yet."
         assert not self.qk_ln, f"qk_ln={self.qk_ln} not implemented yet."
 
+    def to_hf(self):
+        return HfMptAttentionConfig(
+            attn_type=self.attn_type,
+            attn_impl=self.attn_impl,
+            attn_pdrop=self.attn_pdrop,
+            attn_uses_sequence_id=self.attn_uses_sequence_id,
+            prefix_lm=self.prefix_lm,
+            clip_qkv=self.clip_qkv,
+            softmax_scale=self.softmax_scale,
+            qk_ln=self.qk_ln,
+            alibi=self.alibi,
+            alibi_bias_max=self.alibi_bias_max,
+        )
+
     @staticmethod
-    def from_dict(d):
-        return MptAttentionConfig(**d)
+    def from_hf(config: HfMptAttentionConfig):
+        if isinstance(config, dict):
+            config = HfMptAttentionConfig(**config)
+        try:
+            flash_attention_block_size = config.flash_attention_block_size
+        except AttributeError:
+            flash_attention_block_size = None
+        return MptAttentionConfig(
+            attn_type=config.attn_type,
+            attn_impl=config.attn_impl,
+            attn_pdrop=config.attn_pdrop,
+            attn_uses_sequence_id=config.attn_uses_sequence_id,
+            prefix_lm=config.prefix_lm,
+            clip_qkv=config.clip_qkv,
+            softmax_scale=config.softmax_scale,
+            qk_ln=config.qk_ln,
+            alibi=config.alibi,
+            alibi_bias_max=config.alibi_bias_max,
+            flash_attention_block_size=flash_attention_block_size,
+        )
 
 
 # Haliax-style data class version
@@ -96,7 +111,7 @@ class MptConfig(HFCompatConfig):
     n_layers: int = 12
     expansion_ratio: int = 4
     max_seq_len: int = 2048
-    learned_pos_emb: bool = True
+    learned_pos_emb: bool = False
     attn_config: MptAttentionConfig = field(default_factory=MptAttentionConfig)
     logit_scale: Optional[Union[float, str]] = None
     use_bias: bool = True
@@ -105,7 +120,6 @@ class MptConfig(HFCompatConfig):
     embedding_fraction: float = 1.0
     resid_pdrop: float = 0.0
     emb_pdrop: float = 0.0
-    init_config: Dict[str, Any] = field(default_factory=lambda: {})
 
     Embed = property(lambda self: Axis("embed", self.d_model))
     Head = property(lambda self: Axis("head", self.n_heads))
@@ -135,18 +149,13 @@ class MptConfig(HFCompatConfig):
                 " 'inv_sqrt_d_model'."
             )
 
-        # if self.init_config and self.init_config != init_config_defaults:
-        #     raise ValueError("init_config_defaults not supported yet.")
-
     @property
     def model_type(self) -> Type["MptLmHeadModel"]:
         return MptLmHeadModel
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
-        return HFCheckpointConverter(
-            cls, "mosaicml/mpt-7b@68e1a8e0ebb9b30f3c45c1ef6195980f29063ae2", trust_remote_code=True
-        )
+        return HFCheckpointConverter(cls, "mosaicml/mpt-7b", trust_remote_code=False)
 
     @classmethod
     def from_hf_config(cls, config):
@@ -159,21 +168,19 @@ class MptConfig(HFCompatConfig):
             resid_pdrop=config.resid_pdrop,
             emb_pdrop=config.emb_pdrop,
             learned_pos_emb=config.learned_pos_emb,
-            attn_config=MptAttentionConfig.from_dict(config.attn_config),
+            attn_config=MptAttentionConfig.from_hf(config.attn_config),
             use_bias=not config.no_bias,
             embedding_fraction=config.embedding_fraction,
             logit_scale=config.logit_scale,
-            init_config=config.init_config,
         )
 
     def to_hf_config(self, vocab_size, config_overrides=None):
-        if LazyHfMPTConfig is None:
-            _load_hf_mpt_config()
-
         if config_overrides is None:
             config_overrides = {}
 
-        return LazyHfMPTConfig(
+        attn_config = self.attn_config.to_hf()
+
+        return HfMptConfig(
             d_model=self.d_model,
             n_heads=self.n_heads,
             n_layers=self.n_layers,
@@ -182,11 +189,10 @@ class MptConfig(HFCompatConfig):
             resid_pdrop=self.resid_pdrop,
             emb_pdrop=self.emb_pdrop,
             learned_pos_emb=self.learned_pos_emb,
-            attn_config=dataclasses.asdict(self.attn_config),
+            attn_config=attn_config,
             no_bias=not self.use_bias,
             embedding_fraction=self.embedding_fraction,
             logit_scale=self.logit_scale,
-            init_config=self.init_config,
             vocab_size=vocab_size,
             **config_overrides,
         )
@@ -204,10 +210,11 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
         return MptMlp(up_proj=up_proj, down_proj=down_proj)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray):
-        hidden_states = self.up_proj(hidden_states)
+    def __call__(self, hidden_states: NamedArray, *, key):
+        k_up, k_down = maybe_rng_split(key, 2)
+        hidden_states = self.up_proj(hidden_states, key=k_up)
         hidden_states = hnn.gelu(hidden_states, approximate=False)
-        hidden_states = self.down_proj(hidden_states)
+        hidden_states = self.down_proj(hidden_states, key=k_down)
         return hidden_states
 
 
@@ -235,34 +242,44 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         )
         return MptAttention(config=config, Wqkv=Wqkv, out_proj=out_proj)
 
-    def __call__(self, hidden_states: NamedArray, mask: Optional[AttnMask] = None, bias: Optional[NamedArray] = None):
-        qkv_out = self.Wqkv(hidden_states)
+    def __call__(
+        self,
+        hidden_states: NamedArray,
+        mask: Optional[AttentionMask | NamedArray],
+        bias: Optional[NamedArray],
+        key: Optional[PRNGKey],
+    ) -> NamedArray:
+        k_qkv, k_out = maybe_rng_split(key, 2)
+        qkv_out = self.Wqkv(hidden_states, key=k_qkv)
         q, k, v = qkv_out.unbind("qkv")
 
         # Rename k and v's SeqLen as haliax doesn't support unnamed axes or duplicate axes
-        k = k.rename({self.config.Pos: self.config.KeyPos})
-        v = v.rename({self.config.Pos: self.config.KeyPos})
-
-        scale = jax.lax.rsqrt(float(self.config.HeadDim.size))
-
-        # do this first to help keep FP values small
-        q = q * scale
-
-        attn_scores = hax.dot(self.config.HeadDim, q, k)
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
 
         if bias is not None:
-            attn_scores = attn_scores + bias
+            # slice out the bias for this input
+            if bias.has_axis("key_position"):
+                bias = bias["key_position", hax.dslice(0, k.axis_size("key_position"))]
 
-        if mask is not None:
-            mask = materialize_mask(mask)
-            attn_scores = attn_scores + (1.0 - mask) * -1e9
+            if bias.has_axis("position"):
+                bias = bias["position", hax.dslice(0, q.axis_size("position"))]
 
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(hidden_states.dtype)
-        # attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        attn_output = levanter.models.attention.dot_product_attention(
+            "position",
+            "key_position",
+            "head_dim",
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            inference=True,
+            use_flash=self.config.attn_config.attn_impl == "flash",
+            flash_block_size=self.config.attn_config.flash_attention_block_size,
+        )
 
-        attn_output = hax.dot("key_position", attn_weights, v)  # [heads, seq_len, head_dim]
-
-        attn_output = self.out_proj(attn_output)
+        attn_output = self.out_proj(attn_output, key=k_out)
         return attn_output
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
@@ -311,12 +328,20 @@ class MptBlock(eqx.Module):
         return MptBlock(norm_1, norm_2, attn, ffn)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attn_bias: Optional[NamedArray], attention_mask: Optional[AttnMask]):
+    def __call__(
+        self,
+        hidden_states: NamedArray,
+        attn_bias: Optional[NamedArray],
+        attention_mask: Optional[AttentionMask | NamedArray],
+        *,
+        key,
+    ):
+        k_attn, k_ffn = maybe_rng_split(key, 2)
         a = self.norm_1(hidden_states)
-        b = self.attn(a, bias=attn_bias, mask=attention_mask)
+        b = self.attn(a, bias=attn_bias, mask=attention_mask, key=k_attn)
         hidden_states = hidden_states + b
         m = self.norm_2(hidden_states)
-        n = self.ffn(m)
+        n = self.ffn(m, key=k_ffn)
         hidden_states = hidden_states + n
         return hidden_states
 
@@ -340,13 +365,17 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
         return MptTransformer(config, blocks, norm_f)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, attention_mask: Optional[AttnMask]) -> NamedArray:
+    def __call__(
+        self, hidden_states: NamedArray, attention_mask: Optional[AttentionMask | NamedArray], *, key
+    ) -> NamedArray:
         if self.config.attn_config.alibi:
             bias = _mpt_build_alibi_bias(self.config.Head, self.config.KeyPos, self.config.attn_config.alibi_bias_max)
         else:
             bias = None
 
-        hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask)
+        key = maybe_rng_split(key, self.Layers.size) if key is not None else None
+
+        hidden_states = self.blocks.fold(hidden_states, attn_bias=bias, attention_mask=attention_mask, key=key)
         hidden_states = self.norm_f(hidden_states)
 
         return hidden_states
@@ -402,12 +431,11 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(self, input_ids: NamedArray, attn_mask: Optional[AttnMask], *, inference, key=None) -> NamedArray:
-        # TODO: add back in dropout
-        del key
-        del inference
+    def __call__(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None
+    ) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
-        hidden_states = self.transformer(hidden_states, attention_mask=attn_mask)
+        hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
         output_logits = self.wte.unembed(hidden_states)
 
         return output_logits
@@ -438,7 +466,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         lev_config = MptConfig.from_hf_config(config)  # type: ignore
         Vocab = haliax.Axis("vocab", config.vocab_size)  # type: ignore
 
-        with jax.default_device(jax.devices("cpu")[0]):
+        with use_cpu_device():
             lev_model = eqx.filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
@@ -454,7 +482,7 @@ def _mpt_alibi_gen_slopes(n_heads, alibi_bias_max=8):
     m = m * (alibi_bias_max / _n_heads)
     slopes = 1.0 / jnp.power(2, m)
     if _n_heads != n_heads:
-        slopes = jnp.concat([slopes[1::2], slopes[::2]])[:n_heads]
+        slopes = jnp.concatenate([slopes[1::2], slopes[::2]])[:n_heads]
     return slopes
 
 

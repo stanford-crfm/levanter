@@ -21,6 +21,8 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -47,9 +49,9 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
     else:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
@@ -67,15 +69,16 @@ def main(config: EvalLmConfig):
 
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample):
+            model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
-            return model.compute_loss(example, key=None, inference=True)
+            return model.compute_loss(example, key=None)
 
         total = config.trainer.max_eval_batches
 
         # initialize the model
         if config.checkpoint_path is not None:
             # initialize the model
-            with jax.default_device(jax.devices("cpu")[0]):
+            with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 ckpt = load_checkpoint(model, None, config.checkpoint_path)

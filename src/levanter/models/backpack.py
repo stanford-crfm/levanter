@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from transformers import PretrainedConfig
@@ -23,7 +22,7 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
-from levanter.models.attention import AttnMask, materialize_mask
+from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -179,32 +178,27 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return WeightsOnlyAttention(config, c_attn, dropout)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[AttnMask], layer_idx, inference: bool = True, *, key):
+    def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
         qk_out = self.c_attn(x)
         q, k = qk_out.unbind("qk")
 
         # Rename k's Pos as haliax doesn't support unnamed axes or duplicate axes
         k = k.rename({"position": "key_position"})
+        QPos = q.resolve_axis("position")
+        KPos = k.resolve_axis("key_position")
 
-        # mistral tweak: scale norms by 1/sqrt(layer_idx) to prevent blowup
-        scale = jax.lax.rsqrt(float(self.config.SenseHeadDim.size))
+        mask = materialize_mask(mask, q.resolve_axis("position"), k.resolve_axis("key_position"))
 
-        # do this first to help keep FP values small
-        q = q * scale
+        attn_weights = hnn.attention.dot_product_attention_weights(
+            "head_dim",
+            "key_position",
+            q,
+            k,
+            mask=materialize_mask(mask, QPos, KPos),
+            attention_dtype=jnp.float32 if self.config.upcast_attn else None,
+        )
 
-        # mistral tweak: attention scores can overflow FP16, or just be too imprecise, so upcast to FP32
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
-
-        attn_scores = hax.dot("head_dim", q, k)
-
-        if mask is not None:
-            mask = materialize_mask(mask)
-            attn_scores = attn_scores + (1.0 - mask) * -1e15
-
-        attn_weights = hnn.softmax(attn_scores, axis="key_position").astype(x.dtype)
-        attn_weights = self.dropout(attn_weights, key=key, inference=inference)
+        attn_weights = self.dropout(attn_weights, key=key)
         return attn_weights
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
@@ -253,13 +247,13 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         return NoMixBlock(ln_1=ln_1, ln_2=ln_2, mlp=mlp, resid_dropout1=resid_dropout1, resid_dropout2=resid_dropout2)
 
     @named_call
-    def __call__(self, hidden_states: NamedArray, residual: NamedArray, inference, *, key):
+    def __call__(self, hidden_states: NamedArray, residual: NamedArray, *, key):
         k1, k2 = haliax.jax_utils.maybe_rng_split(key, 2)
 
-        residual = self.resid_dropout1(hidden_states, key=k1, inference=inference) + residual
+        residual = self.resid_dropout1(hidden_states, key=k1) + residual
         hidden_states = self.ln_1(residual)
         mlp_out = self.mlp(hidden_states)
-        residual = self.resid_dropout2(mlp_out, key=k2, inference=inference) + residual
+        residual = self.resid_dropout2(mlp_out, key=k2) + residual
         hidden_states = self.ln_2(residual)
 
         return hidden_states
@@ -303,9 +297,9 @@ class BackpackSenses(StateDictSerializationMixin, eqx.Module):
         )
 
     @named_call
-    def sense_embed(self, input_embeds, inference, *, key):
+    def sense_embed(self, input_embeds, *, key):
         hidden_states = self.ln(input_embeds)
-        hidden_states = self.block(hidden_states, input_embeds, inference=inference, key=key)
+        hidden_states = self.block(hidden_states, input_embeds, key=key)
         senses = self.final_mlp(hidden_states)
 
         return senses
@@ -334,11 +328,12 @@ class BackpackGpt2Embeddings(eqx.Module):
         return self.token_embeddings.take("vocab", input_ids)
 
     @named_call
-    def embed(self, input_ids, inference, *, key):
+    def embed(self, input_ids, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
         position_embeds = self.position_embeddings
-        x = input_embeds + position_embeds
-        x = self.dropout(x, inference=inference, key=key)
+        input_len = input_ids.resolve_axis("position").size
+        x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
+        x = self.dropout(x, key=key)
 
         return x
 
@@ -400,25 +395,20 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
     @named_call
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[AttnMask] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
-        if not inference and key is None:
-            raise ValueError("key must be provided for training")
-
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
 
         # Compute contextualization weights
-        hidden_states = self.embeddings.embed(input_ids, inference=inference, key=k_embed)
-        hidden_states = self.transformer(hidden_states, attn_mask, inference=inference, key=k_transformer)
+        hidden_states = self.embeddings.embed(input_ids, key=k_embed)
+        hidden_states = self.transformer(hidden_states, attn_mask, key=k_transformer)
         contextualization_weights = self.kq_selfattention(
-            hidden_states, mask=attn_mask, inference=inference, layer_idx=self.config.num_layers, key=k_sa
+            hidden_states, mask=attn_mask, layer_idx=self.config.num_layers, key=k_sa
         )  # (seq, seq, senses)
 
         ## Compute sense vectors
         sense_input_embeds = self.embeddings.embed_input_ids(input_ids)  # (seq, embed
-        sense_vectors = self.sense_net.sense_embed(
-            sense_input_embeds, inference=inference, key=k_senses
-        )  # (seq, senses, embed)
+        sense_vectors = self.sense_net.sense_embed(sense_input_embeds, key=k_senses)  # (seq, senses, embed)
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum

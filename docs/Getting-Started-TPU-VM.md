@@ -11,6 +11,8 @@ Second, you need to follow some steps to enable Cloud TPU VM. You can follow Goo
 but the gist of it is you need to enable the TPU API and the Compute Engine API. You can do this by running:
 
 ```bash
+gcloud auth login  # if you haven't already
+gcloud auth application-default login  # on your local machine
 gcloud components install alpha
 gcloud services enable tpu.googleapis.com
 gcloud config set account your-email-account
@@ -20,7 +22,13 @@ gcloud config set project your-project
 You can follow more steps there to get used to things like creating instances and such, but we'll only discuss the
 most important details here.
 
-You may also need to create an SSH key and add it to your Google Cloud account. TODO
+Google recommends not running those first two commands on a VM, and instead using tokens and service accounts. You can
+find more information about that [here](https://cloud.google.com/docs/authentication/production#auth-cloud-implicit-python).
+Honestly, if you're working outside of a corp environment and not dealing with private data, I don't bother...
+
+You may also need to create an SSH key and add it to your Google Cloud account. Consider using
+[GCloud's guide on ssh keys](https://cloud.google.com/compute/docs/connect/add-ssh-keys#metadata) (or OS Login if you do that)
+to set up ssh keys and [using `ssh-agent`](https://kb.iu.edu/d/aeww) to make executing the SSH commands easier.
 
 ## Creating a TPU VM Instance
 
@@ -37,7 +45,7 @@ the venv on each worker, and it will clone the repo to `~/levanter/`.
 **For Public Users**:
 
 ```bash
-bash infra/spin-up-tpu-vm.sh <name> -z <zone> -t <type> [--preemptible]
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible]
 ```
 
 Defaults are:
@@ -45,22 +53,26 @@ Defaults are:
 - `type`: `v3-32`
 - `preemptible`: `false`
 
-**For Stanford CRFM Users**:
+**Notes**:
 
-Stanford CRFM folks can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
+* This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
+path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
+* The command will spam you with a lot of output, sorry.
+* If you use a preemptible instance, you probably want to use the ["babysitting" script](#babysitting-script) to
+the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
+
+
+
+**For Stanford CRFM Developers**:
+
+Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
+
 ```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/helpers/setup-tpu-vm-nfs.sh
 ```
 
 In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
 venv and a copy of the repo.
-
-**Notes**:
-- This uploads setup scripts via scp. If the ssh-key that you used for Google Cloud requires passphrase or your ssh key
-path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
-- The command will spam you with a lot of output, sorry.
-- If you use a preemptible instance, you probably want to use the "babysitting" script that automatically re-creates
-the VM. That's explained down below in the "Running Levanter GPT-2" section.
 
 
 ## Useful commands
@@ -82,14 +94,14 @@ the VM. That's explained down below in the "Running Levanter GPT-2" section.
 `gcloud compute tpus tpu-vm scp $name:path/to/file my_file --zone us-east1-d --worker=0`
 
 ## Running Levanter GPT-2
-Now that you have a TPU VM instance, you can follow the [Running Levanter] steps, but here are a few shortcuts:
+Now that you have a TPU VM instance, you can follow the [Getting Started](Getting-Started-Training.md) steps, but here are a few shortcuts:
 
 ### Launch a GPT-2 Small in unattended mode (using nohup)
 ```bash
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
-launch.sh will run the command in the background and redirect stdout and stderr to a log file in the home directory
+`launch.sh` will run the command in the background and redirect stdout and stderr to a log file in the home directory
 on each worker.
 
 ### Launch a GPT-2 Small in interactive mode
@@ -98,20 +110,20 @@ This version writes to the terminal, you should use tmux or something for long r
 gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
-### Using the "babysitting" script with a preemptible (or TRC) TPU VM
+### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
-the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The baby-sitting
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The babysitting
 script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
 It keeps running the command (and relaunching) until the command exits successfully.
 
-Running in this mode is a bit more complex because you need to set a unique run id and (ideally unique) run name
-for your run, which would otherwise be generated for you by WandB.
+Note that the babysitting-script will automatically set the `RUN_ID` environment variable if not set, and pass it to the
+training command. This ensures that restarted jobs have the same run id, which is important for resumes to work.
 
 You can run it like this:
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible]  -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
 ```
 
@@ -127,16 +139,15 @@ an NFS server or similar, you should upload your config to GCS:
 gsutil cp my_config.yaml gs://my_bucket//my_config.yaml
 ```
 
-Afterwards, you can use the config directly from the TPU VM instance, e.g.:
+Afterward, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -s infra/setup-tpu-vm-nfs.sh -- \
+infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
     WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
-    --trainer.wandb.id rrr --trainer.wandb.name zzz --trainer.checkpointer.base_path gs://path/to/checkpoints/
+    --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
-The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec. `--trainer.wandb.id` must be unique
-to use WandB, and `--trainer.wandb.name` is a human-readable name for the run,
+The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec.
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
 
@@ -179,7 +190,7 @@ try again, and get stuck in a loop forever. (You can ctrl-c it at any point afte
 ## Random Tricks
 
 I (@dlwh) personally like to use pdsh instead of gcloud to run commands on all workers. It doesn't have the reboot
-issue, and seems to work better for long lived jobs and such. You can install it with `sudo apt-get install pdsh`.
+issue, and seems to work better for long-lived jobs and such. You can install it with `sudo apt-get install pdsh`.
 You can then get the ips for your machines like so:
 
 ```bash

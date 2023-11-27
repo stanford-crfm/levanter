@@ -57,7 +57,7 @@ def test_viz_lm():
                 ),
                 checkpoint_path=f"{f}/ckpt",
                 num_docs=len(jax.devices()),
-                output_dir=f"{f}/viz",
+                path=f"{f}/viz",
             )
             viz_logprobs.main(config)
         finally:

@@ -9,7 +9,7 @@ import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
 
-from levanter.models.attention import AttnMask
+from levanter.models.attention import AttentionMask
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
@@ -18,9 +18,8 @@ LmT = TypeVar("LmT", bound="LmHeadModel")
 
 class LmExample(eqx.Module):
     tokens: hax.NamedArray
-    targets: hax.NamedArray
-    attn_mask: AttnMask
     loss_mask: hax.NamedArray
+    attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
@@ -60,9 +59,12 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         pass
 
     @property
-    @abc.abstractmethod
     def Pos(self) -> Axis:
-        pass
+        return self.config.Pos
+
+    @property
+    def KeyPos(self) -> Axis:
+        return self.config.KeyPos
 
     @classmethod
     @abc.abstractmethod
@@ -71,7 +73,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[NamedArray] = None, *, inference: bool, key=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         pass
 
@@ -87,7 +89,6 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         self,
         example: LmExample,
         *,
-        inference: bool,
         key=None,
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
@@ -97,8 +98,9 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
-        logits = self(example.tokens, example.attn_mask, inference=inference, key=key)
-        target_y = hax.nn.one_hot(example.targets, self.Vocab, dtype=logits.dtype)
+        logits = self(example.tokens, example.attn_mask, key=key)
+        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )

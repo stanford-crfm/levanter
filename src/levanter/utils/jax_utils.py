@@ -3,19 +3,22 @@ import functools as ft
 import json
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 import equinox as eqx
 import jax
 from jax import lax
 from jax import numpy as jnp
+from jax._src.array import ArrayImpl
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like
 
 
 def jnp_to_python(a: jnp.ndarray):
-    if a.shape == () or a.shape == (1,):
+    if isinstance(a, (float, int)):
+        return float(a)
+    elif a.shape == () or a.shape == (1,):
         return a.item()
     else:
         return a.tolist()
@@ -34,7 +37,7 @@ def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.devices("cpu")[0]):
+    with jax.default_device(jax.local_devices(backend="cpu")[0]):
         yield
 
 
@@ -52,6 +55,37 @@ def parameter_count(model: PyTree):
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
     leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if is_jax_array_like(x)}
     return sum(x.size for x in leaves.values())
+
+
+def currently_allocated_array_memory(backend=None) -> Mapping[jax.Device, int]:
+    """Returns a mapping from device to the number of bytes currently allocated on that device"""
+    if backend is None:
+        backend = jax.lib.xla_bridge.get_backend()
+
+    result: dict[jax.Device, int] = {}
+
+    array: ArrayImpl
+    for array in backend.live_arrays():
+        for buffer in array.device_buffers:
+            result[buffer.device()] = result.get(buffer.device(), 0) + buffer.nbytes
+
+    return result
+
+
+def format_currently_allocated_array_memory(backend=None) -> str:
+    def _format_bytes(n):
+        if n < 1024:
+            return f"{n}B"
+        elif n < 1024**2:
+            return f"{n / 1024:.2f}KB"
+        elif n < 1024**3:
+            return f"{n / 1024 ** 2:.2f}MB"
+        else:
+            return f"{n / 1024 ** 3:.2f}GB"
+
+    return "\n".join(
+        f"{device}: {_format_bytes(nbytes)}" for device, nbytes in currently_allocated_array_memory(backend).items()
+    )
 
 
 def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
@@ -161,7 +195,7 @@ def _isnamedtupleinstance(x):
     f = getattr(t, "_fields", None)
     if not isinstance(f, tuple):
         return False
-    return all(type(n) == str for n in f)
+    return all(isinstance(n, str) for n in f)
 
 
 def leaf_key_paths(
@@ -238,3 +272,16 @@ def recursive_checkpoint(funs, threshold=2):
         f1 = recursive_checkpoint(funs[: len(funs) // 2])
         f2 = recursive_checkpoint(funs[len(funs) // 2 :])
         return lambda x: f2(jax.remat(f1)(x))
+
+
+def is_inexact_arrayish(x):
+    """
+    Similar to [equinox.is_inexact_array][] but works on anything that has a shape and dtype
+    and the dtype is inexact.
+
+    Specifically, we want to work with [jax.ShapeDtypeStruct][]s, which are not arrays.
+    """
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return jnp.issubdtype(x.dtype, jnp.inexact)
+    else:
+        return False

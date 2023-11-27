@@ -549,7 +549,7 @@ learn differently from Transformers.
 
 To get started, first install the appropriate version of JAX for your system. See [JAX's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](Getting-Started-GPU.md).
 
 Next, clone the repository and install it with pip:
 

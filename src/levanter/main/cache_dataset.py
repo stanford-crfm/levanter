@@ -1,13 +1,17 @@
+import logging
 import os
 from dataclasses import dataclass
 
 import wandb
 
 import levanter
-from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, cache_dataset
+from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, build_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logger
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,16 +29,20 @@ def main(args: RayCachedLMDatasetConfig):
 
     wandb.init(mode="offline")
 
-    for split in args.splits:
+    for split in ["train", "validation"]:
         print(f"Caching {split} to {args.cache_dir}.")
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer)
         split_cache_dir = os.path.join(args.cache_dir, split)
         source = args.get_shard_source(split)
 
+        if source is None:
+            logger.warning(f"Skipping {split} because it is empty.")
+            continue
+
         monitors = [RichMetricsMonitor(source.num_shards), WandbMetricsMonitor("preprocess/" + split, commit=True)]
 
-        cache = cache_dataset(
+        cache = build_cache(
             cache_dir=split_cache_dir,
             input_shards=source,
             processor=batch_tokenizer,

@@ -9,17 +9,20 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
 
+import equinox
 import fsspec
 import jax
+import jax.numpy as jnp
 from draccus import field
 from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
+from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
 
 import haliax.partitioning
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
-from levanter.utils.jax_utils import multihost_broadcast_sync
+from levanter.types import FilterSpec
 
 
 logger = logging.getLogger(__name__)
@@ -57,12 +60,29 @@ class Checkpointer:
         base_path: PathLike,
         save_interval: Optional[datetime.timedelta],
         step_policies: Sequence[CheckpointInterval],
+        *,
+        keep_params: PyTree[FilterSpec] = True,
         dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
     ):
-        """dt_now_injection is used for testing"""
+        """
+        Class for managing checkpoints. Saves checkpoints according to two policies: time and step.
+
+        Time policy: we save a checkpoint at least every `save_interval` seconds.
+        Step policy: we save a checkpoint every `every` steps, until `until` steps have been reached.
+
+        Time checkpoints are deleted after the next checkpoint is saved. Step checkpoints are never deleted.
+
+        Args:
+            base_path: the base path to save checkpoints to. may be gcs, local, or anything that tensorstore supports
+            save_interval: the minimum amount of time between checkpoints (for time)
+            step_policies: the step policies to use
+            keep_params: a PyTree of FilterSpecs that specifies which parameters to keep in the checkpoint
+            dt_now_injection: a function that returns the current time. useful for testing
+        """
         self.base_path = str(base_path)
         self.save_interval = save_interval
         self.step_policies = list(step_policies)
+        self.keep_params = keep_params
         self._dt_now_injection = dt_now_injection or datetime.datetime.now
         self._last_save_time = self._dt_now_injection()
         self._last_save_step = 0
@@ -148,17 +168,16 @@ class Checkpointer:
             my_should_save = True
             my_save_permanent_ckpt = False
 
-        should_save, save_permanent_ckpt = multihost_broadcast_sync(
-            (my_should_save, my_save_permanent_ckpt), timeout=500
+        should_save, save_permanent_ckpt = broadcast_one_to_all(
+            jnp.array([my_should_save, my_save_permanent_ckpt], dtype=jnp.bool_)
         )
 
         # log the decision
         if should_save:
-            extra_str = f" We would have said {should_save=}/{save_permanent_ckpt=}."
             if save_permanent_ckpt:
-                logger.info(f"Saving checkpoint at step {step}.{extra_str}")
+                logger.info(f"Saving checkpoint at step {step}.")
             else:
-                logger.info(f"Saving temporary checkpoint at step {step}.{extra_str}")
+                logger.info(f"Saving temporary checkpoint at step {step}.")
 
         if should_save:
             last_checkpoint = self._last_temporary_checkpoint
@@ -201,8 +220,9 @@ class Checkpointer:
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
+        model = equinox.filter(info.model, self.keep_params)
         save_checkpoint(
-            model=info.model,
+            model=model,
             training_state=(info.opt_state, info.next_key),
             step=info.step,
             checkpoint_path=path,
@@ -244,8 +264,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
     logger.info(f"Saved checkpoint for step {step}")
 
     # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    cp_out = multihost_broadcast_sync(checkpoint_path)
-    assert cp_out == checkpoint_path, f"Checkpoint path mismatch: {cp_out} != {checkpoint_path}"
+    sync_global_devices(checkpoint_path)
 
     return checkpoint_path
 
@@ -432,12 +451,13 @@ class CheckpointerConfig:
     def expanded_path(self, run_id):
         return os.path.expanduser(os.path.join(self.base_path, run_id))
 
-    def create(self, run_id) -> Checkpointer:
+    def create(self, run_id, keep_params: PyTree[FilterSpec] = True) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
             base_path=self.expanded_path(run_id),
             save_interval=self.save_interval,
             step_policies=keeps,
+            keep_params=keep_params,
         )
 
     def __post_init__(self):

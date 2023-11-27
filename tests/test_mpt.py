@@ -9,12 +9,14 @@ from transformers import AutoModelForCausalLM
 import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
-from test_utils import check_load_config, parameterize_with_configs, skip_if_no_torch
+from levanter.utils.tree_utils import inference_mode
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
+@pytest.mark.skip(reason="MPT is broken in the latest version of transformers")
 @skip_if_no_torch
-@pytest.mark.parametrize("use_bias", [True, False])
-def test_mpt_nano_compare(use_bias):
+@pytest.mark.parametrize("attn_impl", ["torch", "flash"])
+def test_mpt_nano_compare(attn_impl):
     import torch
 
     # conjure up a fake model and compare
@@ -29,9 +31,8 @@ def test_mpt_nano_compare(use_bias):
         max_seq_len=512,
         n_heads=8,
         n_layers=2,
-        attn_config={"attn_impl": "torch", "alibi": True},
+        attn_config={"attn_impl": attn_impl, "alibi": True, "flash_attention_block_size": 32},
         vocab_size=vocab_size,
-        no_bias=not use_bias,
     )
 
     model = cls(config)
@@ -59,18 +60,20 @@ def test_mpt_nano_compare(use_bias):
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = MptLmHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
+    lev_model = inference_mode(lev_model, True)
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
     causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
-    with jax.disable_jit():
-        lev_out = lev_model(hax_input, causal_mask, inference=True, key=None).array
+    lev_out = lev_model(hax_input, causal_mask).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
 
     # now test round trip
     # convert all values to torch
     with tempfile.TemporaryDirectory() as tmpdir:
+        # FA hack: we need to override the config to use torch attention, as their impl doesn't work with flash/alibi
+        converter = converter.with_config_overrides(config_overrides={"attn_config": {"attn_impl": "torch"}})
         converter._save_pretrained_local(lev_model, tmpdir)
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
@@ -106,3 +109,13 @@ def test_mpt_configs(config_file):
     config_class = TrainLmConfig
 
     check_load_config(config_class, config_file)
+
+
+def test_pass_different_length_seq():
+    config = MptConfig(
+        max_seq_len=32,
+        d_model=16,
+        n_layers=4,
+        n_heads=2,
+    )
+    check_model_works_with_seqlen(MptLmHeadModel, config, 16)

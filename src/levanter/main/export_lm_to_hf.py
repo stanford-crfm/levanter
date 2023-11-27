@@ -1,21 +1,20 @@
 import logging
-import os
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional
 
 import equinox as eqx
 import jax
+from jax.sharding import Mesh
 
-import haliax as hax
-import haliax.tree_util as htu
 from haliax import Axis
 
 import levanter
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
-from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore
+from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.utils.jax_utils import is_inexact_arrayish, use_cpu_device
 
 
 logger = logging.getLogger(__name__)
@@ -28,11 +27,8 @@ class ConvertLmConfig:
     upload_to_hf: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
 
     model: LmConfig = Gpt2Config()
-
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
-
     tokenizer: str = "gpt2"
-
     override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config
 
     config_overrides: Optional[dict] = None  # if specified, override the config with these values
@@ -42,7 +38,6 @@ class ConvertLmConfig:
         return load_tokenizer(self.tokenizer)
 
 
-@levanter.config.main()
 def main(config: ConvertLmConfig):
     logger.setLevel(logging.INFO)
     tokenizer = config.the_tokenizer
@@ -52,18 +47,28 @@ def main(config: ConvertLmConfig):
 
     key = jax.random.PRNGKey(0)
 
-    with jax.default_device(jax.devices("cpu")[0]):
-        model = eqx.filter_eval_shape(config.model.build(Vocab, key=key), Vocab, config.model, key=key)
+    with use_cpu_device(), Mesh([jax.local_devices(backend="cpu")[0]], "dev"):
+        model: LmHeadModel = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+        trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
+        # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
+        ckpt = load_checkpoint(trainable, None, config.checkpoint_path)
 
-        with hax.enable_shape_checks(False):
-            model = tree_deserialize_leaves_tensorstore(os.path.join(config.checkpoint_path, "model"), model)
+        assert ckpt is not None
+        trainable, _, _ = ckpt
+        model = eqx.combine(trainable, non_trainable)
 
-        model = htu.resize_axis(model, Vocab.resize(vocab_size), key=key)
+        if config.override_vocab_size:
+            model = model.resize_vocab(config.override_vocab_size)
 
         converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
 
-        converter.save_pretrained(model, config.output_dir, upload_to_hf=config.upload_to_hf or False)
+        converter.save_pretrained(
+            model,
+            config.output_dir,
+            upload_to_hf=config.upload_to_hf or False,
+            save_tokenizer=config.save_tokenizer,
+        )
 
 
 if __name__ == "__main__":
-    main()
+    levanter.config.main(main)()

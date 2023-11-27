@@ -1,20 +1,22 @@
 import re
 from dataclasses import fields
-from typing import Any, Dict, List, Optional, TypeVar, Union, cast, overload
+from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
 import jax
-import numpy
 import numpy as np
 import safetensors.numpy
 from jax import numpy as jnp
-from jax.experimental import multihost_utils
 from jax.experimental.multihost_utils import sync_global_devices
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
+import haliax.partitioning
 from haliax import NamedArray
+from haliax._src.util import index_where
+from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
 
 from levanter.utils.jax_utils import leaf_key_paths
@@ -85,16 +87,25 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         # TODO: where's the best place to put this logic for NamedArrays
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
-        return NamedArray(jnp.array(state_dict[prefix]), axes=tree.axes)
-    elif tree is None:
-        if prefix is None:
-            return None
-        return state_dict.get(prefix, None)
-    else:
+
+        array = state_dict[prefix]
+        mesh = haliax.partitioning._get_mesh()
+        if mesh.devices.size > 1:  # this happens with the default mesh
+            pspec = haliax.partitioning.pspec_for_axis(tree.axes)
+            sharding = jax.sharding.NamedSharding(mesh, pspec)
+            array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])
+        else:
+            array = jnp.array(array)
+        return NamedArray(array, axes=tree.axes)
+    elif is_jax_array_like(tree):
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a state dict without a prefix")
         # TODO: add "strict" flag so we can return None in cases where it's just missing
         return jnp.array(state_dict[prefix])
+    else:
+        if prefix is None:
+            return tree
+        return state_dict.get(prefix, tree)
 
 
 def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> None:
@@ -113,12 +124,14 @@ def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix:
         # TODO: where's the best place to put this logic for NamedArrays
         assert prefix is not None
         state_dict[prefix] = tree.array
-    else:
+    elif is_jax_array_like(tree):
         if prefix is not None:
             if tree is not None:
                 state_dict[prefix] = tree  # type: ignore
         else:
             raise ValueError("Cannot update torch dict with a leaf value.")
+    else:
+        pass
 
 
 def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateDict:
@@ -168,6 +181,10 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
     linear layers can have arbitrary dimensions, grouped into input and output axes. This function
     flattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
 
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
+
     :param prefix: prefix to apply to the keys in the state dict
     :param tree:
     :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
@@ -215,6 +232,10 @@ def unflatten_linear_layers(
     In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
     linear layers can have arbitrary dimensions, grouped into input and output axes. This function
     unflattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
+
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
 
     :param prefix: prefix to apply to the keys in the state dict
     :param statedict: the state dict to source the flattened weights from
@@ -332,7 +353,7 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
     # now we have to vectorize the tensors
     for k, tensors in tensors_to_vectorize.items():
-        vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = np.stack(tensors, axis=0)
 
     return vectorized_dict
 
@@ -345,22 +366,46 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
     This method is especially useful for saving models distributed across multiple hosts.
     """
 
-    def get_to_cpu(arr: Union[jnp.ndarray, np.ndarray]):
-        if isinstance(arr, np.ndarray):
-            return arr
-        elif "cpu" in arr.device().device_kind:
-            return np.array(arr)
-        elif arr.is_fully_addressable:
-            r = np.array(arr)
-            return r
-        else:
-            return np.array(jax.device_get(multihost_utils.process_allgather(arr, tiled=True)))
+    with jax.default_device(jax.local_devices(backend="cpu")[0]):
 
-    # need to make sure the model is on *this machine* and *this machine's CPU* before saving
-    model = jax.tree_map(lambda arr: get_to_cpu(arr), model)
-    # TODO: it's be nice if safetensors supported an iterator or something so we could do the allgather one at a time
-    state_dict = model.to_state_dict(prefix=prefix)
-    return state_dict
+        def get_to_cpu(arr):
+            if not is_jax_array_like(arr):
+                return arr
+            elif isinstance(arr, np.ndarray):
+                return arr
+            elif arr.is_fully_addressable:
+                r = np.array(arr)
+                return r
+            else:
+                # unfortunately, jax's allgather seems to replicate to every device rather than every host
+                # which doesn't work for ~7B parameter models on TPU (assuming we also have optimizer state)
+                # this approach limits us to <64B parameters, but that's good enough for now
+                # we're going to do something a bit fancy, where we shard the model into a (process, device) mesh,
+                # then look for some axis along which we can shard the array, and then we'll do an allgather
+                # via pjit. If we can't find one, we'll just fully replicate since it probably isn't that big.
+                # TODO: ensure that this mesh arranges devices correctly
+                # (jax seems to do this internally itself, so we should be fine?)
+                process_mesh = Mesh(np.array(jax.devices()).reshape((jax.process_count(), -1)), ("process", "device"))
+                # now we need to find an axis along which we can shard the array.
+                # for this, we need to find an axis s.t. size(axis) % local_devices == 0
+
+                try:
+                    axis_to_shard = index_where(
+                        lambda axis_size: axis_size % process_mesh.devices.size == 0, arr.shape
+                    )
+                except ValueError:
+                    return np.array(arr)
+
+                shardings = [None if i != axis_to_shard else "device" for i in range(len(arr.shape))]
+                sharding = NamedSharding(process_mesh, PartitionSpec(*shardings))
+                out = jax.jit(_identity_fn, out_shardings=sharding)(arr)
+                return np.array(out)
+
+        # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+        model = jax.tree_util.tree_map(lambda arr: get_to_cpu(arr), model)
+        # TODO: it would be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+        state_dict = model.to_state_dict(prefix=prefix)
+        return state_dict
 
 
 _GLOBAL_SAVE_COUNT = 0
@@ -379,3 +424,7 @@ def save_state_dict(state_dict: StateDict, path):
     global _GLOBAL_SAVE_COUNT
     sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
     _GLOBAL_SAVE_COUNT += 1
+
+
+def _identity_fn(x):
+    return x
