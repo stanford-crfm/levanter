@@ -19,7 +19,6 @@ import jmp
 import numpy as np
 import optax
 from draccus import field
-from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
@@ -34,7 +33,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint
+from levanter.checkpoint import CheckpointerConfig, load_from_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
@@ -266,7 +265,7 @@ class Trainer:
                 not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
 
         Returns:
-            model, opt_state, key, resume_step
+            TrainerState: the initial state,
         """
         if model is not None and model_init is not None:
             raise ValueError("only one of model and model_init should be specified")
@@ -278,44 +277,30 @@ class Trainer:
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
         with self:
-            if self.config.load_checkpoint is not False:
-                trainer_state_shape = eqx.filter_eval_shape(
-                    self._initialize_state_from_scratch, model_init, training_key, is_trainable
-                )
+            load_checkpoint_path = self.config.load_checkpoint_path
 
-                load_checkpoint_path = self.config.load_checkpoint_path
+            if load_checkpoint_path is None:
+                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-                if load_checkpoint_path is None:
-                    load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+            # if we're loading a checkpoint, we need to know which parameters are trainable
+            is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable)  # type: ignore
 
-                ckpt = load_checkpoint(
-                    trainer_state_shape,
-                    load_checkpoint_path,
-                    axis_mapping=self.parameter_axis_mapping,
-                    mesh=self.device_mesh,
-                )
+            assert model_init is not None
 
-                if ckpt is None:
-                    if self.config.load_checkpoint is True:
-                        raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-                else:
-                    if model is not None:
-                        model = eqx.combine(ckpt.model, model)
-                    elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt.model)):
-                        # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                        # TODO: do we want to extend this to non-model things that don't get initialized from a ckpt?
-                        non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(
-                            model_init
-                        )
-                        model = eqx.combine(ckpt.model, non_trainable)
-                    else:
-                        model = ckpt.model
-
-                    return dataclasses.replace(ckpt, model=model)
-
-            return named_jit(self._initialize_state_from_scratch, self.parameter_axis_mapping)(
-                model_init, training_key, is_trainable
+            state = load_from_checkpoint_or_initialize(
+                self._initialize_state_from_scratch,
+                load_checkpoint_path,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+                force_load_checkpoint=self.config.load_checkpoint,
+                is_checkpointed=is_checkpointed,
+            )(
+                model_init,
+                training_key,
+                is_trainable,
             )
+
+            return state
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
