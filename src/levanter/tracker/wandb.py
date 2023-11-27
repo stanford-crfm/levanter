@@ -122,7 +122,7 @@ class WandbConfig(TrackerConfig):
 
         # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
         # however, we do share information about the run id, so that we can link to it from the other workers
-        if jax.process_index() != 0:
+        if jax.process_index() == 0:
             mode = self.mode
         else:
             mode = "disabled"
