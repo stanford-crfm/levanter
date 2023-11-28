@@ -46,7 +46,7 @@ class TrainLmConfig:
 
 
 def main(config: TrainLmConfig):
-    config.trainer.initialize()
+    levanter.initialize(config)
 
     tokenizer = config.data.the_tokenizer
 
@@ -84,8 +84,6 @@ def main(config: TrainLmConfig):
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
     with Trainer(config.trainer, optimizer, compute_loss) as trainer:
-        levanter.tracker.log_hyperparameters(config)
-
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed

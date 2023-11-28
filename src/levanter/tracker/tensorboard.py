@@ -31,7 +31,7 @@ class TensorboardTracker(Tracker):
         for k, v in metrics.items():
             self.writer.add_scalar(k, v, global_step=None)
 
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         pylogger.error("TensorboardLogger does not support logging artifacts yet")
         pass
 

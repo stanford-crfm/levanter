@@ -9,7 +9,21 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import equinox as eqx
 import jax
@@ -31,7 +45,7 @@ from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
-from levanter import logging, tracker
+from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
@@ -146,10 +160,7 @@ class Trainer:
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
-        if isinstance(config.tracker, Sequence):
-            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
-        else:
-            self.tracker = config.tracker.init(self.run_id)
+
         self._cmanagers = []
 
     @cached_property
@@ -217,7 +228,7 @@ class Trainer:
             raise RuntimeError("Trainer is already entered")
 
         self._cmanagers = [
-            levanter.current_tracker(self.tracker),
+            # levanter.current_tracker(self.tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
@@ -249,51 +260,50 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
-        with levanter.tracker.current_tracker(self.tracker):
-            if model is not None and model_init is not None:
-                raise ValueError("only one of model and model_init should be specified")
-            elif model is None and model_init is None:
-                raise ValueError("one of model and model_init must be specified")
+        if model is not None and model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+        elif model is None and model_init is None:
+            raise ValueError("one of model and model_init must be specified")
 
+        if model is not None:
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
+            # We can't use plain partials because they aren't pytrees
+            model_init = jax.tree_util.Partial(lambda m: m, model)
+
+        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+
+        # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
+        trainable_model_shape = self.trainable_params_only(model_shape)
+
+        ckpt = self.maybe_load_checkpoint(
+            trainable_model_shape,
+            (opt_state_shape, training_key),
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
+        )
+
+        if ckpt is not None:
+            trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
-                # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
-                # We can't use plain partials because they aren't pytrees
-                model_init = jax.tree_util.Partial(lambda m: m, model)
-
-            model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
-
-            # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
-            trainable_model_shape = self.trainable_params_only(model_shape)
-
-            ckpt = self.maybe_load_checkpoint(
-                trainable_model_shape,
-                (opt_state_shape, training_key),
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-            )
-
-            if ckpt is not None:
-                trainable_model, (opt_state, training_key), completed_step = ckpt
-                if model is not None:
-                    model = eqx.combine(trainable_model, model)
-                elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
-                    # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                    non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-                    model = eqx.combine(trainable_model, non_trainable)
-                else:
-                    model = trainable_model
-                step = completed_step + 1
+                model = eqx.combine(trainable_model, model)
+            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
+                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
+                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
+                model = eqx.combine(trainable_model, non_trainable)
             else:
-                model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
-                step = 0
+                model = trainable_model
+            step = completed_step + 1
+        else:
+            model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
+            step = 0
 
-            return TrainerState(step, model, opt_state, training_key)
+        return TrainerState(step, model, opt_state, training_key)
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
-        with capture_time() as step_time, levanter.current_tracker(self.tracker):
+        with capture_time() as step_time:
             key, new_key = jax.random.split(state.training_key)
             loss, new_model, new_optstate = self._train_step_fn(
                 state.model, state.opt_state, *batch, **batch_kwargs, key=key
@@ -310,23 +320,23 @@ class Trainer:
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
-        with levanter.current_tracker(self.tracker):
-            while state.step < self.config.num_train_steps:
-                with capture_time() as loading_time:
-                    example = next(iter_data)
+        # with levanter.current_tracker(self.tracker):
+        while state.step < self.config.num_train_steps:
+            with capture_time() as loading_time:
+                example = next(iter_data)
 
-                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
-                info = self.train_step(state, example)
-                state = info.state
+            info = self.train_step(state, example)
+            state = info.state
 
-                if run_hooks:
-                    with capture_time() as hook_time:
-                        self.run_hooks(info)
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
 
-                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
-                yield info
+            yield info
 
     def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
@@ -496,6 +506,15 @@ class Trainer:
             return None
 
 
+def _initialize_global_tracker(config, run_id):
+    if isinstance(config, Sequence):
+        tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
+    else:
+        tracker = config.init(run_id)
+
+    levanter.tracker.set_global_tracker(tracker)
+
+
 @dataclass
 class TrainerConfig:
     seed: int = 0  # random seed
@@ -573,15 +592,18 @@ class TrainerConfig:
         self.distributed.initialize()
         self._validate_and_set_defaults()
 
-        self._maybe_set_id()
-        self._initialize_logging()
+        id = self._maybe_set_id()
+        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        _initialize_global_tracker(self.tracker, id)
+
         self.ray.initialize()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
 
         if self.require_accelerator:
-            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+            if jax.default_backend() == "cpu":
+                raise RuntimeError("No accelerator found. Please run on a TPU or GPU.")
 
         if self.shutdown_at_exit is not False:
             if isinstance(self.shutdown_at_exit, bool):
@@ -640,10 +662,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logging(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -666,6 +684,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -692,6 +712,22 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+
+class AllConfig(Protocol):
+    trainer: TrainerConfig
+
+
+def initialize(config: TrainerConfig | AllConfig):
+    """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
+    as hyperparameters and an artifact"""
+    if isinstance(config, TrainerConfig):
+        trainer_config = config
+    else:
+        trainer_config = config.trainer
+
+    trainer_config.initialize()
+    levanter.tracker.log_configuration(config)
 
 
 @dataclass

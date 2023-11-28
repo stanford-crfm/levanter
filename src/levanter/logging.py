@@ -10,13 +10,17 @@ import jax
 pylogger = pylogging.getLogger(__name__)
 
 
-def init_logging(path: Union[str, Path], level: int = pylogging.INFO) -> None:
+def init_logging(log_dir: Union[str, Path], run_id: str, level: int = pylogging.INFO) -> None:
     """
     Initialize logging.Logger with the appropriate name, console, and file handlers.
 
     :param path: Path for writing log file
     :param level: Default logging level
     """
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"{run_id}.log"
+
     process_index = jax.process_index()
     log_format = f"%(asctime)s - {process_index} - %(name)s - %(filename)s:%(lineno)d - %(levelname)s :: %(message)s"
     # use ISO 8601 format for timestamps, except no TZ, because who cares

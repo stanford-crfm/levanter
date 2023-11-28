@@ -45,6 +45,7 @@ class LoraLmConfig:
 
 
 def main(config: LoraLmConfig):
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     converter = HFCheckpointConverter.from_hf(config.initialize_from_hf, trust_remote_code=config.trust_remote_code)
@@ -53,7 +54,6 @@ def main(config: LoraLmConfig):
 
     converter = converter.replaced(tokenizer=tokenizer)
 
-    config.trainer.initialize()
     model_config = converter.default_config
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators

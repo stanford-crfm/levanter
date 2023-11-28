@@ -4,9 +4,11 @@ from levanter.tracker.tracker_fns import (
     current_tracker,
     get_tracker,
     jit_log_metrics,
+    log_configuration,
     log_hyperparameters,
     log_metrics,
     log_summary,
+    set_global_tracker,
 )
 
 
@@ -19,7 +21,9 @@ __all__ = [
     "current_tracker",
     "get_tracker",
     "jit_log_metrics",
+    "log_configuration",
     "log_metrics",
     "log_summary",
     "log_hyperparameters",
+    "set_global_tracker",
 ]

@@ -1,4 +1,3 @@
-import dataclasses
 import logging
 import os
 import tempfile
@@ -7,13 +6,12 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
-import draccus
 import jax
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
-from levanter.tracker.helpers import generate_pip_freeze, hparams_to_dict, infer_experiment_git_root
+from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils import jax_utils
 
@@ -56,8 +54,8 @@ class WandbTracker(Tracker):
     def log_summary(self, metrics: dict[str, Any]):
         self.run.summary.update(metrics)
 
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        self.run.log_artifact(artifact, name=name, type=type)
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
+        self.run.log_artifact(artifact_path, name=name, type=type)
 
 
 def is_wandb_available():
@@ -159,15 +157,6 @@ class WandbConfig(TrackerConfig):
                     setattr(r, k, v)
 
             logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
-
-        # TODO: bring this back?
-        # if dataclasses.is_dataclass(hparams):
-        #     with tempfile.TemporaryDirectory() as tmpdir:
-        #         config_path = os.path.join(tmpdir, "config.yaml")
-        #         with open(config_path, "w") as f:
-        #             draccus.dump(hparams, f, encoding="utf-8")
-        #         if wandb.run is not None:
-        #             wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
         # generate a pip freeze
         with tempfile.TemporaryDirectory() as tmpdir:

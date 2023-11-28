@@ -48,7 +48,7 @@ class TrainArgs(alpaca.TrainArgs):
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize()
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -103,8 +103,6 @@ def train(config: TrainArgs):
         # end major difference from Alpaca
 
         with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
-            levanter.tracker.log_hyperparameters(config)
-
             trainer.add_default_hooks()
             state = trainer.initial_state(training_key, model=model)
 

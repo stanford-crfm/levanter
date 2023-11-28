@@ -36,7 +36,7 @@ class VizGpt2Config:
 
 
 def main(config: VizGpt2Config):
-    config.trainer.initialize()
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     # some axes we use outside the model proper
