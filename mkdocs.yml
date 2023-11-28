@@ -89,8 +89,7 @@ nav:
       - "Fine-Tuning.md"
       - "LoRA.md"
   - 'Developer Guide':
-      - 'dev/Port-Models.md'
-      - 'dev/Trackers.md'
+      - 'Port-Models.md'
   - Other:
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"

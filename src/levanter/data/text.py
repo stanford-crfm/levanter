@@ -45,9 +45,9 @@ from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  
 from levanter.data.shard_cache import (  # noqa
     ChunkMetadata,
     LoggerMetricsMonitor,
-    LoggingMetricsMonitor,
     MetricsMonitor,
     ShardCache,
+    WandbMetricsMonitor,
     _serialize_json_and_commit,
     build_cache,
 )
@@ -604,7 +604,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         if monitors is True:
             monitors = [
-                LoggingMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
+                WandbMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
                 LoggerMetricsMonitor(f"preprocessing.{split}"),
             ]
         elif monitors is False:
