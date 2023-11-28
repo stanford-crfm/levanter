@@ -36,12 +36,11 @@ class VizGpt2Config:
 
 
 def main(config: VizGpt2Config):
-    config.trainer.initialize(config)
+    config.trainer.initialize()
     tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-
     # some axes we use outside the model proper
+    EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
@@ -53,7 +52,6 @@ def main(config: VizGpt2Config):
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping

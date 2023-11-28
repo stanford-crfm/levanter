@@ -4,7 +4,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from levanter.tracker import Tracker, TrackerConfig, helpers
+from levanter.tracker import Tracker, TrackerConfig
 
 
 pylogger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class TensorboardTracker(Tracker):
             self.writer.add_scalar(k, v, global_step=None)
 
     def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        pylogger.warning("TensorboardLogger does not support logging artifacts yet")
+        pylogger.error("TensorboardLogger does not support logging artifacts yet")
         pass
 
 
@@ -47,7 +47,7 @@ class TensorboardConfig(TrackerConfig):
     filename_suffix: Optional[str] = ""
     write_to_disk: Optional[bool] = True
 
-    def init(self, run_id: Optional[str], hparams) -> TensorboardTracker:
+    def init(self, run_id: Optional[str]) -> TensorboardTracker:
         dir_to_write = self.logdir
         if run_id is not None:
             dir_to_write = os.path.join(dir_to_write, run_id)
@@ -65,11 +65,6 @@ class TensorboardConfig(TrackerConfig):
             filename_suffix=self.filename_suffix,
             write_to_disk=self.write_to_disk,
         )
-
-        hparams_dict = helpers.hparams_to_dict(hparams)
-        hparams_dict = _flatten_nested_dict(hparams_dict)
-
-        writer.add_hparams(hparams_dict, {"dummy": 0})
 
         return TensorboardTracker(writer)
 

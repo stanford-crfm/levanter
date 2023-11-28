@@ -62,7 +62,7 @@ def compute_validation_loss(
         prefix = "eval"
         if name:
             prefix += "/" + name
-        levanter.log_metrics({f"{prefix}/loss": loss}, step=info.step)
+        levanter.tracker.log_metrics({f"{prefix}/loss": loss}, step=info.step)
 
         if name:
             logger.info(f"{name} validation loss: {loss:.3f}")

@@ -46,6 +46,8 @@ class TrainLmConfig:
 
 
 def main(config: TrainLmConfig):
+    config.trainer.initialize()
+
     tokenizer = config.data.the_tokenizer
 
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
@@ -71,36 +73,35 @@ def main(config: TrainLmConfig):
     else:
         converter = None
 
-    # initialize training config *after* we've done the hf stuff b/c we might have changed the model config
-    config.trainer.initialize(config)
-
-    # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
-    # this makes deterministic training pretty easy
-    seed = config.trainer.seed
-    data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-
-    # some axes we need
-    Batch = config.trainer.TrainBatch
-    EvalBatch = config.trainer.EvalBatch
-    Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
-
-    # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
-    # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
-    compute_axis_mapping = config.trainer.compute_axis_mapping
-    parameter_axis_mapping = config.trainer.parameter_axis_mapping
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
-
-    optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
-    # 3. Sets the global metrics logger
+    # 3. Sets the global metrics tracker
     with Trainer(config.trainer, optimizer, compute_loss) as trainer:
+        levanter.tracker.log_hyperparameters(config)
+
+        # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
+        # this makes deterministic training pretty easy
+        seed = config.trainer.seed
+        data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+
+        # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
+        # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
+        compute_axis_mapping = trainer.compute_axis_mapping
+        parameter_axis_mapping = trainer.parameter_axis_mapping
+
+        # some axes we need
+        Batch = config.trainer.TrainBatch
+        EvalBatch = config.trainer.EvalBatch
+        Pos = config.model.Pos
+        KeyPos = config.model.KeyPos
+
         eval_datasets = config.data.validation_sets(Pos.size)
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
 

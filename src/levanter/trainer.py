@@ -567,7 +567,7 @@ class TrainerConfig:
             warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
             self.tracker = self.wandb
 
-    def initialize(self, all_config):
+    def initialize(self):
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         self.distributed.initialize()

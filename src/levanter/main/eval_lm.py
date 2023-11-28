@@ -41,7 +41,7 @@ class EvalLmConfig:
 
 
 def main(config: EvalLmConfig):
-    config.trainer.initialize(config)
+    config.trainer.initialize()
     tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.eval_batch_size)

@@ -5,6 +5,7 @@ from typing import Any, Literal, Optional
 import jax
 
 from levanter.tracker import CompositeTracker, Tracker
+from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
@@ -52,6 +53,21 @@ def log_summary(metrics: dict[str, Any]):
     if _global_tracker is None:
         raise RuntimeError("No global tracker set")
     _global_tracker.log_summary(metrics)
+
+
+def log_hyperparameters(hparams: Any):
+    """
+     Log hyperparameters to the global tracker.
+
+    Args:
+         hparams: Hyperparameters to log
+    """
+    global _global_tracker
+    if _global_tracker is None:
+        raise RuntimeError("No global tracker set")
+
+    hparams_dict = hparams_to_dict(hparams)
+    _global_tracker.log_hyperparameters(hparams_dict)
 
 
 @typing.overload
