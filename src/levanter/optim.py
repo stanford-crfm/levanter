@@ -95,6 +95,10 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
 
+    @classmethod
+    def default_choice_name(cls) -> Optional[str]:
+        return "adam"
+
     @abc.abstractmethod
     def build(self, num_train_steps: int):
         raise NotImplementedError
