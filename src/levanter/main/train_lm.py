@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
-import wandb
 
 import haliax as hax
 from haliax import Axis
@@ -97,12 +96,14 @@ def main(config: TrainLmConfig):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
+    # Using the trainer as a context manager does 3 things:
+    # 1. Sets the device mesh
+    # 2. Sets the axis mapping (for fsdp)
+    # 3. Sets the global metrics logger
+    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
+        eval_datasets = config.data.validation_sets(Pos.size)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
 
-    eval_datasets = config.data.validation_sets(Pos.size)
-    train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-
-    with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -129,7 +130,11 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        wandb.summary["parameter_count"] = parameter_count(state.model)
+        levanter.tracker.log_summary(
+            {
+                "parameter_count": parameter_count(state.model),
+            }
+        )
 
         # boilerplate hooks and such
         trainer.add_default_hooks()
