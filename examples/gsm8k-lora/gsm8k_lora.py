@@ -41,7 +41,7 @@ class TrainArgs:
     lora: LoraConfig = LoraConfig()
 
     max_tune_length: int = 2048  # maximum length of the input to the model during tuning
-    data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
+    data: str = "gsm8k"  # name of the dataset to use
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
 
     input_key: str = "question"  # key in the dataset for the input
@@ -105,7 +105,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
 
         sources = [format_example(example) for example in batch]
         targets = [format_output(example) for example in batch]
-        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+
         examples = [s + t for s, t in zip(sources, targets)]
         sources_tokenized = tokenizer(sources, return_tensors="np", padding=False, truncation=True)
         examples_tokenized = tokenizer(examples, return_tensors="np", padding=False, truncation=True)
