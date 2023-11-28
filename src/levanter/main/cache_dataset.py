@@ -21,7 +21,7 @@ class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logging("cache_dataset.log")
+    init_logging(".", "cache_dataset.log")
     args.initialize()
 
     tokenizer = args.the_tokenizer
