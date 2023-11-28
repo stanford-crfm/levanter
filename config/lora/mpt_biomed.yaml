@@ -11,8 +11,7 @@ lora:
   alpha: 32.0
   target_modules: ["Wqkv"]
 trainer:
-  tracker:
-    type: wandb
+  wandb:
     project: "levanter"
     tags: ["mpt", "lora", "pubmed"]
 

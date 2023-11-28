@@ -11,7 +11,7 @@ model:
   num_heads: 4
   num_layers: 2
 trainer:
-  tracker:
+  wandb:
     project: "levanter"
     tags: ["openwebtext", "llama"]
   mp: p=f32

@@ -11,7 +11,7 @@ model:
   resid_pdrop: 0.0
 fcm_prob: 0.15
 trainer:
-  tracker:
+  wandb:
     project: "levanter"
     tags: ["pile", "gpt2"]
 
