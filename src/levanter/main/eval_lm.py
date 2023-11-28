@@ -49,9 +49,9 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
     else:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping

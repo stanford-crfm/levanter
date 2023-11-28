@@ -1,5 +1,5 @@
 import copy
-import logging
+import logging as pylogging
 import os
 import re
 import subprocess
@@ -11,25 +11,32 @@ from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
-import wandb
 from tqdm import tqdm
 
-from levanter.logging import WandbConfig, log_optimizer_hyperparams, save_xla_dumps_to_wandb
+import levanter.tracker
+from levanter.logging import save_xla_dumps_to_wandb
+from levanter.tracker.helpers import log_optimizer_hyperparams
+from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
-logger = logging.getLogger(__name__)
+logger = pylogging.getLogger(__name__)
 
 
-def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
+def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     total_load_time = 0.0
     total_loss_time = 0.0
     n = 0
 
-    pbar = tqdm(dataset, desc="eval", position=1, leave=False)
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+
+    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     iter_ = iter(pbar)
     while True:
         time_in = time.time()
@@ -38,7 +45,6 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None):
             break
         load_time = time.time() - time_in
         total_load_time += load_time
-
         loss = loss_fn(model, batch)
         total_loss += loss.item()
         n += 1
@@ -63,26 +69,34 @@ def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
     dataset: Iterable,
     max_batches: Optional[int] = None,
+    name: Optional[str] = None,
 ):
     def compute_loss(info: StepInfo):
-        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches)
+        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches, name=name)
 
-        if wandb.run is not None:
-            wandb.log({"eval/loss": loss}, step=info.step)
+        prefix = "eval"
+        if name:
+            prefix += "/" + name
+        levanter.log_metrics({f"{prefix}/loss": loss}, step=info.step)
 
-        logger.info(f"validation loss: {loss:.3f}")
+        if name:
+            logger.info(f"{name} validation loss: {loss:.3f}")
+        else:
+            logger.info(f"validation loss: {loss:.3f}")
 
         return loss
 
     return compute_loss
 
 
-def log_to_wandb(step: StepInfo):
-    wandb.log({"train/loss": step.loss, "global_step": step.step}, step=step.step)
-    log_optimizer_hyperparams(step.opt_state, step=step.step)
+def log_step_info(step: StepInfo):
+    levanter.tracker.log_metrics({"train/loss": step.loss, "global_step": step.step}, step=step.step)
+    log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
 
 
 def wandb_xla_logger(config: WandbConfig):
+    import wandb
+
     last_mtime = wandb.run and wandb.run.start_time or time.time()
 
     def log_xla_to_wandb(step: StepInfo):
@@ -112,14 +126,14 @@ def log_performance_stats(
 
         # log these totals because it's useful for comparing different seqlens, batch sizes, etc
         total_tokens = tokens_per_example * batch_size * step_info.step
-        wandb.log({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
+        levanter.tracker.log_metrics({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
 
         if flops_per_example:
             total_flops = flops_per_example * batch_size * step_info.step
-            wandb.log({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
+            levanter.tracker.log_metrics({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
 
         if step_info.step_duration != 0.0:
-            wandb.log(
+            levanter.tracker.log_metrics(
                 {
                     wrap_key("examples_per_second"): float(batch_size) / step_info.step_duration,
                     wrap_key("tokens_per_second"): float(tokens_per_example) / step_info.step_duration * batch_size,
@@ -129,7 +143,7 @@ def log_performance_stats(
             )
 
             if flops_per_example is not None:
-                wandb.log(
+                levanter.tracker.log_metrics(
                     {
                         wrap_key("gflops_per_second"): flops_per_example / 1e9 / step_info.step_duration * batch_size,
                     },
@@ -156,7 +170,7 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
 
 def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool = False):
     """
-    Logs memory usage to wandb. This runs a loop that samples memory usage every `sample_interval` seconds.
+    Logs memory usage. This runs a loop that samples memory usage every `sample_interval` seconds.
     We only log when hooks are invoked, so there's not much point in running this much more frequently than you invoke
     the hook.
 
@@ -222,7 +236,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
         match = regex.search(by_kind)
         if match:
             memory_usage = humanfriendly.parse_size(match.group(1))
-            wandb.log({"memory/total": memory_usage / 1e6}, step=step.step)
+            levanter.tracker.log_metrics({"memory/total": memory_usage / 1e6}, step=step.step)
 
         # this works for the "kind" and the individual devices
         regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
@@ -233,14 +247,14 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             for match in regex.finditer(per_device):
                 memory_usage = humanfriendly.parse_size(match.group(1))
                 device_name = match.group(3)
-                wandb.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+                levanter.tracker.log_metrics({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
 
         # now, get the memory usage per kind.
         # same regex as above
         for match in regex.finditer(by_kind):
             memory_usage = match.group(1)
             memory_usage = humanfriendly.parse_size(memory_usage)
-            wandb.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
+            levanter.tracker.log_metrics({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
 
@@ -266,6 +280,9 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         path = os.path.join(html_dir, f"step_{step}.html")
 
         viz_probs(path, model, tokenizer, log_prob_fn, test_data, max_docs=max_docs)
+        # TODO: convert to generic logging
+        import wandb
+
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs

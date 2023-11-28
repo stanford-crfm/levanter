@@ -11,8 +11,8 @@ import levanter.main.eval_lm as eval_lm
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
-from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.tracker.wandb import WandbConfig
 from levanter.utils.py_utils import logical_cpu_core_count
 
 

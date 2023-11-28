@@ -22,36 +22,74 @@ the installation steps in that guide before continuing. Don't spin up a TPU VM i
 
 ### CUDA Setup
 
-See the [CUDA guide](./Getting-Started-CUDA.md) for instructions on setting up a CUDA machine.
+See the [GPU guide](./Getting-Started-GPU.md) for instructions on setting up a CUDA machine.
 
 ### WandB Setup
 
 Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a WandB account and [get an API key](https://wandb.ai/authorize).
 
-
 ## Data Preparation
 
-Currently, our data preprocessing pipeline assumes that you have already:
+The key ingredient for training an LM is a lot of plain-text data.
+We have two top-level ways of consuming training data: a [**single source**](#single-data-source) and [**mixture of sources**](#mixture-of-sources).
+Single source is simpler and probably closer to what you're used to, while multiple
+source allows you to have multiple evaluation sets or use techniques like [DoReMi](https://arxiv.org/abs/2305.10429).
 
-1. Turned your data into one or more JSONL files of *plain text*.
-2. Split your data into train and validation sets.
-3. Done any randomization of your data.
+### Data Sources
 
-Instead of (1), you may instead use a Huggingface Dataset, such as [The Pile](https://huggingface.co/datasets/EleutherAI/pile).
-If you have, and if your data is already split and randomized, you may skip to the [Machine Setup](#machine-setup) section.
-
+In Levanter, a data source can either be a list of training and validation URLs pointing to
+(possibly compressed) JSONL files, or a Huggingface Dataset. In either case,
+we assume there is a single field, by default called `"text"`, that contains the text of the example.
 If you have a sequence-to-sequence task, as of September 2023, you should turn each example into a single text
 by e.g. using a templating mechanism with a prompt (a la Alpaca).
 
-(2) is something we're looking to relax. And we'd like to support automatically handling shuffling.
-
-### Data Format: JSONL
+#### Data Format: JSONL
 
 The canonical format for training data in Levanter is (compressed) JSONL, or JSON Lines.
 Each line of the file is a JSON object, which is a dictionary of key-value pairs.
 The only required key is `"text"`, which should map to a string of plain text.
+Other keys are ignored, but you can use them to store metadata about your data.
 
 Once you have done so, you can create the `data` section of your training configuration:
+
+```yaml
+    train_urls:
+      - "gs://path/to/train_web_{1..32}.jsonl.gz"
+      - "gs://path/to/train_web_crawl2.jsonl.gz"
+    validation_urls:
+      - "gs://path/to/valid_web.jsonl.gz"
+```
+
+Levanter uses [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) to read data from files,
+so it can transparently handle compressed files and files in cloud storage (like Google Cloud Storage or AWS S3).
+Levanter uses [braceexpand](https://pypi.org/project/braceexpand/) to expand the `{1..32}` syntax.
+You can also use more than one entry if you have urls that don't follow a naming scheme:
+
+!!! tip
+
+    Levanter's preprocessing pipeline works best if you split your data into at least 1 shard for every machine
+    (i.e. every 8 TPUs or GPUs). This isn't a big deal, but it helps.
+
+#### Data Format: Huggingface Datasets
+
+If you have a Huggingface Dataset, such as [The Pile](https://huggingface.co/datasets/EleutherAI/pile), you can use it directly in Levanter. It must
+have a `"text"` column, and it must be split into train and validation sets. To use it,
+you can specify the dataset name in the `data` section of your training configuration:
+
+```yaml
+data:
+    id: "EleutherAI/pile"
+    # if needed:
+    # name: "subset"
+```
+
+This will be passed to `datasets.load_dataset`. If the dataset supports streaming, you can use `stream: true` to stream
+the data instead of loading it all into memory. If a streaming dataset is sharded, we will attempt to exploit the
+sharded structure to preprocess more efficiently.
+
+### Single Data Source
+
+If you have a single source of data, you can use the `data` section of your training configuration to specify it:
 
 ```yaml
 data:
@@ -63,39 +101,44 @@ data:
     tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
 
-Levanter uses [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) to read data from files,
-so it can transparently handle compressed files and files in cloud storage (like Google Cloud Storage or AWS S3).
-Levanter uses [braceexpand](https://pypi.org/project/braceexpand/) to expand the `{1..32}` syntax.
-You can also use more than one entry if you have urls that don't follow a naming scheme:
+
+### Mixture of Sources
+
+!!! warning
+
+    This feature is experimental and may change in the future.
+
+If you have multiple sources of data (e.g., multiple domains, or distinct subsets of data), you can use the `data` section of your training configuration to specify them:
 
 ```yaml
 data:
-    train_urls:
-      - "gs://path/to/train_web.jsonl.gz"
-      - "gs://path/to/train_news.jsonl.gz"
-      - "gs://path/to/train_wiki.jsonl.gz"
-    validation_urls: # etc.
+  configs:
+    wikitext:
+      id: dlwh/wikitext_103_detokenized
+    web:
+      train_urls:
+        - "gs://path/to/train_web_{1..32}.jsonl.gz"
+      validation_urls:
+        - "gs://path/to/valid_web.jsonl.gz"
+  train_weights:
+    wikitext: 0.1
+    web: 0.9
+  cache_dir: "gs://path/to/cache"
+  tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
 
-**Note**: Levanter's preprocessing pipeline works best if you split your data into at least 1 shard for every machine
-(i.e. 8 TPUs). This isn't a big deal, but it helps.
+`train_weights` is a dictionary mapping source names to weights. The weights need not sum to 1, but they should be positive.
+The weights are normalized to sum to 1. You can include a weight of 0.0 to exclude a source from training,
+in which case it will only be used for evaluation (if present).
 
-### Data Format: Huggingface Datasets
+Evaluation losses are broken down by source, so you can see how each source is performing. Not every source needs to have
+validation data.
 
-If you have a Huggingface Dataset, you can use it directly in Levanter. It must
-have a `"text"` column, and it must be split into train and validation sets. To use it,
-you can specify the dataset name in the `data` section of your training configuration:
+!!! tip
 
-```yaml
-data:
-    id: "EleutherAI/pile"
-    # if needed:
-    # name: "subset"
-```
-
-This will be passed to `datasets.load_dataset`. If the dataset supports
-streaming, you can use `stream: true` to stream the data instead of loading it all into memory.
-If a streaming dataset is sharded, we will attempt to exploit the sharded structure to preprocess more efficiently.
+        If you only have one training source, but you want to use multiple evaluation sources, you can use the
+        the mixture of sources mechanism with a single source. Just set the weight of the training source to 1.0
+        and the weights of the evaluation sources to 0.0.
 
 ## Data Preprocessing
 
@@ -171,7 +214,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter" # TODO
     tags: ["gpt2"]
 

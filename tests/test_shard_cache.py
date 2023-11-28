@@ -9,7 +9,7 @@ import pytest
 import ray
 
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.shard_cache import ChunkMetadata, _get_broker_actor, build_cache
+from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_cache
 from levanter.data.sharded_dataset import ShardedDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
@@ -301,3 +301,23 @@ def test_map_batches_and_map_shard_cache():
             ray_entries.append({"q": entry["q"].tolist()})
 
         assert ray_entries == list(simple_processed)
+
+
+def test_serial_cache_writer():
+    with tempfile.TemporaryDirectory() as tmpdir1, tempfile.TemporaryDirectory() as tmpdir2:
+        source = SimpleShardSource(num_shards=4)
+        processor = TestProcessor()
+
+        with SerialCacheWriter(tmpdir1, rows_per_chunk=8) as writer:
+            for shard_name in source.shard_names:
+                for batch in source.open_shard(shard_name):
+                    writer.write_batch(processor([batch]))
+
+        serial = writer.result(batch_size=1)
+        ray_ds = build_cache(tmpdir2, source, processor, await_finished=True)
+
+        def freeze_batch(batch):
+            # make it hashable
+            return tuple(batch["test"].values.to_numpy())
+
+        assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)

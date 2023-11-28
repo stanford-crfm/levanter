@@ -18,7 +18,7 @@ from optax._src import numerics
 from optax._src.schedule import InjectHyperparamsState, _convert_floats
 from optax._src.transform import bias_correction, update_moment
 
-from levanter.logging import jittable_wandb_log
+import levanter.tracker
 from levanter.utils.jax_utils import parameter_count
 
 
@@ -519,7 +519,7 @@ def _sophia_gradient_transform(
 
         # this doesn't work well on CPU, so skip if cpu
         if jax.lib.xla_bridge.get_backend().platform != "cpu":
-            jittable_wandb_log(stats, step=state.count)
+            levanter.tracker.jit_log_metrics(stats, step=state.count)
 
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)

@@ -15,7 +15,7 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
+from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -129,7 +129,15 @@ def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
-        return JsonDataset([path_or_id])
+        # get file format: jsonl or json
+        if path_or_id.endswith(".jsonl"):
+            return JsonlDataset([path_or_id])
+        elif path_or_id.endswith(".json"):
+            return JsonDataset([path_or_id])
+        else:
+            raise ValueError(
+                f"We only support HF Dataset or a data file with .json or .jsonl extensions, not {path_or_id}!"
+            )
     else:
         return WrappedHFDataset(path_or_id, split="train")
 
@@ -210,9 +218,7 @@ def train(config: TrainArgs):
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
-
-    with trainer.device_mesh:
+    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 

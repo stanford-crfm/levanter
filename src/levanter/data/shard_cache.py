@@ -1,11 +1,12 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import asyncio
 import dataclasses
-import logging
+import logging as pylogging
 import os
 import sys
 import threading
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from queue import PriorityQueue
 from typing import (
@@ -30,7 +31,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
 import tblib
-import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -45,8 +45,11 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+import levanter.tracker
+
+from .. import logging
 from . import ShardableDataset
-from ._preprocessor import BatchProcessor, as_record_batch, dict_from_record_batch
+from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
 from .sharded_dataset import ShardedDataset
 
 
@@ -54,7 +57,7 @@ T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 _ExcInfo = Tuple[Optional[BaseException], tblib.Traceback]
 
-logger = logging.getLogger(__name__)
+logger = pylogging.getLogger(__name__)
 
 DEFAULT_ROWS_PER_CHUNK = 1024 * 32
 LEDGER_FILE_NAME = "cache_ledger.json"
@@ -145,6 +148,65 @@ class CacheLedger:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
 
 
+class SerialCacheWriter(AbstractContextManager):
+    """
+    Writes ShardCache-compatible caches to disk. This is a serial version of ShardCacheWriter that doesn't use Ray.
+    Mostly for scripts and debugging.
+
+    Examples:
+        >>> with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
+        ...     for batch in process_batches():
+        ...         writer.write_batch(batch)
+    """
+
+    def __init__(self, cache_dir: str, rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK):
+        if rows_per_chunk <= 0:
+            raise ValueError("rows_per_chunk must be positive")
+        self.cache_dir = cache_dir
+        self._rows_per_chunk = rows_per_chunk
+        self._chunks: List[ChunkMetadata] = []
+        self._current_chunk_writer: Optional[_ChunkWriter] = None
+        self._is_closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # if successful, write the ledger
+        if self._current_chunk_writer is not None:
+            self._current_chunk_writer.__exit__(exc_type, exc_val, exc_tb)
+            self._chunks.append(self._current_chunk_writer.get_metadata())
+            self._current_chunk_writer = None
+
+        if exc_type is None:
+            _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks))
+            logger.info(f"Cache ledger written to {self.cache_dir}")
+            self._is_closed = True
+
+    def result(self, batch_size: int = 1) -> "ShardCache":
+        if not self._is_closed:
+            raise RuntimeError("Cannot get result until ShardCacheWriter is closed")
+        return ShardCache.load(self.cache_dir, batch_size=batch_size)
+
+    def write_batch(self, batch: BatchResult):
+        rb = as_record_batch(batch)
+
+        while rb.num_rows > 0:
+            if self._current_chunk_writer is None:
+                self._current_chunk_writer = _ChunkWriter(
+                    self.cache_dir, f"chunk-{len(self._chunks)}", rb.schema
+                ).__enter__()
+
+            slice = rb.slice(0, min(rb.num_rows, self._rows_per_chunk - self._current_chunk_writer.num_rows))
+            self._current_chunk_writer.write_batch(slice)
+            rb = rb.slice(slice.num_rows)
+
+            if self._current_chunk_writer.num_rows >= self._rows_per_chunk:
+                self._current_chunk_writer.__exit__(None, None, None)
+                self._chunks.append(self._current_chunk_writer.get_metadata())
+                self._current_chunk_writer = None
+
+
 class _ChunkWriter:
     def __init__(self, cache_dir: str, chunk_name: str, schema: pa.Schema):
         self.cache_dir = cache_dir
@@ -205,7 +267,7 @@ def _produce_cache_for_shard(
     """Produces chunks of preprocessed data from a single shard and writes them to disk. Chunks are written to sink,
     which is an actor of ChunkCacheBuilder."""
     # TODO: thread logging level through calls
-    logging.basicConfig(level=logging.INFO)
+    pylogging.basicConfig(level=pylogging.INFO)
     # load or create shard metadata (for recovery)
     try:
         shard_name = source.shard_names[shard_idx]
@@ -415,7 +477,7 @@ class RichMetricsMonitor(MetricsMonitor):
         self.progress.start()
 
 
-class WandbMetricsMonitor(MetricsMonitor):
+class LoggingMetricsMonitor(MetricsMonitor):
     last_metrics: Optional[InProgressCacheMetrics]
     last_time: Optional[float]
 
@@ -457,16 +519,16 @@ class WandbMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        wandb.log(to_log, commit=self.commit)
+        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[logging.Logger, str]] = None, level=logging.INFO):
+    def __init__(self, logger: Optional[Union[pylogging.Logger, str]] = None, level=pylogging.INFO):
         if isinstance(logger, str):
-            logger = logging.getLogger(logger)
-        self.logger = logger or logging.getLogger(__name__)
+            logger = pylogging.getLogger(logger)
+        self.logger = logger or pylogging.getLogger(__name__)
         self.level = level
 
     def __call__(self, metrics: InProgressCacheMetrics):
@@ -510,7 +572,7 @@ class _ShardStatus:
 def _mk_process_task(processor: BatchProcessor[T]):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         return processor(batch)
 
     return process_task
@@ -519,7 +581,7 @@ def _mk_process_task(processor: BatchProcessor[T]):
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         ray.get(queue.task_running.remote())
         result = processor(batch)
         del batch
@@ -614,7 +676,7 @@ class ChunkCacheBuilder:
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         self.broker_ref = broker_ref
         self.shard_status: Dict[str, _ShardStatus] = dict()
         self._current_round_robin = []
@@ -753,7 +815,7 @@ class ChunkCacheBroker:
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
-        logging.basicConfig(level=logging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO)
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
