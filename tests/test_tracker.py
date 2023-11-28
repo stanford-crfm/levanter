@@ -28,9 +28,9 @@ def test_tracker_plugin_multi_parsing_work():
 
     import draccus
 
-    from levanter.tracker.tracker import NoopTrackerConfig
+    from levanter.tracker.tracker import NoopConfig
 
-    assert isinstance(draccus.decode(ConfigHolder, parsed).tracker, NoopTrackerConfig)
+    assert isinstance(draccus.decode(ConfigHolder, parsed).tracker, NoopConfig)
 
     config = """
     tracker:
@@ -39,7 +39,7 @@ def test_tracker_plugin_multi_parsing_work():
     """
     parsed = yaml.safe_load(config)
     decoded = draccus.decode(ConfigHolder, parsed).tracker
-    assert decoded == (NoopTrackerConfig(), TrackerConfig.get_choice_class("wandb")())
+    assert decoded == (NoopConfig(), TrackerConfig.get_choice_class("wandb")())
 
 
 def test_get_tracker_by_name():

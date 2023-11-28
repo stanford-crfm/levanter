@@ -9,7 +9,7 @@ import draccus
 class Tracker(abc.ABC):
     """
     A tracker is responsible for logging metrics, hyperparameters, and artifacts.
-    Meant to be used with the [current_tracker][] context manager, but can also be used directly.
+    Meant to be used with the [levanter.tracker.current_tracker][] context manager, but can also be used directly.
 
     The name is borrowed from HF Accelerate.
 
@@ -27,7 +27,7 @@ class Tracker(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def log(self, metrics: dict[str, typing.Any], *, step, commit: Optional[bool] = None):
+    def log(self, metrics: dict[str, typing.Any], *, step: Optional[int], commit: Optional[bool] = None):
         """
         Log metrics to the tracker. Step is always required.
 
@@ -108,6 +108,6 @@ class NoopTracker(Tracker):
 
 @TrackerConfig.register_subclass("noop")
 @dataclasses.dataclass
-class NoopTrackerConfig(TrackerConfig):
+class NoopConfig(TrackerConfig):
     def init(self, run_id: Optional[str], hparams=None) -> Tracker:
         return NoopTracker()

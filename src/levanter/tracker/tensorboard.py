@@ -38,7 +38,7 @@ class TensorboardTracker(Tracker):
 
 @TrackerConfig.register_subclass("tensorboard")
 @dataclass
-class TensorboardTrackerConfig(TrackerConfig):
+class TensorboardConfig(TrackerConfig):
     logdir: str = "tblogs"
     comment: Optional[str] = ""
     purge_step: Optional[int] = None

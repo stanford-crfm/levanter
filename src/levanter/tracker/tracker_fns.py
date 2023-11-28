@@ -13,11 +13,11 @@ from levanter.utils.jax_utils import is_inside_jit
 _global_tracker: Optional["Tracker"] = None
 
 
-def log_metrics(metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
+def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
     """
     Log metrics to the global tracker.
 
-    Args
+    Args:
         metrics: Metrics to log
         step: Step to log at
         commit: Whether to commit the metrics. If None, uses the default for the tracker.
@@ -43,9 +43,10 @@ def jit_log_metrics(metrics, *, step=None):
 
 def log_summary(metrics: dict[str, Any]):
     """
-    Log summary metrics to the global tracker.
+     Log summary metrics to the global tracker.
 
-    :param metrics: Metrics to log
+    Args:
+         metrics: Metrics to log
     """
     global _global_tracker
     if _global_tracker is None:
@@ -71,14 +72,14 @@ def current_tracker(
     Get or set the global tracker. Note that setting the global tracker is not thread-safe,
     and using a tracker from multiple threads is only supported if the tracker itself is thread-safe.
 
-    Args
+    Args:
       tracker: If provided, returns a context manager that sets the global tracker to the provided tracker when used.
 
-    Returns
+    Returns:
         If no tracker is provided, returns the current global tracker.
         If a tracker is provided, returns a context manager that sets the global tracker to the provided tracker when used.
 
-    Examples
+    Examples:
         >>> from levanter.tracker import current_tracker, log_metrics
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
@@ -113,8 +114,18 @@ def get_tracker(name: str) -> Tracker:
     """
     Lookup a tracker in the current global tracker with the provided name.
 
-    :param name: Name of the tracker
-    :return: The tracker
+    Args:
+        name: Name of the tracker to lookup
+
+    Returns:
+        The tracker with the provided name
+
+    Examples:
+        >>> from levanter.tracker import get_tracker, log_metrics
+        >>> from levanter.tracker.wandb import WandbTracker
+        >>> with current_tracker(WandbTracker()):
+        ...     log_metrics({"foo": 1}, step=0)
+        ...     get_tracker("wandb").log_metrics({"foo": 2}, step=1)
     """
     tracker = current_tracker()
     if isinstance(tracker, CompositeTracker):
