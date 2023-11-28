@@ -10,7 +10,7 @@ model:
 trainer:
   tracker:
     project: "levanter"
-    tags: [ "openwebtext", "gpt2"]
+    tags: [ "openwebtext", "gpt2", "sophia-h"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
