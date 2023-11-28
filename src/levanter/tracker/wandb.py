@@ -105,7 +105,7 @@ class WandbConfig(TrackerConfig):
     save_xla_dumps: bool = False
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
-    def init(self, run_id: Optional[str], hparams=None) -> WandbTracker:
+    def init(self, run_id: Optional[str], hparams) -> WandbTracker:
         import wandb
 
         if run_id is not None and self.id is not None and run_id != self.id:

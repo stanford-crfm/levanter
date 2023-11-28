@@ -86,7 +86,7 @@ class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     discover_packages_path = "levanter.tracker"
 
     @abc.abstractmethod
-    def init(self, run_id: Optional[str], hparams=None) -> Tracker:
+    def init(self, run_id: Optional[str], hparams) -> Tracker:
         raise NotImplementedError
 
     @classmethod
@@ -113,5 +113,5 @@ class NoopTracker(Tracker):
 @TrackerConfig.register_subclass("noop")
 @dataclasses.dataclass
 class NoopConfig(TrackerConfig):
-    def init(self, run_id: Optional[str], hparams=None) -> Tracker:
+    def init(self, run_id: Optional[str], hparams) -> Tracker:
         return NoopTracker()

@@ -47,7 +47,7 @@ class TensorboardConfig(TrackerConfig):
     filename_suffix: Optional[str] = ""
     write_to_disk: Optional[bool] = True
 
-    def init(self, run_id: Optional[str], hparams=None) -> TensorboardTracker:
+    def init(self, run_id: Optional[str], hparams) -> TensorboardTracker:
         dir_to_write = self.logdir
         if run_id is not None:
             dir_to_write = os.path.join(dir_to_write, run_id)
