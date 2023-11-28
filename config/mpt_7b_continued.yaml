@@ -5,7 +5,6 @@ initialize_from_hf: true
 use_hf_model_config: true
 trainer:
   tracker:
-    type: wandb
     project: "levanter"
     tags: ["pile", "mpt"]
 

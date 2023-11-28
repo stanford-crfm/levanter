@@ -89,6 +89,10 @@ class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     def init(self, run_id: Optional[str], hparams=None) -> Tracker:
         raise NotImplementedError
 
+    @classmethod
+    def default_choice_name(cls) -> Optional[str]:
+        return "wandb"
+
 
 class NoopTracker(Tracker):
     name: str = "noop"

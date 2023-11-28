@@ -15,6 +15,26 @@ def test_tracker_plugin_stuff_works():
         TrackerConfig.get_choice_class("foo")
 
 
+def test_tracker_plugin_default_works():
+    config = """
+    tracker:
+        entity: foo
+    """
+    parsed = yaml.safe_load(config)
+
+    @dataclasses.dataclass
+    class ConfigHolder:
+        tracker: TrackerConfig
+
+    import draccus
+
+    tconfig = draccus.decode(ConfigHolder, parsed).tracker
+
+    assert isinstance(tconfig, TrackerConfig.get_choice_class("wandb"))
+
+    assert tconfig.entity == "foo"  # type: ignore
+
+
 def test_tracker_plugin_multi_parsing_work():
     config = """
     tracker:
