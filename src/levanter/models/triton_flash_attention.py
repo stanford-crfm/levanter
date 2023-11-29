@@ -13,7 +13,7 @@ import haliax as hax
 def triton_flash_attention(
     q: hax.NamedArray,
     k: hax.NamedArray,
-    v: hax.xNamedArray,
+    v: hax.NamedArray,
     softmax_scale: float = 1.0,
     causal: bool = True,
 ):
@@ -130,14 +130,15 @@ def _triton_flash_attention_backward(
     MMA_V3 = False
     seq_len_kv = k.shape["position"]
     d_out = d_out.contiguous()
-    out_shape = jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.dtype)
 
     # Create output objects
     dq = jnp.zeros_like(q, dtype=q.dtype)
     dk = jnp.empty_like(k)
     dv = jnp.empty_like(v)
     delta = jnp.empty_like(L)
+
     bwd_preprocess_grid = (cdiv(q.shape["position"], BLOCK) * q.shape["batch"] * q.shape["heads"],)
+    bwd_preprocess_out_shape = jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.dtype)
 
     jt.triton_call(
         out,
@@ -146,11 +147,16 @@ def _triton_flash_attention_backward(
         BLOCK_M=BLOCK,
         D_HEAD=Lk,
         kernel=_bwd_preprocess,
-        out_shape=out_shape,
+        out_shape=bwd_preprocess_out_shape,
         grid=bwd_preprocess_grid,
     )
 
     bwd_grid = (q.shape["batch"] * q.shape["heads"], 1)
+    bwd_out_shape = [
+        jax.ShapeDtypeStruct(shape=q.shape.values(), dtype=q.dtype),
+        jax.ShapeDtypeStruct(shape=k.shape.values(), dtype=q.dtype),
+        jax.ShapeDtypeStruct(shape=v.shape.values(), dtype=q.dtype),
+    ]
 
     jt.triton_call(
         q.array,
@@ -192,6 +198,7 @@ def _triton_flash_attention_backward(
         num_stages=1,
         kernel=_bwd_kernel,
         grid=bwd_grid,
+        out_shape=bwd_out_shape,
     )
 
     if len(dq.shape) == 5:

@@ -110,20 +110,30 @@ def _triton_flash_attention_forward(
     return hax.named(attn_output, q.axes)
 
 
-def _triton_flash_attention_backward(
-    d_out: NamedArray,
-):
-    outshape = jax.ShapeDtypeStruct(shape=d_out.shape.values(), dtype=d_out.dtype)
+# def _triton_flash_attention_backward(
+#     ignore,
+#     qkv,
+#     residuals,
+#     grad_in: hax.NamedArray,
+#     inference: bool,
+# ):
 
-    jax.debug.print("\n\nCALLING TRITON FLASH ATTEN BACKWARD\n\n")
-    backward_out = jt.triton_call(
-        do=d_out.array,
-        kernel=attention.backward,
-        out_shape=outshape,
-        grid=None,
-    )
-    return hax.named(backward_out, d_out.axes)
+#     del ignore
+#     O, L = residuals
+#     q, k, v = qkv
+#     # dO = grad_in
+
+#     outshape = jax.ShapeDtypeStruct(shape=d_out.shape.values(), dtype=d_out.dtype)
+
+#     jax.debug.print("\n\nCALLING TRITON FLASH ATTEN BACKWARD\n\n")
+#     backward_out = jt.triton_call(
+#         grad_in.array,
+#         kernel=attention.backward,
+#         out_shape=outshape,
+#         grid=None,
+#     )
+#     return hax.named(backward_out, grad_in.axes)
 
 
 _triton_flash_attention.def_fwd(_triton_flash_attention_forward)
-_triton_flash_attention.def_bwd(_triton_flash_attention_backward)
+# _triton_flash_attention.def_bwd(_triton_flash_attention_backward)
