@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import os
 import tempfile
 import typing
@@ -14,6 +15,9 @@ from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
+
+
+logger = logging.getLogger(__name__)
 
 
 _global_tracker: Optional["Tracker"] = None
@@ -42,9 +46,18 @@ def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optiona
         _global_tracker.log(metrics, step=step)
 
 
+def _no_throw_log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
+    try:
+        if _global_tracker is None:
+            raise RuntimeError("No global tracker set")
+        _global_tracker.log(metrics, step=step)
+    except Exception:
+        logger.exception("Error logging metrics")
+
+
 def jit_log_metrics(metrics, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
-    jax.debug.callback(log_metrics, metrics, step=step)
+    jax.debug.callback(_no_throw_log_metrics, metrics, step=step)
 
 
 def log_summary(metrics: dict[str, Any]):
