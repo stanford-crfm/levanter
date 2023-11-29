@@ -12,8 +12,6 @@ trainer:
     - type: wandb
       project: "levanter"
       tags: [ "openwebtext", "gpt2", "itest"]
-#    - type: tensorboard
-#      logdir: gs://levanter-checkpoints/tblogs/
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
