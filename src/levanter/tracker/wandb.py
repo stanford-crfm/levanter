@@ -1,4 +1,3 @@
-import dataclasses
 import logging
 import os
 import tempfile
@@ -7,13 +6,12 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
-import draccus
 import jax
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
-from levanter.tracker.helpers import generate_pip_freeze, hparams_to_dict, infer_experiment_git_root
+from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils import jax_utils
 
@@ -48,24 +46,16 @@ class WandbTracker(Tracker):
             self.run = run
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        if self.run is None:
-            raise RuntimeError("Must call init before logging hyperparameters")
         self.run.config.update(hparams)
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
-        if self.run is None:
-            raise RuntimeError("Must call init before logging metrics")
         self.run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
-        if self.run is None:
-            raise RuntimeError("Must call init before logging summary")
         self.run.summary.update(metrics)
 
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
-        if self.run is None:
-            raise RuntimeError("Must call init before logging artifacts")
-        self.run.log_artifact(artifact, name=name, type=type)
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
+        self.run.log_artifact(artifact_path, name=name, type=type)
 
 
 def is_wandb_available():
@@ -105,7 +95,7 @@ class WandbConfig(TrackerConfig):
     save_xla_dumps: bool = False
     """If True, will save the XLA code to wandb (as configured by XLA_FLAGS). This is useful for debugging."""
 
-    def init(self, run_id: Optional[str], hparams) -> WandbTracker:
+    def init(self, run_id: Optional[str]) -> WandbTracker:
         import wandb
 
         if run_id is not None and self.id is not None and run_id != self.id:
@@ -118,7 +108,7 @@ class WandbConfig(TrackerConfig):
         if id is None:
             id = run_id
 
-        hparams_to_save = hparams_to_dict(hparams)
+        hparams_to_save = {}
 
         # for distributed runs, we only want the primary worker to use wandb, so we make everyone else be disabled
         # however, we do share information about the run id, so that we can link to it from the other workers
@@ -167,14 +157,6 @@ class WandbConfig(TrackerConfig):
                     setattr(r, k, v)
 
             logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
-
-        if dataclasses.is_dataclass(hparams):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                config_path = os.path.join(tmpdir, "config.yaml")
-                with open(config_path, "w") as f:
-                    draccus.dump(hparams, f, encoding="utf-8")
-                if wandb.run is not None:
-                    wandb.run.log_artifact(str(config_path), name="config.yaml", type="config")
 
         # generate a pip freeze
         with tempfile.TemporaryDirectory() as tmpdir:

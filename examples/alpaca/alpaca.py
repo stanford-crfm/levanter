@@ -182,7 +182,7 @@ def get_prompts(prompt_path):
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.

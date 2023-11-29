@@ -43,7 +43,7 @@ class Tracker(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
 
     def __enter__(self):
@@ -77,16 +77,16 @@ class CompositeTracker(Tracker):
         for tracker in self.loggers:
             tracker.log_summary(metrics)
 
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         for tracker in self.loggers:
-            tracker.log_artifact(artifact, name=name, type=type)
+            tracker.log_artifact(artifact_path, name=name, type=type)
 
 
 class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     discover_packages_path = "levanter.tracker"
 
     @abc.abstractmethod
-    def init(self, run_id: Optional[str], hparams) -> Tracker:
+    def init(self, run_id: Optional[str]) -> Tracker:
         raise NotImplementedError
 
     @classmethod
@@ -106,12 +106,12 @@ class NoopTracker(Tracker):
     def log_summary(self, metrics: dict[str, Any]):
         pass
 
-    def log_artifact(self, artifact, *, name: Optional[str] = None, type: Optional[str] = None):
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
 
 
 @TrackerConfig.register_subclass("noop")
 @dataclasses.dataclass
 class NoopConfig(TrackerConfig):
-    def init(self, run_id: Optional[str], hparams) -> Tracker:
+    def init(self, run_id: Optional[str]) -> Tracker:
         return NoopTracker()
