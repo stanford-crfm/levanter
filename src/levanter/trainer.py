@@ -10,7 +10,21 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import equinox as eqx
 import jax
@@ -153,10 +167,7 @@ class Trainer:
         self.config = config
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
-        if isinstance(config.tracker, Sequence):
-            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
-        else:
-            self.tracker = config.tracker.init(self.run_id)
+
         self._cmanagers = []
 
         if add_default_hooks:
@@ -224,7 +235,7 @@ class Trainer:
 
     def __enter__(self):
         this_managers = [
-            levanter.current_tracker(self.tracker),
+            # levanter.current_tracker(self.tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
@@ -282,31 +293,31 @@ class Trainer:
             if load_checkpoint_path is None:
                 load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-            # if we're loading a checkpoint, we need to know which parameters are trainable
-            is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable)  # type: ignore
+        # if we're loading a checkpoint, we need to know which parameters are trainable
+        is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable)  # type: ignore
 
-            assert model_init is not None
+        assert model_init is not None
 
-            state = load_from_checkpoint_or_initialize(
-                self._initialize_state_from_scratch,
-                load_checkpoint_path,
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-                force_load_checkpoint=self.config.load_checkpoint,
-                is_checkpointed=is_checkpointed,
-            )(
-                model_init,
-                training_key,
-                is_trainable,
-            )
+        state = load_from_checkpoint_or_initialize(
+            self._initialize_state_from_scratch,
+            load_checkpoint_path,
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
+            force_load_checkpoint=self.config.load_checkpoint,
+            is_checkpointed=is_checkpointed,
+        )(
+            model_init,
+            training_key,
+            is_trainable,
+        )
 
-            return state
+        return state
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
-        with capture_time() as step_time, levanter.current_tracker(self.tracker):
+        with capture_time() as step_time:
             loss, new_state = self._train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
@@ -320,23 +331,23 @@ class Trainer:
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
-        with levanter.current_tracker(self.tracker):
-            while state.step < self.config.num_train_steps:
-                with capture_time() as loading_time:
-                    example = next(iter_data)
+        # with levanter.current_tracker(self.tracker):
+        while state.step < self.config.num_train_steps:
+            with capture_time() as loading_time:
+                example = next(iter_data)
 
-                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
-                info = self.train_step(state, example)
-                state = info.state
+            info = self.train_step(state, example)
+            state = info.state
 
-                if run_hooks:
-                    with capture_time() as hook_time:
-                        self.run_hooks(info)
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
 
-                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
-                yield info
+            yield info
 
     def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
@@ -461,6 +472,15 @@ class Trainer:
         return non_trainable
 
 
+def _initialize_global_tracker(config, run_id):
+    if isinstance(config, Sequence):
+        tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
+    else:
+        tracker = config.init(run_id)
+
+    levanter.tracker.set_global_tracker(tracker)
+
+
 @dataclass
 class TrainerConfig:
     seed: int = 0  # random seed
@@ -532,21 +552,24 @@ class TrainerConfig:
             warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
             self.tracker = self.wandb
 
-    def initialize(self, all_config):
+    def initialize(self):
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         self.distributed.initialize()
         self._validate_and_set_defaults()
 
-        self._maybe_set_id()
-        self._initialize_logging()
+        id = self._maybe_set_id()
+        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        _initialize_global_tracker(self.tracker, id)
+
         self.ray.initialize()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
 
         if self.require_accelerator:
-            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+            if jax.default_backend() == "cpu":
+                raise RuntimeError("No accelerator found. Please run on a TPU or GPU.")
 
         if self.shutdown_at_exit is not False:
             if isinstance(self.shutdown_at_exit, bool):
@@ -605,10 +628,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logging(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -631,6 +650,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -657,6 +678,22 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+
+class AllConfig(Protocol):
+    trainer: TrainerConfig
+
+
+def initialize(config: TrainerConfig | AllConfig):
+    """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
+    as hyperparameters and an artifact"""
+    if isinstance(config, TrainerConfig):
+        trainer_config = config
+    else:
+        trainer_config = config.trainer
+
+    trainer_config.initialize()
+    levanter.tracker.log_configuration(config)
 
 
 @dataclass
