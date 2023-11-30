@@ -274,7 +274,7 @@ class DistributedConfig:
             logger.info(
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
                 f" coordinator_address={coordinator_address}, process_id={self.process_id}, my"
-                f" device_ids={device_ids}.All devices: {jax.devices()}."
+                f" device_ids={device_ids}."
             )
         else:
             logger.info(
