@@ -19,6 +19,5 @@ trainer:
   model_axis_size: 1
 
 optimizer:
-  type: adam
   learning_rate: 6E-4
   weight_decay: 0.1

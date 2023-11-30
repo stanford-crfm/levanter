@@ -21,6 +21,5 @@ trainer:
   num_train_steps: 10000
   steps_per_eval: 500
 optimizer:
-  type: adam
   learning_rate: 1.2e-4
   weight_decay: 0.0

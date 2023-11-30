@@ -24,7 +24,6 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  type: adam
   learning_rate: 1.2E-5  # set low for fine-tuning
   weight_decay: 0.1
   min_lr_ratio: 0.1
