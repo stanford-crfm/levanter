@@ -327,7 +327,15 @@ class _ShardWriter:
 
 
 def _produce_chunks_for_shard(
-    sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
+    sink,
+    cache_dir,
+    shard_writer,
+    source,
+    priority_fn,
+    shard_idx,
+    processor: BatchProcessor,
+    process_queue,
+    rows_per_chunk,
 ):
     shard_name = source.shard_names[shard_idx]
     total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)

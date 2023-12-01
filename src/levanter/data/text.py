@@ -396,6 +396,10 @@ class BatchTokenizer(BatchProcessor[str]):
             return self.override_resources.get("num_gpus", 0)
         return 0
 
+    @property
+    def batch_size(self) -> int:
+        return 1024
+
 
 def concatenate_and_group_texts(
     encoding: BatchEncoding,
