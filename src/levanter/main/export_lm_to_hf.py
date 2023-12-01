@@ -14,7 +14,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.jax_utils import is_inexact_arrayish, use_cpu_device
 
 
 logger = logging.getLogger(__name__)
@@ -49,11 +49,13 @@ def main(config: ConvertLmConfig):
 
     with use_cpu_device(), Mesh([jax.local_devices(backend="cpu")[0]], "dev"):
         model: LmHeadModel = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+        trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
         # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-        ckpt = load_checkpoint(model, None, config.checkpoint_path)
+        ckpt = load_checkpoint(trainable, None, config.checkpoint_path)
 
         assert ckpt is not None
-        model, _, _ = ckpt
+        trainable, _, _ = ckpt
+        model = eqx.combine(trainable, non_trainable)
 
         if config.override_vocab_size:
             model = model.resize_vocab(config.override_vocab_size)

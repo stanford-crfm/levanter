@@ -81,13 +81,13 @@ nav:
   - 'Installation and Setup':
       - 'Installation.md'
       - 'Getting-Started-TPU-VM.md'
-      - 'Getting-Started-CUDA.md'
+      - 'Getting-Started-GPU.md'
   - 'User Guide':
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
-      - "Replicating-Alpaca.md"
-      - "Alpaca-LoRA.md"
+      - "Fine-Tuning.md"
+      - "LoRA.md"
   - 'Developer Guide':
       - 'Port-Models.md'
   - Other:

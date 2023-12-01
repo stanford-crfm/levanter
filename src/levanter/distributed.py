@@ -1,14 +1,14 @@
 import atexit
+import itertools
 import logging
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
 import jax
 import ray
-from jax._src import clusters
+from jax._src import clusters, distributed
 from jax._src.clusters import SlurmCluster, TpuCluster
 
 from levanter.utils.py_utils import logical_cpu_core_count
@@ -25,7 +25,7 @@ _LOCAL_PROCESS_ID = "SLURM_LOCALID"
 _NUM_NODES = "SLURM_STEP_NUM_NODES"
 _TASKS_PER_NODE = "SLURM_STEP_TASKS_PER_NODE"
 _VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
-_NODE_NAME = "SLURM_TOPOLOGY_ADDR"
+_NODE_NAME = "SLURMD_NODENAME"
 
 
 class LevanterSlurmCluster(clusters.SlurmCluster):
@@ -97,18 +97,14 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # now we can figure out which node we are on. This is also annoying because the node list
         # is a comma separated list of nodes, but they collapse the list if there are multiple nodes
         # with the same name e.g. node001,node002,node003,node004,node007 -> node[001-004,007]
-        # thankfully slurm exposes a command to expand this list for us
+        #  slurm exposes a command to expand this list for us, but it's not always available
         node_list = LevanterSlurmCluster._node_list()
         if node_list is None:
             raise ValueError(
                 "Could not find node list in environment variables. You must set coordinator_address manually."
             )
 
-        node_list = (
-            subprocess.check_output(["scontrol", "show", "hostnames", node_list], input=b"")
-            .decode("utf-8")
-            .splitlines()
-        )
+        node_list = _square_brace_expand(node_list)
 
         # finally, we can figure out which node we are on
         local_node = os.environ[_NODE_NAME]
@@ -131,6 +127,38 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # select contiguous devices for this process
         begin = local_process_id * num_devices_per_local_process
         return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+
+def _square_brace_expand(node_list):
+    # Find all parts of the sequence including text and number ranges
+    parts = re.findall(r"(\[.*?\]|[^\[\]]+)", node_list)
+
+    # This function will generate numbers from a range or a single number string
+    def generate_numbers(number_string):
+        if "-" in number_string:  # it's a range
+            start, end = map(int, number_string.split("-"))
+            return [str(i).zfill(len(number_string.split("-")[0])) for i in range(start, end + 1)]
+        else:  # it's a single number
+            return [number_string]
+
+    # This function will process each part and return a list of strings or a list of lists of strings
+    # Process each part to create lists of possible variations
+    processed_parts = []
+    for part in parts:
+        if part.startswith("[") and part.endswith("]"):
+            # Extract the number sequences and expand each one
+            number_sequences = part.strip("[]").split(",")
+            processed_parts.append(
+                list(itertools.chain.from_iterable(generate_numbers(seq) for seq in number_sequences))
+            )
+        else:
+            processed_parts.append([part])
+
+    # Compute the Cartesian product of all parts to generate all combinations
+    expanded_nodes = ["".join(combination) for combination in itertools.product(*processed_parts)]
+
+    # Join the nodes with commas
+    return expanded_nodes
 
 
 def _choose_port(id):
@@ -172,31 +200,22 @@ def auto_ray_cluster(
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
         else:
-            cluster_types = [LevanterSlurmCluster, TpuCluster]
-            found = False
-            for cluster_type in cluster_types:
-                if cluster_type.is_env_present():
-                    found = True
-                    break
+            coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
-            if not found:
+            if coord_address is None:
                 logger.info("No auto-discovered ray address found. Using default ray.init()")
                 address = None
             else:
-                logger.info(f"Auto-discovered ray address using {cluster_type.__name__}")
-
-                coord_address = cluster_type.get_coordinator_address()
+                logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
 
                 ray_port = _choose_port(port + 10234)
                 address = f"{host}:{ray_port}"
 
                 # Explicitly setting the number of CPUs on ray init stops init errors
-                num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
-                if num_cpus is None:
-                    num_cpus = logical_cpu_core_count()
+                num_cpus = logical_cpu_core_count()
 
-                if cluster_type.get_process_id() == 0:
+                if jax.process_index() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
@@ -204,13 +223,12 @@ def auto_ray_cluster(
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
                     logger.info(
-                        f"Starting ray worker and connecting to {address}."
-                        f" We are process {cluster_type.get_process_id()}."
+                        f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
                     )
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     os.system(f"ray start --address {address} --num-cpus {num_cpus}")
 
-    logger.info(f"ray.init(address='{address}', **{kwargs})")
+    logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
     ray.init(address=address, namespace=namespace, **kwargs)
     atexit.register(lambda: ray.shutdown())
@@ -254,8 +272,14 @@ class DistributedConfig:
 
             jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
             logger.info(
-                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
-                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
+                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
+                f" coordinator_address={coordinator_address}, process_id={self.process_id}, my"
+                f" device_ids={device_ids}."
+            )
+        else:
+            logger.info(
+                "Not initializing jax.distributed because no distributed config "
+                "was provided, and no cluster was detected."
             )
 
 

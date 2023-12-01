@@ -8,8 +8,9 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data.shard_cache import BatchProcessor, ChunkMetadata, _get_broker_actor, build_cache
-from levanter.data.shard_source import ShardedDataSource
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_cache
+from levanter.data.sharded_dataset import ShardedDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -41,7 +42,7 @@ class TestProcessor(BatchProcessor[Sequence[int]]):
         return 1
 
 
-class SimpleShardSource(ShardedDataSource[List[int]]):
+class SimpleShardSource(ShardedDataset[List[int]]):
     def __init__(self, num_shards: int = 4):
         self._num_shards = num_shards
 
@@ -103,7 +104,7 @@ class _CustomException(Exception):
 
 
 def test_cache_recover_from_crash():
-    class CrashingShardSource(ShardedDataSource[List[int]]):
+    class CrashingShardSource(ShardedDataset[List[int]]):
         def __init__(self, crash_point: int):
             self.crash_point = crash_point
 
@@ -146,7 +147,7 @@ def test_cache_recover_from_crash():
 
 
 def test_no_hang_if_empty_shard_source():
-    class EmptyShardSource(ShardedDataSource[List[int]]):
+    class EmptyShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return []
@@ -173,7 +174,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
 
     blocker_to_wait_on_test = Blocker.remote()
 
-    class SlowShardSource(ShardedDataSource[List[int]]):
+    class SlowShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0", "shard_1"]
@@ -239,7 +240,7 @@ def test_can_get_chunk_before_finished():
 
     blocker_to_wait_on_test = Blocker.remote()
 
-    class SlowShardSource(ShardedDataSource[List[int]]):
+    class SlowShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0"]
@@ -292,3 +293,49 @@ def test_shard_cache_crashes_if_processor_throws():
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(RuntimeError):
             build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
+
+
+def test_map_batches_and_map_shard_cache():
+    td = tempfile.TemporaryDirectory()
+    with td as tmpdir:
+        ray_ds = (
+            SimpleShardSource()
+            .map(lambda list: list * 2)
+            .map_batches(TestProcessor(), 8)
+            .map(lambda d: {"q": d["test"]})
+            .build_cache(tmpdir, await_finished=True)
+        )
+
+        def composite_fn(list):
+            assert len(list) == 1
+            return {"q": list[0] * 2}
+
+        simple_processed = simple_process(composite_fn, SimpleShardSource())
+
+        # we internally change all the int lists in the ray_ds to np arrays, so we need to convert them back to lists
+        ray_entries = []
+        for entry in ray_ds:
+            assert entry.keys() == {"q"}
+            ray_entries.append({"q": entry["q"].tolist()})
+
+        assert ray_entries == list(simple_processed)
+
+
+def test_serial_cache_writer():
+    with tempfile.TemporaryDirectory() as tmpdir1, tempfile.TemporaryDirectory() as tmpdir2:
+        source = SimpleShardSource(num_shards=4)
+        processor = TestProcessor()
+
+        with SerialCacheWriter(tmpdir1, rows_per_chunk=8) as writer:
+            for shard_name in source.shard_names:
+                for batch in source.open_shard(shard_name):
+                    writer.write_batch(processor([batch]))
+
+        serial = writer.result(batch_size=1)
+        ray_ds = build_cache(tmpdir2, source, processor, await_finished=True)
+
+        def freeze_batch(batch):
+            # make it hashable
+            return tuple(batch["test"].values.to_numpy())
+
+        assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)

@@ -26,7 +26,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
@@ -55,7 +55,11 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+
+    # Attention-related config
     upcast_attn: bool = False
+    use_flash_attention: bool = False
+    flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
@@ -273,7 +277,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "heads", "position", "head_size"))
 
-        cos, sin = self.rotary_emb(seq_len=self.config.seq_len)
+        cos, sin = self.rotary_emb(seq_len=x.axis_size("position"))
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
@@ -284,9 +288,19 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         v = v.rename({"position": "key_position"})
 
         c = self.config
-        if isinstance(mask, AttentionMask):
-            mask = mask.materialize()
-        attn_output = hnn.attention.dot_product_attention(c.Pos, c.KeyPos, c.HeadSize, q, k, v, mask)
+        attn_output = dot_product_attention(
+            "position",
+            "key_position",
+            "head_size",
+            q,
+            k,
+            v,
+            mask,
+            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+            use_flash=c.use_flash_attention,
+            flash_block_size=c.flash_attention_block_size,
+        )
+
         if self.config.upcast_attn:
             attn_output = attn_output.astype(x.dtype)
 

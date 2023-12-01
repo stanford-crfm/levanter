@@ -6,7 +6,9 @@
 <a href="https://levanter.readthedocs.io/en/latest/?badge=latest">
     <img alt="Documentation Status" src="https://readthedocs.org/projects/levanter/badge/?version=latest">
 </a>
+<a href="">
 <img alt="License" src="https://img.shields.io/github/license/stanford-crfm/levanter?color=blue" />
+</a>
 <a href="https://https://pypi.org/project/levanter/">
     <img alt="PyPI" src="https://img.shields.io/pypi/v/levanter?color=blue" />
 </a>
@@ -89,7 +91,7 @@ cd ../levanter
 
 Please refer to the [Installation Guide](docs/Installation.md) for more information on how to install Levanter.
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-GPU.md).
 
 <!--levanter-user-guide-start-->
 
@@ -189,7 +191,7 @@ Please see the [TPU Getting Started](docs/Getting-Started-TPU-VM.md) guide for m
 
 ### Training with CUDA
 
-Please see the [CUDA Getting Started](docs/Getting-Started-CUDA.md) guide for more information on how to set up a CUDA environment and run Levanter there.
+Please see the [CUDA Getting Started](docs/Getting-Started-GPU.md) guide for more information on how to set up a CUDA environment and run Levanter there.
 
 <!--levanter-user-guide-end-->
 
