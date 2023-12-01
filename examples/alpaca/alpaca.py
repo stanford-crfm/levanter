@@ -181,7 +181,7 @@ def get_prompts(prompt_path):
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -217,9 +217,7 @@ def train(config: TrainArgs):
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
         return model.compute_loss(example, key=key).scalar()
 
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
-
-    with trainer.device_mesh:
+    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 

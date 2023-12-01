@@ -287,7 +287,7 @@ model:
   num_layers: 2
 ```
 
-For more details on the training configuration, please refer to [Configuration Guide](./Configuration-Guide.md).
+For more details on the training configuration, please refer to [Configuration Guide](../Configuration-Guide.md).
 
 ### Launch Training Job
 Once you have your training configuration ready and your training environment set up, you can launch a training job with the following command:
@@ -299,7 +299,7 @@ HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
 python levanter/src/levanter/main/train_lm.py --config_path $CONFIG_PATH
 ```
 
-Check out [Training on Your Own Data](./Training-On-Your-Data.md) for more detailed guide on how to spin off a training cluster and launch a training job.
+Check out [Training on Your Own Data](../Training-On-Your-Data.md) for more detailed guide on how to spin off a training cluster and launch a training job.
 
 ### Profile Your Model
 If you are interested in profiling the training throughput of your model, good news is that it comes for free with automatic job monitoring in Levanter, powered through Weights & Biases.
