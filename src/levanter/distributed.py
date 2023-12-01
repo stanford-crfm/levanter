@@ -203,8 +203,8 @@ def auto_ray_cluster(
             coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
             if coord_address is None:
-                logger.info("No auto-discovered ray address found. Using default ray.init()")
-                address = None
+                logger.info("No auto-discovered ray address found. Using ray.init('local').")
+                address = "local"
             else:
                 logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
