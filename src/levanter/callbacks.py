@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+    print(model.embeddings.dropout.inference)
     total_loss = 0.0
     n = 0
 
