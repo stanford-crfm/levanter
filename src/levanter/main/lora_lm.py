@@ -107,7 +107,7 @@ def main(config: LoraLmConfig):
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
         # data loaders
-        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
+        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)  # type: ignore
 
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
