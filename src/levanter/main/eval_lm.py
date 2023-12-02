@@ -55,7 +55,7 @@ def main(config: EvalLmConfig):
         if validation_set is None:
             raise ValueError("Can't eval on validation_set b/c there isn't one!")
 
-        raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)
+        raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
