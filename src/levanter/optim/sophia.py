@@ -148,11 +148,13 @@ class BaseSophiaConfig(HessianOptConfig):
             return optimizer
 
         # Hong suggested using cosine decay for gamma
-        gamma_decay_schedule = optax.cosine_decay_schedule(self.gamma, num_train_steps // 2, 0)  # type: ignore
+        # gamma_decay_schedule = optax.cosine_decay_schedule(self.gamma, num_train_steps // 2, 0)  # type: ignore
         constant_gamma_schedule = optax.constant_schedule(self.gamma)  # type: ignore
-        gamma_schedule = optax.join_schedules([constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2])
+        # gamma_schedule = optax.join_schedules([constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2])
 
-        return inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps), gamma=gamma_schedule)
+        return inject_hyperparams(_optimizer)(
+            learning_rate=self.lr_scheduler(num_train_steps), gamma=constant_gamma_schedule
+        )
 
 
 @OptimizerConfig.register_subclass("sophia-g")

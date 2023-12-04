@@ -31,7 +31,7 @@ class SecondOrderTransformation(NamedTuple):
 
     init: optax.TransformInitFn
     update: optax.TransformUpdateFn
-    hessian_update: HessianUpdateFn
+    update_hessian: HessianUpdateFn
 
 
 AnySecondOrderTransformation = Union[SecondOrderTransformation, optax.GradientTransformation]
@@ -45,17 +45,17 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
 
     init_fns = []
     update_fns = []
-    hessian_update_fns: List[Optional[HessianUpdateFn]] = []
+    update_hessian_fns: List[Optional[HessianUpdateFn]] = []
 
     for arg in args:
         if isinstance(arg, SecondOrderTransformation):
             init_fns.append(arg.init)
             update_fns.append(arg.update)
-            hessian_update_fns.append(arg.hessian_update)
+            update_hessian_fns.append(arg.update_hessian)
         else:
             init_fns.append(arg.init)
             update_fns.append(arg.update)
-            hessian_update_fns.append(None)
+            update_hessian_fns.append(None)
 
     def init_fn(params):
         return tuple(fn(params) for fn in init_fns)
@@ -72,14 +72,14 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             new_state.append(new_s)
         return updates, tuple(new_state)
 
-    def hessian_update_fn(state, fn, model, *batch, **batch_kwargs):
-        if len(hessian_update_fns) != len(state):
+    def update_hessian_fn(state, fn, model, *batch, **batch_kwargs):
+        if len(update_hessian_fns) != len(state):
             raise ValueError(
                 "The number of updates and states has to be the same in chain! Make sure you have called init first!"
             )
 
         new_state = []
-        for s, update_fn in zip(state, hessian_update_fns):
+        for s, update_fn in zip(state, update_hessian_fns):
             if update_fn is None:
                 new_state.append(s)
             else:
@@ -87,7 +87,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
                 new_state.append(new_s)
         return tuple(new_state)
 
-    return SecondOrderTransformation(init_fn, update_fn, hessian_update_fn)
+    return SecondOrderTransformation(init_fn, update_fn, update_hessian_fn)
 
 
 def inject_hyperparams(
@@ -172,7 +172,7 @@ def inject_hyperparams(
         def init_fn(params):
             count = jnp.zeros([], jnp.int32)
             if hyperparam_dtype is None:
-                dtype = getattr(next(iter(jax.tree_util.tree_leaves(params)), None), "dtype", None)
+                dtype = _find_first_floating_dtype(numeric_hps)
             else:
                 dtype = hyperparam_dtype
             hparams = {k: jnp.asarray(_convert_floats(v, dtype)) for k, v in numeric_hps.items()}
@@ -183,7 +183,7 @@ def inject_hyperparams(
 
         def update_fn(updates, state, params=None):
             if hyperparam_dtype is None:
-                dtype = getattr(next(iter(jax.tree_util.tree_leaves(updates)), None), "dtype", None)
+                dtype = _find_first_floating_dtype(updates)
             else:
                 dtype = hyperparam_dtype
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
@@ -195,14 +195,23 @@ def inject_hyperparams(
             return updates, InjectHyperparamsState(count_inc, hparams, inner_state)
             # pylint:enable=too-many-function-args
 
+        def _find_first_floating_dtype(updates):
+            dtype = jnp.float32
+            for v in jax.tree_util.tree_leaves(updates):
+                if isinstance(v, jnp.ndarray):
+                    if isinstance(v.dtype, jnp.floating):
+                        dtype = v.dtype
+                        break
+            return dtype
+
         def update_hessian(state, fn, model, *batch, **batch_kwargs):
             if hyperparam_dtype is None:
-                dtype = getattr(next(iter(jax.tree_util.tree_leaves(state)), None), "dtype", None)
+                dtype = _find_first_floating_dtype(batch)
             else:
                 dtype = hyperparam_dtype
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
             hparams.update(schedule_fn(state.count, dtype))
-            new_inner_state = inner_factory(**other_hps, **hparams).hessian_update(
+            new_inner_state = inner_factory(**other_hps, **hparams).update_hessian(
                 state.inner_state,
                 fn,
                 model,
