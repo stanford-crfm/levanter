@@ -5,21 +5,10 @@ from typing import Callable, Iterable, List, NamedTuple, Optional, Union
 
 import chex
 import jax
-import jaxtyping
 import optax
 from jax import numpy as jnp
-from jax._src.random import PRNGKey
 from optax._src import numerics
 from optax._src.schedule import InjectHyperparamsState, _convert_floats
-
-
-class ScaleByHessianState(NamedTuple):
-    """State for Sophia and similar."""
-
-    count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
-    hessian_count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
-    mu: optax.Updates  # momentum
-    h: optax.Updates  # EMA of hessian diagonal
 
 
 class HessianUpdateFn(typing.Protocol):
@@ -31,7 +20,6 @@ class HessianUpdateFn(typing.Protocol):
         fn,
         model,
         *batch,
-        hess_key: PRNGKey,
         **batch_kwargs,
     ) -> optax.OptState:
         """Returns the updated `state` given the `hessian` and `state`."""
@@ -84,7 +72,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             new_state.append(new_s)
         return updates, tuple(new_state)
 
-    def hessian_update_fn(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def hessian_update_fn(state, fn, model, *batch, **batch_kwargs):
         if len(hessian_update_fns) != len(state):
             raise ValueError(
                 "The number of updates and states has to be the same in chain! Make sure you have called init first!"
@@ -95,7 +83,7 @@ def chain_second_order(*args: AnySecondOrderTransformation) -> SecondOrderTransf
             if update_fn is None:
                 new_state.append(s)
             else:
-                new_s = update_fn(s, fn, model, *batch, hess_key=hess_key, **batch_kwargs)
+                new_s = update_fn(s, fn, model, *batch, **batch_kwargs)
                 new_state.append(new_s)
         return tuple(new_state)
 
@@ -207,7 +195,7 @@ def inject_hyperparams(
             return updates, InjectHyperparamsState(count_inc, hparams, inner_state)
             # pylint:enable=too-many-function-args
 
-        def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+        def update_hessian(state, fn, model, *batch, **batch_kwargs):
             if hyperparam_dtype is None:
                 dtype = getattr(next(iter(jax.tree_util.tree_leaves(state)), None), "dtype", None)
             else:
@@ -219,7 +207,6 @@ def inject_hyperparams(
                 fn,
                 model,
                 *batch,
-                hess_key=hess_key,
                 **batch_kwargs,
             )
 

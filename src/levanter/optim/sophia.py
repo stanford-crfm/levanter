@@ -1,13 +1,15 @@
 import abc
 import typing
 from dataclasses import dataclass
-from typing import Any, Optional, TypeVar, runtime_checkable
+from typing import Any, NamedTuple, Optional, TypeVar, runtime_checkable
 
 import equinox as eqx
 import jax
+import jaxtyping
 import optax
 from jax import numpy as jnp
 from jax.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 
 # TODO: remove dependency on _src internals
 from optax._src import numerics
@@ -15,12 +17,7 @@ from optax._src.transform import bias_correction, update_moment
 
 import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
-from levanter.optim.second_order import (
-    ScaleByHessianState,
-    SecondOrderTransformation,
-    chain_second_order,
-    inject_hyperparams,
-)
+from levanter.optim.second_order import SecondOrderTransformation, chain_second_order, inject_hyperparams
 from levanter.optim.util import hvp, tree_gaussian
 from levanter.utils.jax_utils import parameter_count
 
@@ -30,6 +27,16 @@ Ex = TypeVar("Ex")
 
 GAMMA_SOPHIA_G = 0.05
 GAMMA_SOPHIA_H = 0.01
+
+
+class ScaleBySophiaState(NamedTuple):
+    """State for Sophia and similar."""
+
+    count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
+    hessian_count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
+    mu: optax.Updates  # momentum
+    h: optax.Updates  # EMA of hessian diagonal
+    hess_key: PRNGKey
 
 
 @runtime_checkable
@@ -97,6 +104,7 @@ class BaseSophiaConfig(HessianOptConfig):
 
     epsilon: float = 1e-12
     clip_threshold: Optional[float] = 1.0
+    rng_seed: int = 0
 
     @abc.abstractmethod
     def compute_hessian(
@@ -112,6 +120,7 @@ class BaseSophiaConfig(HessianOptConfig):
     def build(self, num_train_steps: int):
         def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
             components = []
+            key = jax.random.PRNGKey(self.rng_seed)
 
             components.append(
                 _sophia_gradient_transform(
@@ -121,6 +130,7 @@ class BaseSophiaConfig(HessianOptConfig):
                     b2=self.beta2,
                     eps=self.epsilon,
                     gamma=gamma,
+                    initial_key=key,
                     clip_threshold=self.clip_threshold,
                 )
             )
@@ -173,11 +183,12 @@ def sophia_h(
     weight_decay: float = 0.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
+    key: PRNGKey,
 ) -> SecondOrderTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
 
-    components.append(scale_by_sophia_h(b1, b2, eps, gamma, clip_threshold, update_interval))
+    components.append(scale_by_sophia_h(b1, b2, eps, gamma, clip_threshold, update_interval, key=key))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -188,7 +199,14 @@ def sophia_h(
 
 
 def scale_by_sophia_h(
-    b1=0.965, b2=0.99, eps=1e-8, gamma=GAMMA_SOPHIA_H, clip_threshold: Optional[float] = 1.0, update_interval=10
+    b1=0.965,
+    b2=0.99,
+    eps=1e-8,
+    gamma=GAMMA_SOPHIA_H,
+    clip_threshold: Optional[float] = 1.0,
+    update_interval=10,
+    *,
+    key: PRNGKey,
 ):
 
     return _sophia_gradient_transform(
@@ -199,6 +217,7 @@ def scale_by_sophia_h(
         eps=eps,
         gamma=gamma,
         clip_threshold=clip_threshold,
+        initial_key=key,
     )
 
 
@@ -212,11 +231,12 @@ def sophia_g(
     weight_decay: float = 0.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
+    key: PRNGKey,
 ) -> SecondOrderTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
 
-    components.append(scale_by_sophia_g(b1, b2, eps, gamma, clip_threshold, update_interval))
+    components.append(scale_by_sophia_g(b1, b2, eps, gamma, clip_threshold, update_interval, key=key))
 
     if weight_decay > 0:
         components.append(optax.add_decayed_weights(weight_decay))
@@ -233,6 +253,8 @@ def scale_by_sophia_g(
     gamma: float = GAMMA_SOPHIA_G,
     clip_threshold: Optional[float] = 1.0,
     update_interval=10,
+    *,
+    key: PRNGKeyArray,
 ):
 
     return _sophia_gradient_transform(
@@ -243,6 +265,7 @@ def scale_by_sophia_g(
         eps=eps,
         gamma=gamma,
         clip_threshold=clip_threshold,
+        initial_key=key,
     )
 
 
@@ -254,6 +277,7 @@ def _sophia_gradient_transform(
     eps: float,
     gamma: float,
     clip_threshold: Optional[float],
+    initial_key: PRNGKeyArray,
     mu_dtype: Optional[Any] = None,
 ) -> SecondOrderTransformation:
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
@@ -261,7 +285,9 @@ def _sophia_gradient_transform(
     def init_fn(params):
         mu = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)  # First moment
         h = jax.tree_util.tree_map(jnp.zeros_like, params)  # Second moment
-        return ScaleByHessianState(count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), mu=mu, h=h)
+        return ScaleBySophiaState(
+            count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), mu=mu, h=h, hess_key=initial_key
+        )
 
     def update_fn(updates, state, params=None):
         mu = update_moment(updates, state.mu, b1, 1)
@@ -299,17 +325,22 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
 
-        return updates, ScaleByHessianState(count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat)
+        return updates, ScaleBySophiaState(
+            count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat, hess_key=state.hess_key
+        )
 
-    def update_hessian(state, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def update_hessian(state, fn, model, *batch, **batch_kwargs):
         def _do_update():
-            new_hess = sophia_hess_fn(fn, model, *batch, hess_key=hess_key, **batch_kwargs)
+            key, next_key = jax.random.split(state.hess_key)
+            new_hess = sophia_hess_fn(fn, model, *batch, hess_key=key, **batch_kwargs)
             # new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -1, 1), new_hess)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
             nu = update_moment(new_hess, state.h, b2, 1)
-            return ScaleByHessianState(count=state.count, hessian_count=hessian_count_inc, mu=state.mu, h=nu)
+            return ScaleBySophiaState(
+                count=state.count, hessian_count=hessian_count_inc, mu=state.mu, h=nu, hess_key=next_key
+            )
 
         def _dont_update():
             return state

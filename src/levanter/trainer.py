@@ -50,6 +50,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time
+from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
@@ -427,6 +428,12 @@ class Trainer:
             )(trainable_model, *batch, **batch_kwargs)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+
+            if isinstance(self.optimizer, SecondOrderTransformation):
+                opt_state = self.optimizer.hessian_update(
+                    opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
+                )
+
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
