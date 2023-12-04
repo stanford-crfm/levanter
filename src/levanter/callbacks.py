@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, Protocol
 
 import humanfriendly
 import jax
@@ -23,6 +23,8 @@ from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
 logger = pylogging.getLogger(__name__)
+
+
 
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):

@@ -107,6 +107,19 @@ class _Hook:
     every: int
 
 
+@typing.runtime_checkable
+class Callback(Protocol[M]):
+    def on_step(self, info: StepInfo[M], force: bool = False):
+        ...
+
+
+@typing.runtime_checkable
+class JitCallback(Protocol[M]):
+    def inside_step(self, next_state: TrainerState[M], examples, grads: M):
+        ...
+
+
+
 class TrainerHooks:
     hooks: List[_Hook]
 
