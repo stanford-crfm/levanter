@@ -430,7 +430,7 @@ class Trainer:
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
 
             if isinstance(self.optimizer, SecondOrderTransformation):
-                opt_state = self.optimizer.hessian_update(
+                opt_state = self.optimizer.update_hessian(
                     opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
                 )
 

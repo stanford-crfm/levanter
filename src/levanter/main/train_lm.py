@@ -45,7 +45,7 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
-    hessian_update_steps: int = 10
+    update_hessian_steps: int = 10
 
 
 def main(config: TrainLmConfig):

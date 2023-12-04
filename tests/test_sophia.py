@@ -25,7 +25,7 @@ def test_sophia_h():
         out = eqx.filter_vmap(model)(data)
         return jnp.mean(out**2) * 4
 
-    jit_update = eqx.filter_jit(optimizer.hessian_update)
+    jit_update = eqx.filter_jit(optimizer.update_hessian)
 
     for i in range(1000):
         opt_state = jit_update(opt_state, loss_fn, model, data)
