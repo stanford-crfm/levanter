@@ -64,6 +64,7 @@ logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
 M = TypeVar("M", bound=PyTree)
+M_con = TypeVar("M_con", bound=PyTree, contravariant=True)
 
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
@@ -101,12 +102,6 @@ class StepInfo(Generic[M]):
     next_step = property(lambda self: self.state.step)
 
 
-@dataclass
-class _Hook:
-    fn: Callable[[StepInfo], None]
-    every: int
-
-
 @typing.runtime_checkable
 class Callback(Protocol[M]):
     def on_step(self, info: StepInfo[M], force: bool = False):
@@ -114,26 +109,69 @@ class Callback(Protocol[M]):
 
 
 @typing.runtime_checkable
-class JitCallback(Protocol[M]):
-    def inside_step(self, next_state: TrainerState[M], examples, grads: M):
+class JitCallback(Protocol[M_con]):
+    def inside_step(self, state: TrainerState[M], examples, grads: M_con):
         ...
 
+
+class LambdaCallback(Callback[M]):
+    def __init__(self, fn: Callable[[StepInfo[M]], Any]):
+        self.fn = fn
+
+    def on_step(self, info: StepInfo[M], force: bool = False):
+        self.fn(info)
+
+
+@dataclass
+class _Hook(Generic[M]):
+    fn: Callback[M]
+    every: int
+
+
+@dataclass
+class _JitHook(Generic[M]):
+    fn: JitCallback[M]
+    every: int
 
 
 class TrainerHooks:
     hooks: List[_Hook]
+    jit_hooks: List[_JitHook]
 
     def __init__(self):
         self.hooks = []
+        self.jit_hooks = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
-                hook.fn(info)
+                hook.fn.on_step(info, force=force)
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
-        def decorator(fn: Callable[[StepInfo], None]):
-            self.hooks.append(_Hook(fn, every))
+    def run_jit_hooks(self, state: TrainerState, examples, grads: M):
+        for hook in self.jit_hooks:
+            jax.lax.cond(
+                state.step % hook.every == 0,
+                lambda _: hook.fn.inside_step(state, examples, grads),
+                lambda _: None,
+                None,
+            )
+
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
+        def decorator(fn):
+            is_something = False
+
+            if isinstance(fn, Callback):
+                self.hooks.append(_Hook(fn, every))
+                is_something = True
+
+            if isinstance(fn, JitCallback):
+                self.jit_hooks.append(_JitHook(fn, every))
+                is_something = True
+
+            if not is_something:
+                if not callable(fn):
+                    raise ValueError(f"fn must be callable, got {fn}")
+                self.hooks.append(_Hook(LambdaCallback(fn), every))
 
         if fn is None:
             return decorator
@@ -220,7 +258,7 @@ class Trainer:
     def add_hook(self, *, every: int = 1):
         ...
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | JitCallback] = None, *, every: int = 1):
         return self.hooks.add_hook(fn, every=every)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
@@ -454,6 +492,8 @@ class Trainer:
         loss, grads = accumulate_gradients_sharded(
             split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
         )(trainable_model, rest_model, *batch, **batch_kwargs)
+
+        self.hooks.run_jit_hooks(state, batch, grads)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
         model = eqx.apply_updates(model, updates)

@@ -7,24 +7,24 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterable, Optional, Protocol
+from typing import Callable, Iterable, Optional
 
 import humanfriendly
 import jax
+import jax.numpy as jnp
 from tqdm import tqdm
 
 import levanter.tracker
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer import StepInfo
+from levanter.trainer import JitCallback, M, StepInfo, TrainerState
+from levanter.utils import jax_utils
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
 logger = pylogging.getLogger(__name__)
-
-
 
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
@@ -273,3 +273,24 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs
+
+
+class LogGradientNorms(JitCallback):
+    """
+    Logs the gradient norms of the model parameters.
+    """
+
+    def __init__(self, prefix: str = "grad_norms"):
+        self.prefix = prefix
+
+    def inside_step(self, state: TrainerState[M], examples, grads: M):
+        leaf_key_paths = jax_utils.leaf_key_paths(grads)
+
+        to_log = {}
+
+        for key_path, g in zip(jax.tree_leaves(leaf_key_paths), jax.tree_leaves(grads)):
+            if isinstance(g, jnp.ndarray) and issubclass(g.dtype.type, jnp.floating):
+                g = jnp.linalg.norm(g)
+            to_log[f"{self.prefix}/{key_path}"] = jnp.linalg.norm(g)
+
+        levanter.tracker.jit_log_metrics(to_log, step=state.step)

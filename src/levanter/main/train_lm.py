@@ -152,6 +152,8 @@ def main(config: TrainLmConfig):
                 every=config.hf_save_steps,
             )
 
+        # trainer.add_hook(callbacks.LogGradientNorms(), every=5)
+
         # visualize log probs
         @named_jit(
             in_axis_resources=parameter_axis_mapping,
