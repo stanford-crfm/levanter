@@ -14,13 +14,15 @@ import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
+import haliax.nn
+
 import levanter.tracker
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import JitCallback, M, StepInfo, TrainerState
 from levanter.utils import jax_utils
-from levanter.utils.jax_utils import jnp_to_python
+from levanter.utils.jax_utils import jnp_to_python, join_key
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
@@ -275,22 +277,46 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
     return compute_and_viz_log_probs
 
 
-class LogGradientNorms(JitCallback):
+class GradWatchCallback(JitCallback):
     """
-    Logs the gradient norms of the model parameters.
+    Emulates the behavior of Wandb's PyTorch-only built-in gradient logging (wandb.watch)
+
+    Args:
+        prefix (str): The prefix to use for logging.
+        include_histogram (bool): Whether to include histograms of the gradients.
+        split_scan_layers (bool): Whether to split the scan layers into separate histograms/norms
     """
 
-    def __init__(self, prefix: str = "grad_norms"):
+    def __init__(
+        self,
+        prefix: str = "grads",
+        include_histogram: bool = False,
+        split_scan_layers: bool = True,
+    ):
         self.prefix = prefix
+        self.include_histogram = include_histogram
+        self.split_scan_layers = split_scan_layers
 
     def inside_step(self, state: TrainerState[M], examples, grads: M):
-        leaf_key_paths = jax_utils.leaf_key_paths(grads)
 
-        to_log = {}
+        if self.split_scan_layers:
+            is_leaf = lambda n: isinstance(n, haliax.nn.Stacked)  # noqa: E731
+        else:
+            is_leaf = lambda n: False  # noqa: E731
 
-        for key_path, g in zip(jax.tree_leaves(leaf_key_paths), jax.tree_leaves(grads)):
-            if isinstance(g, jnp.ndarray) and issubclass(g.dtype.type, jnp.floating):
-                g = jnp.linalg.norm(g)
-            to_log[f"{self.prefix}/{key_path}"] = jnp.linalg.norm(g)
+        def _rec_log_magnitudes(to_log, prefix, grad):
+            leaf_key_paths = jax_utils.leaf_key_paths(grad, prefix=prefix, is_leaf=is_leaf)
+            del prefix
+            for key_path, g in zip(
+                jax.tree_leaves(leaf_key_paths, is_leaf=is_leaf), jax.tree_leaves(grad, is_leaf=is_leaf)
+            ):
+                if self.split_scan_layers and isinstance(g, haliax.nn.Stacked):
+                    unstacked = g.unstacked()
+                    for i, layer in enumerate(unstacked):
+                        _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
+                else:
+                    to_log[f"{self.prefix}/{key_path}"] = jnp.linalg.norm(g)
 
+        to_log: dict[str, jax.Array] = {}
+        _rec_log_magnitudes(to_log, None, grads)
         levanter.tracker.jit_log_metrics(to_log, step=state.step)

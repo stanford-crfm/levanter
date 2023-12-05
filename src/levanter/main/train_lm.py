@@ -152,7 +152,7 @@ def main(config: TrainLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # trainer.add_hook(callbacks.LogGradientNorms(), every=5)
+        trainer.add_hook(callbacks.GradWatchCallback(), every=5)
 
         # visualize log probs
         @named_jit(
