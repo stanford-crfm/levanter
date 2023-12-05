@@ -289,7 +289,7 @@ class GradWatchCallback(JitCallback):
 
     def __init__(
         self,
-        prefix: str = "grads",
+        prefix: str = "gradients",
         include_histogram: bool = False,
         split_scan_layers: bool = True,
     ):
