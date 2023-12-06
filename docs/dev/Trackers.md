@@ -20,14 +20,14 @@ A basic example of using the tracker interface is shown below:
 
 ```python
 import wandb
-from levanter.tracker import current_tracker, log_metrics, log_summary
+import levanter.tracker as tracker
 from levanter.tracker.wandb import WandbTracker
 
-with current_tracker(WandbTracker(wandb.init())):
+with tracker.current_tracker(WandbTracker(wandb.init())):
     for step in range(100):
-        log_metrics({"loss": 100 -0.01 * step}, step=step)
+        tracker.log({"loss": 100 - 0.01 * step}, step=step)
 
-    log_summary({"best_loss": 0.0})
+    tracker.log_summary({"best_loss": 0.0})
 ```
 
 A more typical example would be to use it in a config file, as we do with Trainer:

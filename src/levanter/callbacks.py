@@ -19,6 +19,7 @@ import haliax.nn
 import levanter.tracker
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
+from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import JitCallback, M, StepInfo, TrainerState
 from levanter.utils import jax_utils
@@ -66,7 +67,7 @@ def compute_validation_loss(
         prefix = "eval"
         if name:
             prefix += "/" + name
-        levanter.tracker.log_metrics({f"{prefix}/loss": loss}, step=info.step)
+        levanter.tracker.log({f"{prefix}/loss": loss}, step=info.step)
 
         if name:
             logger.info(f"{name} validation loss: {loss:.3f}")
@@ -79,7 +80,7 @@ def compute_validation_loss(
 
 
 def log_step_info(step: StepInfo):
-    levanter.tracker.log_metrics({"train/loss": step.loss, "global_step": step.step}, step=step.step)
+    levanter.tracker.log({"train/loss": step.loss, "global_step": step.step}, step=step.step)
     log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
 
 
@@ -115,14 +116,14 @@ def log_performance_stats(
 
         # log these totals because it's useful for comparing different seqlens, batch sizes, etc
         total_tokens = tokens_per_example * batch_size * step_info.step
-        levanter.tracker.log_metrics({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
+        levanter.tracker.log({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
 
         if flops_per_example:
             total_flops = flops_per_example * batch_size * step_info.step
-            levanter.tracker.log_metrics({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
+            levanter.tracker.log({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
 
         if step_info.step_duration != 0.0:
-            levanter.tracker.log_metrics(
+            levanter.tracker.log(
                 {
                     wrap_key("examples_per_second"): float(batch_size) / step_info.step_duration,
                     wrap_key("tokens_per_second"): float(tokens_per_example) / step_info.step_duration * batch_size,
@@ -132,7 +133,7 @@ def log_performance_stats(
             )
 
             if flops_per_example is not None:
-                levanter.tracker.log_metrics(
+                levanter.tracker.log(
                     {
                         wrap_key("gflops_per_second"): flops_per_example / 1e9 / step_info.step_duration * batch_size,
                     },
@@ -225,7 +226,7 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
         match = regex.search(by_kind)
         if match:
             memory_usage = humanfriendly.parse_size(match.group(1))
-            levanter.tracker.log_metrics({"memory/total": memory_usage / 1e6}, step=step.step)
+            levanter.tracker.log({"memory/total": memory_usage / 1e6}, step=step.step)
 
         # this works for the "kind" and the individual devices
         regex = re.compile(r"([\d.]+[a-zA-Z]+) \(([\d.]+)%\): ([\w\d:_]+)")
@@ -236,14 +237,14 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
             for match in regex.finditer(per_device):
                 memory_usage = humanfriendly.parse_size(match.group(1))
                 device_name = match.group(3)
-                levanter.tracker.log_metrics({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
+                levanter.tracker.log({f"memory/device/{device_name}": memory_usage / 1e6}, step=step.step)
 
         # now, get the memory usage per kind.
         # same regex as above
         for match in regex.finditer(by_kind):
             memory_usage = match.group(1)
             memory_usage = humanfriendly.parse_size(memory_usage)
-            levanter.tracker.log_metrics({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
+            levanter.tracker.log({f"memory/{match.group(3)}": memory_usage / 1e6}, step=step.step)
 
     return log_memory_usage
 
@@ -290,7 +291,7 @@ class GradWatchCallback(JitCallback):
     def __init__(
         self,
         prefix: str = "gradients",
-        include_histogram: bool = False,
+        include_histogram: bool = True,
         split_scan_layers: bool = True,
     ):
         self.prefix = prefix
@@ -315,8 +316,12 @@ class GradWatchCallback(JitCallback):
                     for i, layer in enumerate(unstacked):
                         _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
                 else:
-                    to_log[f"{self.prefix}/{key_path}"] = jnp.linalg.norm(g)
+                    to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
+
+                    if self.include_histogram:
+                        hist = Histogram.from_array(g)
+                        to_log[f"{self.prefix}/histograms/{key_path}"] = hist
 
         to_log: dict[str, jax.Array] = {}
         _rec_log_magnitudes(to_log, None, grads)
-        levanter.tracker.jit_log_metrics(to_log, step=state.step)
+        levanter.tracker.jit_log(to_log, step=state.step)

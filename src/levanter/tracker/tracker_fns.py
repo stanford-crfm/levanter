@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import os
 import tempfile
 import typing
@@ -8,23 +9,30 @@ from typing import Any, Literal, Optional
 
 import draccus
 import jax
+from jaxtyping import Scalar
 
 from levanter.tracker import CompositeTracker, Tracker
 from levanter.tracker.helpers import hparams_to_dict
+from levanter.tracker.histogram import Histogram
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
 
 
+logger = logging.getLogger(__name__)
+
 _global_tracker: Optional["Tracker"] = None
 
+LoggableValues: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
 
-def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
+
+def log(metrics: dict[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None):
     """
     Log metrics to the global tracker.
 
     Args:
-        metrics: Metrics to log
+        metrics: Metrics to log. We use LoggableValues just to give you a sense of what you can log. Backends may
+            support additional types.
         step: Step to log at
         commit: Whether to commit the metrics. If None, uses the default for the tracker.
     """
@@ -36,15 +44,23 @@ def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optiona
         # we're inside a jit, so we need to log from the host
         if commit:
             raise ValueError("Cannot commit from inside jit")
-        jit_log_metrics(metrics, step=step)
+        jit_log(metrics, step=step)
     else:
         # TODO: do we need to coerce to np here?
         _global_tracker.log(metrics, step=step)
 
 
-def jit_log_metrics(metrics, *, step=None):
+def _do_jit_log(metrics, *, step=None):
+    try:
+        log(metrics, step=step)
+    except Exception as e:
+        logger.exception("Error logging metrics from jit", exc_info=e)
+        raise e
+
+
+def jit_log(metrics, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
-    jax.debug.callback(log_metrics, metrics, step=step)
+    jax.debug.callback(_do_jit_log, metrics, step=step)
 
 
 def log_summary(metrics: dict[str, Any]):
@@ -111,10 +127,10 @@ def set_global_tracker(tracker: Tracker):
         force: Whether to force setting the global tracker even if it is already set
 
     Examples:
-        >>> from levanter.tracker import set_global_tracker, log_metrics
+        >>> from levanter.tracker import set_global_tracker, log
         >>> from levanter.tracker.wandb import WandbTracker
         >>> set_global_tracker(WandbTracker())
-        >>> log_metrics({"foo": 1}, step=0)
+        >>> log({"foo": 1}, step=0)
     """
     global _global_tracker
     if _global_tracker is not None:
@@ -148,10 +164,10 @@ def current_tracker(
         If a tracker is provided, returns a context manager that sets the global tracker to the provided tracker when used.
 
     Examples:
-        >>> from levanter.tracker import current_tracker, log_metrics
+        >>> from levanter.tracker import current_tracker, log
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
-        ...     log_metrics({"foo": 1}, step=0)
+        ...     log({"foo": 1}, step=0)
         ...     current_tracker().log({"foo": 2}, step=1)
     """
     global _global_tracker
@@ -189,10 +205,10 @@ def get_tracker(name: str) -> Tracker:
         The tracker with the provided name
 
     Examples:
-        >>> from levanter.tracker import get_tracker, log_metrics
+        >>> from levanter.tracker import get_tracker, log
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
-        ...     log_metrics({"foo": 1}, step=0)
+        ...     log({"foo": 1}, step=0)
         ...     get_tracker("wandb").log_metrics({"foo": 2}, step=1)
     """
     tracker = current_tracker()

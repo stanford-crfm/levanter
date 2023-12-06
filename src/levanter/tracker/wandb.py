@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
 import jax
+import numpy as np
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
 from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
+from levanter.tracker.histogram import Histogram
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils import jax_utils
 
@@ -46,16 +48,37 @@ class WandbTracker(Tracker):
             self.run = run
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        self.run.config.update(hparams)
+        self.run.config.update(_convert_values_to_loggable(hparams))
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
-        self.run.log(metrics, step=step, commit=commit)
+        self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
-        self.run.summary.update(metrics)
+        self.run.summary.update(_convert_values_to_loggable(metrics))
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
+
+
+def _convert_values_to_loggable(values: dict[str, Any]):
+    def convert_value_to_loggable(value: Any):
+        if isinstance(value, (list, tuple)):
+            return [convert_value_to_loggable(v) for v in value]
+        elif isinstance(value, dict):
+            return {k: convert_value_to_loggable(v) for k, v in value.items()}
+        elif isinstance(value, jax.Array):
+            if value.ndim == 0:
+                return value.item()
+            else:
+                return np.array(value)
+        elif isinstance(value, Histogram):
+            from wandb.data_types import Histogram as WandbHistogram
+
+            return WandbHistogram(np_histogram=value.to_numpy_histogram())
+        else:
+            return value
+
+    return convert_value_to_loggable(values)
 
 
 def is_wandb_available():

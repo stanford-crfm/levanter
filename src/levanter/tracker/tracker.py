@@ -14,10 +14,10 @@ class Tracker(abc.ABC):
     The name is borrowed from HF Accelerate.
 
     Examples:
-        >>> from levanter.tracker import current_tracker, log_metrics
+        >>> from levanter.tracker import current_tracker, log
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
-        ...     log_metrics({"foo": 1}, step=0)
+        ...     log({"foo": 1}, step=0)
     """
 
     name: str
