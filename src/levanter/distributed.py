@@ -252,7 +252,7 @@ class DistributedConfig:
 
         # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
         # since it depends on the jax internals, but it's the best we can do
-        if any(env.is_env_present() for env in clustres.ClusterEnv._cluster_types):
+        if any(env.is_env_present() for env in clusters.ClusterEnv._cluster_types):
             return True
 
         return False
