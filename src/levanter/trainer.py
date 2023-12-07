@@ -27,10 +27,8 @@ from typing import (
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
-import optax
 from draccus import field
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
@@ -52,6 +50,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time
+from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
@@ -431,6 +430,12 @@ class Trainer:
             )(trainable_model, *batch, **batch_kwargs)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+
+            if isinstance(self.optimizer, SecondOrderTransformation):
+                opt_state = self.optimizer.update_hessian(
+                    opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
+                )
+
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
@@ -734,109 +739,5 @@ def initialize(config: TrainerConfig | AllConfig):
     levanter.tracker.log_configuration(config)
 
 
-@dataclass
-class OptimizerConfig:
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    min_lr_ratio: float = 0.1
-    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
-    warmup: float = 0.01
-    """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
-    cooldown: float = 0.0
-    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    def build(self, num_train_steps: int) -> GradientTransformation:
-        """Creates the optimizer"""
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
-    def lr_scheduler(self, num_train_steps):
-        warmup_steps = self._convert_warmup(num_train_steps)
-        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
-        min_lr = self.learning_rate * self.min_lr_ratio
-
-        match self.lr_schedule:
-            case "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            case "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-            case "linear":
-                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-            case "inv_sqrt":
-                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
-            case _:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-        schedules = []
-        boundaries = []
-
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedules.append(warmup)
-            boundaries.append(warmup_steps)
-
-        schedules.append(schedule)
-
-        if cooldown_steps != 0:
-            final_main_lr = schedule(lr_decay_steps)
-            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
-            schedules.append(cooldown)
-            boundaries.append(num_train_steps - cooldown_steps)
-
-        if len(schedules) > 1:
-            schedule = optax.join_schedules(schedules, boundaries)
-
-        return schedule
-
-    def _convert_warmup(self, num_train_steps: int):
-        if self.warmup_ratio is not None:
-            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
-            return int(self.warmup_ratio * num_train_steps)
-        else:
-            return _convert_ratio_or_steps(self.warmup, num_train_steps)
-
-
-def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
-    def schedule(count):
-        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
-        return jnp.maximum(lr * decay, min_lr)
-
-    return schedule
-
-
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
-
-
-def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
-    if ratio_or_steps < 1.0:
-        return int(ratio_or_steps * num_train_steps)
-    else:
-        return int(ratio_or_steps)

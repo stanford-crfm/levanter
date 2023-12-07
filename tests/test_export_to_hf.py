@@ -50,8 +50,7 @@ def test_export_lm_to_hf():
             export_lm_to_hf.main(config)
 
             if has_torch():
-                m = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
-                print(m)
+                AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
 
         finally:
             try:
