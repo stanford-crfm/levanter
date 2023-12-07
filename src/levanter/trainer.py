@@ -541,11 +541,11 @@ class TrainerConfig:
         pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
         self._maybe_set_id()
+        self._initialize_logging()
         self.ray.initialize()
         self._initialize_jax_config()
         self._validate_and_set_defaults()
         self.wandb.init(self.id, all_config)
-        self._initialize_logging()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
