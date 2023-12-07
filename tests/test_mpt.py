@@ -74,7 +74,9 @@ def test_mpt_nano_compare(attn_impl):
     with tempfile.TemporaryDirectory() as tmpdir:
         # FA hack: we need to override the config to use torch attention, as their impl doesn't work with flash/alibi
         converter = converter.with_config_overrides(config_overrides={"attn_config": {"attn_impl": "torch"}})
-        converter._save_pretrained_local(lev_model, tmpdir)
+        converter._save_pretrained_local(
+            lev_model, tmpdir, save_tokenizer=True, save_reference_code=True, max_shard_size=1e8
+        )
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()
