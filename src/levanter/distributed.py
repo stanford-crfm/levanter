@@ -208,7 +208,7 @@ def auto_ray_cluster(
                 logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
 
-                ray_port = _choose_port(port + 10234)
+                ray_port = _choose_port(port + 240)
                 address = f"{host}:{ray_port}"
 
                 # Explicitly setting the number of CPUs on ray init stops init errors
@@ -220,6 +220,8 @@ def auto_ray_cluster(
                     ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                    else:
+                        logger.info(f"Successfully started ray head on port {ray_port}.")
 
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
@@ -231,6 +233,8 @@ def auto_ray_cluster(
                     ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                    else:
+                        logger.info(f"Successfully started ray worker and connected to {address}.")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
