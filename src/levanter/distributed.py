@@ -3,6 +3,7 @@ import itertools
 import logging
 import os
 import re
+import socket
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
@@ -214,14 +215,18 @@ def auto_ray_cluster(
                 # Explicitly setting the number of CPUs on ray init stops init errors
                 num_cpus = logical_cpu_core_count()
 
-                if jax.process_index() == 0:
-                    logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
+                # it used to be that if we were coordinator, we were also process 0
+                # this is no longer the case, so instead we need to check if we are the coordinator
+                # and if so, start the head
+
+                if _is_this_machine(host):
+                    logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
                     ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
                     else:
-                        logger.info(f"Successfully started ray head on port {ray_port}. We are process 0 {host}.")
+                        logger.info(f"Successfully started ray head on port {ray_port}.")
 
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
@@ -300,3 +305,21 @@ class RayConfig:
     def initialize(self):
         if self.auto_start_cluster:
             auto_ray_cluster(address=self.address, start_workers=self.start_workers)
+
+
+def _is_this_machine(host):
+    """
+    Checks if the given host identifies this machine.
+    """
+    try:
+        # Get all IP addresses associated with the host
+        host_ips, aliases, _ = socket.gethostbyname_ex(host)
+    except socket.gaierror:
+        # Host could not be resolved
+        return False
+
+    # Get the IP addresses of all interfaces
+    machine_ips = [socket.gethostbyname(ifname) for ifname in socket.getifaddrs()]
+
+    # Check if any of the host IPs match any of the machine IPs
+    return any(host_ip in machine_ips for host_ip in host_ips)
