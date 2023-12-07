@@ -217,7 +217,10 @@ def auto_ray_cluster(
                 if jax.process_index() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
+                    ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
+                    if ret != 0:
+                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
@@ -225,7 +228,9 @@ def auto_ray_cluster(
                         f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
                     )
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                    ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                    if ret != 0:
+                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
