@@ -8,10 +8,9 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  tracker:
-    - type: wandb
-      project: "levanter"
-      tags: [ "openwebtext", "gpt2", "itest"]
+  wandb:
+    project: "levanter"
+    tags: [ "openwebtext", "gpt2", "itest"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
@@ -20,6 +19,8 @@ trainer:
   train_batch_size: 256
   num_train_steps: 20000
 optimizer:
-  learning_rate: 1E-3
+  type: sophia-h
+  learning_rate: 0.8E-3
   weight_decay: 0.1
   warmup: 0.01
+  gamma: 0.005
