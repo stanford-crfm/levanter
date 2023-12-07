@@ -312,14 +312,14 @@ def _is_this_machine(host):
     Checks if the given host identifies this machine.
     """
     try:
-        # Get all IP addresses associated with the host
-        host_ips, aliases, _ = socket.gethostbyname_ex(host)
+        # Get IP addresses of all interfaces
+        machine_ips = [addr[4][0] for addr in socket.getaddrinfo(socket.gethostname(), None)]
+
+        # Get the IP address of the host
+        host_ip = socket.gethostbyname(host)
     except socket.gaierror:
-        # Host could not be resolved
+        # Host or interface could not be resolved
         return False
 
-    # Get the IP addresses of all interfaces
-    machine_ips = [socket.gethostbyname(ifname) for ifname in socket.getifaddrs()]
-
-    # Check if any of the host IPs match any of the machine IPs
-    return any(host_ip in machine_ips for host_ip in host_ips)
+    # Check if the host IP matches any of the machine IPs
+    return any(host_ip == machine_ip for machine_ip in machine_ips)
