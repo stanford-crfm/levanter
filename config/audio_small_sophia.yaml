@@ -1,0 +1,102 @@
+data:
+  configs:
+    commercial:
+      train_urls:
+        - "gs://levanter-data/music-data/commercial-audiogen-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.audiogen.valid-small.txt"
+    fma:
+      train_urls:
+        - "gs://levanter-data/music-data/fma-audiogen-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.audiogen.valid-small.txt"
+    lakh:
+      train_urls:
+        - "gs://levanter-data/music-data/lakh-midigen-sharded/train.shard-{0..15}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/lakh.midigen.valid-small.txt"
+    metamidi:
+      train_urls:
+        - "gs://levanter-data/music-data/metamidi-midigen-sharded/train.shard-{0..15}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/lakh.midigen.valid-small.txt"
+    commercial_t:
+      train_urls:
+        - "gs://levanter-data/music-data/commercial-transmidi-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.trans_midigen.valid-small.txt"
+    fma_t:
+      train_urls:
+        - "gs://levanter-data/music-data/fma-transmidi-sharded/train.shard-{0..15}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.trans_midigen.valid-small.txt"
+    commercial_transcribe:
+      train_urls:
+        - "gs://levanter-data/music-data/commercial-transcribe-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.transcribe.valid-small.txt"
+    commercial_synthesize:
+      train_urls:
+        - "gs://levanter-data/music-data/commercial-synthesize-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.synthesize.valid-small.txt"
+    fma_transcribe:
+      train_urls:
+        - "gs://levanter-data/music-data/fma-transcribe-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.transcribe.valid-small.txt"
+    fma_synthesize:
+      train_urls:
+        - "gs://levanter-data/music-data/fma-synthesize-sharded/train.shard-{0..255}.txt"
+      validation_urls:
+        - "gs://levanter-data/music-data/encodec_fma.synthesize.valid-small.txt"
+  train_weights:
+    commercial: 0.28
+    fma: 0.05
+    lakh: 0.03
+    metamidi: 0.07
+    commercial_t: 0.2
+    fma_t: 0.03
+    commercial_transcribe: 0.14
+    commercial_synthesize: 0.14
+    fma_transcribe: 0.03
+    fma_synthesize: 0.03
+  cache_dir: "gs://levanter-data/music-data/audiomidi-cache"
+  tokenizer: "passthrough"
+  vocab_size: 5567
+  enforce_eos: False
+model:
+  type: gpt2
+  hidden_dim: 768
+  num_heads: 12
+  num_layers: 12
+  seq_len: 8192
+  scale_attn_by_inverse_layer_idx: true
+  gradient_checkpointing: true
+  use_flash_attention: true
+  flash_attention_block_size: 8192
+trainer:
+  wandb:
+    project: "levanter"
+    tags: [ "midi", "gpt2", "audio"]
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: 1
+  num_train_steps: 100000
+  train_batch_size: 64
+  checkpointer:
+    base_path: gs://levanter-data/audio-checkpoints/
+    save_interval: 30m
+  axis_resources:
+    batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"
+  parameter_axis_resources:
+    embed: "data"
+optimizer:
+  type: sophia-h
+  learning_rate: 6E-4
+  weight_decay: 0.2
+  min_lr_ratio: 0.1
+  warmup: 2000
