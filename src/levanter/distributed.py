@@ -217,7 +217,9 @@ def auto_ray_cluster(
                 if jax.process_index() == 0:
                     logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus} --address {address}")
+                    ret = os.system(
+                        f"ray start --head --port {ray_port} --num-cpus {num_cpus} --node-ip-address 0.0.0.0"
+                    )
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
                     else:
