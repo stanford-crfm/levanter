@@ -20,7 +20,10 @@ PREEMPTIBLE=false
 AUTODELETE=true
 SETUP_SCRIPT="$SCRIPT_DIR/helpers/setup-tpu-vm.sh"
 
-GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ -z "$GIT_BRANCH" ]; then
+    GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+fi
+
 GIT_REPO=$(git config --get remote.origin.url)
 
 # if GIT_REPO looks like an ssh url, convert it to https

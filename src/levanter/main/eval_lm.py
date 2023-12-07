@@ -51,7 +51,7 @@ def main(config: EvalLmConfig):
     if config.eval_on_train:
         raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
     else:
-        raw_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)  # type: ignore
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping

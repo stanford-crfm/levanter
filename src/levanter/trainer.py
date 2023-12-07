@@ -285,12 +285,14 @@ class Trainer:
             trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
                 model = eqx.combine(trainable_model, model)
-            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
+            else:
+                model = eqx.combine(trainable_model, model_shape)
+
+            if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(model)):
                 # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
                 non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
                 model = eqx.combine(trainable_model, non_trainable)
-            else:
-                model = trainable_model
+
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -594,6 +596,8 @@ class TrainerConfig:
     def initialize(self):
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
+        # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
+        pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
         self._validate_and_set_defaults()
 
