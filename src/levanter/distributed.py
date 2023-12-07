@@ -223,7 +223,7 @@ def auto_ray_cluster(
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
                     else:
-                        logger.info(f"Successfully started ray head on port {ray_port}.")
+                        logger.info(f"Successfully started ray head on port {ray_port}. We are process 0 {host}.")
 
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
