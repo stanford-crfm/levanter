@@ -1,5 +1,6 @@
 umask 000
 LEV_ROOT=$(dirname "$(readlink -f $0)")/..
+ulimit -s 65536
 
 # figure out venv, first check if we wrote a path in infra/venv_path
 if [ ! -d "$VENV" ] && [ -f "$LEV_ROOT/infra/venv_path.txt" ]; then
