@@ -332,6 +332,7 @@ class GradWatchCallback(JitCallback):
                         _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
                 else:
                     to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
+                    return
 
                     if self.include_histogram:
                         hist = Histogram.from_array(g)
