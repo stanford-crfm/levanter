@@ -314,9 +314,6 @@ class GradWatchCallback(JitCallback):
         self.split_scan_layers = split_scan_layers
 
     def inside_step(self, state: TrainerState[M], examples, grads: M):
-        # what if we don't do anything?
-        return
-
         if self.split_scan_layers:
             is_leaf = lambda n: isinstance(n, haliax.nn.Stacked)  # noqa: E731
         else:
@@ -333,7 +330,9 @@ class GradWatchCallback(JitCallback):
                     for i, layer in enumerate(unstacked):
                         _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
                 else:
-                    to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
+                    # to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
+                    to_log[f"{self.prefix}/norms/{key_path}"] = jnp.sum(g)
+                    return
 
                     if self.include_histogram:
                         hist = Histogram.from_array(g)
