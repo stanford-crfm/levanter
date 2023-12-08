@@ -50,7 +50,7 @@ S = TypeVar("S", bound=PyTree)
 
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
-    "jax_softmax_custom_jvp": True,
+    "jax_softmax_custom_jvp": False,
 }
 
 # A note on the semantics of "step" vs "next_step":
