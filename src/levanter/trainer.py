@@ -148,12 +148,13 @@ class TrainerHooks:
 
     def run_jit_hooks(self, state: TrainerState, examples, grads: M):
         for hook in self.jit_hooks:
-            jax.lax.cond(
-                state.step % hook.every == 0,
-                lambda _: hook.fn.inside_step(state, examples, grads),
-                lambda _: None,
-                None,
-            )
+            # jax.lax.cond(
+            #     state.step % hook.every == 0,
+            #     lambda _: hook.fn.inside_step(state, examples, grads),
+            #     lambda _: None,
+            #     None,
+            # )
+            hook.fn.inside_step(state, examples, grads)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
