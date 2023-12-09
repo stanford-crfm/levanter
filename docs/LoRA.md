@@ -14,11 +14,12 @@ nice because it's highly memory efficient, and it results in adapters that are o
 many gigabytes that a fully fine-tuned Llama 2 model would be.
 
 The LoRA model we create will be compatible with [Hugging Face's PEFT](https://github.com/huggingface/peft) library,
-so that you can use it with their inference scripts or anywhere else you might want to use a PEFT model.
+so that you can use it with their inference scripts or anywhere else you might want to use a PEFT model. (PEFT
+is Hugging Face's library for parameter-efficient fine-tuning, meaning techniques like LoRA.)
 Levanter also supports saving "merged" checkpoints, which are compatible with Hugging Face's inference scripts,
 as well as any library that doesn't support PEFT checkpoints.
 
-## The Data
+## The GSM8K Dataset
 
 Let's talk a little bit about the data. GSM8K is a dataset of grade-school math problems, with the goal of
 evaluating models' ability to do arithmetic. Only recently (Claude, GPT-4, Gemini) have LLMs been able to perform
@@ -36,7 +37,13 @@ You are only actually evaluated on the answer, not the explanation,
 which comes after the `####` in the answer.
 
 
-## LORA-izing the Model
+## Training a LoRA Model Adapter
+
+We're going to use Levanter to train a LoRA adapter for Llama 2. We'll use the same Llama 2 model as in the
+[Fine-Tuning tutorial](./Fine-Tuning.md), but we'll use a different dataset and a different training script.
+The full script is available at [`gsm8k_lora.py`](https://github.com/stanford-crfm/levanter/blob/main/examples/gsm8k-lora/gsm8k_lora.py).
+Broadly speaking, the script is similar to the fine-tuning script, with the key differences being LoRA-izing the model
+and changing the data loader for the GSM8K dataset. We will highlight the important parts here.
 
 ### 0. Quick LoRA Overview
 
@@ -57,8 +64,11 @@ more than 6.7B parameters in the base model for a reduction of about 99.7% in pa
 
 ### 1. Apply the LoRA transform to the model
 
-Thus, to "LoRA-ize" a model, we need to do some surgery on the model's linear layers. This is what Levanter's
+So, to "LoRA-ize" a model, we need to do some surgery on the model's linear layers, by wrapping each linear layer
+in a LoRA layer. This is what Levanter's
 `loraize` function does. It takes a model and a `LoraConfig` and returns a new model with the LoRA transform
+applied to the linear layers.
+
  The `LoraConfig` is a dataclass with the following fields:
 ```python
 @dataclass(frozen=True)
@@ -71,10 +81,11 @@ class LoraConfig:
 ```
 
 By default, we LoRA-ize all linear modules in the model, which we recommend. This was found to be better than the other
-options: https://twitter.com/Tim_Dettmers/status/1689375417189412864, https://arxiv.org/pdf/2305.14314.pdf Section 4.
+options: [\[1\]](https://twitter.com/Tim_Dettmers/status/1689375417189412864), [\[2\] Section 4](https://arxiv.org/pdf/2305.14314.pdf).
 (As with all config in Levanter, [these can be changed in the config file or via command line flags](./Configuration-Guide.md).)
+It's worth mentioning that `loraize` works with any Haliax model, not just LMs.
 
-In our modifications below, we apply `loraize` inside of a [`haliax.named_jit`](https://haliax.readthedocs.io/en/latest/partitioning/#haliax.named_jit) function. This ensures that the
+In our script below, we apply `loraize` inside of a [`haliax.named_jit`](https://haliax.readthedocs.io/en/latest/partitioning/#haliax.named_jit) function. This ensures that the
 parameters are sharded correctly.
 
 ```python
@@ -99,8 +110,6 @@ def train(config: TrainArgs):
             return loraize(model, config.lora, key=lora_key)
 
         model = loraize_hf_model(model)
-
-
 ```
 
 ### 2. Tell the trainer to only train the LoRA params
