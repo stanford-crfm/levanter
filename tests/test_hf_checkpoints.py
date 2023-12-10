@@ -49,7 +49,9 @@ def test_save_backpack_model_with_code():
     lev_model = inference_mode(lev_model, True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter._save_pretrained_local(lev_model, tmpdir)
+        converter._save_pretrained_local(
+            lev_model, tmpdir, save_tokenizer=True, save_reference_code=True, max_shard_size=1e8
+        )
 
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 
