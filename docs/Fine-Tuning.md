@@ -316,8 +316,8 @@ wandb login ${YOUR TOKEN HERE}
 Now you can run the training command:
 
 ```bash
-python levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca.yaml \
+python levanter/examples/alpaca/alpaca.py \
+--config_path levanter/examples/alpaca/alpaca.yaml \
 --trainer.checkpointer.base_path levanter/checkpoints \
 --hf_save_path levanter/checkpoints
 ```
