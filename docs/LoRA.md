@@ -220,8 +220,8 @@ The default config is available at [`gsm8k-llama2.yaml`](https://github.com/stan
 The example commands below demonstrate how to launch a training job
 on a single A100, but it should work for other single node GPU configurations.
 Please ensure you've gone through the [GPU installation instructions](Getting-Started-GPU.md) first.
-We recommend using Ampere or later GPUs
-with Levanter, as we make heavy use of bf16 precision, which is only performant on Ampere and later.
+We recommend using Ampere or later GPUs with Levanter, as we make heavy use of bf16 precision, which is only performant
+on Ampere and later.
 
 Before running your training bash command, ensure you are in your `levanter` conda environment, you've created a directory for saving checkpoints
 during training, you are logged into your wandb account with the following two commands:
@@ -241,8 +241,14 @@ python examples/gsm8k-lora/gsm8k_lora.py \
 --trainer.checkpointer.base_path checkpoints \
 --hf_save_path hf-checkpoints \
 --merged_hf_save_path merged-checkpoints \
---merged_hf_upload <somewhere>/gsm8k-llama2-merged
+--merged_hf_upload <somewhere>/gsm8k-llama2-merged \
+--trainer.per_device_parallelism 2
 ```
+
+The last flag represents how many examples get processed in parallel on each GPU. This is a tradeoff between
+speed and memory usage. The value here is tuned for a single 40GB A100.
+If you have different (or more) GPUs, you will want to change it. This will take about 6 hours on a single A100.
+
 You can change `--trainer.checkpointer.base_path`,  `--hf_save_path`, and `--merged_hf_save_path` to your desired model
 checkpoint directories. You'll also want to replace the `--merged_hf_upload`
 with your own Hugging Face Hub username and repo name. (You can also just remove it if you don't want to upload
@@ -250,7 +256,7 @@ the merged checkpoint, though HELM needs it to be on the Hub for now.)
 
 ### Running on TPU
 
-Here's how to run the command on a TPUv3-32.  As we typically do, we leave all
+Here's how to run the command on a TPU v3-32.  As we typically do, we leave all
 the paths specified on the command line, so that you can easily change them. They can be either regular
 paths or GCS paths.
 As with GPU, please ensure you've gone through the [TPU installation instructions](Getting-Started-TPU-VM.md) first.
