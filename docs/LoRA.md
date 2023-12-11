@@ -29,7 +29,7 @@ without HF PEFT. We'll show you how to do that as well.
 
 Let's talk a little bit about the data. GSM8K is a dataset of grade-school math problems, with the goal of
 evaluating models' ability to do arithmetic. Only recently (Claude, GPT-4, Gemini) have LLMs been able to perform
-well on this dataset. Llama 2 7B by itself only gets about 13% accuracy on the dataset.
+well on this dataset "out of the box." Llama 2 7B only gets 13.3%. Let's see if we can do better!
 
 Here's an example problem from the dataset (You can see the whole dataset on the
 [Hugging Face Datasets page](https://huggingface.co/datasets/gsm8k/viewer/main/train?row=0))
@@ -39,29 +39,30 @@ Q: Natalia sold clips to 48 of her friends in April, and then she sold half as m
 A: Natalia sold 48/2 = <<48/2=24>>24 clips in May. Natalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May. #### 72
 ```
 
-You are only actually evaluated on the answer, not the explanation,
-which comes after the `####` in the answer.
+You are only actually evaluated on the numerical answer, which comes after the `####`. The explanations
+exist to encourage the LLM to do Chain-Of-Thought-type reasoning, rather than trying to do it all "in its head."
 
 
 ## Training a LoRA Model Adapter
 
-We're going to use Levanter to train a LoRA adapter for Llama 2. We'll use the same Llama 2 model as in the
-[Fine-Tuning tutorial](./Fine-Tuning.md), but we'll use a different dataset and a different training script.
+We're going to use Levanter to train a LoRA adapter using the same Llama 2 7b model we used in the
+[Fine-Tuning tutorial](./Fine-Tuning.md).
 The full script is available at [`gsm8k_lora.py`](https://github.com/stanford-crfm/levanter/blob/main/examples/gsm8k-lora/gsm8k_lora.py).
 Broadly speaking, the script is similar to the fine-tuning script, with the key differences being LoRA-izing the model
-and changing the data loader for the GSM8K dataset. We will highlight the important parts here.
+and changing the data loader for the GSM8K dataset. We will highlight the important parts of the script below.
 
 ### 0. Quick LoRA Overview
 
 There are now many tutorials on what LoRA is and how it works, so we won't go into too much detail here.
-The basic idea is that we want to adapt a model to a new task, but we don't want to have to store a new copy of the
-entire model. So instead we add a small number of parameters (typically between .1% and 1%) to the model, and train
-just those parameters. The particular way we do this is by adding a low-rank linear layer to each linear layer in the
-model (or a subset thereof).
+The basic idea is that we want to adapt a model to a new task, but we don't want to create and store a new copy of the
+entire model.
 
-In LoRA we add an extra low-rank linear layer (of rank $r$, typically 8 or 16) to each linear layer in the model,
-where the low-rank layer can be represented as a pair of matrices $A \in \mathbb{R}^{d \times r}$ and $B \in \mathbb{R}^{r \times d}$.
-The output of this new combined layer is $A \cdot (B \cdot x) + W \cdot x + b$, where $x$ is the input to the layer.
+So instead, we add a small number of parameters (typically between .1% and 1%) to the model, and train
+just those parameters. The particular way we do this is by adding a low-rank linear layer to each linear layer in the
+model (or a subset thereof). That is, we modify each linear layer's weights $W$ to be $W + A \cdot B$, where $A$ and $B$
+are small matrices. The product $A \cdot B$ is low rank (typically rank $r = 8$ or $16$).
+The output of the modified layer is then $(W + A \cdot B) \cdot x =  A \cdot (B \cdot x) + W \cdot x$, where $x$ is the input to the layer.
+We train only the parameters $A$ and $B$, and leave the parameters $W$ alone.
 
 This is a diagram taken from the LoRA paper, which graphically shows how the LoRA transform is applied to a linear layer:
 
@@ -70,6 +71,13 @@ This is a diagram taken from the LoRA paper, which graphically shows how the LoR
 Because the low-rank matrix is small, it's much more space efficient than the "full finetuning" that we did for Alpaca.
 For example, in this tutorial with default settings, the LoRA adapter will have about 20M parameters, compared to the
 more than 6.7B parameters in the base model for a reduction of about 99.7% in parameters.
+
+This parameter savings also means that training requires much less memory: we can fit
+LoRA finetuning onto a much smaller GPU than we could fit a full finetuning, because we don't need to store optimizer
+states for the base model parameters, and the model parameters themselves can be stored at reduced (compute) precision.
+For example, full fine-tuning a 7B model would typically require 80GB just to store the model and optimizer states
+(at full precision), but with LoRA we can easily fit training onto a single 40GB A100.
+
 
 ### 1. Apply the LoRA transform to the model
 
