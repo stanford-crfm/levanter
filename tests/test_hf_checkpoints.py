@@ -9,6 +9,7 @@ import haliax
 
 from levanter.compat.hf_checkpoints import _convert_to_jnp
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
+from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
@@ -48,7 +49,9 @@ def test_save_backpack_model_with_code():
     lev_model = inference_mode(lev_model, True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter._save_pretrained_local(lev_model, tmpdir)
+        converter._save_pretrained_local(
+            lev_model, tmpdir, save_tokenizer=True, save_reference_code=True, max_shard_size=1e8
+        )
 
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 
@@ -87,3 +90,36 @@ def test_conversion_to_jnp_bfloat16():
     assert x_jnp.dtype == jnp.bfloat16
     assert x_jnp.shape == x.shape
     assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)
+
+
+def test_save_sharded_checkpoints():
+    converter = Gpt2Config.default_hf_checkpoint_converter
+
+    nano_config = Gpt2Config(
+        hidden_dim=64,
+        num_heads=2,
+        num_layers=2,
+        resid_pdrop=0.0,
+    )
+
+    nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        converter.save_pretrained(nano_model, tmpdir, max_shard_size=1024)
+
+        # make sure we saved a few different files
+        import glob
+
+        assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
+
+        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=tmpdir)
+
+        assert loaded_model.config == nano_model.config
+        assert loaded_model.Vocab == nano_model.Vocab
+
+        input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
+        causal_mask = haliax.nn.attention.causal_mask(nano_model.config.Pos, nano_model.config.KeyPos)
+        np.testing.assert_equal(
+            np.array(nano_model(input, causal_mask, key=None).array),
+            np.array(loaded_model(input, causal_mask, key=None).array),
+        )
