@@ -37,6 +37,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 from ray.exceptions import GetTimeoutError
+from ray.util.queue import Queue
 from rich.progress import (
     BarColumn,
     Progress,
@@ -411,7 +412,15 @@ def _read_chunks_for_shards(
 
 
 def _produce_chunks_for_shard(
-    sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
+    sink,
+    cache_dir,
+    shard_writer,
+    source,
+    priority_fn,
+    shard_idx,
+    processor: BatchProcessor,
+    process_queue,
+    rows_per_chunk,
 ):
     shard_name = source.shard_names[shard_idx]
     total_rows_written = sum(chunk.num_rows for chunk in shard_writer.chunks)
@@ -419,10 +428,8 @@ def _produce_chunks_for_shard(
         logger.info(f"Resuming shard {shard_name} at row {total_rows_written}")
     else:
         logger.info(f"Starting shard {shard_name}")
-    shard_iter = source.open_shard_at_row(shard_name, total_rows_written)
+
     target_batch_size = min(processor.batch_size, rows_per_chunk)
-    writer: Optional[_ChunkWriter] = None
-    batch = []
 
     def yield_chunk(chunk: ChunkMetadata):
         logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
@@ -430,22 +437,31 @@ def _produce_chunks_for_shard(
         shard_writer.commit_chunk(chunk)
         return chunk.num_rows
 
-    def do_preprocess(batch):
-        nonlocal writer
+    batch_count = 0
 
-        # TODO: don't do a .get here, but spawn a whole bunch of tasks as soon as we can
-        # the issue is we need to implement some kind of backpressure or latch-type thing so we don't starve
-        # other shards since we want to stream them round-robin
+    def submit_task_for_processing(batch):
+        nonlocal batch_count
+        batch_count += 1
         priority = priority_fn(shard_idx, shard_writer.num_chunks)
         output_batch_future = ray.get(process_queue.submit.remote(priority=priority, batch=_RefBox(batch)))
-        record_batch = ray.get(output_batch_future)
+        return output_batch_future
 
+    def open_iterator():
+        logger.info(f"Starting to get rows for shard {shard_name}")
+        return source.open_shard_at_row(shard_name, total_rows_written)
+
+    result_iterator = _map_batches_in_parallel(
+        open_iterator, submit_task_for_processing, batch_size=target_batch_size, max_queue_size=10
+    )
+
+    writer: Optional[_ChunkWriter] = None
+    for processed_batch in result_iterator:
         if writer is None:
             chunk_name = os.path.join(shard_name, f"chunk-{shard_writer.num_chunks}")
-            writer = _ChunkWriter(cache_dir, chunk_name, record_batch.schema)
+            writer = _ChunkWriter(cache_dir, chunk_name, processed_batch.schema)
             writer.__enter__()
 
-        writer.write_batch(record_batch)
+        writer.write_batch(processed_batch)
 
         if writer.num_rows >= rows_per_chunk:
             writer.__exit__(None, None, None)
@@ -453,16 +469,6 @@ def _produce_chunks_for_shard(
             writer = None
             yield_chunk(chunk)
 
-    logger.info(f"Starting to get rows for shard {shard_name}")
-    for row in shard_iter:
-        batch.append(row)
-
-        if len(batch) == target_batch_size:
-            do_preprocess(batch)
-            batch = []
-
-    if batch:
-        do_preprocess(batch)
     if writer is not None:
         writer.__exit__(None, None, None)
         chunk = writer.get_metadata()
@@ -650,23 +656,18 @@ class _ShardStatus:
         return self.producer_task is not None
 
 
-def _mk_process_task(processor: BatchProcessor[T]):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        return processor(batch)
-
-    return process_task
-
-
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        ray.get(queue.task_running.remote())
-        result = processor(batch)
-        del batch
-        return as_record_batch(result)
+        try:
+            logging.basicConfig(level=logging.INFO)
+            ray.get(queue.task_running.remote())
+            result = processor(batch)
+            del batch
+            return as_record_batch(result)
+        except Exception as e:
+            logger.exception("Error in process_task")
+            raise e
 
     return process_task
 
@@ -1131,7 +1132,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
         if self._broker is None:
-            return ray.remote(lambda: None).remote()
+            return ray.remote(num_cpus=0)(lambda: None).remote()
         else:
             return self._broker.finished_sentinel.remote()
 
@@ -1337,13 +1338,6 @@ class _ChunkReader:
             yield record_batch
 
     @staticmethod
-    def from_name(cache_dir, name: str, batch_size: int) -> "_ChunkReader":
-        fs, path = fsspec.core.url_to_fs(cache_dir)
-        with fs.open(os.path.join(path, f"{name}.json"), "r") as f:
-            metadata = ChunkMetadata.from_json(f.read())  # type: ignore
-        return _ChunkReader.from_metadata(cache_dir, metadata, batch_size)
-
-    @staticmethod
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int) -> "_ChunkReader":
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
@@ -1362,3 +1356,42 @@ def _restore_exc_info(exc_info):
         return (exc_value.__class__, exc_value, tb.as_traceback())
     else:
         return (Exception, Exception("Process failed with no exception"), tb.as_traceback())
+
+
+def _map_batches_in_parallel(
+    it: Callable[[], Iterator[T]], fn: Callable[[list[T]], ray.ObjectRef], batch_size, max_queue_size
+):
+    # Uses Ray to map a function over batches in parallel. It's assumed that the function runs things
+    # in the background. We yield the results in order.
+
+    # `it` is a Callable[[], Iterator[T]] b/c we can't pass in certain stateful iterators to Ray tasks.
+    queue = Queue(maxsize=max_queue_size, actor_options={"num_cpus": 0})
+
+    @ray.remote(num_cpus=0)
+    def producer_task(it, fn):
+        try:
+            batch = []
+            for item in it():
+                batch.append(item)
+                if len(batch) == batch_size:
+                    queue.put(_RefBox(fn(batch)))
+                    batch = []
+
+            if len(batch) > 0:
+                queue.put(_RefBox(fn(batch)))
+        except Exception:  # noqa
+            # always push an exception to the queue so that the consumer can raise it
+            queue.put(ray.put(_exc_info()))
+
+        queue.put(None)
+
+    producer_task.remote(it, fn)
+
+    while True:
+        result = queue.get()
+        if result is None:
+            break
+        elif isinstance(result, _RefBox):
+            yield ray.get(result.ref)
+        else:
+            raise _restore_exc_info(result)[1]
