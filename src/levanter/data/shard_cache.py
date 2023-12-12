@@ -1,6 +1,7 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import asyncio
 import dataclasses
+import heapq
 import logging
 import os
 import sys
@@ -136,6 +137,15 @@ class ChunkMetadata:
 class ShardMetadata:
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
     is_finished: bool = False
+
+
+    @property
+    def total_rows(self):
+        return sum(chunk.num_rows for chunk in self.chunks)
+
+    @property
+    def total_chunks_produced(self):
+        return len(self.chunks)
 
 
 @dataclass_json
@@ -325,6 +335,81 @@ class _ShardWriter:
         _serialize_json_and_commit(self.metadata_path, self.metadata)
 
 
+# We always want to prioritize chunks with the lowest serial number. This is because we want to stream chunks
+# to the trainer in order, and we want to minimize the amount of time we spend waiting for the next chunk.
+# because we zig-zag over shards to produce the serial numbers, we assign two kinds of priorities:
+# 1. reading priority: we want to read from the shard with the fewest dispatched chunks
+# 2. processing priority: we want to process the chunks with the lowest serial number first
+
+class DoneSentinel:
+    pass
+
+@dataclass
+class _BatchToBeProcessed:
+    data: Any
+    shard_name: str
+    shard_chunk_idx: int
+    batch_idx_in_chunk: int
+
+
+# we do it this way so we can control the number of concurrent tasks trying to read from the source
+# we distribute our shards evenly to some number of readers. Each reader round-robin reads from its shards
+# until it produces a chunk, then it yields the chunk to the main thread, which writes it to disk.
+# ideally the IO would by async, but that's not an option here.
+def _read_chunks_for_shards(
+    shard_source: ShardedDataset[T],
+    shards_to_manage: dict[str, str],  # shard_name -> metadata_path
+    cache_dir: str,
+    batch_processor: BatchProcessor,
+    rows_per_chunk: int,  # TODO: better size control
+):
+
+    shard_pqueue: list[Tuple[int, str]] = []  # heapq of (num_chunks, shard_name)
+    shard_readers: Dict[str, Iterator[T]] = {}
+    shard_writers: Dict[str, _ShardWriter] = {}
+    target_batch_size = min(batch_processor.batch_size, rows_per_chunk)
+
+    try:
+        for shard_name, shard_metadata_path in shards_to_manage.items():
+            shard_writers[shard_name] = _ShardWriter(shard_metadata_path)
+            shard_metadata = shard_writers[shard_name].metadata
+            heapq.heappush(shard_pqueue, (len(shard_metadata.chunks), shard_name))
+            shard_readers[shard_name] = shard_source.open_shard_at_row(shard_name, shard_metadata.total_rows)
+
+        while len(shard_pqueue) > 0:
+            num_chunks, shard_name = heapq.heappop(shard_pqueue)
+            writer = shard_writers[shard_name]
+            shard_iter = shard_readers[shard_name]
+            chunk_writer: Optional[_ChunkWriter] = None
+
+            chunk_produced = False
+
+            while not chunk_produced:
+                batch = []
+                for row in shard_iter:
+                    batch.append(row)
+
+                    if len(batch) == target_batch_size:
+                        break
+
+                if batch:
+                    # submit batch to be processed
+
+            if len(batch) < rows_per_chunk:
+                # we're done with this shard
+                del shard_readers[shard_name]
+                continue
+            else:
+                # we're not done with this shard, so put it back in the queue
+                heapq.heappush(shard_pqueue, (num_chunks + 1, shard_name))
+    except:  # noqa: E722
+        # push an exception to the queue so the other threads know to stop
+        read_chunks_out(_exc_info())
+
+
+
+
+
 def _produce_chunks_for_shard(
     sink, cache_dir, shard_writer, source, priority_fn, shard_idx, processor, process_queue, rows_per_chunk
 ):
@@ -340,8 +425,6 @@ def _produce_chunks_for_shard(
     batch = []
 
     def yield_chunk(chunk: ChunkMetadata):
-        nonlocal total_rows_written
-        total_rows_written += chunk.num_rows
         logger.debug(f"Yielding new chunk {chunk.name} from {shard_name} with {chunk.num_rows} rows")
         sink.new_chunk.remote(shard_name, chunk)
         shard_writer.commit_chunk(chunk)
