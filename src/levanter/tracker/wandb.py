@@ -48,7 +48,7 @@ class WandbTracker(Tracker):
             self.run = run
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        self.run.config.update(_convert_values_to_loggable(hparams))
+        self.run.config.update(_convert_values_to_loggable(hparams), allow_val_change=True)
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
         self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
@@ -156,6 +156,7 @@ class WandbConfig(TrackerConfig):
             mode=mode,
             config=hparams_to_save,
             settings=git_settings,
+            allow_val_change=True,
         )
 
         assert r is not None
