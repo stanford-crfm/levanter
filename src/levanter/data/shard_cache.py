@@ -1138,7 +1138,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 if not loop:
                     break
 
-                shard_offset = i % len(self._ledger.chunks)
+                shard_offset = (i + self._num_readers) % num_chunks
         else:
             assert self._broker is not None
             i = shard_offset
