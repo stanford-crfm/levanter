@@ -214,6 +214,7 @@ class WandbConfig:
             mode=mode,
             config=hparams_to_save,
             settings=other_settings,
+            allow_val_change=True,
         )
 
         assert r is not None
