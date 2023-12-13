@@ -43,7 +43,7 @@ def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optiona
         jit_log_metrics(metrics, step=step)
     else:
         # TODO: do we need to coerce to np here?
-        _global_tracker.log(metrics, step=step)
+        _global_tracker.log(metrics, step=step, commit=commit)
 
 
 def _no_throw_log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
