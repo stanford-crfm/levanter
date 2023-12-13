@@ -19,6 +19,7 @@ def non_caching_cycle(iterable):
     """Like itertools.cycle, but doesn't cache the iterable."""
     while True:
         yield from iterable
+        print("epoch XXX")
 
 
 # https://stackoverflow.com/a/58336722/1736826 CC-BY-SA 4.0
