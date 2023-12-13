@@ -398,7 +398,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def batch_size(self) -> int:
-        return 1024
+        return 128
 
 
 def concatenate_and_group_texts(
