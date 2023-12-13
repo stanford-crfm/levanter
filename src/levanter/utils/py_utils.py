@@ -17,9 +17,13 @@ def logical_cpu_core_count():
 
 def non_caching_cycle(iterable):
     """Like itertools.cycle, but doesn't cache the iterable."""
+    import jax
+
+    epoch = 0
     while True:
+        print(f"epoch {epoch} from cycle on {jax.process_index()}")
         yield from iterable
-        print("epoch XXX")
+        epoch += 1
 
 
 # https://stackoverflow.com/a/58336722/1736826 CC-BY-SA 4.0
