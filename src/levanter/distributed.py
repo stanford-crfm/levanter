@@ -37,7 +37,7 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
     # TODO: upstream this
     """
 
-    # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
+    # this is mostly copy paste, but it looks at range of different env variables that slurm sometimes sets
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
@@ -70,31 +70,35 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
 
     @classmethod
     def get_local_device_ids_for_process(cls) -> Optional[List[int]]:
+        local_process_id = cls.get_local_process_id()
+
+        if local_process_id is None:
+            return None
+
+        local_process_count = cls._infer_local_process_count()
+
         if _VISIBLE_DEVICES in os.environ:
             all_visible_devices = [int(x) for x in os.environ[_VISIBLE_DEVICES].split(",")]
         else:
-            all_visible_devices = list(range(jax.local_device_count()))
+            # if we don't expose CUDA_VISIBLE_DEVICES, we just assume there's one per process
+            all_visible_devices = list(range(local_process_count))
 
-        # We want to figure out how many tasks are running on this node
-        # the only env variable that is reliably set here is SLURM_STEP_TASKS_PER_NODE
-        # which is a comma separated list of the number of tasks per node, except they "helpfully"
-        # collapse the list if there are multiple nodes with the same number of tasks e.g.
-        # 1(x2),3,4(x3) -> 1,1,3,4,4,4
-        # Why they do this is beyond me. It seems like more trouble to be less helpful.
-        # So we have to do some parsing to figure out how many tasks are on each node
-        # and then figure out which node we are on
-        # first replace the repeated values with the number of times they are repeated
-        unrolled_tasks_per_node = []
 
-        multi_match = re.compile(r"(\d+)\(x(\d+)\)")
-        for x in os.environ[_TASKS_PER_NODE].split(","):
-            match = multi_match.match(x)
-            if match:
-                unrolled_tasks_per_node.extend([int(match.group(1))] * int(match.group(2)))
-            else:
-                unrolled_tasks_per_node.append(int(x))
+        if len(all_visible_devices) % local_process_count != 0:
+            raise ValueError(
+                f"Number of visible devices ({len(all_visible_devices)}) is not divisible by the number "
+                f"of local tasks ({local_process_count})"
+            )
 
-        # now we can figure out which node we are on. This is also annoying because the node list
+        num_devices_per_local_process = len(all_visible_devices) // local_process_count
+
+        # select contiguous devices for this process
+        begin = local_process_id * num_devices_per_local_process
+        return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+    @classmethod
+    def _infer_local_process_count(cls):
+        # Figure out which node we're on. This is also annoying because the node list
         # is a comma separated list of nodes, but they collapse the list if there are multiple nodes
         # with the same name e.g. node001,node002,node003,node004,node007 -> node[001-004,007]
         #  slurm exposes a command to expand this list for us, but it's not always available
@@ -105,28 +109,28 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
             )
 
         node_list = _square_brace_expand(node_list)
-
-        # finally, we can figure out which node we are on
         local_node = os.environ[_NODE_NAME]
         local_node_index = node_list.index(local_node)
+
+        # We want to figure out how many tasks are running on this node
+        # the only env variable that is reliably set here is SLURM_STEP_TASKS_PER_NODE
+        # which is a comma separated list of the number of tasks per node, except they "helpfully"
+        # collapse the list if there are multiple nodes with the same number of tasks e.g.
+        # 1(x2),3,4(x3) -> 1,1,3,4,4,4
+        # So we have to do some parsing to figure out how many tasks are on each node
+        # and then figure out which node we are on
+        # first replace the repeated values with the number of times they are repeated
+        unrolled_tasks_per_node = []
+        multi_match = re.compile(r"(\d+)\(x(\d+)\)")
+        for x in os.environ[_TASKS_PER_NODE].split(","):
+            match = multi_match.match(x)
+            if match:
+                unrolled_tasks_per_node.extend([int(match.group(1))] * int(match.group(2)))
+            else:
+                unrolled_tasks_per_node.append(int(x))
+
         tasks_on_local_node = unrolled_tasks_per_node[local_node_index]
-
-        local_process_id = cls.get_local_process_id()
-
-        if local_process_id is None:
-            return None
-
-        if len(all_visible_devices) % tasks_on_local_node != 0:
-            raise ValueError(
-                f"Number of visible devices ({len(all_visible_devices)}) is not divisible by the number "
-                f"of local tasks ({tasks_on_local_node})"
-            )
-
-        num_devices_per_local_process = len(all_visible_devices) // tasks_on_local_node
-
-        # select contiguous devices for this process
-        begin = local_process_id * num_devices_per_local_process
-        return all_visible_devices[begin : begin + num_devices_per_local_process]
+        return tasks_on_local_node
 
 
 def _square_brace_expand(node_list):
