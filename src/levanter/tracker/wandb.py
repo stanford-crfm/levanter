@@ -72,9 +72,11 @@ def _convert_values_to_loggable(values: dict[str, Any]):
             else:
                 return np.array(value)
         elif isinstance(value, Histogram):
-            from wandb.data_types import Histogram as WandbHistogram
+            import wandb
 
-            return WandbHistogram(np_histogram=value.to_numpy_histogram())
+            counts, limits = value.to_numpy_histogram()
+
+            return wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
         else:
             return value
 
@@ -97,7 +99,7 @@ class WandbConfig(TrackerConfig):
     """
 
     entity: Optional[str] = None  # An entity is a username or team name where you send runs
-    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    project: Optional[str] = "levanter"  # The name of the project where you are sending the enw run.
     name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
     tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project

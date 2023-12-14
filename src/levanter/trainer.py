@@ -148,13 +148,13 @@ class TrainerHooks:
 
     def run_jit_hooks(self, state: TrainerState, examples, grads: M):
         for hook in self.jit_hooks:
-            # jax.lax.cond(
-            #     state.step % hook.every == 0,
-            #     lambda _: hook.fn.inside_step(state, examples, grads),
-            #     lambda _: None,
-            #     None,
-            # )
-            hook.fn.inside_step(state, examples, grads)
+            jax.lax.cond(
+                state.step % hook.every == 0,
+                lambda _: hook.fn.inside_step(state, examples, grads),
+                lambda _: None,
+                None,
+            )
+            # hook.fn.inside_step(state, examples, grads)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
@@ -369,8 +369,7 @@ class Trainer:
         Performs a single training step.
         """
         with capture_time() as step_time:
-            loss, new_state, metrics = self._train_step_fn(state, *batch, **batch_kwargs)
-            tracker.log(metrics, step=state.step)
+            loss, new_state = self._train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
@@ -478,39 +477,38 @@ class Trainer:
             donate_args=(True,),
         )(self._train_step)
 
-    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState, dict]:
-        with tracker.jit_log_context() as metrics:
-            key, new_key = jax.random.split(state.training_key)
-            opt_state = state.opt_state
-            model = inference_mode(state.model, False)
+    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
+        key, new_key = jax.random.split(state.training_key)
+        opt_state = state.opt_state
+        model = inference_mode(state.model, False)
 
-            # we do this so that we only take the gradients of the trainable parameters
-            trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
+        # we do this so that we only take the gradients of the trainable parameters
+        trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
 
-            def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
-                model = eqx.combine(trainable_model, rest_model)
-                return self.loss_fn(model, *batch, **batch_kwargs, key=key)
+        def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
+            model = eqx.combine(trainable_model, rest_model)
+            return self.loss_fn(model, *batch, **batch_kwargs, key=key)
 
-            loss, grads = accumulate_gradients_sharded(
-                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(trainable_model, rest_model, *batch, **batch_kwargs)
+        loss, grads = accumulate_gradients_sharded(
+            split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+        )(trainable_model, rest_model, *batch, **batch_kwargs)
 
-            self.hooks.run_jit_hooks(state, batch, grads)
+        self.hooks.run_jit_hooks(state, batch, grads)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+        updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
 
-            if isinstance(self.optimizer, SecondOrderTransformation):
-                opt_state = self.optimizer.update_hessian(
-                    opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
-                )
-
-            model = eqx.apply_updates(model, updates)
-
-            new_state = dataclasses.replace(
-                state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
+        if isinstance(self.optimizer, SecondOrderTransformation):
+            opt_state = self.optimizer.update_hessian(
+                opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
             )
 
-        return loss, new_state, metrics
+        model = eqx.apply_updates(model, updates)
+
+        new_state = dataclasses.replace(
+            state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
+        )
+
+        return loss, new_state
 
     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
         model = model_init()

@@ -1,12 +1,10 @@
-from typing import NamedTuple
-
+import equinox
 import jax
 import numpy as np
 from jaxtyping import Scalar
 
 
-# NamedTuple so it's a pytree
-class Histogram(NamedTuple):
+class Histogram(equinox.Module):
     """
     Has enough information to log to tensorboard and wandb
     """

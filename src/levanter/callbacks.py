@@ -330,12 +330,11 @@ class GradWatchCallback(JitCallback):
                     for i, layer in enumerate(unstacked):
                         _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
                 else:
-                    # to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
-                    to_log[f"{self.prefix}/norms/{key_path}"] = jnp.sum(g)
+                    to_log[f"{self.prefix}/norm/{key_path}"] = jnp.linalg.norm(g)
 
                     if self.include_histogram:
                         hist = Histogram.from_array(g)
-                        to_log[f"{self.prefix}/histograms/{key_path}"] = hist
+                        to_log[f"{self.prefix}/histogram/{key_path}"] = hist
 
         to_log: dict[str, jax.Array] = {}
         _rec_log_magnitudes(to_log, None, grads)
