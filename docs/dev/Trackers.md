@@ -11,10 +11,10 @@ Given Levanter's historical dependency on W&B, the interface is designed to look
 The methods currently exposed are:
 
 * [levanter.tracker.current_tracker][]: returns the current tracker instance or sets it.
-* [levanter.tracker.log_metrics][]: logs a dictionary of metrics for a given step.
+* [levanter.tracker.log][]: logs a dictionary of metrics for a given step.
 * [levanter.tracker.log_summary][]: logs a dictionary of "summary" information, analogous to W&B's version.
 * [levanter.tracker.get_tracker][]: returns a tracker with the given name.
-* [levanter.tracker.jit_log_metrics][]: a version of [levanter.tracker.log_metrics][] that works inside JAX jit.
+* [levanter.tracker.jit_log][]: a version of [levanter.tracker.log][] that accumulates metrics inside of a `jit`-ted function.
 
 A basic example of using the tracker interface is shown below:
 
@@ -73,7 +73,7 @@ TODO: expand this section.
 
 ::: levanter.tracker.current_tracker
 
-::: levanter.tracker.log_metrics
+::: levanter.tracker.log
 
 ::: levanter.tracker.log_summary
 

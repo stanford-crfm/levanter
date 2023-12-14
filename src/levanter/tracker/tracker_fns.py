@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import logging
 import os
@@ -22,6 +23,7 @@ from levanter.utils.jax_utils import is_inside_jit
 logger = logging.getLogger(__name__)
 
 _global_tracker: Optional["Tracker"] = None
+_jit_log_dict: dict[str, Any] = {}
 
 LoggableValues: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
 
@@ -60,7 +62,10 @@ def _do_jit_log(metrics, *, step=None):
 
 def jit_log(metrics, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
-    jax.debug.callback(_do_jit_log, metrics, step=step)
+    # This doesn't work reliably on TPU, so we disable it for now
+    # jax.debug.callback(_do_jit_log, metrics, step=step)
+    global _jit_log_dict
+    _jit_log_dict.update(metrics)
 
 
 def log_summary(metrics: dict[str, Any]):
@@ -220,6 +225,17 @@ def get_tracker(name: str) -> Tracker:
         return tracker
 
     raise KeyError(f"Tracker with name {name} not found")
+
+
+@contextlib.contextmanager
+def jit_log_context():
+    global _jit_log_dict
+    old_dict = _jit_log_dict
+    _jit_log_dict = {}
+    try:
+        yield _jit_log_dict
+    finally:
+        _jit_log_dict = old_dict
 
 
 class _GlobalLoggerContextManager(AbstractContextManager):

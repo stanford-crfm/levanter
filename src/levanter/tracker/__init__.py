@@ -4,6 +4,7 @@ from levanter.tracker.tracker_fns import (
     current_tracker,
     get_tracker,
     jit_log,
+    jit_log_context,
     log,
     log_configuration,
     log_hyperparameters,
