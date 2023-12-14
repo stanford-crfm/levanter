@@ -3,6 +3,7 @@ from typing import Generic, Optional, Type, TypeVar
 
 import draccus
 import equinox as eqx
+import jax.numpy as jnp
 from jax.random import PRNGKey
 
 import haliax as hax
@@ -98,7 +99,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
-        logits = self(example.tokens, example.attn_mask, key=key)
+        logits = self(example.tokens, example.attn_mask, key=key).astype(jnp.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         return cross_entropy_loss(
