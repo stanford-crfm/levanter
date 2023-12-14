@@ -306,8 +306,8 @@ class GradWatchCallback(JitCallback):
     def __init__(
         self,
         prefix: str = "gradients",
-        include_histogram: bool = False,
-        split_scan_layers: bool = False,
+        include_histogram: bool = True,
+        split_scan_layers: bool = True,
     ):
         self.prefix = prefix
         self.include_histogram = include_histogram
@@ -332,7 +332,6 @@ class GradWatchCallback(JitCallback):
                 else:
                     # to_log[f"{self.prefix}/norms/{key_path}"] = jnp.linalg.norm(g)
                     to_log[f"{self.prefix}/norms/{key_path}"] = jnp.sum(g)
-                    return
 
                     if self.include_histogram:
                         hist = Histogram.from_array(g)
