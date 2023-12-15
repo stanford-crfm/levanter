@@ -788,7 +788,7 @@ class _ShardWriterWorker:  # type: ignore
     def chunk_failed(self, chunk_id: int, error: ExceptionInfo):
         self.collator.chunk_failed(chunk_id, error)
         print(f"Error while processing chunk {chunk_id} of shard {self.shard_name}", flush=True)
-        ray.get(self.parent_ref.shard_failed.remote(self.shard_name, error))
+        self.parent_ref.shard_failed.remote(self.shard_name, error)
 
     def _finished_chunk(self, idx: int, chunk: ChunkMetadata):
         if idx < self.metadata_writer.num_chunks:
@@ -822,11 +822,13 @@ class _ShardWriterWorker:  # type: ignore
             chunks_committed.append(chunk)
 
         if len(chunks_committed) > 0:
+            # TODO: this is called inside an async call so we need to not block, but we do need to sequence
+            # this to come before the shard_finished
             ray.get(self.parent_ref.new_chunk.remote(self.shard_name, *chunks_committed))
 
         if self._expected_num_chunks is not None and self.metadata_writer.num_chunks == self._expected_num_chunks:
             self.metadata_writer.finish()
-            ray.get(self.parent_ref.shard_finished.remote(self.shard_name))
+            self.parent_ref.shard_finished.remote(self.shard_name)
 
 
 class _ChunkCollator:
