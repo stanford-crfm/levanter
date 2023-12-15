@@ -943,9 +943,7 @@ class ChunkCacheBuilder:
             def priority_fn(shard_idx, chunk_idx):
                 return chunk_idx * num_shards + shard_idx
 
-            # we make 1 task for min(2 * nodes, num_shards) groups of shards
-            # num_shard_groups = min(2 * ray.cluster_resources()["CPU"], num_shards)
-            num_shard_groups = num_shards
+            num_shard_groups = max(min(2 * len(ray.nodes()), num_shards), 1)
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
