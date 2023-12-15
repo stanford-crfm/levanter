@@ -47,7 +47,7 @@ class PriorityWorkQueue:
         min_actors: int = 1,
         max_actors: Optional[int] = None,
     ):
-        self.queued_tasks = []
+        self.queued_tasks: list = []
         self.process_function = process_function
         if isinstance(actor_resources, dict):
             self.resources = RayResources.from_resource_dict(actor_resources)

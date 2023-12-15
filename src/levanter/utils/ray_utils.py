@@ -14,16 +14,16 @@ class ExceptionInfo:
 
     def restore(self):
         if self.ex is not None:
-            exc_value = self.ex.with_traceback(tb.as_traceback())
-            return (self.ex.__class__, exc_value, tb.as_traceback())
+            exc_value = self.ex.with_traceback(self.tb.as_traceback())
+            return (self.ex.__class__, exc_value, self.tb.as_traceback())
         else:
-            return (Exception, Exception("Process failed with no exception"), tb.as_traceback())
+            return (Exception, Exception("Process failed with no exception"), self.tb.as_traceback())
 
     def reraise(self):
         if self.ex is not None:
-            raise self.ex.with_traceback(tb.as_traceback())
+            raise self.ex.with_traceback(self.tb.as_traceback())
         else:
-            raise Exception("Process failed with no exception").with_traceback(tb.as_traceback())
+            raise Exception("Process failed with no exception").with_traceback(self.tb.as_traceback())
 
 
 @dataclass
@@ -58,10 +58,15 @@ class DoneSentinel:
 DONE = DoneSentinel()
 
 
-def ser_exc_info() -> ExceptionInfo:
-    exc_type, exc_value, exc_traceback = sys.exc_info()
-    tb = tblib.Traceback(exc_traceback)
-    return ExceptionInfo(exc_value, tb)
+def ser_exc_info(exception=None) -> ExceptionInfo:
+    if exception is None:
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        tb = tblib.Traceback(exc_traceback)
+        return ExceptionInfo(exc_value, tb)
+    else:
+        tb = exception.__traceback__
+        tb = tblib.Traceback(tb)
+        return ExceptionInfo(exception, tb)
 
 
 def current_actor() -> ray.actor.ActorHandle:
