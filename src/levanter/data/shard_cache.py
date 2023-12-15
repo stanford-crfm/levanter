@@ -763,7 +763,7 @@ class _ShardWriterWorker:  # type: ignore
         if self.metadata_writer.is_finished:
             logger.info(f"Shard {shard_name} already finished. Skipping.")
             self._expected_num_chunks = self.metadata_writer.num_chunks
-            self.parent_ref.shard_finished.remote(self.shard_name)
+            self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
 
         self.collator = _ChunkCollator(cache_dir, shard_name)
 
