@@ -363,9 +363,9 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
 @ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
 def _alternating_shard_reader(
     builder_ref: ActorHandle,  # _ChunkCacheBuilder
-    shard_writers: dict[str, ActorHandle],  # _ShardWriterWorker
+    shard_writers: ActorHandle,  # _GroupedShardWriter
     shard_source: ShardedDataset[T],
-    shard_idxes: Sequence[int],
+    shard_names: Sequence[str],
     priority_fn: Callable[[int, int], float],
     processor_actor: ActorHandle,  # _BatchProcessorQueue
     batch_size,
@@ -374,17 +374,17 @@ def _alternating_shard_reader(
     shard_pqueue: list[tuple[int, int]] = []  # heapq of (num_chunks, shard_idx)
     shard_readers: dict[int, Iterator[list[T]]] = {}
     try:
-        shard_metadatas = _initial_shard_metadatas(shard_source, shard_idxes, shard_writers)
+        shard_metadatas = _initial_shard_metadatas(shard_source, shard_names, shard_writers)
     except Exception as e:
         builder_ref.other_failed.remote(ser_exc_info())
         raise e
 
     batch_size = min(batch_size, num_rows_per_chunk)
 
-    for shard_idx in shard_idxes:
-        shard_name = shard_source.shard_names[shard_idx]
+    for shard_name in shard_names:
+        shard_idx = shard_source.shard_names.index(shard_name)
         try:
-            shard_metadata = shard_metadatas[shard_idx]
+            shard_metadata = shard_metadatas[shard_name]
             heapq.heappush(shard_pqueue, (len(shard_metadata.chunks), shard_idx))
             shard_readers[shard_idx] = _shard_reader_generator(
                 shard_source, shard_idx, shard_metadata.total_rows, batch_size
@@ -399,7 +399,6 @@ def _alternating_shard_reader(
         shard_name = shard_source.shard_names[shard_idx]
         try:
             shard_iter = shard_readers[shard_idx]
-            writer = shard_writers[shard_source.shard_names[shard_idx]]
 
             exhausted_shard = False
 
@@ -420,38 +419,38 @@ def _alternating_shard_reader(
                     priority = priority_fn(shard_idx, chunk_id)
                     batch = ray.put(batch)
                     batch_result_ref = ray.get(processor_actor.submit.remote(priority=priority, batch=RefBox(batch)))
-                    writer.chunk_batch_finished.remote(chunk_id, chunk_batch_idx, batch_result_ref)
+                    shard_writers.chunk_batch_finished.remote(
+                        shard_name, chunk_id, chunk_batch_idx, RefBox(batch_result_ref)
+                    )
                     chunk_batch_idx += 1
 
                 if total_chunk_rows >= num_rows_per_chunk or exhausted_shard:
                     chunk_filled = True
 
             if chunk_batch_idx > 0:
-                writer.chunk_finished_reading.remote(chunk_id, chunk_batch_idx)
+                shard_writers.chunk_finished_reading.remote(shard_name, chunk_id, chunk_batch_idx)
                 chunk_id += 1
 
             if exhausted_shard:
-                writer.shard_finished_reading.remote(chunk_id)
+                shard_writers.shard_finished_reading.remote(shard_name, chunk_id)
                 del shard_readers[shard_idx]
-                del shard_metadatas[shard_idx]
+                del shard_metadatas[shard_name]
             else:
                 # we're not done with this shard, so put it back in the queue
                 heapq.heappush(shard_pqueue, (chunk_id, shard_idx))
 
         except Exception as e:  # noqa
             logger.exception(f"Error while processing shard {shard_name}")
-            ray.get(shard_writers[shard_name].shard_failed.remote(ser_exc_info()))
+            ray.get(shard_writers.shard_failed.remote(shard_name, ser_exc_info()))
             raise e
 
 
-def _initial_shard_metadatas(shard_source, shard_idxes, shard_writers):
-    shard_metadatas: dict[int, ShardMetadata] = {}
-    _metadata_futures = [
-        shard_writers[shard_source.shard_names[shard_idx]].current_metadata.remote() for shard_idx in shard_idxes
-    ]
+def _initial_shard_metadatas(shard_source, shard_names, shard_group_writer):
+    shard_metadatas: dict[str, ShardMetadata] = {}
+    _metadata_futures = [shard_group_writer.current_metadata.remote(name) for name in shard_names]
     shard_metadatas_rs = ray.get(_metadata_futures)
-    for shard_idx, shard_metadata in zip(shard_idxes, shard_metadatas_rs):
-        shard_metadatas[shard_idx] = shard_metadata
+    for shard_name, shard_metadata in zip(shard_names, shard_metadatas_rs):
+        shard_metadatas[shard_name] = shard_metadata
     return shard_metadatas
 
 
@@ -672,9 +671,9 @@ class LoggerMetricsMonitor(MetricsMonitor):
 
 @dataclass
 class _ShardStatus:
-    writer_task: Optional[ActorHandle]
     num_chunks_sent: int = 0
     current_buffer: list[ChunkMetadata] = dataclasses.field(default_factory=list)
+    is_producing: bool = True
 
     def pop_chunk_to_send(self) -> Optional[ChunkMetadata]:
         if len(self.current_buffer) == 0:
@@ -686,10 +685,6 @@ class _ShardStatus:
     @property
     def is_finished_and_buffer_empty(self):
         return not self.is_producing and len(self.current_buffer) == 0
-
-    @property
-    def is_producing(self):
-        return self.writer_task is not None
 
 
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
@@ -704,7 +699,44 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
     return process_task
 
 
-@ray.remote
+# Ray does poorly with large numbers of actors (grumble grumble), so we can't have one actor per shard.
+# This class wraps a map of shard names to _ShardWriterWorkers, and manages the lifecycle of the workers.
+@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")  # type: ignore
+class _GroupShardWriterWorker:
+    def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
+        logging.basicConfig(level=logging.INFO)
+        self.cache_dir = cache_dir
+        self.shard_names = shard_names
+        self.shard_writers: dict[str, _ShardWriterWorker] = {
+            shard_name: _ShardWriterWorker(parent_ref, cache_dir, shard_name) for shard_name in shard_names
+        }
+
+    def current_metadata(self, shard_name: str):
+        return self.shard_writers[shard_name].current_metadata()
+
+    async def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox):
+        # batch is a pa.RecordBatch ref box
+        try:
+            batch = await batch.ref
+            return self.shard_writers[shard_name].chunk_batch_finished(chunk_id, batch_idx, batch)
+        except Exception as e:
+            print(f"Error while processing batch {batch_idx} of chunk {chunk_id} of shard {shard_name}", flush=True)
+            self.shard_writers[shard_name].chunk_failed(chunk_id, ser_exc_info())
+            raise e
+
+    def chunk_finished_reading(self, shard_name: str, chunk_id: int, expected_num_batches: int):
+        return self.shard_writers[shard_name].chunk_finished_reading(chunk_id, expected_num_batches)
+
+    def chunk_failed(self, shard_name: str, chunk_id: int, error: ExceptionInfo):
+        return self.shard_writers[shard_name].chunk_failed(chunk_id, error)
+
+    def shard_finished_reading(self, shard_name: str, expected_num_chunks: int):
+        return self.shard_writers[shard_name].shard_finished_reading(expected_num_chunks)
+
+    def shard_failed(self, shard_name: str, error: ExceptionInfo):
+        return self.shard_writers[shard_name].shard_failed(error)
+
+
 class _ShardWriterWorker:  # type: ignore
     """
     Actor that writes chunks to disk and updates the ShardMetadata. It reports to the ChunkCacheBroker
@@ -755,7 +787,8 @@ class _ShardWriterWorker:  # type: ignore
 
     def chunk_failed(self, chunk_id: int, error: ExceptionInfo):
         self.collator.chunk_failed(chunk_id, error)
-        self.parent_ref.shard_failed.remote(self.shard_name, error)
+        print(f"Error while processing chunk {chunk_id} of shard {self.shard_name}", flush=True)
+        ray.get(self.parent_ref.shard_failed.remote(self.shard_name, error))
 
     def _finished_chunk(self, idx: int, chunk: ChunkMetadata):
         if idx < self.metadata_writer.num_chunks:
@@ -827,26 +860,27 @@ class _ChunkCollator:
             self.chunk_writers[chunk_id].__exit__(*error.restore())
             del self.chunk_writers[chunk_id]
 
-        error.reraise()
-
     def _attempt_to_write_chunk_fragments(self, chunk_id) -> Optional[ChunkMetadata]:
-        assert chunk_id in self.chunk_partial_batches
 
-        chunk_batches = self.chunk_partial_batches[chunk_id]
+        if chunk_id in self.chunk_partial_batches:
+            chunk_batches = self.chunk_partial_batches[chunk_id]
 
-        while len(chunk_batches) > 0 and chunk_batches[0][0] == self.batch_counts[chunk_id]:
-            # we can write this batch
-            batch_id, batch = heapq.heappop(chunk_batches)
+            while len(chunk_batches) > 0 and chunk_batches[0][0] == self.batch_counts[chunk_id]:
+                # we can write this batch
+                batch_id, batch = heapq.heappop(chunk_batches)
 
-            if chunk_id not in self.chunk_writers:
-                assert batch_id == 0
-                chunk_name = os.path.join(self.shard_name, f"chunk-{chunk_id}")
-                writer = _ChunkWriter(self.cache_dir, chunk_name, batch.schema)
-                writer.__enter__()
-                self.chunk_writers[chunk_id] = writer
+                if chunk_id not in self.chunk_writers:
+                    assert batch_id == 0
+                    chunk_name = os.path.join(self.shard_name, f"chunk-{chunk_id}")
+                    writer = _ChunkWriter(self.cache_dir, chunk_name, batch.schema)
+                    writer.__enter__()
+                    self.chunk_writers[chunk_id] = writer
 
-            self.chunk_writers[chunk_id].write_batch(batch)
-            self.batch_counts[chunk_id] += 1
+                self.chunk_writers[chunk_id].write_batch(batch)
+                self.batch_counts[chunk_id] += 1
+
+        if chunk_id not in self.batch_counts:
+            return None
 
         if chunk_id in self.expected_totals and self.batch_counts[chunk_id] == self.expected_totals[chunk_id]:
             assert len(chunk_batches) == 0
@@ -896,12 +930,11 @@ class ChunkCacheBuilder:
         else:
             logger.info(f"Starting cache build for {len(source.shard_names)} shards")
 
-            self._shard_writers = {}
+            self._shard_writers = []
             self._shard_readers = []
+
             for shard_name in source.shard_names:
-                writer = _ShardWriterWorker.remote(self_ref, cache_dir, shard_name)  # type: ignore
-                self._shard_writers[shard_name] = writer
-                self.shard_status[shard_name] = _ShardStatus(writer)
+                self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
 
@@ -912,15 +945,18 @@ class ChunkCacheBuilder:
             # num_shard_groups = min(2 * ray.cluster_resources()["CPU"], num_shards)
             num_shard_groups = num_shards
 
-            shard_groups: list[list[int]] = [[] for _ in range(num_shard_groups)]
+            shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
                 self._current_round_robin.append(shard_name)
-                shard_groups[i % num_shard_groups].append(i)
+                shard_groups[i % num_shard_groups].append(shard_name)
 
             for shard_group in shard_groups:
+                writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
+                self._shard_writers.append(writer)
+
                 reader = _alternating_shard_reader.remote(
                     self_ref,
-                    self._shard_writers,
+                    writer,
                     source,
                     shard_group,
                     priority_fn,
@@ -966,7 +1002,7 @@ class ChunkCacheBuilder:
     def shard_finished(self, shard_name: str):
         """Callback method for when a shard worker has finished."""
         shard_status = self.shard_status[shard_name]
-        shard_status.writer_task = None
+        shard_status.is_producing = False
 
         # we might still have buffered chunks, so we need to check if we can append them
         self._attempt_to_flush_buffers()
