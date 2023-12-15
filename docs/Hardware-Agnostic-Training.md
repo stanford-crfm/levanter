@@ -25,7 +25,7 @@ Whenever a checkpoint is saved, Levanter creates a new directory named after the
 
 * the model's parameters
 * the current optimizer and trainer states
-* meta data on the current training step and the time the training step was saved
+* metadata on the current training step and the time the training step was saved
 
 ```
 user@DN0a2335e6 rj96a79n/step-1591 % ls
