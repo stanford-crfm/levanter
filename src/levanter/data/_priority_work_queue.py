@@ -8,7 +8,7 @@ from typing import Callable, Optional, TypeVar
 import ray
 from ray.actor import ActorHandle
 
-from levanter.utils.ray_utils import ExceptionInfo, RayResources, RefBox, current_actor
+from levanter.utils.ray_utils import ExceptionInfo, RayResources, RefBox, current_actor_handle
 
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class PriorityWorkQueue:
 
     def _spin_up_actor(self):
         assert len(self.workers) < self.max_actors
-        self_ref = current_actor()
+        self_ref = current_actor_handle()
 
         id = self._next_actor_id
         self._next_actor_id += 1

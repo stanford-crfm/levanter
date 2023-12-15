@@ -69,5 +69,5 @@ def ser_exc_info(exception=None) -> ExceptionInfo:
         return ExceptionInfo(exception, tb)
 
 
-def current_actor() -> ray.actor.ActorHandle:
+def current_actor_handle() -> ray.actor.ActorHandle:
     return ray.runtime_context.get_runtime_context().current_actor
