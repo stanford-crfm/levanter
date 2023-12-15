@@ -1,6 +1,6 @@
 # Switching Hardware Mid Training Run
 
-One of the standout features of Levanter is its ability to seamlessly operate on both GPU and TPU platforms. This unique feature allows for greater flexibility and adaptability in managing your training resources and is not a capability commonly supported by most frameworks, especially when it involves changing the number or type of accelerators mid-training while preserving the optimizer state. Our guide will walk you through the steps and best practices for switching hardware configurations mid-training run, ensuring a smooth and efficient training process for your models.
+One of the standout features of Levanter is its ability to seamlessly operate on both GPU and TPU platforms. This unique feature allows for greater flexibility and adaptability in managing your training resources and is not a capability commonly supported by most frameworks, especially when it involves changing the number or type of accelerators mid-training while preserving the optimizer state. The following guide will walk you through the steps and best practices for switching hardware configurations mid-training run, ensuring a smooth and efficient training process for your models.
 
 ### Starting a Training Run
 
