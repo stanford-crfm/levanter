@@ -58,7 +58,7 @@ Use `trainer.load_checkpoint_path` to specify where the model checkpoint you mov
 ## Picking Up Where You Left Off
 When your training run resumes, the trainer will first fast-forward through your training data to continue from the exact point in the epoch where your checkpoint was saved. You should see a progress bar tracking the fast-forward through your data.
 
-Resuming your training run restores your checkpoint's optimizers states, so your WandB learning curves should resume smoothly from where they left off.
+Resuming your training run restores your checkpoint's optimizer states, so your WandB learning curves should resume smoothly from where they left off.
 
 Loss curve when training was stopped on 2 GPUs:
 ![stopped-loss](figures/stopped_curve.png "loss curve when training stopped")
