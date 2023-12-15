@@ -673,7 +673,7 @@ class LoggerMetricsMonitor(MetricsMonitor):
 class _ShardStatus:
     num_chunks_sent: int = 0
     current_buffer: list[ChunkMetadata] = dataclasses.field(default_factory=list)
-    is_producing: bool = True
+    expected_num_chunks: Optional[int] = None
 
     def pop_chunk_to_send(self) -> Optional[ChunkMetadata]:
         if len(self.current_buffer) == 0:
@@ -684,7 +684,7 @@ class _ShardStatus:
 
     @property
     def is_finished_and_buffer_empty(self):
-        return not self.is_producing and len(self.current_buffer) == 0
+        return self.expected_num_chunks is not None and self.num_chunks_sent >= self.expected_num_chunks
 
 
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
@@ -812,7 +812,7 @@ class _ShardWriterWorker:  # type: ignore
         self._attempt_to_commit_chunks()
 
     def shard_failed(self, error: ExceptionInfo):
-        ray.get(self.parent_ref.shard_failed.remote(self.shard_name, error))
+        self.parent_ref.shard_failed.remote(self.shard_name, error)
 
     def _attempt_to_commit_chunks(self):
         chunks_committed = []
@@ -824,11 +824,11 @@ class _ShardWriterWorker:  # type: ignore
         if len(chunks_committed) > 0:
             # TODO: this is called inside an async call so we need to not block, but we do need to sequence
             # this to come before the shard_finished
-            ray.get(self.parent_ref.new_chunk.remote(self.shard_name, *chunks_committed))
+            self.parent_ref.new_chunk.remote(self.shard_name, *chunks_committed)
 
         if self._expected_num_chunks is not None and self.metadata_writer.num_chunks == self._expected_num_chunks:
             self.metadata_writer.finish()
-            self.parent_ref.shard_finished.remote(self.shard_name)
+            self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
 
 
 class _ChunkCollator:
@@ -999,10 +999,10 @@ class ChunkCacheBuilder:
         if len(chunks) > 0:
             ray.get(self.broker_ref._new_metrics.remote(self._metrics))
 
-    def shard_finished(self, shard_name: str):
+    def shard_finished(self, shard_name: str, expected_num_chunks: int):
         """Callback method for when a shard worker has finished."""
         shard_status = self.shard_status[shard_name]
-        shard_status.is_producing = False
+        shard_status.expected_num_chunks = expected_num_chunks
 
         # we might still have buffered chunks, so we need to check if we can append them
         self._attempt_to_flush_buffers()
