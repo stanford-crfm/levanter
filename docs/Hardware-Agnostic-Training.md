@@ -15,7 +15,7 @@ python src/levanter/main/train_lm.py \
 ```
 This example command assumes you're starting your training run on 2 GPUs in a [FSDP (Fully Sharded Data Parallel)](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html) setup. The `trainer.per_device_parallelism` parameter instructs Levanter to distribute the processing of each training batch across multiple accelerators, in this case, across 2 GPUs. With this setting, each GPU handles a subset of the training batch, processing 128 examples each, and their combined efforts contribute to the effective handling of the entire 256 batch size.
 
-We have comprehensive documentation on [getting started with training](Getting-Started-Training) in levanter, the [configuration file](Configuration-Guide.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
+We have comprehensive documentation on [getting started with training](Getting-Started-Training.md) in levanter, the [configuration file](Configuration-Guide.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
 
 
 ### How the Model Checkpoint is Saved
