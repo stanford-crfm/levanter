@@ -819,7 +819,6 @@ class ChunkCacheBuilder:
         self._current_round_robin = []
         self.source = source
         self._metrics = InProgressCacheMetrics()
-        self._processor_actor = BatchProcessorQueue.remote(processor)  # type: ignore
 
         self_ref = current_actor_handle()
 
@@ -831,6 +830,7 @@ class ChunkCacheBuilder:
 
             self._shard_writers = []
             self._shard_readers = []
+            self._processor_actors = []
 
             for shard_name in source.shard_names:
                 self.shard_status[shard_name] = _ShardStatus()
@@ -849,8 +849,10 @@ class ChunkCacheBuilder:
 
             for shard_group in shard_groups:
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
-
                 self._shard_writers.append(writer)
+
+                processor_actor = BatchProcessorQueue.remote(processor)  # type: ignore
+                self._processor_actors.append(processor_actor)
 
                 reader = _alternating_shard_reader.remote(
                     self_ref,
@@ -858,7 +860,7 @@ class ChunkCacheBuilder:
                     source,
                     shard_group,
                     priority_fn,
-                    self._processor_actor,
+                    processor_actor,
                     processor.batch_size,
                     rows_per_chunk,
                 )
