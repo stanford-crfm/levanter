@@ -35,7 +35,6 @@ from levanter.utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle
 
 from . import ShardableDataset
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
-from ._priority_work_queue import _QueueItem
 from .sharded_dataset import ShardedDataset
 
 
@@ -1425,6 +1424,14 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
         return as_record_batch(result)
 
     return process_task
+
+
+@dataclass(order=True, frozen=True)
+class _QueueItem:
+    priority: float
+    batch: ray.ObjectRef = dataclasses.field(compare=False)
+    task_id: int
+    task_future: asyncio.Future = dataclasses.field(compare=False)
 
 
 @ray.remote(num_cpus=0)
