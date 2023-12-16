@@ -352,6 +352,9 @@ def _alternating_shard_reader(
             ray.get(shard_writers[shard_name].shard_failed.remote(ser_exc_info()))
             raise e
 
+    MAX_INFLIGHT = 30
+    back_pressure_queue: list[ray.ObjectRef] = []
+
     while len(shard_pqueue) > 0:
         chunk_id, shard_idx = heapq.heappop(shard_pqueue)
         shard_name = shard_source.shard_names[shard_idx]
@@ -374,12 +377,19 @@ def _alternating_shard_reader(
                 total_chunk_rows += len(batch)
 
                 if batch:
+                    # we want to limit the number of pending tasks, so we wait until we're below the limit
+                    # before we start reading the next batch
+                    while len(back_pressure_queue) >= MAX_INFLIGHT:
+                        finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
+
                     priority = priority_fn(shard_idx, chunk_id)
                     batch = ray.put(batch)
                     batch_result_ref = ray.get(processor_actor.submit.remote(priority=priority, batch=RefBox(batch)))
                     shard_writers.chunk_batch_finished.remote(
                         shard_name, chunk_id, chunk_batch_idx, RefBox(batch_result_ref)
                     )
+                    back_pressure_queue.append(batch_result_ref)
+
                     chunk_batch_idx += 1
 
                 if total_chunk_rows >= num_rows_per_chunk or exhausted_shard:
@@ -910,7 +920,7 @@ class ChunkCacheBuilder:
             def priority_fn(shard_idx, chunk_idx):
                 return chunk_idx * num_shards + shard_idx
 
-            num_shard_groups = max(min(2 * len(ray.nodes()), num_shards), 1)
+            num_shard_groups = max(min(len(ray.nodes()), num_shards), 1)
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
