@@ -1,5 +1,6 @@
 import contextlib
 import dataclasses
+import logging
 import logging as pylogging
 import os
 import tempfile
@@ -118,11 +119,9 @@ def silence_transformer_nag():
     # this is a hack to silence the transformers' "None of PyTorch, TensorFlow 2.0 or Flax have been found..." thing
     # which is annoying and not useful
     # Often we won't call this early enough, but it helps with multiprocessing stuff
-    logger = pylogging.getLogger("transformers")
-    logger.setLevel(pylogging.ERROR)
-
-    # log propagation bites us here when using ray
-    logger.propagate = False
+    if os.getenv("TRANSFORMERS_VERBOSITY") is None:
+        os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+    import transformers  # noqa: F401
 
 
 @dataclass
