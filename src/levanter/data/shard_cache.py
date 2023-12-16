@@ -584,6 +584,77 @@ class _ShardStatus:
         return self.expected_num_chunks is not None and self.num_chunks_sent >= self.expected_num_chunks
 
 
+def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(batch: List[T]) -> pa.RecordBatch:
+        logging.basicConfig(level=logging.INFO)
+        queue.task_running.remote()
+        result = processor(batch)
+        del batch
+        return as_record_batch(result)
+
+    return process_task
+
+
+@dataclass(order=True, frozen=True)
+class _QueueItem:
+    priority: float
+    batch: ray.ObjectRef = dataclasses.field(compare=False)
+    task_id: int
+    task_future: asyncio.Future = dataclasses.field(compare=False)
+
+
+@ray.remote(num_cpus=0)
+class BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
+    """
+    A queue of tasks to be processed by a BatchProcessor.
+
+    BatchProcessorQueue spins up tasks to process batches of data.
+    It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
+    It then waits for a task to finish before spinning up another one.
+    """
+
+    pqueue: PriorityQueue[_QueueItem]
+    processor: BatchProcessor
+    _next_task_id: int
+    ready: bool  # whether or not we can spin up a new task
+
+    @property
+    def batch_size(self):
+        return self.processor.batch_size
+
+    def __init__(self, batch_processor: BatchProcessor[T]):
+        self.pqueue = PriorityQueue()
+        self.processor = batch_processor
+        self._next_task_id = 0
+        self.ready = True  # whether we're ready to ask ray to start a new task
+        self_ref = ray.runtime_context.get_runtime_context().current_actor
+        self._task_processor = _mk_queue_aware_process_task(batch_processor, self_ref)
+
+    # we don't need/want to dereference the batch, so we wrap it in a RefBox
+    # one virtue of doing things this way is that we can let Ray try to schedule the compute near the data.
+    async def submit(self, priority: float, batch: RefBox):
+        """Returns a future that is set to the *ObjectRef* of the processed batch. The future is "complete" when the task
+        starts, not when it finishes. You then call ray.get on the future's result to get the actual batch."""
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        f: asyncio.Future = asyncio.Future()
+        self.pqueue.put(_QueueItem(priority, batch.ref, task_id, f))
+        self._maybe_start_task()
+        return await f
+
+    def _maybe_start_task(self):
+        if self.ready and not self.pqueue.empty():
+            self.ready = False
+            item = self.pqueue.get()
+            batch = item.batch
+            item.task_future.set_result(self._task_processor.remote(batch))
+
+    def task_running(self):
+        self.ready = True
+        self._maybe_start_task()
+
+
 # Ray does poorly with large numbers of actors (grumble grumble), so we can't have one actor per shard.
 # This class wraps a map of shard names to _ShardWriterWorkers, and manages the lifecycle of the workers.
 @ray.remote(num_cpus=1, scheduling_strategy="SPREAD")  # type: ignore
@@ -1412,74 +1483,3 @@ class _ChunkReader:
     def from_metadata(cache_dir, metadata: ChunkMetadata, batch_size: int) -> "_ChunkReader":
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
-
-
-def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        logging.basicConfig(level=logging.INFO)
-        queue.task_running.remote()
-        result = processor(batch)
-        del batch
-        return as_record_batch(result)
-
-    return process_task
-
-
-@dataclass(order=True, frozen=True)
-class _QueueItem:
-    priority: float
-    batch: ray.ObjectRef = dataclasses.field(compare=False)
-    task_id: int
-    task_future: asyncio.Future = dataclasses.field(compare=False)
-
-
-@ray.remote(num_cpus=0)
-class BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
-    """
-    A queue of tasks to be processed by a BatchProcessor.
-
-    BatchProcessorQueue spins up tasks to process batches of data.
-    It spins up tasks until it reaches the maximum number of tasks that can be run in parallel.
-    It then waits for a task to finish before spinning up another one.
-    """
-
-    pqueue: PriorityQueue[_QueueItem]
-    processor: BatchProcessor
-    _next_task_id: int
-    ready: bool  # whether or not we can spin up a new task
-
-    @property
-    def batch_size(self):
-        return self.processor.batch_size
-
-    def __init__(self, batch_processor: BatchProcessor[T]):
-        self.pqueue = PriorityQueue()
-        self.processor = batch_processor
-        self._next_task_id = 0
-        self.ready = True  # whether we're ready to ask ray to start a new task
-        self_ref = ray.runtime_context.get_runtime_context().current_actor
-        self._task_processor = _mk_queue_aware_process_task(batch_processor, self_ref)
-
-    # we don't need/want to dereference the batch, so we wrap it in a RefBox
-    # one virtue of doing things this way is that we can let Ray try to schedule the compute near the data.
-    async def submit(self, priority: float, batch: RefBox):
-        """Returns a future that is set to the *ObjectRef* of the processed batch. The future is "complete" when the task
-        starts, not when it finishes. You then call ray.get on the future's result to get the actual batch."""
-        task_id = self._next_task_id
-        self._next_task_id += 1
-        f: asyncio.Future = asyncio.Future()
-        self.pqueue.put(_QueueItem(priority, batch.ref, task_id, f))
-        self._maybe_start_task()
-        return await f
-
-    def _maybe_start_task(self):
-        if self.ready and not self.pqueue.empty():
-            self.ready = False
-            item = self.pqueue.get()
-            batch = item.batch
-            item.task_future.set_result(self._task_processor.remote(batch))
-
-    def task_running(self):
-        self.ready = True
-        self._maybe_start_task()
