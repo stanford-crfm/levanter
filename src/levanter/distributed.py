@@ -222,7 +222,9 @@ def auto_ray_cluster(
                 if _is_this_machine(host):
                     logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
+                    ret = os.system(
+                        f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
+                    )
                     if ret != 0:
                         raise RuntimeError(f"Failed to start ray head with exit code {ret}")
                     else:

@@ -7,8 +7,6 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
-from transformers import LlamaConfig as HfLlamaConfig
-from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.nn as hnn
@@ -26,10 +24,16 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
+
+
+silence_transformer_nag()
+from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
+from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
 @LmConfig.register_subclass("llama")
