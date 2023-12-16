@@ -18,8 +18,8 @@ def num_cpus_used_by_tokenizer(tokenizer) -> int:
         else:
             # This is a bit hacky, but HF's fast tokenizers are parallelized under the hood.
             # we reserve a couple of cores just so Ray has somewhere to run the coordinator.
-            # Empirically I never see it get past 16 (usually more like 5-8), so we'll say 16
-            return min(max(1, logical_cpu_core_count() - 2), 16)
+            # Empirically I never see it get past 10 (usually more like 5-8), so we'll say 8
+            return min(max(1, logical_cpu_core_count() - 2), 8)
     else:
         return 1
 

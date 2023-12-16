@@ -325,7 +325,7 @@ def _alternating_shard_reader(
     shard_source: ShardedDataset[T],
     shard_names: Sequence[str],
     priority_fn: Callable[[int, int], float],
-    processor_actor: ActorHandle,  # _BatchProcessorQueue
+    processor_actor: ActorHandle,  # BatchProcessorQueue
     batch_size,
     num_rows_per_chunk,
 ):
@@ -615,7 +615,7 @@ class _QueueItem:
 
 
 @ray.remote(num_cpus=0)
-class BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
+class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     """
     A queue of tasks to be processed by a BatchProcessor.
 
@@ -931,7 +931,7 @@ class ChunkCacheBuilder:
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
                 self._shard_writers.append(writer)
 
-                processor_actor = BatchProcessorQueue.remote(processor)  # type: ignore
+                processor_actor = _BatchProcessorQueue.remote(processor)  # type: ignore
                 self._processor_actors.append(processor_actor)
 
                 reader = _alternating_shard_reader.remote(
