@@ -2,7 +2,7 @@ cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama/
 rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 train_urls:
-  - gs://levanter-data/dev/redpajama/2019-30/en_head_{0000..0059}.json.gz.dedup.classifier.jsonl.zst
+  - gs://levanter-data/dev/redpajama/2019-30/en_head_{0000..0055}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2019-30/en_middle_{0060..0096}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2020-05/en_head_{0000..0068}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2020-05/en_middle_{0000..0128}.json.gz.dedup.classifier.jsonl.zst
@@ -11,7 +11,7 @@ train_urls:
   - gs://levanter-data/dev/redpajama/2022-05/en_head_{0000..0059}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2022-05/en_middle_{0000..0096}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/2023-06/en_head_{0000..0069}.json.gz.dedup.classifier.jsonl.zst
-  - gs://levanter-data/dev/redpajama/2023-06/en_middle_{0000..104}.json.gz.dedup.classifier.jsonl.zst
+  - gs://levanter-data/dev/redpajama/2023-06/en_middle_{0000..0104}.json.gz.dedup.classifier.jsonl.zst
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_024de5df-1b7f-447c-8c3a-51407d8d6732.jsonl
   - gs://levanter-data/dev/redpajama/arxiv/arxiv_03232e26-be3f-4a28-a5d2-ee1d8c0e9831.jsonl
