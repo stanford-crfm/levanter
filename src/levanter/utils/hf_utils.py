@@ -1,8 +1,11 @@
 import os
 
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
-
+from levanter.logging import silence_transformer_nag
 from levanter.utils.py_utils import logical_cpu_core_count
+
+
+silence_transformer_nag()
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast  # noqa: E402
 
 
 HFTokenizer = PreTrainedTokenizer | PreTrainedTokenizerFast
