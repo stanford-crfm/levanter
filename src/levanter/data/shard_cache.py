@@ -1418,7 +1418,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: List[T]) -> pa.RecordBatch:
         logging.basicConfig(level=logging.INFO)
-        ray.get(queue.task_running.remote())
+        queue.task_running.remote()
         result = processor(batch)
         del batch
         return as_record_batch(result)
