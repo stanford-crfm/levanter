@@ -36,12 +36,11 @@ class VizGpt2Config:
 
 
 def main(config: VizGpt2Config):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
-    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
-
     # some axes we use outside the model proper
+    EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 

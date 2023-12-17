@@ -1,23 +1,33 @@
+import dataclasses
+import logging
+import os
+import tempfile
 import typing
+import warnings
 from contextlib import AbstractContextManager
 from typing import Any, Literal, Optional
 
+import draccus
 import jax
 
 from levanter.tracker import CompositeTracker, Tracker
+from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
 
 
+logger = logging.getLogger(__name__)
+
+
 _global_tracker: Optional["Tracker"] = None
 
 
-def log_metrics(metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
+def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
     """
     Log metrics to the global tracker.
 
-    Args
+    Args:
         metrics: Metrics to log
         step: Step to log at
         commit: Whether to commit the metrics. If None, uses the default for the tracker.
@@ -36,21 +46,93 @@ def log_metrics(metrics: dict[str, Any], *, step, commit: Optional[bool] = None)
         _global_tracker.log(metrics, step=step)
 
 
+def _no_throw_log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
+    try:
+        if _global_tracker is None:
+            raise RuntimeError("No global tracker set")
+        _global_tracker.log(metrics, step=step)
+    except Exception:
+        logger.exception("Error logging metrics")
+
+
 def jit_log_metrics(metrics, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
-    jax.debug.callback(log_metrics, metrics, step=step)
+    jax.debug.callback(_no_throw_log_metrics, metrics, step=step)
 
 
 def log_summary(metrics: dict[str, Any]):
     """
-    Log summary metrics to the global tracker.
+     Log summary metrics to the global tracker.
 
-    :param metrics: Metrics to log
+    Args:
+         metrics: Metrics to log
     """
     global _global_tracker
     if _global_tracker is None:
         raise RuntimeError("No global tracker set")
     _global_tracker.log_summary(metrics)
+
+
+def log_hyperparameters(hparams: dict[str, Any]):
+    """
+     Log hyperparameters to the global tracker.
+
+    Args:
+         hparams: Hyperparameters to log
+    """
+    global _global_tracker
+    if _global_tracker is None:
+        raise RuntimeError("No global tracker set")
+
+    _global_tracker.log_hyperparameters(hparams)
+
+
+def log_configuration(hparams: Any, config_name: Optional[str] = None):
+    """
+     Logs a configuration object to the global tracker. If the configuration object is a dataclass,
+        it is dumped to a yaml file and logged as an artifact.
+
+    Args:
+         hparams: Hyperparameters to log
+    """
+    global _global_tracker
+    if _global_tracker is None:
+        raise RuntimeError("No global tracker set")
+
+    hparams_dict = hparams_to_dict(hparams)
+    _global_tracker.log_hyperparameters(hparams_dict)
+
+    if dataclasses.is_dataclass(hparams):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            with open(config_path, "w") as f:
+                draccus.dump(hparams, f, encoding="utf-8")
+                name = config_name or "config.yaml"
+                _global_tracker.log_artifact(config_path, name=name, type="config")
+
+
+def set_global_tracker(tracker: Tracker):
+    """
+    Set the global tracker. Note that setting the global tracker is not thread-safe,
+    and using a tracker from multiple threads is only supported if the tracker itself is thread-safe.
+
+    In general, it's preferred to use the context manager returned by `current_tracker` instead of this function
+    except for once at the beginning of the program.
+
+    Args:
+        tracker: The tracker to set as the global tracker
+        force: Whether to force setting the global tracker even if it is already set
+
+    Examples:
+        >>> from levanter.tracker import set_global_tracker, log_metrics
+        >>> from levanter.tracker.wandb import WandbTracker
+        >>> set_global_tracker(WandbTracker())
+        >>> log_metrics({"foo": 1}, step=0)
+    """
+    global _global_tracker
+    if _global_tracker is not None:
+        warnings.warn("Global tracker is already set. Overwriting it.")
+    _global_tracker = tracker
 
 
 @typing.overload
@@ -71,14 +153,14 @@ def current_tracker(
     Get or set the global tracker. Note that setting the global tracker is not thread-safe,
     and using a tracker from multiple threads is only supported if the tracker itself is thread-safe.
 
-    Args
+    Args:
       tracker: If provided, returns a context manager that sets the global tracker to the provided tracker when used.
 
-    Returns
+    Returns:
         If no tracker is provided, returns the current global tracker.
         If a tracker is provided, returns a context manager that sets the global tracker to the provided tracker when used.
 
-    Examples
+    Examples:
         >>> from levanter.tracker import current_tracker, log_metrics
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
@@ -113,8 +195,18 @@ def get_tracker(name: str) -> Tracker:
     """
     Lookup a tracker in the current global tracker with the provided name.
 
-    :param name: Name of the tracker
-    :return: The tracker
+    Args:
+        name: Name of the tracker to lookup
+
+    Returns:
+        The tracker with the provided name
+
+    Examples:
+        >>> from levanter.tracker import get_tracker, log_metrics
+        >>> from levanter.tracker.wandb import WandbTracker
+        >>> with current_tracker(WandbTracker()):
+        ...     log_metrics({"foo": 1}, step=0)
+        ...     get_tracker("wandb").log_metrics({"foo": 2}, step=1)
     """
     tracker = current_tracker()
     if isinstance(tracker, CompositeTracker):

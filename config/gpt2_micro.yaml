@@ -7,7 +7,6 @@ model:
   num_layers: 4
 trainer:
   tracker:
-    type: wandb
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
 

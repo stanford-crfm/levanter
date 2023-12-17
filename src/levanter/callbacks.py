@@ -27,6 +27,8 @@ logger = pylogging.getLogger(__name__)
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
+    total_load_time = 0.0
+    total_loss_time = 0.0
     n = 0
 
     if name is not None:
@@ -35,10 +37,20 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         desc = "eval"
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
-    for batch in pbar:
+    iter_ = iter(pbar)
+    while True:
+        time_in = time.time()
+        batch = next(iter_, None)
+        if batch is None:
+            break
+        load_time = time.time() - time_in
+        total_load_time += load_time
         loss = loss_fn(model, batch)
         total_loss += loss.item()
         n += 1
+        loss_time = time.time() - time_in - load_time
+        total_loss_time += loss_time
+
         pbar.set_postfix(loss=total_loss / n)
 
         if max_batches is not None and n >= max_batches:
@@ -46,6 +58,9 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 
     if n > 0:
         total_loss /= n
+
+    logger.info(f"eval loading time: {total_load_time / n:.3f} s/ba")
+    logger.info(f"eval loss time: {total_loss_time / n:.3f} s/ba")
 
     return total_loss
 
@@ -62,7 +77,7 @@ def compute_validation_loss(
         prefix = "eval"
         if name:
             prefix += "/" + name
-        levanter.log_metrics({f"{prefix}/loss": loss}, step=info.step)
+        levanter.tracker.log_metrics({f"{prefix}/loss": loss}, step=info.step)
 
         if name:
             logger.info(f"{name} validation loss: {loss:.3f}")

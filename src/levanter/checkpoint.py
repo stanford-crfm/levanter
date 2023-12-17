@@ -1,5 +1,7 @@
+import contextlib
 import dataclasses
 import datetime
+import functools
 import json
 import logging
 import os
@@ -7,19 +9,23 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, List, Optional, Sequence, TypeVar, Union
+from typing import Callable, List, Optional, ParamSpec, Sequence, TypeVar, Union
 
 import equinox
+import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
 from draccus import field
-from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
+from jax import ShapeDtypeStruct
+from jax._src.interpreters.pxla import Mesh
 from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
 
+import haliax as hax
 import haliax.partitioning
+from haliax.partitioning import ResourceMapping
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
@@ -394,73 +400,12 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
         return None
 
 
-def tree_serialise_leaves(
-    path: PathLike,
-    pytree: PyTree,
-    filter_spec=default_serialise_filter_spec,
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> None:
-    """Analog to `equinox.tree_serialise_leaves`, but saves the leaves of a PyTree using fsspec."""
-
-    with fsspec.open(str(path), "wb") as f:
-        logger.info(f"Serializing to {path}")
-
-        def _serialise(spec, x):
-            def __serialise(y):
-                spec(f, y)
-                return y
-
-            jax.tree_map(__serialise, x, is_leaf=is_leaf)
-
-        jax.tree_map(_serialise, filter_spec, pytree)
-
-
-def tree_deserialise_leaves(
-    path: PathLike,
-    like: PyTree,
-    filter_spec=default_deserialise_filter_spec,
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-    fs=None,
-) -> PyTree:
-    """
-    Analog to `equinox.tree_deserialise_leaves`, but loads the leaves of a PyTree using fsspec.
-    """
-
-    fs, path_to_open = _get_fs_and_plain_path(path, fs)
-
-    with fs.open(path_to_open, "rb") as f:
-
-        def _deserialise(spec, x):
-            def __deserialise(y):
-                return spec(f, y)
-
-            return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
-
-        out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
-    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
-    return out
-
-
 def _get_fs_and_plain_path(path, fs=None):
     if fs is None:
         fs, _, (path_to_open,) = fsspec.get_fs_token_paths(str(path))
     else:
         path_to_open = path
     return fs, path_to_open
-
-
-# similar to eqx but it's a bit more permissive: it just wants things that have shapes and dtypes to be the same
-def _assert_same(new, old):
-    if hasattr(new, "shape") and hasattr(old, "shape"):
-        assert new.shape == old.shape, f"Shapes don't match: {new.shape} vs {old.shape}"
-    if hasattr(new, "dtype") and hasattr(old, "dtype"):
-        assert new.dtype == old.dtype, f"Dtypes don't match: {new.dtype} vs {old.dtype}"
-
-    # now get mad if one has a shape and the other doesn't
-    if hasattr(new, "shape") != hasattr(old, "shape"):
-        raise ValueError(f"One has a shape and the other doesn't: {new} vs {old}")
-    if hasattr(new, "dtype") != hasattr(old, "dtype"):
-        raise ValueError(f"One has a dtype and the other doesn't: {new} vs {old}")
 
 
 @dataclass
@@ -497,3 +442,83 @@ class CheckpointerConfig:
                     interval["until"] is None or interval["until"] > prev_interval["until"]
                 ), "Checkpoint intervals must be monotonic"
             prev_interval = interval
+
+
+P = ParamSpec("P")
+
+
+def load_from_checkpoint_or_initialize(
+    init_fn: Callable[P, M],
+    checkpoint_path: str,
+    axis_mapping: Optional[ResourceMapping] = None,
+    mesh: Optional[Mesh] = None,
+    *,
+    # TODO: add this back in
+    # allow_partial_checkpoint: bool,
+    force_load_checkpoint: Optional[bool] = None,
+    is_checkpointed: Optional[PyTree[FilterSpec]] = True,
+) -> Callable[P, M]:
+    """
+    Loads a checkpoint if it exists, otherwise initializes from scratch.
+
+    Args:
+        init_fn: the initialization function. This should be a function that takes some arguments and returns a
+                model or state. It should be jit-able and should not have any (destructive) side effects. It will
+                likely be called 2-3 times.
+        checkpoint_path: the path to the checkpoint
+        axis_mapping: the axis mapping to use for initialization. If None, the default axis mapping will be used.
+        mesh: the mesh to use for initialization. If None, the default mesh will be used.
+        force_load_checkpoint: if True, we must load a checkpoint. If False, we will not load a checkpoint. If None,
+                we will load a checkpoint if it exists.
+        is_checkpointed: a filter spec for the checkpointed parameters. This is used to filter out non-checkpointed
+                parameters for the initialization. If you don't specify this, all parameters are assumed to be
+                checkpointed.
+    """
+    if force_load_checkpoint is False:
+        cmanager = mesh or contextlib.nullcontext()
+
+        @functools.wraps(init_fn)
+        @hax.named_jit(axis_resources=axis_mapping)
+        def fn(*args, **kwargs):
+            with cmanager:
+                return init_fn(*args, **kwargs)
+
+        return fn
+    else:
+
+        @functools.wraps(init_fn)
+        def fn(*args, **kwargs):
+            with contextlib.ExitStack() as stack:
+                if mesh is not None:
+                    stack.enter_context(mesh)
+                if axis_mapping is not None:
+                    stack.enter_context(hax.axis_mapping(axis_mapping))
+
+                ckpt_shape = eqx.filter_eval_shape(init_fn, *args, **kwargs)
+
+                ckpt = load_checkpoint(
+                    eqx.filter(ckpt_shape, is_checkpointed), checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+                )
+
+                if ckpt is None:
+                    if force_load_checkpoint is True:
+                        raise ValueError(f"Could not load checkpoint from {checkpoint_path}")
+                    else:
+                        out = hax.named_jit(init_fn, axis_mapping)(*args, **kwargs)
+                        return out
+                else:
+                    ckpt = eqx.combine(ckpt, ckpt_shape)
+                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt)):
+                        # if we're resuming, we need to initialize any non-checkpointed values
+                        @hax.named_jit(axis_resources=axis_mapping)
+                        def partial_init(init_fn, *args, **kwargs):
+                            m = init_fn(*args, **kwargs)
+                            return eqx.filter(m, is_checkpointed, inverse=True)
+
+                        non_checkpointed = partial_init(init_fn, *args, **kwargs)
+                        ckpt = eqx.filter(ckpt, lambda x: not isinstance(x, ShapeDtypeStruct))
+                        return eqx.combine(ckpt, non_checkpointed)
+                    else:
+                        return ckpt
+
+        return fn

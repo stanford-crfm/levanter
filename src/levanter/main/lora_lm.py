@@ -19,7 +19,8 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import AdamConfig, OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
 
@@ -33,7 +34,7 @@ class LoraLmConfig:
     lora: LoraConfig = field(default_factory=LoraConfig)
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     peft_save_path: Optional[str] = None  # path to save peft-compatible checkpoints
     peft_hf_upload: Optional[str] = None
@@ -46,6 +47,7 @@ class LoraLmConfig:
 
 
 def main(config: LoraLmConfig):
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     converter = HFCheckpointConverter.from_hf(config.initialize_from_hf, trust_remote_code=config.trust_remote_code)
@@ -54,7 +56,6 @@ def main(config: LoraLmConfig):
 
     converter = converter.replaced(tokenizer=tokenizer)
 
-    config.trainer.initialize(config)
     model_config = converter.default_config
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators

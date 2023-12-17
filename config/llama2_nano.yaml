@@ -12,7 +12,6 @@ model:
   num_layers: 2
 trainer:
   tracker:
-    type: wandb
     project: "levanter"
     tags: ["openwebtext", "llama"]
   mp: p=f32

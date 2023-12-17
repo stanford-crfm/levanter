@@ -17,7 +17,7 @@ class NonePolicy(StringHolderEnum):
     ERROR = "error"
 
 
-def inference_mode(tree: T, value: bool, none_policy: str = NonePolicy.PRESERVE) -> T:
+def inference_mode(tree: T, value: bool, none_policy: str = NonePolicy.REPLACE) -> T:
     """
     Analogous to [equinox.nn.inference_mode][] (neé [equinox.tree_inference][]), but
     it works in the presence of nones for the `inference` argument.

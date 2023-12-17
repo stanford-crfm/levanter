@@ -7,7 +7,7 @@ from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor,
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
-from levanter.tracker import NoopTrackerConfig, TrackerConfig
+from levanter.tracker import NoopConfig, TrackerConfig
 
 
 logger = logging.getLogger(__name__)
@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
-    tracker: TrackerConfig = field(default_factory=NoopTrackerConfig)
+    tracker: TrackerConfig = field(default_factory=NoopConfig)
 
 
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logging("cache_dataset.log")
+    init_logging(".", "cache_dataset.log")
     args.initialize()
 
     tokenizer = args.the_tokenizer

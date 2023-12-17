@@ -25,6 +25,7 @@ from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
+from jaxtyping import Array
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 from transformers import PretrainedConfig as HfConfig
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
@@ -42,6 +43,8 @@ from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
+
+DEFAULT_MAX_SHARD_SIZE = int(10e9)
 
 logger = logging.getLogger(__name__)
 
@@ -526,8 +529,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         self,
         model: LmWithHfSerializationMixin,
         path: str,
-        save_tokenizer: bool = True,
-        save_reference_code: Optional[bool] = None,
+        save_tokenizer: bool,
+        save_reference_code: Optional[bool],
+        max_shard_size: int,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -588,7 +592,17 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # Model
         state_dict = to_numpy_state_dict(model)
-        save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
+        shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
+        if index is None:
+            save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
+        else:
+            for k, v in shards.items():
+                save_state_dict(v, os.path.join(path, k))
+            with open(os.path.join(path, SAFE_TENSORS_INDEX_NAME), "w") as f:
+                json.dump(index, f)
+
+            logger.info(f"Saved a sharded checkpoint with {len(shards)} shards, max size {max_shard_size} bytes")
+
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def save_pretrained(
@@ -598,6 +612,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         upload_to_hf: Union[bool, str, RepoRef] = False,
         save_reference_code: Optional[bool] = None,
         save_tokenizer: bool = True,
+        max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
         **hf_upload_kwargs,
     ):
         """
@@ -622,7 +637,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 logger.info(f"Saving model to {path} via temp path {local_path}")
 
             self._save_pretrained_local(
-                model, local_path, save_reference_code=save_reference_code, save_tokenizer=save_tokenizer
+                model,
+                local_path,
+                save_reference_code=save_reference_code,
+                save_tokenizer=save_tokenizer,
+                max_shard_size=max_shard_size,
             )
 
             if upload_to_hf is True:
@@ -828,3 +847,82 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
 
     result = eqx.combine(real_arrays, new_buffers)
     return result
+
+
+# copied/adapted from HF Transformers
+# Apache 2.0 License
+
+
+def _shard_hf_checkpoint(
+    state_dict: dict[str, Array],
+    max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
+    weights_name: str = SAFE_TENSORS_MODEL,
+):
+    """
+    Splits a model state dictionary in sub-checkpoints so that the final size of each sub-checkpoint does not exceed a
+    given size.
+
+    The sub-checkpoints are determined by iterating through the `state_dict` in the order of its keys, so there is no
+    optimization made to make each sub-checkpoint as close as possible to the maximum size passed. For example, if the
+    limit is 10GB and we have weights of sizes [6GB, 6GB, 2GB, 6GB, 2GB, 2GB] they will get sharded as [6GB], [6+2GB],
+    [6+2+2GB] and not [6+2+2GB], [6+2GB], [6GB].
+
+    <Tip warning={true}>
+
+    If one of the model's weight is bigger than `max_shard_size`, it will end up in its own sub-checkpoint which will
+    have a size greater than `max_shard_size`.
+
+    </Tip>
+
+    Args:
+        state_dict (`dict[str, Array]`): The state dictionary of a model to save.
+        max_shard_size (`int`):
+            The maximum size of each sub-checkpoint.
+        weights_name (`str`, *optional*, defaults to `"pytorch_model.bin"`):
+            The name of the model save file.
+
+    Returns:
+        A tuple comprising the sharded state dictionaries and the index. The index is a dictionary with two keys:
+        - `"metadata"`: a dictionary containing the total size of the model and the number of shards.
+        - `"weight_map"`: a dictionary mapping each weight to the sub-checkpoint it is saved in.
+
+        The index may be None if there is only one shard.
+    """
+    sharded_state_dicts: list[dict[str, Array]] = [{}]
+    last_block_size = 0
+    total_size = 0
+
+    for key, weight in state_dict.items():
+        weight_size = weight.size * weight.itemsize
+
+        # If this weight is going to tip up over the maximal size, we split, but only if we have put at least one
+        # weight in the current shard.
+        if last_block_size + weight_size > max_shard_size and len(sharded_state_dicts[-1]) > 0:
+            sharded_state_dicts.append({})
+            last_block_size = 0
+
+        sharded_state_dicts[-1][key] = weight
+        last_block_size += weight_size
+        total_size += weight_size
+
+    # If we only have one shard, we return it
+    if len(sharded_state_dicts) == 1:
+        return {weights_name: sharded_state_dicts[0]}, None
+
+    # Otherwise, let's build the index
+    weight_map = {}
+    shards = {}
+    for idx, shard in enumerate(sharded_state_dicts):
+        # NOTE(dlwh): this is how it is in the HF code. it hurts me
+        shard_file = weights_name.replace(".bin", f"-{idx+1:05d}-of-{len(sharded_state_dicts):05d}.bin")
+        shard_file = shard_file.replace(
+            ".safetensors", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.safetensors"
+        )
+        shards[shard_file] = shard
+        for key in shard.keys():
+            weight_map[key] = shard_file
+
+    # Add the metadata
+    metadata = {"total_size": total_size}
+    index = {"metadata": metadata, "weight_map": weight_map}
+    return shards, index

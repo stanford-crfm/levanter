@@ -49,7 +49,7 @@ class TrainArgs(alpaca.TrainArgs):
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -106,7 +106,7 @@ def train(config: TrainArgs):
         all_param_count = parameter_count(state.model)
         just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
-        levanter.log_summary(
+        levanter.tracker.log_summary(
             {
                 "parameter_count": all_param_count,
                 "trainable_parameter_count": just_lora_params,

@@ -15,6 +15,26 @@ def test_tracker_plugin_stuff_works():
         TrackerConfig.get_choice_class("foo")
 
 
+def test_tracker_plugin_default_works():
+    config = """
+    tracker:
+        entity: foo
+    """
+    parsed = yaml.safe_load(config)
+
+    @dataclasses.dataclass
+    class ConfigHolder:
+        tracker: TrackerConfig
+
+    import draccus
+
+    tconfig = draccus.decode(ConfigHolder, parsed).tracker
+
+    assert isinstance(tconfig, TrackerConfig.get_choice_class("wandb"))
+
+    assert tconfig.entity == "foo"  # type: ignore
+
+
 def test_tracker_plugin_multi_parsing_work():
     config = """
     tracker:
@@ -28,9 +48,9 @@ def test_tracker_plugin_multi_parsing_work():
 
     import draccus
 
-    from levanter.tracker.tracker import NoopTrackerConfig
+    from levanter.tracker.tracker import NoopConfig
 
-    assert isinstance(draccus.decode(ConfigHolder, parsed).tracker, NoopTrackerConfig)
+    assert isinstance(draccus.decode(ConfigHolder, parsed).tracker, NoopConfig)
 
     config = """
     tracker:
@@ -39,7 +59,7 @@ def test_tracker_plugin_multi_parsing_work():
     """
     parsed = yaml.safe_load(config)
     decoded = draccus.decode(ConfigHolder, parsed).tracker
-    assert decoded == (NoopTrackerConfig(), TrackerConfig.get_choice_class("wandb")())
+    assert decoded == (NoopConfig(), TrackerConfig.get_choice_class("wandb")())
 
 
 def test_get_tracker_by_name():

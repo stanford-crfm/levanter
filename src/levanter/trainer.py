@@ -10,16 +10,27 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
-import optax
 from draccus import field
-from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
@@ -34,12 +45,13 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint
+from levanter.checkpoint import CheckpointerConfig, load_from_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import capture_time
+from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
@@ -158,6 +170,7 @@ class Trainer:
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
             self.tracker = config.tracker.init(self.run_id)
+
         self._cmanagers = []
 
         if add_default_hooks:
@@ -270,7 +283,7 @@ class Trainer:
                 not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
 
         Returns:
-            model, opt_state, key, resume_step
+            TrainerState: the initial state,
         """
         if model is not None and model_init is not None:
             raise ValueError("only one of model and model_init should be specified")
@@ -281,51 +294,35 @@ class Trainer:
             # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
+        load_checkpoint_path = self.config.load_checkpoint_path
+
+        if load_checkpoint_path is None:
+            load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+
+        assert model_init is not None
+
         with self:
-            if self.config.load_checkpoint is not False:
-                trainer_state_shape = eqx.filter_eval_shape(
-                    self._initialize_state_from_scratch, model_init, training_key, is_trainable
-                )
-
-                load_checkpoint_path = self.config.load_checkpoint_path
-
-                if load_checkpoint_path is None:
-                    load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-                ckpt = load_checkpoint(
-                    trainer_state_shape,
-                    load_checkpoint_path,
-                    axis_mapping=self.parameter_axis_mapping,
-                    mesh=self.device_mesh,
-                )
-
-                if ckpt is None:
-                    if self.config.load_checkpoint is True:
-                        raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-                else:
-                    if model is not None:
-                        model = eqx.combine(ckpt.model, model)
-                    elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt.model)):
-                        # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                        # TODO: do we want to extend this to non-model things that don't get initialized from a ckpt?
-                        non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(
-                            model_init
-                        )
-                        model = eqx.combine(ckpt.model, non_trainable)
-                    else:
-                        model = ckpt.model
-
-                    return dataclasses.replace(ckpt, model=model)
-
-            return named_jit(self._initialize_state_from_scratch, self.parameter_axis_mapping)(
-                model_init, training_key, is_trainable
+            state = load_from_checkpoint_or_initialize(
+                self._initialize_state_from_scratch,
+                load_checkpoint_path,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+                force_load_checkpoint=self.config.load_checkpoint,
+                # if we're loading a checkpoint, we need to know which parameters are trainable
+                is_checkpointed=TrainerState(True, is_trainable, True, True, is_trainable),  # type: ignore
+            )(
+                model_init,
+                training_key,
+                is_trainable,
             )
+
+        return state
 
     def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
         """
         Performs a single training step.
         """
-        with capture_time() as step_time, levanter.current_tracker(self.tracker):
+        with capture_time() as step_time:
             loss, new_state = self._train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
@@ -370,13 +367,11 @@ class Trainer:
 
         return info
 
-    def _add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_step_info, every=1)
-        if eval_dataset is not None:
-            self.add_eval_hook(eval_dataset)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -451,6 +446,11 @@ class Trainer:
         )(trainable_model, rest_model, *batch, **batch_kwargs)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+        if isinstance(self.optimizer, SecondOrderTransformation):
+            opt_state = self.optimizer.update_hessian(
+                opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
+            )
+
         model = eqx.apply_updates(model, updates)
 
         new_state = dataclasses.replace(
@@ -472,12 +472,14 @@ class Trainer:
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
-    def _init_non_trainable_params(self, model_init):
-        model = model_init()
-        # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = self.partition_trainable_params(model)
-        non_trainable = self.mp.cast_to_compute(non_trainable)
-        return non_trainable
+
+def _initialize_global_tracker(config, run_id):
+    if isinstance(config, Sequence):
+        tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
+    else:
+        tracker = config.init(run_id)
+
+    levanter.tracker.set_global_tracker(tracker)
 
 
 @dataclass
@@ -551,21 +553,26 @@ class TrainerConfig:
             warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
             self.tracker = self.wandb
 
-    def initialize(self, all_config):
+    def initialize(self):
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
+        # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
+        pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
         self._validate_and_set_defaults()
 
-        self._maybe_set_id()
-        self._initialize_logging()
+        id = self._maybe_set_id()
+        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        _initialize_global_tracker(self.tracker, id)
+
         self.ray.initialize()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
 
         if self.require_accelerator:
-            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+            if jax.default_backend() == "cpu":
+                raise RuntimeError("No accelerator found. Please run on a TPU or GPU.")
 
         if self.shutdown_at_exit is not False:
             if isinstance(self.shutdown_at_exit, bool):
@@ -624,10 +631,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logging(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -650,6 +653,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -678,119 +683,24 @@ class TrainerConfig:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
 
-@dataclass
-class OptimizerConfig:
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    min_lr_ratio: float = 0.1
-    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
-    warmup: float = 0.01
-    """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
-    cooldown: float = 0.0
-    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    def build(self, num_train_steps: int) -> GradientTransformation:
-        """Creates the optimizer"""
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
-    def lr_scheduler(self, num_train_steps):
-        warmup_steps = self._convert_warmup(num_train_steps)
-        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
-        min_lr = self.learning_rate * self.min_lr_ratio
-
-        match self.lr_schedule:
-            case "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            case "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-            case "linear":
-                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-            case "inv_sqrt":
-                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
-            case _:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-        schedules = []
-        boundaries = []
-
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedules.append(warmup)
-            boundaries.append(warmup_steps)
-
-        schedules.append(schedule)
-
-        if cooldown_steps != 0:
-            final_main_lr = schedule(lr_decay_steps)
-            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
-            schedules.append(cooldown)
-            boundaries.append(num_train_steps - cooldown_steps)
-
-        if len(schedules) > 1:
-            schedule = optax.join_schedules(schedules, boundaries)
-
-        return schedule
-
-    def _convert_warmup(self, num_train_steps: int):
-        if self.warmup_ratio is not None:
-            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
-            return int(self.warmup_ratio * num_train_steps)
-        else:
-            return _convert_ratio_or_steps(self.warmup, num_train_steps)
+class AllConfig(Protocol):
+    trainer: TrainerConfig
 
 
-def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
-    def schedule(count):
-        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
-        return jnp.maximum(lr * decay, min_lr)
+def initialize(config: TrainerConfig | AllConfig):
+    """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
+    as hyperparameters and an artifact"""
+    if isinstance(config, TrainerConfig):
+        trainer_config = config
+    else:
+        trainer_config = config.trainer
 
-    return schedule
+    trainer_config.initialize()
+    levanter.tracker.log_configuration(config)
 
 
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
-
-
-def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
-    if ratio_or_steps < 1.0:
-        return int(ratio_or_steps * num_train_steps)
-    else:
-        return int(ratio_or_steps)
-
-
-def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
-    if isinstance(x, hax.NamedArray):
-        return x.scalar()
-    else:
-        return x
 
 
 def _trainable_params_only(model: M, filter: PyTree[FilterSpec]) -> M:
@@ -817,3 +727,10 @@ def _partition_trainable_params(model, filter):
 
     combined_mask = jax.tree_util.tree_map(trainable_and_diffable, filter)
     return eqx.partition(model, combined_mask)
+
+
+def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
+    if isinstance(x, hax.NamedArray):
+        return x.scalar()
+    else:
+        return x
