@@ -286,29 +286,27 @@ class Trainer:
             # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
-        with self:
-            load_checkpoint_path = self.config.load_checkpoint_path
+        load_checkpoint_path = self.config.load_checkpoint_path
 
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-        # if we're loading a checkpoint, we need to know which parameters are trainable
-        is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable)  # type: ignore
+        if load_checkpoint_path is None:
+            load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
         assert model_init is not None
 
-        state = load_from_checkpoint_or_initialize(
-            self._initialize_state_from_scratch,
-            load_checkpoint_path,
-            axis_mapping=self.parameter_axis_mapping,
-            mesh=self.device_mesh,
-            force_load_checkpoint=self.config.load_checkpoint,
-            is_checkpointed=is_checkpointed,
-        )(
-            model_init,
-            training_key,
-            is_trainable,
-        )
+        with self:
+            state = load_from_checkpoint_or_initialize(
+                self._initialize_state_from_scratch,
+                load_checkpoint_path,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+                force_load_checkpoint=self.config.load_checkpoint,
+                # if we're loading a checkpoint, we need to know which parameters are trainable
+                is_checkpointed=TrainerState(True, is_trainable, True, True, is_trainable),  # type: ignore
+            )(
+                model_init,
+                training_key,
+                is_trainable,
+            )
 
         return state
 
