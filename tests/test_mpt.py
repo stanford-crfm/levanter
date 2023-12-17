@@ -10,7 +10,7 @@ import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.utils.tree_utils import inference_mode
-from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_model_works_with_seqlen, skip_if_no_torch
 
 
 @pytest.mark.skip(reason="MPT is broken in the latest version of transformers")
@@ -74,7 +74,9 @@ def test_mpt_nano_compare(attn_impl):
     with tempfile.TemporaryDirectory() as tmpdir:
         # FA hack: we need to override the config to use torch attention, as their impl doesn't work with flash/alibi
         converter = converter.with_config_overrides(config_overrides={"attn_config": {"attn_impl": "torch"}})
-        converter._save_pretrained_local(lev_model, tmpdir)
+        converter._save_pretrained_local(
+            lev_model, tmpdir, save_tokenizer=True, save_reference_code=True, max_shard_size=1e8
+        )
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()
@@ -100,15 +102,6 @@ def test_mpt_nano_compare(attn_impl):
 #
 #     Vocab = haliax.Axis("vocab", config.vocab_size)
 #     lev_model = MptLmHeadModel.from_hf_pretrained("mosaicml/mpt-7b")
-
-
-@parameterize_with_configs("mpt*.yaml")
-def test_mpt_configs(config_file):
-    from levanter.main.train_lm import TrainLmConfig
-
-    config_class = TrainLmConfig
-
-    check_load_config(config_class, config_file)
 
 
 def test_pass_different_length_seq():

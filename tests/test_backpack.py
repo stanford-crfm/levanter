@@ -104,7 +104,9 @@ def test_backpack_nano_compare():
 
     # now test round trip
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter._save_pretrained_local(lev_model, tmpdir)
+        converter._save_pretrained_local(
+            lev_model, tmpdir, save_tokenizer=True, save_reference_code=True, max_shard_size=1e8
+        )
         model = AutoModelForCausalLM.from_pretrained(tmpdir, trust_remote_code=True)
 
     model.eval()

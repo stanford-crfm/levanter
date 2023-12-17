@@ -3,13 +3,13 @@ import itertools
 import logging
 import os
 import re
+import socket
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
 import jax
 import ray
 from jax._src import clusters, distributed
-from jax._src.clusters import SlurmCluster, TpuCluster
 
 from levanter.utils.py_utils import logical_cpu_core_count
 
@@ -209,16 +209,25 @@ def auto_ray_cluster(
                 logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
 
-                ray_port = _choose_port(port + 10234)
+                ray_port = _choose_port(port + 240)
                 address = f"{host}:{ray_port}"
 
                 # Explicitly setting the number of CPUs on ray init stops init errors
                 num_cpus = logical_cpu_core_count()
 
-                if jax.process_index() == 0:
-                    logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
+                # it used to be that if we were coordinator, we were also process 0
+                # this is no longer the case, so instead we need to check if we are the coordinator
+                # and if so, start the head
+
+                if _is_this_machine(host):
+                    logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
+                    ret = os.system(f"ray start --head --port {ray_port} --num-cpus {num_cpus}")
+                    if ret != 0:
+                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                    else:
+                        logger.info(f"Successfully started ray head on port {ray_port}.")
+
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
                 elif start_workers:
@@ -226,7 +235,11 @@ def auto_ray_cluster(
                         f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
                     )
                     logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                    ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                    if ret != 0:
+                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                    else:
+                        logger.info(f"Successfully started ray worker and connected to {address}.")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
@@ -253,7 +266,7 @@ class DistributedConfig:
 
         # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
         # since it depends on the jax internals, but it's the best we can do
-        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+        if any(env.is_env_present() for env in clusters.ClusterEnv._cluster_types):
             return True
 
         return False
@@ -292,3 +305,21 @@ class RayConfig:
     def initialize(self):
         if self.auto_start_cluster:
             auto_ray_cluster(address=self.address, start_workers=self.start_workers)
+
+
+def _is_this_machine(host):
+    """
+    Checks if the given host identifies this machine.
+    """
+    try:
+        # Get IP addresses of all interfaces
+        machine_ips = [addr[4][0] for addr in socket.getaddrinfo(socket.gethostname(), None)]
+
+        # Get the IP address of the host
+        host_ip = socket.gethostbyname(host)
+    except socket.gaierror:
+        # Host or interface could not be resolved
+        return False
+
+    # Check if the host IP matches any of the machine IPs
+    return any(host_ip == machine_ip for machine_ip in machine_ips)

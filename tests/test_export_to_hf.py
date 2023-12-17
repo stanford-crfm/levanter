@@ -50,7 +50,6 @@ def test_export_lm_to_hf():
             export_lm_to_hf.main(config)
 
             if has_torch():
-                # mostly just make sure it loads
                 AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
 
         finally:
