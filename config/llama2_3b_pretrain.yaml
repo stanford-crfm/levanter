@@ -22,6 +22,10 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 1E-6  # set low for fine-tuning
+  learning_rate: 3E-4  # same as Llama2-7B
   weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1E-5
+  warmup: 2000
   min_lr_ratio: 0.1
