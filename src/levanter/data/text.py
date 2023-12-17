@@ -16,10 +16,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
-import pyarrow.parquet as pq
 from chex import PRNGKey
 from draccus import field
-from pyarrow._parquet import FileMetaData
 
 import haliax as hax
 from haliax import Axis
@@ -48,7 +46,6 @@ from levanter.data.shard_cache import (  # noqa
     MetricsMonitor,
     ShardCache,
     WandbMetricsMonitor,
-    _serialize_json_and_commit,
     build_cache,
 )
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
@@ -59,7 +56,6 @@ from levanter.utils.jax_utils import use_cpu_device  # noqa
 logger = logging.getLogger("levanter.data.text")
 
 # TASKS:
-# TODO: figure out directory structure for caching multiple sources
 # TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
@@ -207,23 +203,6 @@ def _load_old_ledger(cache_dir):
         raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
 
-def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
-    # The old format looked like {"files": [{"file_name": name, "num_tokens": num_tokens} for name, num_tokens in ledger.items()]}
-    # the new format looks like { "chunks": [{"name": name, "num_rows": rows, field_counts: {"input_ids": num_tokens}} for name, rows, num_tokens in ledger.items()]}
-    # We unfortunately can't determine num_rows from the old format, so we have to open the chunks to find out
-
-    return CacheLedger(
-        chunks=[
-            ChunkMetadata(
-                name=chunk["file_name"].replace(".parquet", ""),
-                num_rows=_open_arrow_table(os.path.join(cache_dir, chunk["file_name"])).num_rows,
-                field_counts={"input_ids": chunk["num_tokens"]},
-            )
-            for chunk in ledger["files"]
-        ],
-    )
-
-
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     """
     Represents a tokenized document cache, which is a directory of parquet files with a ledger file.
@@ -298,20 +277,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             cache = ShardCache.load(cache_dir, batch_size=batch_size)
             return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
         except FileNotFoundError:
-            logger.info("new cache format not found, trying to convert from old format")
-            try:
-                ledger = _load_old_ledger(cache_dir)
-                logger.info("old cache format found, converting to new format")
-                ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
-                cache = ShardCache.load(cache_dir, batch_size=batch_size)
-                return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
-            except FileNotFoundError:
-                logger.warning("old cache format not found, creating new cache")
-                raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-            except Exception:
-                logger.exception("error converting cache")
-                raise
+            raise FileNotFoundError(f"{cache_dir} is not a complete cache")
         except Exception:
             logger.exception("error loading cache")
             raise
@@ -324,11 +290,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             return self
 
         return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
-
-
-def _open_arrow_table(path) -> FileMetaData:
-    fs, _, paths = fsspec.get_fs_token_paths(path)
-    return pq.read_metadata(path, filesystem=fs)
 
 
 def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
