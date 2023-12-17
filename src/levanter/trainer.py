@@ -361,13 +361,11 @@ class Trainer:
 
         return info
 
-    def _add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_step_info, every=1)
-        if eval_dataset is not None:
-            self.add_eval_hook(eval_dataset)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -467,13 +465,6 @@ class Trainer:
         opt_state = self.optimizer.init(trainable)
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
-
-    def _init_non_trainable_params(self, model_init):
-        model = model_init()
-        # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = self.partition_trainable_params(model)
-        non_trainable = self.mp.cast_to_compute(non_trainable)
-        return non_trainable
 
 
 def _initialize_global_tracker(config, run_id):
