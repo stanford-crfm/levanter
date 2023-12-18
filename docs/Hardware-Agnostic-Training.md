@@ -38,7 +38,7 @@ gsutil -m cp -r <GPU MODEL CHECKPT PATH> gs://<SOMEWHERE>
 ```
 You need to be logged into your GCP account in your current environment for this command to run properly. Information on how to set this up can be found [here](Getting-Started-TPU-VM.md).
 
-### Re-Configuring `per_device_parallelism`
+### Reconfiguration
 When transitioning to a new hardware setup, whether it's switching from GPU to TPU or adjusting the number of GPUs, we recommend maintaining the same training batch size (trainer.train_batch_size) and number of train steps (trainer.num_train_steps) to prevent issues with the learning rate scheduler.
 
 ## Resuming A Training Run
