@@ -228,9 +228,30 @@ def _sniff_format(url):
     good_formats = [".jsonl", ".txt", ".json"]
     # try both with and without compression (could be gz, bz2, etc, so look at the "first" extension)
     extensions = [os.path.splitext(url)[1], os.path.splitext(os.path.splitext(url)[0])[1]]
+    format_from_url = None
     for format in good_formats:
         if any(ext == format for ext in extensions):
-            return format
+            format_from_url = format
+            break
+
+    # If format_from_url is ".json", we need to check if it's actually jsonl
+    if format_from_url == ".json":
+        try:
+            with fsspec.open(url, "r", compression="infer") as f:
+                json.load(f)
+                return ".json"
+        except json.JSONDecodeError:
+            pass
+        
+        try:
+            with fsspec.open(url, "r", compression="infer") as f:
+                for line in f:
+                    json.loads(line)
+                    return ".jsonl"
+        except json.JSONDecodeError:
+            raise ValueError(f"Undable to determine format from content of {format_from_url}.")
+    else:
+        return format_from_url
 
 
 class JsonlDataset(ShardedDataset[dict]):
