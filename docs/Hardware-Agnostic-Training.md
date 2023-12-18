@@ -31,7 +31,7 @@ metadata.json	model		training_state	worker-0.cert
 ```
 
 ### Moving the Checkpoint File to Google Storage
-To switch to a new hardware configuration mid training run, you need to move your checkpoint file and your training data over to the new hardware environment. If you started your training run on a GPU server and want to move it to a TPU VM instance, you can use the following command to upload your checkpoint file to a Google Cloud Storage bucket that your TPU VM can access.
+To switch to a new hardware configuration mid-training run, you need to move your checkpoint file and your training data over to the new hardware environment. If you started your training run on a GPU server and want to move it to a TPU VM instance, you can use the following command to upload your checkpoint file to a Google Cloud Storage bucket that your TPU VM can access.
 
 ```bash
 gsutil -m cp -r <GPU MODEL CHECKPT PATH> gs://<SOMEWHERE>
