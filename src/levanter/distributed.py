@@ -75,20 +75,21 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         if local_process_id is None:
             return None
 
+        if _VISIBLE_DEVICES not in os.environ:
+            # if we don't expose CUDA_VISIBLE_DEVICES, we use JAX's default behavior, which is assuming 1 per process.
+            # this happens typically if CUDA_VISIBLE_DEVICES isn't forwarded to the docker container
+            return None
+
         local_process_count = cls._infer_local_process_count()
 
-        if _VISIBLE_DEVICES in os.environ:
-            all_visible_devices = [int(x) for x in os.environ[_VISIBLE_DEVICES].split(",")]
-        else:
-            # if we don't expose CUDA_VISIBLE_DEVICES, we just assume there's one per process
-            all_visible_devices = list(range(local_process_count))
-
+        all_visible_devices = [int(x) for x in os.environ[_VISIBLE_DEVICES].split(",")]
 
         if len(all_visible_devices) % local_process_count != 0:
             raise ValueError(
                 f"Number of visible devices ({len(all_visible_devices)}) is not divisible by the number "
                 f"of local tasks ({local_process_count})"
             )
+            return None
 
         num_devices_per_local_process = len(all_visible_devices) // local_process_count
 
