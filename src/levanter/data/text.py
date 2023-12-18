@@ -1,5 +1,6 @@
 import abc
 import copy
+import dataclasses
 import functools
 import json
 import logging
@@ -711,6 +712,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Dict[str, TokenizedDocumentCache]:
+        # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
+        # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
+        # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
+        task_config_fields = set(x.name for x in dataclasses.fields(LMTaskConfig))
+        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
+
         caches = {}
         for name, source_config in self.configs.items():
             weight = self.train_weights.get(name, 0)
@@ -719,10 +726,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 continue
 
             source_config_dict = source_config.__dict__
+
             dataset = LMDatasetConfig(
-                tokenizer=self.tokenizer,
                 cache_dir=os.path.join(self.cache_dir, name),
                 **source_config_dict,
+                **task_config_dict,
             )
             cache = dataset.build_or_load_cache(split, monitors)
             # drop the data source and corresponding weight if the cache is not built
