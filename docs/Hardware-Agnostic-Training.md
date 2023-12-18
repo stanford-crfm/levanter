@@ -13,7 +13,7 @@ python src/levanter/main/train_lm.py \
     --trainer.train_batch_size 256
 ```
 This example command assumes you're starting your training run on 2 GPUs in a [FSDP (Fully Sharded Data Parallel)](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html) setup.
-We have documentation on [getting started with training](Getting-Started-Training.md) in levanter, the [configuration file](Configuration-Guide.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
+We have documentation on [getting started with training](Getting-Started-Training.md) in Levanter, the [configuration file](Configuration-Guide.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
 
 
 ### How the Model Checkpoint is Saved
