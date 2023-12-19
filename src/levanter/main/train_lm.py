@@ -100,7 +100,9 @@ def main(config: TrainLmConfig):
     trainer = Trainer(config.trainer, optimizer, compute_loss)
 
     eval_datasets = config.data.validation_sets(Pos.size)
-    train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+    train_dataset = CausalLmDataset(
+        config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+    )
 
     with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
