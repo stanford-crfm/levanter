@@ -8,9 +8,6 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
 from jax.random import PRNGKey
-from transformers import AutoModelForCausalLM
-from transformers.models.mpt.configuration_mpt import MptAttentionConfig as HfMptAttentionConfig
-from transformers.models.mpt.configuration_mpt import MptConfig as HfMptConfig
 
 import haliax
 import haliax as hax
@@ -30,10 +27,16 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import cached_classproperty
+
+
+silence_transformer_nag()
+from transformers.models.mpt.configuration_mpt import MptAttentionConfig as HfMptAttentionConfig  # noqa: E402
+from transformers.models.mpt.configuration_mpt import MptConfig as HfMptConfig  # noqa: E402
 
 
 @dataclass
@@ -455,6 +458,8 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         axis_mapping: Optional[Dict[str, str]] = None,
         config=None,
     ) -> "MptLmHeadModel":
+        from transformers import AutoModelForCausalLM
+
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True, config=config)
         state_dict = model.state_dict()
         # move to cpu

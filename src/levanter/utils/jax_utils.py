@@ -1,18 +1,17 @@
 import contextlib
-import functools as ft
 import json
 from dataclasses import fields
-from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 import equinox as eqx
 import jax
-from jax import lax
 from jax import numpy as jnp
-from jax._src.array import ArrayImpl
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like
+
+
+X = TypeVar("X")
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -22,16 +21,6 @@ def jnp_to_python(a: jnp.ndarray):
         return a.item()
     else:
         return a.tolist()
-
-
-Carry = TypeVar("Carry")
-X = TypeVar("X")
-Y = TypeVar("Y")
-
-
-def reduce(fn: Callable[[Carry, X], Carry], init: Carry, *xs: X) -> Carry:
-    res = lax.scan(lambda carry, x: (fn(carry, *x), None), init=init, xs=xs)
-    return res[0]
 
 
 @contextlib.contextmanager
@@ -46,13 +35,9 @@ def is_inside_jit():
     return isinstance(jnp.zeros(()), jax.core.Tracer)
 
 
-def flops_estimate(fn, *args):
-    """Estimates the flop count of a function using XLA/HLO fanciness. See
-    https://github.com/google/flax/discussions/1854"""
-    m = jax.xla_computation(fn)(*args).as_hlo_module()
-    client = jax.lib.xla_bridge.get_backend()
-    costs = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)
-    return costs["flops"]
+def flops_estimate(fn, *args, **kwargs):
+    """Estimates the flop count of a function"""
+    return jax.jit(fn).lower(*args).cost_analysis()["flops"]
 
 
 def parameter_count(model: PyTree):
@@ -60,78 +45,6 @@ def parameter_count(model: PyTree):
     # NB we need to use object identity here, mostly because of ShapedDtypeStruct
     leaves = {id(x): x for x in jax.tree_util.tree_leaves(model) if is_jax_array_like(x)}
     return sum(x.size for x in leaves.values())
-
-
-def currently_allocated_array_memory(backend=None) -> Mapping[jax.Device, int]:
-    """Returns a mapping from device to the number of bytes currently allocated on that device"""
-    if backend is None:
-        backend = jax.lib.xla_bridge.get_backend()
-
-    result: dict[jax.Device, int] = {}
-
-    array: ArrayImpl
-    for array in backend.live_arrays():
-        for buffer in array.device_buffers:
-            result[buffer.device()] = result.get(buffer.device(), 0) + buffer.nbytes
-
-    return result
-
-
-def format_currently_allocated_array_memory(backend=None) -> str:
-    def _format_bytes(n):
-        if n < 1024:
-            return f"{n}B"
-        elif n < 1024**2:
-            return f"{n / 1024:.2f}KB"
-        elif n < 1024**3:
-            return f"{n / 1024 ** 2:.2f}MB"
-        else:
-            return f"{n / 1024 ** 3:.2f}GB"
-
-    return "\n".join(
-        f"{device}: {_format_bytes(nbytes)}" for device, nbytes in currently_allocated_array_memory(backend).items()
-    )
-
-
-def dump_fwd_bwd_jaxprs(out_prefix, fn, *args):
-    jaxpr_vjp = jax.make_jaxpr(lambda *x: jax.vjp(fn, *x))(*args)
-    primals, bkwd_fn = jax.vjp(fn, *args)
-    jaxpr_bkwd_fn = jax.make_jaxpr(bkwd_fn)(primals)
-
-    jaxpr_val_and_grad = jax.make_jaxpr(lambda *x: jax.value_and_grad(fn)(*x))(*args)
-
-    Path(out_prefix).parent.mkdir(parents=True, exist_ok=True)
-
-    with open(f"{out_prefix}.vg.jaxpr", "w") as f:
-        f.write(jaxpr_val_and_grad.pretty_print(name_stack=True))
-
-    with open(f"{out_prefix}.fwdbwd.jaxpr", "w") as f:
-        f.write(jaxpr_vjp.pretty_print(name_stack=True))
-        f.write(jaxpr_bkwd_fn.pretty_print(name_stack=True))
-
-
-_orig_PRNGkey = jax.random.PRNGKey
-
-
-# TODO: maybe change config option to a string value
-def set_hardware_rng_ops(enabled: bool = True):
-    """Enable JAX Custom PRNG extension."""
-    if enabled:
-        jax.config.update("jax_default_prng_impl", "unsafe_rbg")
-    else:
-        jax.config.update("jax_default_prng_impl", "threefry2x32")
-
-
-@jax.tree_util.register_pytree_node_class
-class pytree_partial(ft.partial):
-    def tree_flatten(self):
-        return ((self.func, self.args, tuple(self.keywords.values())), tuple(self.keywords.keys()))
-
-    @classmethod
-    def tree_unflatten(cls, kw_keys, tree) -> "pytree_partial":
-        assert len(tree) == 3
-        func, args, kw_vals = tree
-        return cls(func, *args, **dict(zip(kw_keys, kw_vals)))
 
 
 _sync_counter = 0
@@ -172,22 +85,6 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
 
     _sync_counter += 1
     return obj
-
-
-# Copy paste from equinox
-def ordered_tree_map(
-    f: Callable[..., Any],
-    tree: Any,
-    *rest: Any,
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> Any:
-    """Like jax.tree_util.tree_map, but guaranteed to iterate over the tree
-    in fixed order. (Namely depth-first left-to-right.)
-    """
-    # Discussion: https://github.com/patrick-kidger/equinox/issues/136
-    leaves, treedef = jax.tree_util.tree_flatten(tree, is_leaf)
-    all_leaves = [leaves] + [treedef.flatten_up_to(r) for r in rest]
-    return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
 
 
 # from https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple
@@ -262,21 +159,6 @@ def key_iterator(key: PRNGKeyArray):
     while True:
         key, subkey = jax.random.split(key)
         yield subkey
-
-
-# from https://github.com/google/jax/issues/4285
-def recursive_checkpoint(funs, threshold=2):
-    if len(funs) == 1:
-        return funs[0]
-    elif len(funs) == 2:
-        f1, f2 = funs
-        return lambda x: f2(f1(x))
-    elif len(funs) <= threshold:
-        return ft.reduce(lambda f, g: lambda x: g(f(x)), funs)
-    else:
-        f1 = recursive_checkpoint(funs[: len(funs) // 2])
-        f2 = recursive_checkpoint(funs[len(funs) // 2 :])
-        return lambda x: f2(jax.remat(f1)(x))
 
 
 def is_inexact_arrayish(x):

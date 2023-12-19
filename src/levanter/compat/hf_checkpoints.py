@@ -26,22 +26,26 @@ from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidati
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
-from transformers import PretrainedConfig as HfConfig
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
-from transformers.models.auto.auto_factory import _get_model_class
 
 import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
+from levanter.logging import silence_transformer_nag
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
+
+
+silence_transformer_nag()
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer  # noqa: E402
+from transformers import PretrainedConfig as HfConfig  # noqa: E402
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa: E402
+from transformers.dynamic_module_utils import get_class_from_dynamic_module  # noqa: E402
+from transformers.models.auto.auto_factory import _get_model_class  # noqa: E402
 
 
 DEFAULT_MAX_SHARD_SIZE = int(10e9)

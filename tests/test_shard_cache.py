@@ -1,7 +1,5 @@
 import asyncio
-import os
 import tempfile
-import time
 from typing import Iterator, List, Sequence
 
 import pyarrow as pa
@@ -161,55 +159,25 @@ def test_no_hang_if_empty_shard_source():
 
 
 def test_chunk_ordering_is_correct_with_slow_shards():
-    @ray.remote
-    class Blocker:
-        def __init__(self):
-            self.future = asyncio.Future()
-
-        async def block(self):
-            await self.future
-
-        def unblock(self):
-            self.future.set_result(None)
-
-    blocker_to_wait_on_test = Blocker.remote()
-
     class SlowShardSource(ShardedDataset[List[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0", "shard_1"]
 
         def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
-            if shard_name == "shard_1":
-                ray.get(blocker_to_wait_on_test.block.remote())
             max_count = 40 if shard_name == "shard_1" else 20
             for i in range(0, max_count):
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = build_cache(
-            tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
+            tmpdir, SlowShardSource(), TestProcessor(1), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
-        # bit hacky, but watch for the cache to create the two chunks for shard 0
-        # we'll use a file watcher to do this
-        shard_0_files = [f"{tmpdir}/shard_0/chunk-{i}.parquet" for i in range(2)]
-        shard_1_files = [f"{tmpdir}/shard_1/chunk-{i}.parquet" for i in range(4)]
-
-        def wait_for_chunk_creation(chunk_files):
-            max_wait = 100
-            while not all(os.path.exists(f) for f in chunk_files):
-                max_wait -= 1
-                if max_wait == 0:
-                    raise TimeoutError("Timed out waiting for chunks to be created")
-                time.sleep(0.5)
-
-        wait_for_chunk_creation(shard_0_files)
-        ray.get(blocker_to_wait_on_test.unblock.remote())
-        wait_for_chunk_creation(shard_1_files)
-
         # now block until the cache is done
+        print("at wait")
         cache.await_finished(timeout=10)
+        print("done waiting")
 
         # now check that the chunks are in the right order
         # TODO: this is a bit gross
@@ -275,6 +243,24 @@ def test_can_get_chunk_before_finished():
 
         # now wait until the cache is finished. mostly so that the tempdir cleanup works
         cache.await_finished(timeout=10)
+
+
+def test_shard_cache_crashes_if_processor_throws():
+    class ThrowingProcessor(BatchProcessor[Sequence[int]]):
+        def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
+            raise RuntimeError("exc")
+
+        @property
+        def batch_size(self) -> int:
+            return 8
+
+        @property
+        def num_cpus(self) -> int:
+            return 1
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(RuntimeError):
+            build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
 def test_map_batches_and_map_shard_cache():

@@ -11,5 +11,5 @@ def test_dont_blow_up_without_validation_set():
             cache_dir=tmpdir,
         )
 
-    # mostly just making sure this doesn't blow up
-    assert config.validation_set(10) is None
+        # mostly just making sure this doesn't blow up
+        assert config.validation_set(10) is None
