@@ -661,8 +661,13 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
+        assert self.train_batch_size != -1 or self.per_device_parallelism != -1
+
         if self.per_device_parallelism == -1:
-            self.per_device_parallelism = self.train_batch_size // jax.device_count()
+            self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+
+        if self.train_batch_size == -1:
+            self.train_batch_size = self.per_device_parallelism * self.data_axis_size
 
         # validate size of per_device_parallelism
         if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
