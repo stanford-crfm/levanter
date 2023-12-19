@@ -21,7 +21,7 @@ from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer import JitCallback, M, StepInfo, TrainerState
+from levanter.trainer import FullCallback, M, StepInfo, TrainerState
 from levanter.utils import jax_utils
 from levanter.utils.jax_utils import jnp_to_python, join_key
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
@@ -293,7 +293,7 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
     return compute_and_viz_log_probs
 
 
-class GradWatchCallback(JitCallback):
+class GradWatchCallback(FullCallback[M, dict[str, float | Histogram]]):
     """
     Emulates the behavior of Wandb's PyTorch-only built-in gradient logging (wandb.watch)
 
@@ -305,7 +305,7 @@ class GradWatchCallback(JitCallback):
 
     def __init__(
         self,
-        prefix: str = "gradients",
+        prefix: Optional[str] = None,
         include_histogram: bool = True,
         split_scan_layers: bool = True,
     ):
@@ -313,29 +313,47 @@ class GradWatchCallback(JitCallback):
         self.include_histogram = include_histogram
         self.split_scan_layers = split_scan_layers
 
-    def inside_step(self, state: TrainerState[M], examples, grads: M):
+    def initial_state(self, state: TrainerState[M]) -> dict[str, float | Histogram]:
+        return self._generate_statistics_for("grad", state.model)
+
+    def inside_step(self, cb_state, state: TrainerState[M], examples, grad: M) -> dict[str, float | Histogram]:
+        return self._generate_statistics_for("grad", grad)
+
+    def on_step(self, cb_state: dict[str, float | Histogram], step_info: StepInfo[M]) -> dict[str, float | Histogram]:
+        levanter.tracker.log(cb_state, step=step_info.step)
+        return cb_state
+
+    def _generate_statistics_for(self, kind: str, tree: M) -> dict[str, float | Histogram]:
         if self.split_scan_layers:
             is_leaf = lambda n: isinstance(n, haliax.nn.Stacked)  # noqa: E731
         else:
             is_leaf = lambda n: False  # noqa: E731
 
-        def _rec_log_magnitudes(to_log, prefix, grad):
-            leaf_key_paths = jax_utils.leaf_key_paths(grad, prefix=prefix, is_leaf=is_leaf)
-            del prefix
+        if self.prefix is not None:
+            log_prefix = self.prefix + "/" + kind
+        else:
+            log_prefix = kind
+
+        def _rec_log_magnitudes(to_log, path_prefix, tree):
+            leaf_key_paths = jax_utils.leaf_key_paths(tree, prefix=path_prefix, is_leaf=is_leaf)
+            del path_prefix
             for key_path, g in zip(
-                jax.tree_leaves(leaf_key_paths, is_leaf=is_leaf), jax.tree_leaves(grad, is_leaf=is_leaf)
+                jax.tree_leaves(leaf_key_paths, is_leaf=is_leaf), jax.tree_leaves(tree, is_leaf=is_leaf)
             ):
                 if self.split_scan_layers and isinstance(g, haliax.nn.Stacked):
                     unstacked = g.unstacked()
                     for i, layer in enumerate(unstacked):
                         _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
                 else:
-                    to_log[f"{self.prefix}/norm/{key_path}"] = jnp.linalg.norm(g)
+                    to_log[f"{log_prefix}/norm/{key_path}"] = jnp.linalg.norm(g)
 
                     if self.include_histogram:
                         hist = Histogram.from_array(g)
-                        to_log[f"{self.prefix}/histogram/{key_path}"] = hist
+                        to_log[f"{log_prefix}/histogram/{key_path}"] = hist
 
         to_log: dict[str, jax.Array] = {}
-        _rec_log_magnitudes(to_log, None, grads)
-        levanter.tracker.jit_log(to_log, step=state.step)
+
+        _rec_log_magnitudes(to_log, None, tree)
+
+        return to_log
+        # levanter.tracker.jit_log(to_log, step=state.step)

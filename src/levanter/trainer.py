@@ -1,3 +1,4 @@
+import abc
 import atexit
 import copy
 import dataclasses
@@ -7,6 +8,7 @@ import os
 import sys
 import typing
 import warnings
+from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -64,6 +66,7 @@ logger = pylogging.getLogger(__name__)
 X = TypeVar("X")  # Input
 M = TypeVar("M", bound=PyTree)
 M_con = TypeVar("M_con", bound=PyTree, contravariant=True)
+CBState = TypeVar("CBState")
 
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
@@ -77,6 +80,8 @@ class TrainerState(eqx.Module, Generic[M]):
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec] = eqx.field(static=True)
+
+    cb_states: Tuple[Any, ...]
 
 
 S = TypeVar("S", bound=TrainerState)
@@ -101,15 +106,23 @@ class StepInfo(Generic[M]):
     next_step = property(lambda self: self.state.step)
 
 
-@typing.runtime_checkable
-class Callback(Protocol[M]):
+class Callback(ABC, Generic[M]):
+    @abc.abstractmethod
     def on_step(self, info: StepInfo[M], force: bool = False):
         ...
 
 
-@typing.runtime_checkable
-class JitCallback(Protocol[M_con]):
-    def inside_step(self, state: TrainerState[M], examples, grads: M_con):
+class FullCallback(ABC, Generic[M_con, CBState]):
+    @abc.abstractmethod
+    def initial_state(self, state: TrainerState[M]) -> CBState:
+        ...
+
+    @abc.abstractmethod
+    def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
+        ...
+
+    @abc.abstractmethod
+    def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
         ...
 
 
@@ -128,35 +141,52 @@ class _Hook(Generic[M]):
 
 
 @dataclass
-class _JitHook(Generic[M]):
-    fn: JitCallback[M]
+class _StatefulHook(Generic[M]):
+    fn: FullCallback[M, Any]
     every: int
 
 
 class TrainerHooks:
     hooks: List[_Hook]
-    jit_hooks: List[_JitHook]
+    stateful_hooks: List[_StatefulHook]
 
     def __init__(self):
         self.hooks = []
-        self.jit_hooks = []
+        self.stateful_hooks = []
 
-    def run_hooks(self, info: StepInfo, force: bool = False):
+    def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
+        return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
+
+    def run_hooks(self, info: StepInfo, force: bool = False) -> tuple[CBState, ...]:
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 hook.fn.on_step(info, force=force)
 
-    def run_jit_hooks(self, state: TrainerState, examples, grads: M):
-        for hook in self.jit_hooks:
-            jax.lax.cond(
-                state.step % hook.every == 0,
-                lambda _: hook.fn.inside_step(state, examples, grads),
-                lambda _: None,
-                None,
-            )
-            # hook.fn.inside_step(state, examples, grads)
+        new_states = []
+        for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
+            if force or info.step % s_hook.every == 0:
+                new_state = s_hook.fn.on_step(state, info)
+            else:
+                new_state = state
+            new_states.append(new_state)
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
+        return tuple(new_states)
+
+    def run_jit_hooks(self, state: TrainerState, examples, grad: M) -> tuple[CBState, ...]:
+        hook: _StatefulHook
+        new_states = []
+        for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
+            new_s = jax.lax.cond(
+                state.step % hook.every == 0,
+                lambda s: hook.fn.inside_step(s, state, examples, grad),
+                lambda s: s,
+                hook_state,
+            )
+            new_states.append(new_s)
+
+        return tuple(new_states)
+
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | FullCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
             is_something = False
 
@@ -164,8 +194,8 @@ class TrainerHooks:
                 self.hooks.append(_Hook(fn, every))
                 is_something = True
 
-            if isinstance(fn, JitCallback):
-                self.jit_hooks.append(_JitHook(fn, every))
+            if isinstance(fn, FullCallback):
+                self.stateful_hooks.append(_StatefulHook(fn, every))
                 is_something = True
 
             if not is_something:
@@ -250,15 +280,7 @@ class Trainer:
         """Returns the mixed precision policy"""
         return self.config.mp
 
-    @typing.overload
-    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
-        ...
-
-    @typing.overload
-    def add_hook(self, *, every: int = 1):
-        ...
-
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | JitCallback] = None, *, every: int = 1):
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | FullCallback] = None, *, every: int = 1):
         return self.hooks.add_hook(fn, every=every)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
@@ -345,7 +367,7 @@ class Trainer:
                 load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
         # if we're loading a checkpoint, we need to know which parameters are trainable
-        is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable)  # type: ignore
+        is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable, True)  # type: ignore
 
         assert model_init is not None
 
@@ -493,7 +515,7 @@ class Trainer:
             split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
         )(trainable_model, rest_model, *batch, **batch_kwargs)
 
-        self.hooks.run_jit_hooks(state, batch, grads)
+        new_hook_states: tuple[Any, ...] = self.hooks.run_jit_hooks(state, batch, grads)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
 
@@ -505,7 +527,12 @@ class Trainer:
         model = eqx.apply_updates(model, updates)
 
         new_state = dataclasses.replace(
-            state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
+            state,
+            step=state.step + 1,
+            model=model,
+            opt_state=opt_state,
+            training_key=new_key,
+            cb_states=new_hook_states,
         )
 
         return loss, new_state
@@ -521,7 +548,10 @@ class Trainer:
 
         opt_state = self.optimizer.init(trainable)
 
-        return TrainerState(0, model, opt_state, training_key, is_trainable)
+        pre_hook_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable, ())
+        hook_states: tuple[Any, ...] = self.hooks.initial_state(pre_hook_state)
+
+        return dataclasses.replace(pre_hook_state, cb_states=hook_states)
 
 
 def _initialize_global_tracker(config, run_id):

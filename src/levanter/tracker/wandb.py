@@ -50,21 +50,21 @@ class WandbTracker(Tracker):
     def log_hyperparameters(self, hparams: dict[str, Any]):
         self.run.config.update(_convert_values_to_loggable(hparams), allow_val_change=True)
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
 
-    def log_summary(self, metrics: dict[str, Any]):
+    def log_summary(self, metrics: typing.Mapping[str, Any]):
         self.run.summary.update(_convert_values_to_loggable(metrics))
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
 
 
-def _convert_values_to_loggable(values: dict[str, Any]):
+def _convert_values_to_loggable(values: typing.Mapping[str, Any]):
     def convert_value_to_loggable(value: Any):
         if isinstance(value, (list, tuple)):
             return [convert_value_to_loggable(v) for v in value]
-        elif isinstance(value, dict):
+        elif isinstance(value, typing.Mapping):
             return {k: convert_value_to_loggable(v) for k, v in value.items()}
         elif isinstance(value, jax.Array):
             if value.ndim == 0:

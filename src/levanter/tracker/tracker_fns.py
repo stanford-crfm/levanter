@@ -26,7 +26,7 @@ _global_tracker: Optional["Tracker"] = None
 LoggableValues: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
 
 
-def log(metrics: dict[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None):
+def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None):
     """
     Log metrics to the global tracker.
 
@@ -47,7 +47,7 @@ def log(metrics: dict[str, LoggableValues | Any], *, step: Optional[int], commit
         jit_log(metrics, step=step)
     else:
         # TODO: do we need to coerce to np here?
-        _global_tracker.log(metrics, step=step)
+        _global_tracker.log(metrics, step=step, commit=commit)
 
 
 def _do_jit_log(metrics, *, step=None):

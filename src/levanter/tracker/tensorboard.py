@@ -23,10 +23,10 @@ class TensorboardTracker(Tracker):
     def __init__(self, writer: "SummaryWriter"):
         self.writer = writer
 
-    def log_hyperparameters(self, hparams: dict[str, Any]):
+    def log_hyperparameters(self, hparams: typing.Mapping[str, Any]):
         self.writer.add_hparams(hparams, {"dummy": 0})
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         del commit
         metrics = _flatten_nested_dict(metrics)
         for k, value in metrics.items():
