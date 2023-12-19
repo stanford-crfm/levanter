@@ -2,7 +2,6 @@ import abc
 import copy
 import dataclasses
 import functools
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -99,6 +98,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         tokens = hax.named(tokens, self.QPos)
 
         example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
         if self.fcm_prob > 0:
             # masks for attention
             # We support forgetful causal masking (FCM) which is a technique that improves training speed by
@@ -192,17 +192,6 @@ class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
             batch_size = 1
         cache = ShardCache.load(cache_dir, batch_size=batch_size)
         return BatchEncodingDataset(cache, return_batches=return_batches)
-
-
-def _load_old_ledger(cache_dir):
-    ledger_path = os.path.join(cache_dir, LEDGER_FILE)
-
-    fs = fsspec.core.url_to_fs(ledger_path)[0]
-    if fs.exists(ledger_path):
-        with fsspec.open(ledger_path, "r") as f:
-            return json.load(f)
-    else:
-        raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
 
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
