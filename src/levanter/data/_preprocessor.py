@@ -51,7 +51,7 @@ class BatchProcessor(Generic[T_contra], ABC):
 
     @property
     def batch_size(self) -> int:
-        return 1024
+        return 128
 
 
 class _DatasetTransform(ABC):

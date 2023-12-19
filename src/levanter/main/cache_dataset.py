@@ -29,7 +29,7 @@ def main(args: RayCachedLMDatasetConfig):
     for split in ["train", "validation"]:
         print(f"Caching {split} to {args.cache_dir}.")
         # connect or start the actor
-        batch_tokenizer = BatchTokenizer(tokenizer)
+        batch_tokenizer = BatchTokenizer(tokenizer, enforce_eos=args.enforce_eos)
         split_cache_dir = os.path.join(args.cache_dir, split)
         source = args.get_shard_source(split)
 

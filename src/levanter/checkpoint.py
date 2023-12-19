@@ -228,11 +228,6 @@ class Checkpointer:
             step=info.step,
             checkpoint_path=path,
         )
-        # also write a little sentinel file to indicate that we wrote this checkpoint from this worker
-        # just for debugging purposes
-        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.cert")
-        with fsspec.open(sentinel_path, "w") as f:
-            f.write("worker participated in checkpoint")
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
@@ -268,10 +263,7 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike, *, exist_ok: 
 
 
 def save_metadata(checkpoint_path, fs, step):
-    metadata = {
-        "step": step,
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
+    metadata = {"step": step, "timestamp": datetime.datetime.now().isoformat()}
     if jax.process_index() == 0:
         with fs.open(os.path.join(checkpoint_path, "metadata.json"), "w") as json_out:
             json.dump(metadata, json_out)
