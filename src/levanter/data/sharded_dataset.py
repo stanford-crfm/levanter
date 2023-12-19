@@ -34,8 +34,8 @@ class ShardedDataset(Dataset[T_co]):
     A ShardedDataset is the main interface for reading data. It's basically a mapping from shard names to iterators,
     with the extra feature that it exposes the ability to skip to a particular row in a shard.
 
-    The difference between a [ShardedDataset][] and a [ShardableDataset][] is that a [ShardedDataset][]
-    has a fixed number of shards, and a [ShardableDataset][] supports a `shard` method that can be used to
+    The difference between a [ShardedDataset][] and a [ShardableDataset][] is that a ShardedDataset
+    has a fixed number of shards, and a ShardableDataset `shard` method that can be used to
     split the dataset into multiple shards.
     """
 
@@ -80,8 +80,7 @@ class ShardedDataset(Dataset[T_co]):
 
         *Note that build_cache does not in general preserve the order of the data.*
 
-        Note that this is an experimental API and is subject to change. It is also not very well tested, so use at your
-        own risk.
+        Note that this is an experimental API and is subject to change.
 
         Returns:
             A new dataset that is backed by the cache.
@@ -201,7 +200,7 @@ class TextUrlDataset(ShardedDataset[str]):
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
         with fsspec.open(url, "r", compression="infer") as f:
-            format = _sniff_format(url)
+            format = _sniff_format_for_dataset(url)
             match format:
                 case ".jsonl":
                     # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
@@ -223,14 +222,49 @@ class TextUrlDataset(ShardedDataset[str]):
                     raise ValueError(f"Unknown format {format}")
 
 
-def _sniff_format(url):
-    # should take into account compression etc
+def _sniff_format_for_dataset(url):
     good_formats = [".jsonl", ".txt", ".json"]
+    format_from_url = None
     # try both with and without compression (could be gz, bz2, etc, so look at the "first" extension)
     extensions = [os.path.splitext(url)[1], os.path.splitext(os.path.splitext(url)[0])[1]]
     for format in good_formats:
         if any(ext == format for ext in extensions):
-            return format
+            format_from_url = format
+            break
+
+    if format_from_url == ".json":
+        # unfortunately, HF (and others) will use "json" for jsonl files,
+        # so we have to do some extra work to distinguish them.
+        # Choices are
+        # 1. look at the first 2 chars, if the first is "[", then it's probably json.
+        #    If it's "{\n", also json. If it's { something else", then it's probably jsonl
+        # 2. look at the first line. If it's valid json, then it's probably jsonl, unless there's only one line.
+        #
+        # (You can't actually distinguish between jsonl and json in a file with one line,
+        #  which we'll just declare to be json and not jsonl, since that seems more likely)
+        # (1) is cheating a bit, but it's fast and works in most cases we care about. (2) is more robust, but slower.
+        with fsspec.open(url, "r", compression="infer") as f:
+            first_two = f.read(2)
+
+            if first_two[0] == "[" or first_two == "{\n" or first_two == "{\r":
+                return ".json"
+            elif first_two[0] == "{":
+                return ".jsonl"
+
+            # this is (much) heavier. This is particularly slow if we're dealing with packed/non-prettified json
+            # since we're parsing the whole file.
+            first_line = first_two + f.readline()
+            try:
+                json.loads(first_line)
+                format_from_url = ".jsonl"
+            except json.JSONDecodeError:
+                return format_from_url
+
+            if not f.readline():
+                # only one line
+                format_from_url = ".json"
+
+    return format_from_url
 
 
 class JsonlDataset(ShardedDataset[dict]):
