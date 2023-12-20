@@ -197,13 +197,13 @@ If you make changes to the config, you'll need to get the config file to all the
 is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
 
 ```bash
-gsutil cp levanter/examples/alpaca/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+gsutil cp examples/alpaca/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
 ```
 
 If using Llama 2:
 
 ```bash
-gsutil cp levanter/examples/alpaca/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+gsutil cp examples/alpaca/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
 ```
 
 And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/alpaca/train-alpaca.yaml`
@@ -231,14 +231,13 @@ during training, you are logged into your wandb account with the following two c
 
 ```bash
 conda activate levanter
-mkdir -p levanter/checkpoints
 wandb login ${YOUR TOKEN HERE}
 ```
 Now you can run the training command:
 
 ```bash
-python levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca.yaml \
+python examples/alpaca/alpaca.py \
+--config_path examples/alpaca/alpaca.yaml \
 --trainer.checkpointer.base_path levanter/checkpoints \
 --hf_save_path levanter/checkpoints
 ```
