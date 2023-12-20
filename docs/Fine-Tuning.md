@@ -1,4 +1,4 @@
-# Custom Fine-Tuning: Alpaca Tutorial
+# Custom Fine-Tuning: Alpaca
 
 While Levanter's main focus is pretraining, we can also use it for fine-tuning.
 As an example, we'll show how to reproduce [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html),
@@ -77,8 +77,265 @@ The area of the rectangle is 50 cm2.
 From there [original Alpaca script](https://github.com/tatsu-lab/stanford_alpaca/blob/main/train.py) *masks out the loss* for all tokens before the start of the output. This gets
 the model to learn to mimic outputs conditioned on inputs, rather than spending time learning to generate inputs and outputs.
 
+## Setup
 
-##Code Walkthrough
+Rather than going through the code first, we'll jump straight to running the script. We'll cover the code in the
+[Code Walkthrough](#code-walkthrough) section below.
+
+!!! tip
+
+    Make sure you go through either the [GPU](./Getting-Started-GPU.md) or [TPU](./Getting-Started-TPU-VM.md) setup, depending on what you want to use.
+
+### Environment Setup
+
+#### \[GPU\] Environment Setup
+
+Follow the instructions in the [Getting Started with GPUs](./Getting-Started-GPU.md) guide to create a conda environment or virtualenv
+and to install JAX with CUDA.
+
+#### \[TPU\] Environment Setup
+
+For TPUs, please follow the instructions in the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide to
+get started with a TPU VM. Once you have, you can just run the
+following command from a source checkout of Levanter:
+
+```bash
+bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
+```
+
+### Install Levanter
+
+```bash
+
+```bash
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+```
+
+## Configuration
+
+We have two configs for Alpaca: one for Llama 1 and one for Llama 2. The only difference is the model id.
+
+### Config to Replicate Alpaca
+
+```yaml
+# cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
+data: tatsu-lab/alpaca
+model_name_or_path: huggyllama/llama-7b
+trainer:
+  mp: p=f32,c=bfloat16
+  wandb:
+    project: "levanter-alpaca"
+  num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
+  train_batch_size: 128
+  # if using model parallelism, this is useful:
+  tensor_parallel_axes: ["mlp", "heads"]
+optimizer:
+  learning_rate: 2e-5
+  weight_decay: 0.0
+```
+
+This config uses mixed fp32/bf16 precision and sets the number of training steps to be roughly 3 epochs. It sets up the optimizer
+to use a learning rate of 2e-5 and no weight decay. `trainer.per_device_parallelism` is roughly equivalent to HF's
+`per_device_train_batch_size`. If you want to use model parallelism, you can set `trainer.model_axis_size` to something
+like 2. (This will split the model across two devices. This might be useful if you're using a v3-64 or something similar and
+want to maintain the same batch size.)
+
+### Llama 2 Config
+
+The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca-llama2.yaml) is identical, except for the model id.
+If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
+
+Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
+to the TPU VM as an environment variable. (We'll show you how to do this later.)
+
+### Customizing the Config
+
+If you have your own dataset, you'll want to change the `data` field in the config to point to your dataset.
+You'll also want to change the `model_name_or_path` field to point to the model you want to use.
+Currently, Levanter supports GPT-2, Llama, MPT, and Backpack checkpoints.
+
+```yaml
+data: <Your Data Path>  # Path to the training data, or huggingface dataset name.
+data_cache_dir: <Your Data Cache Path>
+model_name_or_path: "meta-llama/Llama-2-7b-chat-hf"
+trainer:
+    ...
+```
+
+#### Custom Prompts
+
+If you want to use your own prompts, you can add them to the config, like this:
+
+```yaml
+prompts:
+  prompt_input: |-
+    ### Instruction: {instruction}
+    ### Input: {input}
+    ### Output:
+  prompt_no_input: |-
+    ### Instruction: {instruction}
+    ### Output:
+```
+
+#### Custom Datasets
+
+The script we develop in this tutorial is designed for Alpaca, but it should work for any single-turn
+instruction-following task. For instance, to train a code alpaca model, you could use the following config:
+
+```yaml
+data: lucasmccabe-lmi/CodeAlpaca-20k  # a dataset on the Hugging Face hub
+data_cache_dir: code_alpaca_cache  # some path to store the cache
+```
+
+The dataset can also be a JSON path.
+
+#### \[TPU\] Using a Modified Config
+
+If you make changes to the config, you'll need to get the config file to all the workers. For TPU, the best way to do this
+is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
+
+```bash
+gsutil cp levanter/examples/alpaca/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+If using Llama 2:
+
+```bash
+gsutil cp levanter/examples/alpaca/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
+```
+
+And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/alpaca/train-alpaca.yaml`
+in the command line below. Levanter knows how to read from Google Cloud Storage, so you don't need to do anything else.
+
+## Launching the Job
+
+### \[GPU\] Launching the Job
+
+Right now, Levanter is only known to work with single node GPU training. The example commands below demonstrate how to launch a training job
+on a node with 8 A100 GPUs, but should work for other single node GPU configurations. For example, we've also tested Alpaca replication with
+a node of RTX 6000 Ada Generation 49.1GB GPUs.
+
+Before running your training bash command, ensure you are in your `levanter` conda environment, you've created a directory for saving checkpoints
+during training, you are logged into your wandb account with the following two commands:
+
+!!! warning
+
+    Fine-tuning a 7B parameter model needs **a lot** of accelerator memory, you will need more than 80GB of GPU memory in
+    aggregate to run this job. Because Levanter makes heavy use of FSDP, you can use several smaller cards.
+    If you don't have enough memory, you can try reducing the `train_batch_size` or the `per_device_parallelism` in
+    the config.
+
+
+
+```bash
+conda activate levanter
+mkdir -p levanter/checkpoints
+wandb login ${YOUR TOKEN HERE}
+```
+Now you can run the training command:
+
+```bash
+python levanter/examples/alpaca.py \
+--config_path levanter/examples/alpaca.yaml \
+--trainer.checkpointer.base_path levanter/checkpoints \
+--hf_save_path levanter/checkpoints
+```
+
+You can change `--trainer.checkpointer.base_path` and `--hf_save_path` to your desired model checkpoint directories.
+
+If you're using Llama 2, you'll need to first request access to the model, and then export your Hugging Face API token:
+
+```bash
+export HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE}
+```
+
+or log into the HF CLI with `huggingface-cli login`.
+
+### \[GPU\] NLP-Group Slurm Cluster Launch Example
+
+Say you save the above Alpaca training command as a bash script called `train_alpaca.sh`, then
+you could launch a training job on a slurm cluster with `srun` as follows:
+
+```bash
+srun --account=nlp --cpus-per-task=32 --gpus-per-node=8 --mem=400G --open-mode=append --partition=sphinx  --nodes=1 --pty bash train_alpaca.sh
+```
+
+### \[TPU\] Launching the Job
+
+For TPU, we need just a little bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
+(If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line unless you're using a private model
+or uploading to Hugging Face.)
+
+```bash
+gcloud compute tpus tpu-vm ssh llama-32 --zone us-east1-d --worker=all \
+--command="WANDB_API_KEY=${YOUR TOKEN HERE} \
+HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
+bash levanter/infra/run.sh python \
+levanter/examples/alpaca/alpaca.py \
+--config_path levanter/examples/alpaca/alpaca.yaml \
+--trainer.checkpointer.base_path gs://<somewhere> \
+--hf_save_path gs://<somewhere>
+```
+
+If you're using preemptible or TRC TPUs, you'll want to add `--trainer.id <some id>` to the command line.
+Alternatively, you can use the [babysitting script](./Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
+VM and job if it gets preempted. That would look like this:
+
+```bash
+infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
+WANDB_API_KEY=${YOUR TOKEN HERE} \
+HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
+bash levanter/infra/run.sh python \
+levanter/examples/alpaca/alpaca.py \
+--config_path levanter/examples/alpaca/alpaca-llama2.yaml \
+--trainer.checkpointer.base_path gs://<somewhere> \
+--hf_save_path gs://<somewhere> \
+```
+
+## Waiting
+
+At some point the run will spit out a WandB link. You can click on that to see the training progress. There's
+not a ton to see there (yet), but you can see the training loss go down over time.
+
+On a v3-32 or an 8xA100 box, training should take about ~3.5 hours, similarly on a v3-32 TPU VM.
+It should take ~8.5 hours on 8 RTX 6000 Ada Generation GPUs.
+
+## Using the Model
+
+When you're done, you can copy out the Hugging Face model with:
+
+```bash
+gsutil cp -r gs://<somewhere>/<run_id>/step-<something> ./my-alpaca
+```
+
+The model should work out-of-the-box as a Hugging Face model. You can use it like this:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained("./my-alpaca")
+tokenizer = AutoTokenizer.from_pretrained("./my-alpaca")
+
+instruction = "Translate the following phrase into French."
+input = "I love you."
+
+input = ("Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        f"### Instruction:\n {instruction}\n### Input:\n {input}\n### Response: \n")
+
+input_ids = tokenizer(input, return_tensors="pt")["input_ids"]
+output_ids = model.generate(input_ids, do_sample=True, max_length=100, num_beams=5, num_return_sequences=5)
+
+for output_id in output_ids:
+    print(tokenizer.decode(output_id, skip_special_tokens=True))
+```
+
+You can also hook it up to your favorite inference server for faster inference.
+
+
+## Code Walkthrough
 
 In this section, we'll walk through the code that we use to fine-tune Llama 1 on Alpaca. You can find the full script
 [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca.py).
@@ -201,205 +458,4 @@ class SupervisedDataset(Dataset[LmExample]):
 ### The Rest
 
 The rest is boilerplate: setting up the model, optimizer, and trainer, and then running the training loop.
-We'll skip over that in this tutorial, but you can see the full script [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca.py)
-
-## Setup
-
-### Cloning and Installing Levanter
-
-If you haven't done so already as part of the GPU or TPU environment setup, clone and install Levanter:
-
-```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-```
-
-### \[GPU\] Environment Setup
-Follow the instructions in the [Getting Started with GPUs](./Getting-Started-GPU.md) guide to create a conda environment and install JAX with CUDA.
-
-### \[TPU\] Environment Setup
-We'll spin up a TPU VM using the [Getting Started with TPUs](./Getting-Started-TPU-VM.md) guide.
-If you haven't gone through that guide before, you should do so now. If you have, you can just run the
-following command from a local checkout of the Levanter repo:
-
-```bash
-bash infra/spin-up-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible
-```
-
-## Configuration
-
-We have two configs for Alpaca: one for Llama 1 and one for Llama 2. The only difference is the model id.
-
-### Config to Replicate Alpaca
-
-```yaml
-# cf https://github.com/tatsu-lab/stanford_alpaca#fine-tuning
-data: tatsu-lab/alpaca
-model_name_or_path: huggyllama/llama-7b
-trainer:
-  mp: p=f32,c=bfloat16
-  wandb:
-    project: "levanter-alpaca"
-  num_train_steps: 1218  # 128 * 1218 = 155904, which is almost but not quite 3 epochs, which is what alpaca did
-  train_batch_size: 128
-  # if using model parallelism, this is useful:
-  tensor_parallel_axes: ["mlp", "heads"]
-optimizer:
-  learning_rate: 2e-5
-  weight_decay: 0.0
-```
-
-This config uses mixed fp32/bf16 precision and sets the number of training steps to be roughly 3 epochs. It sets up the optimizer
-to use a learning rate of 2e-5 and no weight decay. `trainer.per_device_parallelism` is roughly equivalent to HF's
-`per_device_train_batch_size`. If you want to use model parallelism, you can set `trainer.model_axis_size` to something
-like 2. (This will split the model across two devices. This might be useful if you're using a v3-64 or something similar and
-want to maintain the same batch size.)
-
-### Llama 2 Config
-
-The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca-llama2.yaml) is identical, except for the model id.
-If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
-
-Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
-to the TPU VM as an environment variable. (We'll show you how to do this later.)
-
-### Customizing the Config
-
-If you have your own dataset, you'll want to change the `data` field in the config to point to your dataset.
-You'll also want to change the `model_name_or_path` field to point to the model you want to use.
-Currently, Levanter supports GPT-2, Llama, MPT, and Backpack checkpoints.
-
-```yaml
-data: <Your Data Path>  # Path to the training data, or huggingface dataset name.
-data_cache_dir: <Your Data Cache Path>
-model_name_or_path: "meta-llama/Llama-2-7b-chat-hf"
-trainer:
-    ...
-```
-
-
-#### \[TPU\] Using a Modified Config
-
-If you make changes to the config, you'll need to get the config file to all the workers. For TPU, the best way to do this
-is to copy it to Google Cloud Storage so that it persists when the machine is preempted. You can do this with:
-
-```bash
-gsutil cp levanter/examples/alpaca/alpaca.yaml gs://<somewhere>/train-alpaca.yaml
-```
-
-If using Llama 2:
-
-```bash
-gsutil cp levanter/examples/alpaca/alpaca-llama2.yaml gs://<somewhere>/train-alpaca.yaml
-```
-
-And then using `--config_path gs://<somewhere>/alpaca.yaml` instead of `--config_path levanter/examples/alpaca/train-alpaca.yaml`
-in the command line below. Levanter knows how to read from Google Cloud Storage, so you don't need to do anything else.
-
-## Launching the Job
-
-### \[GPU\] Launching the Job
-
-Right now, Levanter is only known to work with single node GPU training. The example commands below demonstrate how to launch a training job
-on a node with 8 A100 GPUs, but should work for other single node GPU configurations. For example, we've also tested Alpaca replication with
-a node of RTX 6000 Ada Generation 49.1GB GPUs.
-
-Before running your training bash command, ensure you are in your `levanter` conda environment, you've created a directory for saving checkpoints
-during training, you are logged into your wandb account with the following two commands:
-
-```bash
-conda activate levanter
-mkdir -p levanter/checkpoints
-wandb login ${YOUR TOKEN HERE}
-```
-Now you can run the training command:
-
-```bash
-python levanter/examples/alpaca.py \
---config_path levanter/examples/alpaca.yaml \
---trainer.checkpointer.base_path levanter/checkpoints \
---hf_save_path levanter/checkpoints
-```
-
-You can change `--trainer.checkpointer.base_path` and `--hf_save_path` to your desired model checkpoint directories.
-
-### \[GPU\] NLP-Group Slurm Cluster Launch Example
-
-Say you save the above Alpaca training command as a bash script called `train_alpaca.sh`, then
-you could launch a training job on a slurm cluster with `srun` as follows:
-
-```bash
-srun --account=nlp --cpus-per-task=32 --gpus-per-node=8 --mem=400G --open-mode=append --partition=sphinx  --nodes=1 --pty bash train_alpaca.sh
-```
-
-### \[TPU\] Launching the Job
-
-For TPU, we need just a little bit of ceremony to get the Hugging Face and WANDB API tokens in the environment:
-(If you're using Llama 1, you don't need the `HUGGING_FACE_HUB_TOKEN` line.)
-
-```bash
-gcloud compute tpus tpu-vm ssh llama-32 --zone us-east1-d --worker=all \
---command="WANDB_API_KEY=${YOUR TOKEN HERE} \
-HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
-bash levanter/infra/run.sh python \
-levanter/examples/alpaca/alpaca.py \
---config_path levanter/examples/alpaca/alpaca.yaml \
---trainer.checkpointer.base_path gs://<somewhere> \
---hf_save_path gs://<somewhere> \
-```
-
-If you're using preemptible or TRC TPUs, you'll want to add `--trainer.id <some id>` to the command line,
-and probably use the [babysitting script](./Getting-Started-TPU-VM.md#babysitting-script) to automatically restart the
-vm and job if it gets preempted. That would look like this:
-
-```bash
-infra/babysit-tpu-vm.sh llama-32 -z us-east1-d -t v3-32 --preemptible -- \
-WANDB_API_KEY=${YOUR TOKEN HERE} \
-HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE} \
-bash levanter/infra/run.sh python \
-levanter/examples/alpaca/alpaca.py \
---config_path levanter/examples/alpaca/alpaca-llama2.yaml \
---trainer.checkpointer.base_path gs://<somewhere> \
---hf_save_path gs://<somewhere> \
-```
-
-
-## Waiting
-
-At some point it will spit out a WandB link. You can click on that to see the training progress. There's
-not a ton to see there (yet), but you can see the training loss go down over time.
-
-On a v3-32 or an 8xA100 box, training should take about ~3.5 hours. -32 TPUs. It should take ~8.5 hours on 8 RTX 6000 Ada Generation GPUs.
-
-## Using the Model
-
-When you're done, you can copy out the Hugging Face model with:
-
-```bash
-gsutil cp -r gs://<somewhere>/<run_id>/step-<something> ./my-alpaca
-```
-
-The model should work out-of-the-box as a Hugging Face model. You can use it like this:
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model = AutoModelForCausalLM.from_pretrained("./my-alpaca")
-tokenizer = AutoTokenizer.from_pretrained("./my-alpaca")
-
-instruction = "Translate the following phrase into French."
-input = "I love you."
-
-input = ("Below is an instruction that describes a task, paired with an input that provides further context. "
-        "Write a response that appropriately completes the request.\n\n"
-        f"### Instruction:\n {instruction}\n### Input:\n {input}\n### Response: \n")
-
-input_ids = tokenizer(input, return_tensors="pt")["input_ids"]
-output_ids = model.generate(input_ids, do_sample=True, max_length=100, num_beams=5, num_return_sequences=5)
-
-for output_id in output_ids:
-    print(tokenizer.decode(output_id, skip_special_tokens=True))
-```
-
-You can also hook it up to your favorite inference server for faster inference.
+We'll skip over that in this tutorial, but you can see the full script [here](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca.py) if you want to see how it works.

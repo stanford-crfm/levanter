@@ -86,6 +86,7 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
+  - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"
       - "Hardware-Agnostic-Training.md"

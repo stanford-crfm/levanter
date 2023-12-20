@@ -1,4 +1,4 @@
-# LoRA Tutorial: Alpaca-LoRA
+# LoRA: Alpaca-LoRA
 
 In the [Fine-Tuning tutorial](./Fine-Tuning.md), we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
 
