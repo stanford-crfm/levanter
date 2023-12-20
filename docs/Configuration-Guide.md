@@ -289,7 +289,7 @@ If you're not using SLURM or TPUs, you can specify the cluster manually using th
 
 ## Optimizer
 
-[levanter.trainer.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
+[levanter.optimizer.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
 
 | Parameter       | Description                                                       | Default  |
 |-----------------|-------------------------------------------------------------------|----------|

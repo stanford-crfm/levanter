@@ -38,6 +38,7 @@ def _dummy_step_info(step):
             opt_state=(),
             training_key=(),
             is_trainable=True,
+            cb_states=(),
         ),
         loss=0.0,
         step_duration=0.0,
@@ -152,7 +153,7 @@ def _make_state(step, key):
     optim = optax.adam(1e-4)
     opt_state = optim.init(arrays_only(model))
 
-    return TrainerState(step, model, opt_state, key, True)
+    return TrainerState(step, model, opt_state, key, True, ())
 
 
 def test_checkpoint_simple():
