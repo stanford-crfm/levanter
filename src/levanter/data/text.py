@@ -71,7 +71,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         KPos: Axis,
         fcm_prob: float = 0.0,
         key: Optional[PRNGKey] = None,
-        ignore_index: Optional[int] = -100,
+        ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
@@ -84,7 +84,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key)
+        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id)
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key

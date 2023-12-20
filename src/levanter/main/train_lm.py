@@ -54,7 +54,7 @@ def main(config: TrainLmConfig):
     if config.initialize_from_hf:
         assert isinstance(config.model, HFCompatConfig)
         converter = config.model.default_hf_checkpoint_converter
-        if tokenizer.vocab != converter.tokenizer.vocab:
+        if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
@@ -140,7 +140,7 @@ def main(config: TrainLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
             trainer.add_eval_hook(eval_dataset, name=name)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
