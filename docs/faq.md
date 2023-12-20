@@ -1,5 +1,14 @@
 # Frequently Asked Questions
 
+## Project
+
+### Why is it called Levanter?
+
+Levanter is a wind that blows from the east in the Mediterranean. Stanford CRFM's first training project was
+called [Mistral](https://github.com/stanford-crfm/mistral), which is another Mediterranean wind. (That Mistral
+has no relation to the now more famous [Mistral AI](https://www.mistral.ai/). They took our name!)
+
+
 ## Installation Issues
 
 ### CUDA: `XLA requires ptxas version 11.8 or higher`
