@@ -314,7 +314,7 @@ class GradWatchCallback(FullCallback[M, dict[str, float | Histogram]]):
         self.split_scan_layers = split_scan_layers
 
     def initial_state(self, state: TrainerState[M]) -> dict[str, float | Histogram]:
-        return self._generate_statistics_for("grad", state.model)
+        return self._generate_statistics_for("grad", state.trainable_model)
 
     def inside_step(self, cb_state, state: TrainerState[M], examples, grad: M) -> dict[str, float | Histogram]:
         return self._generate_statistics_for("grad", grad)

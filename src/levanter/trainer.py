@@ -83,6 +83,10 @@ class TrainerState(eqx.Module, Generic[M]):
 
     cb_states: Tuple[Any, ...]
 
+    @property
+    def trainable_model(self):
+        return _partition_trainable_params(self.model, self.is_trainable)[0]
+
 
 S = TypeVar("S", bound=TrainerState)
 
@@ -163,6 +167,7 @@ class TrainerHooks:
                 hook.fn.on_step(info, force=force)
 
         new_states = []
+        assert len(self.stateful_hooks) == len(info.state.cb_states)
         for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
             if force or info.step % s_hook.every == 0:
                 new_state = s_hook.fn.on_step(state, info)

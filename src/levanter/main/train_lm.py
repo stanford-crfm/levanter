@@ -114,6 +114,18 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
+        # Register hooks
+        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+        if config.hf_save_path is not None:
+            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+
+            trainer.add_hook(
+                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
+                every=config.hf_save_steps,
+            )
+
+        trainer.add_hook(callbacks.GradWatchCallback(), every=5)
+
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
         if state.step == 0:
@@ -144,18 +156,6 @@ def main(config: TrainLmConfig):
         for name, eval_dataset in eval_datasets.items():
             eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
             trainer.add_eval_hook(eval_dataset, name=name)
-
-        # Register hooks
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
-        if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
-
-            trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
-                every=config.hf_save_steps,
-            )
-
-        trainer.add_hook(callbacks.GradWatchCallback(), every=5)
 
         # visualize log probs
         @named_jit(
