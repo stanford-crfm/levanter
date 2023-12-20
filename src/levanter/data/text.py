@@ -15,8 +15,8 @@ import fsspec
 import jax
 import numpy as np
 import pyarrow as pa
-from chex import PRNGKey
 from draccus import field
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
@@ -70,7 +70,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         QPos: Axis,
         KPos: Axis,
         fcm_prob: float = 0.0,
-        key: Optional[PRNGKey] = None,
+        key: Optional[PRNGKeyArray] = None,
         ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
