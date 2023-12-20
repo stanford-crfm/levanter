@@ -62,7 +62,6 @@ To change the frequency of saving checkpoints, you can use the following command
 ```
 python src/levanter/main/train_lm.py \
     --config_path config/gpt2_small.yaml \
-    --trainer.load_checkpoint_path checkpoints/gpt2/  \
     --trainer.checkpointer.base_path checkpoints/gpt2/ \
     --trainer.checkpointer.save_interval 20m
 ```
@@ -71,12 +70,13 @@ This will overwrite the default checkpoint settings from the `TrainerConfig` and
 save checkpoints every 20 minutes. The checkpoint will be saved to the directory `checkpoints/gpt2/${run_id}`
 
 Note that:
-- The `--trainer.load_checkpoint_path` argument is optional. You only need to specify it if you want to load a checkpoint from a previous
-run. If it is specified, the trainer will recursively search for the latest checkpoint in the directory and load it.
-If you do not specify it, the trainer will start training from scratch.
-- Both `--trainer.load_checkpoint_path` and `--trainer.checkpointer.base_path` supports local path and cloud storage path (e.g. S3, GCS, etc.), as
+- `--trainer.checkpointer.base_path` supports local path and cloud storage path (e.g. S3, GCS, etc.), as
 long as the path is accessible from the machine that you are running the training script on.
 - The `--trainer.checkpointer.save_interval` argument supports the following units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+- You can also specify `--trainer.load_checkpoint_path` to load a checkpoint from a specific path. If you do not specify it, the trainer will
+see if the `{checkpointer.base_path}/{run_id}` directory exists and load the latest checkpoint from there. If the directory does not exist,
+ the trainer will start training from scratch.
+- You can also specify `--trainer.initialize_from` to initialize the model from a specific checkpoint, without loading the optimizer state.
 
 ### Change Evaluation Parameters
 To change how often the model is evaluated during training, you can use the following command:

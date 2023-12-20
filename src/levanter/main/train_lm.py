@@ -52,6 +52,9 @@ def main(config: TrainLmConfig):
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
     # I recommend skipping it for now
     if config.initialize_from_hf:
+        if config.trainer.initialize_from is not None:
+            raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
+
         assert isinstance(config.model, HFCompatConfig)
         converter = config.model.default_hf_checkpoint_converter
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
