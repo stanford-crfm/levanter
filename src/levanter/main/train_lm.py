@@ -124,7 +124,8 @@ def main(config: TrainLmConfig):
                 every=config.hf_save_steps,
             )
 
-        trainer.add_hook(callbacks.GradWatchCallback(), every=5)
+        # comment out to see if this fixes throughput
+        # trainer.add_hook(callbacks.GradWatchCallback(), every=5)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
