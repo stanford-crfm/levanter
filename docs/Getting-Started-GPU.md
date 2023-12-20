@@ -155,3 +155,16 @@ Then run the job with `sbatch`:
 ```bash
 sbatch my-job.sh
 ```
+
+
+## Miscellaneous Problems
+
+Please see the [FAQ](faq.md) for solutions to common problems.
+
+###  CUDA: `XLA requires ptxas version 11.8 or higher`
+
+See FAQ entry, but some variant of this should work:
+
+```bash
+export PATH=$(echo $PATH | sed 's|:/usr/local/cuda/bin||')
+```
