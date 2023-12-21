@@ -121,14 +121,8 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        print(
-            state.step.sharding,
-            state.step,
-            state.step.sharding.is_fully_addressable,
-            state.step.sharding.is_fully_replicated,
-        )
-
-        if state.step == 0:
+        # TODO: I do not love that we have to coerce to int here.
+        if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
