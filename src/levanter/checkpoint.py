@@ -500,7 +500,7 @@ def load_from_checkpoint_or_initialize(
                         return out
                 else:
                     ckpt = eqx.combine(ckpt, ckpt_shape)
-                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt)):
+                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_util.tree_leaves(ckpt)):
                         # if we're resuming, we need to initialize any non-checkpointed values
                         @hax.named_jit(axis_resources=axis_mapping)
                         def partial_init(init_fn, *args, **kwargs):
