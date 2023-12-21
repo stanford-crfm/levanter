@@ -75,7 +75,7 @@ class TrainerState(eqx.Module, Generic[M]):
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
-    is_trainable: PyTree[FilterSpec] = eqx.field(static=True)
+    is_trainable: PyTree[FilterSpec]
 
 
 S = TypeVar("S", bound=TrainerState)
@@ -301,7 +301,7 @@ class Trainer:
                 mesh=self.device_mesh,
                 force_load_checkpoint=self.config.load_checkpoint,
                 # if we're loading a checkpoint, we need to know which parameters are trainable
-                is_checkpointed=TrainerState(True, is_trainable, True, True, is_trainable),  # type: ignore
+                is_checkpointed=TrainerState(True, is_trainable, True, True, False),  # type: ignore
             )(
                 model_init,
                 training_key,
