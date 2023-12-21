@@ -343,7 +343,7 @@ def load_checkpoint(
             # TODO: pretty sure this is right, but should verify
             step = metadata["step"]
             new_state = dataclasses.replace(
-                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+                tree, _step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
             )
             return new_state
 

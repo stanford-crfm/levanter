@@ -80,11 +80,15 @@ class TrainerState(eqx.Module, Generic[M]):
     It's designed to be extended by subclasses.
     """
 
-    step: IntScalar = eqx.field(converter=lambda x: jnp.asarray(x) if not isinstance(x, bool) else x)
+    _step: IntScalar = eqx.field(converter=lambda x: jnp.asarray(x) if not isinstance(x, bool) else x)
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
+
+    @cached_property
+    def step(self) -> int:
+        return int(self._step)
 
 
 S = TypeVar("S", bound=TrainerState)
@@ -102,11 +106,11 @@ class StepInfo(Generic[M]):
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
 
-    step = property(lambda self: int((self.state.step - 1).item()))
+    step = property(lambda self: self.state.step - 1)
     """
     The step that was just completed. If you want the next step, use `next_step`.
     """
-    next_step = property(lambda self: int(self.state.step.item()))
+    next_step = property(lambda self: self.state.step)
 
 
 @dataclass
@@ -367,7 +371,7 @@ class Trainer:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
             info = self.train_step(state, example)
 
@@ -375,7 +379,7 @@ class Trainer:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=int(state.step))
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
             state = info.state
 
@@ -481,7 +485,7 @@ class Trainer:
         model = eqx.apply_updates(model, updates)
 
         new_state = dataclasses.replace(
-            state, step=state.step + 1, model=model, opt_state=opt_state, training_key=new_key
+            state, _step=state._step + 1, model=model, opt_state=opt_state, training_key=new_key
         )
 
         return loss, new_state
