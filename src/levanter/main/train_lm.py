@@ -56,9 +56,12 @@ def main(config: TrainLmConfig):
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
     # I recommend skipping it for now
     if config.initialize_from_hf:
+        if config.trainer.initialize_from is not None:
+            raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
+
         assert isinstance(config.model, HFCompatConfig)
         converter = config.model.default_hf_checkpoint_converter
-        if tokenizer.vocab != converter.tokenizer.vocab:
+        if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
@@ -104,7 +107,9 @@ def main(config: TrainLmConfig):
         KeyPos = config.model.KeyPos
 
         eval_datasets = config.data.validation_sets(Pos.size)
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        train_dataset = CausalLmDataset(
+            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+        )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
@@ -124,8 +129,7 @@ def main(config: TrainLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # comment out to see if this fixes throughput
-        # trainer.add_hook(callbacks.GradWatchCallback(), every=5)
+        trainer.add_hook(callbacks.GradWatchCallback(), every=5)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
@@ -155,7 +159,7 @@ def main(config: TrainLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
             trainer.add_eval_hook(eval_dataset, name=name)
 
         # visualize log probs

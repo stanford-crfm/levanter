@@ -30,6 +30,7 @@ from typing import (
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -41,7 +42,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.types import Scalar
+from haliax.types import IntScalar, Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -75,13 +76,25 @@ DEFAULT_JAX_CONFIG = {
 
 
 class TrainerState(eqx.Module, Generic[M]):
-    step: int
+    """
+    This is the state of the trainer. It contains the model, optimizer state, and random key.
+    It is an equinox Module becaues it is a PyTree that gets passed to the core `train_step` method
+    of the Trainer. This unfortunately means that `step` is an Array and not an int, hence the IntScalar.
+
+    It's designed to be extended by subclasses.
+    """
+
+    _step: IntScalar = eqx.field(converter=lambda x: jnp.asarray(x) if not isinstance(x, bool) else x)
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
-    is_trainable: PyTree[FilterSpec] = eqx.field(static=True)
+    is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
 
-    cb_states: Tuple[Any, ...]
+    @cached_property
+    def step(self) -> int:
+        return int(self._step)
+
+    # cb_states: Tuple[Any, ...]
 
     @property
     def trainable_model(self):
@@ -117,17 +130,21 @@ class Callback(ABC, Generic[M]):
 
 
 class FullCallback(ABC, Generic[M_con, CBState]):
-    @abc.abstractmethod
-    def initial_state(self, state: TrainerState[M]) -> CBState:
-        ...
+    # @abc.abstractmethod
+    # def initial_state(self, state: TrainerState[M]) -> CBState:
+    #     ...
+
+    # @abc.abstractmethod
+    # def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
+    #     ...
 
     @abc.abstractmethod
-    def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
+    def inside_step(self, state: TrainerState[M], examples, grad: M_con) -> CBState:
         ...
 
-    @abc.abstractmethod
-    def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
-        ...
+    # @abc.abstractmethod
+    # def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
+    #     ...
 
 
 class LambdaCallback(Callback[M]):
@@ -158,38 +175,40 @@ class TrainerHooks:
         self.hooks = []
         self.stateful_hooks = []
 
-    def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
-        return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
+    # def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
+    #     return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
 
-    def run_hooks(self, info: StepInfo, force: bool = False) -> tuple[CBState, ...]:
+    def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 hook.fn.on_step(info, force=force)
 
-        new_states = []
-        assert len(self.stateful_hooks) == len(info.state.cb_states)
-        for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
-            if force or info.step % s_hook.every == 0:
-                new_state = s_hook.fn.on_step(state, info)
-            else:
-                new_state = state
-            new_states.append(new_state)
+        # new_states = []
+        # assert len(self.stateful_hooks) == len(info.state.cb_states)
+        # for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
+        #     if force or info.step % s_hook.every == 0:
+        #         new_state = s_hook.fn.on_step(state, info)
+        #     else:
+        #         new_state = state
+        #     new_states.append(new_state)
 
-        return tuple(new_states)
+        # return tuple(new_states)
+        return
 
-    def run_jit_hooks(self, state: TrainerState, examples, grad: M) -> tuple[CBState, ...]:
+    def run_jit_hooks(self, state: TrainerState, examples, grad: M):
         hook: _StatefulHook
         new_states = []
-        for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
+        # for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
+        for hook in self.stateful_hooks:
             new_s = jax.lax.cond(
-                state.step % hook.every == 0,
-                lambda s: hook.fn.inside_step(s, state, examples, grad),
-                lambda s: s,
-                hook_state,
+                state._step % hook.every == 0,
+                lambda: hook.fn.inside_step(state, examples, grad),
+                lambda: None,
+                # hook_state,
             )
-            new_states.append(new_s)
+            # new_states.append(new_s)
 
-        return tuple(new_states)
+        # return tuple(new_states)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | FullCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
@@ -365,29 +384,52 @@ class Trainer:
             # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
-        with self:
-            load_checkpoint_path = self.config.load_checkpoint_path
-
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-        # if we're loading a checkpoint, we need to know which parameters are trainable
-        is_checkpointed = TrainerState(True, is_trainable, True, True, is_trainable, True)  # type: ignore
-
         assert model_init is not None
 
-        state = load_from_checkpoint_or_initialize(
-            self._initialize_state_from_scratch,
-            load_checkpoint_path,
-            axis_mapping=self.parameter_axis_mapping,
-            mesh=self.device_mesh,
-            force_load_checkpoint=self.config.load_checkpoint,
-            is_checkpointed=is_checkpointed,
-        )(
-            model_init,
-            training_key,
-            is_trainable,
-        )
+        if self.config.initialize_from is not None:
+            model_shape = eqx.filter_eval_shape(model_init)
+            model_shape = _partition_trainable_params(model_shape, is_trainable)[0]
+            # we always load the initial model b/c it might have different non-trainables
+            logger.info(f"Initializing model from checkpoint {self.config.initialize_from}")
+            ckpt_model = levanter.checkpoint.load_checkpoint(
+                model_shape,
+                self.config.initialize_from,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+                subpath="model",
+            )
+
+            if ckpt_model is not None:
+                if model is not None:
+                    # populate any missing parameters from the passed in model
+                    model = eqx.combine(ckpt_model, model)
+                    model_init = jax.tree_util.Partial(lambda m: m, model)
+                else:
+                    old_model_init = model_init
+                    model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), ckpt_model, old_model_init)
+            else:
+                raise RuntimeError(f"Could not load model from checkpoint {self.config.initialize_from}")
+
+        load_checkpoint_path = self.config.load_checkpoint_path
+
+        if load_checkpoint_path is None:
+            load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+
+        with self:
+            assert model_init is not None
+            state = load_from_checkpoint_or_initialize(
+                self._initialize_state_from_scratch,
+                load_checkpoint_path,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+                force_load_checkpoint=self.config.load_checkpoint,
+                # if we're loading a checkpoint, we need to know which parameters are trainable
+                is_checkpointed=TrainerState(True, is_trainable, True, True, False),  # type: ignore
+            )(
+                model_init,
+                training_key,
+                is_trainable,
+            )
 
         return state
 
@@ -417,13 +459,14 @@ class Trainer:
             levanter.tracker.log({"throughput/loading_time": loading_time()}, step=state.step)
 
             info = self.train_step(state, example)
-            state = info.state
 
             if run_hooks:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
                 levanter.tracker.log({"throughput/hook_time": hook_time()}, step=state.step)
+
+            state = info.state
 
             yield info
 
@@ -440,13 +483,11 @@ class Trainer:
 
         return info
 
-    def _add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_step_info, every=1)
-        if eval_dataset is not None:
-            self.add_eval_hook(eval_dataset)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -520,10 +561,9 @@ class Trainer:
             split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
         )(trainable_model, rest_model, *batch, **batch_kwargs)
 
-        new_hook_states: tuple[Any, ...] = self.hooks.run_jit_hooks(state, batch, grads)
+        self.hooks.run_jit_hooks(state, batch, grads)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
-
         if isinstance(self.optimizer, SecondOrderTransformation):
             opt_state = self.optimizer.update_hessian(
                 opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
@@ -532,12 +572,7 @@ class Trainer:
         model = eqx.apply_updates(model, updates)
 
         new_state = dataclasses.replace(
-            state,
-            step=state.step + 1,
-            model=model,
-            opt_state=opt_state,
-            training_key=new_key,
-            cb_states=new_hook_states,
+            state, _step=state._step + 1, model=model, opt_state=opt_state, training_key=new_key
         )
 
         return loss, new_state
@@ -553,10 +588,10 @@ class Trainer:
 
         opt_state = self.optimizer.init(trainable)
 
-        pre_hook_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable, ())
-        hook_states: tuple[Any, ...] = self.hooks.initial_state(pre_hook_state)
+        # pre_hook_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable, ())
+        # hook_states: tuple[Any, ...] = self.hooks.initial_state(pre_hook_state)
 
-        return dataclasses.replace(pre_hook_state, cb_states=hook_states)
+        return TrainerState(0, model, opt_state, training_key, is_trainable)
 
 
 def _initialize_global_tracker(config, run_id):
@@ -611,6 +646,7 @@ class TrainerConfig:
     """if None (default), we'll load a checkpoint if it exists. If true, we must load a checkpoint"""
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
+    initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
     jax_config: Dict[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
@@ -755,8 +791,13 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
+        assert self.train_batch_size != -1 or self.per_device_parallelism != -1
+
         if self.per_device_parallelism == -1:
-            self.per_device_parallelism = self.train_batch_size // jax.device_count()
+            self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+
+        if self.train_batch_size == -1:
+            self.train_batch_size = self.per_device_parallelism * self.data_axis_size
 
         # validate size of per_device_parallelism
         if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:

@@ -52,7 +52,7 @@ def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[in
 
 def _do_jit_log(metrics, *, step=None):
     try:
-        log(metrics, step=step)
+        log(metrics, step=step, commit=False)
     except Exception as e:
         logger.exception("Error logging metrics from jit", exc_info=e)
         raise e

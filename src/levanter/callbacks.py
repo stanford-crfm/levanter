@@ -313,15 +313,17 @@ class GradWatchCallback(FullCallback[M, dict[str, float | Histogram]]):
         self.include_histogram = include_histogram
         self.split_scan_layers = split_scan_layers
 
-    def initial_state(self, state: TrainerState[M]) -> dict[str, float | Histogram]:
-        return self._generate_statistics_for("grad", state.trainable_model)
+    # def initial_state(self, state: TrainerState[M]) -> dict[str, float | Histogram]:
+    #     return self._generate_statistics_for("grad", state.trainable_model)
 
-    def inside_step(self, cb_state, state: TrainerState[M], examples, grad: M) -> dict[str, float | Histogram]:
-        return self._generate_statistics_for("grad", grad)
+    # def inside_step(self, cb_state, state: TrainerState[M], examples, grad: M):
+    def inside_step(self, state: TrainerState[M], examples, grad: M):
+        logs = self._generate_statistics_for("grad", grad)
+        levanter.tracker.jit_log(logs, step=state._step)
 
-    def on_step(self, cb_state: dict[str, float | Histogram], step_info: StepInfo[M]) -> dict[str, float | Histogram]:
-        levanter.tracker.log(cb_state, step=step_info.step)
-        return cb_state
+    # def on_step(self, cb_state: dict[str, float | Histogram], step_info: StepInfo[M]):
+    #     levanter.tracker.log(cb_state, step=step_info.step)
+    #     return cb_state
 
     def _generate_statistics_for(self, kind: str, tree: M) -> dict[str, float | Histogram]:
         if self.split_scan_layers:
