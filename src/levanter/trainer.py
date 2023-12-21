@@ -28,6 +28,7 @@ from typing import (
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -39,7 +40,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.types import Scalar
+from haliax.types import IntScalar, Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -71,11 +72,19 @@ DEFAULT_JAX_CONFIG = {
 
 
 class TrainerState(eqx.Module, Generic[M]):
-    step: int
+    """
+    This is the state of the trainer. It contains the model, optimizer state, and random key.
+    It is an equinox Module becaues it is a PyTree that gets passed to the core `train_step` method
+    of the Trainer. This unfortunately means that `step` is an Array and not an int, hence the IntScalar.
+
+    It's designed to be extended by subclasses.
+    """
+
+    step: IntScalar = eqx.field(converter=lambda x: jnp.asarray(x) if not isinstance(x, bool) else x)
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
-    is_trainable: PyTree[FilterSpec]
+    is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
 
 
 S = TypeVar("S", bound=TrainerState)
@@ -93,11 +102,11 @@ class StepInfo(Generic[M]):
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
 
-    step = property(lambda self: self.state.step - 1)
+    step = property(lambda self: int((self.state.step - 1).item()))
     """
     The step that was just completed. If you want the next step, use `next_step`.
     """
-    next_step = property(lambda self: self.state.step)
+    next_step = property(lambda self: int(self.state.step.item()))
 
 
 @dataclass
@@ -358,16 +367,17 @@ class Trainer:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
 
             info = self.train_step(state, example)
-            state = info.state
 
             if run_hooks:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=int(state.step))
+
+            state = info.state
 
             yield info
 
