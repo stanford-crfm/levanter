@@ -89,12 +89,11 @@ class TrainerState(eqx.Module, Generic[M]):
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
+    cb_states: Tuple[Any, ...]
 
     @cached_property
     def step(self) -> int:
         return int(self._step)
-
-    # cb_states: Tuple[Any, ...]
 
     @property
     def trainable_model(self):
@@ -130,21 +129,21 @@ class Callback(ABC, Generic[M]):
 
 
 class FullCallback(ABC, Generic[M_con, CBState]):
-    # @abc.abstractmethod
-    # def initial_state(self, state: TrainerState[M]) -> CBState:
-    #     ...
-
-    # @abc.abstractmethod
-    # def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
-    #     ...
+    @abc.abstractmethod
+    def initial_state(self, state: TrainerState[M]) -> CBState:
+        ...
 
     @abc.abstractmethod
-    def inside_step(self, state: TrainerState[M], examples, grad: M_con) -> CBState:
+    def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
         ...
 
     # @abc.abstractmethod
-    # def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
+    # def inside_step(self, state: TrainerState[M], examples, grad: M_con) -> CBState:
     #     ...
+
+    @abc.abstractmethod
+    def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
+        ...
 
 
 class LambdaCallback(Callback[M]):
@@ -175,40 +174,38 @@ class TrainerHooks:
         self.hooks = []
         self.stateful_hooks = []
 
-    # def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
-    #     return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
+    def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
+        return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 hook.fn.on_step(info, force=force)
 
-        # new_states = []
-        # assert len(self.stateful_hooks) == len(info.state.cb_states)
-        # for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
-        #     if force or info.step % s_hook.every == 0:
-        #         new_state = s_hook.fn.on_step(state, info)
-        #     else:
-        #         new_state = state
-        #     new_states.append(new_state)
+        new_states = []
+        assert len(self.stateful_hooks) == len(info.state.cb_states)
+        for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
+            if force or info.step % s_hook.every == 0:
+                new_state = s_hook.fn.on_step(state, info)
+            else:
+                new_state = state
+            new_states.append(new_state)
 
-        # return tuple(new_states)
-        return
+        return tuple(new_states)
 
     def run_jit_hooks(self, state: TrainerState, examples, grad: M):
         hook: _StatefulHook
         new_states = []
-        # for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
-        for hook in self.stateful_hooks:
+        for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
             new_s = jax.lax.cond(
                 state._step % hook.every == 0,
-                lambda: hook.fn.inside_step(state, examples, grad),
-                lambda: None,
-                # hook_state,
+                lambda s: hook.fn.inside_step(s, state, examples, grad),
+                lambda s: hook_state,
+                hook_state,
             )
-            # new_states.append(new_s)
+            new_states.append(new_s)
 
-        # return tuple(new_states)
+        return tuple(new_states)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | FullCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
@@ -424,7 +421,14 @@ class Trainer:
                 mesh=self.device_mesh,
                 force_load_checkpoint=self.config.load_checkpoint,
                 # if we're loading a checkpoint, we need to know which parameters are trainable
-                is_checkpointed=TrainerState(True, is_trainable, True, True, False),  # type: ignore
+                is_checkpointed=TrainerState(
+                    True,
+                    is_trainable,
+                    True,
+                    True,
+                    False,
+                    True,
+                ),  # type: ignore
             )(
                 model_init,
                 training_key,
@@ -588,10 +592,10 @@ class Trainer:
 
         opt_state = self.optimizer.init(trainable)
 
-        # pre_hook_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable, ())
-        # hook_states: tuple[Any, ...] = self.hooks.initial_state(pre_hook_state)
+        pre_hook_state: TrainerState = TrainerState(0, model, opt_state, training_key, is_trainable, ())
+        hook_states: tuple[Any, ...] = self.hooks.initial_state(pre_hook_state)
 
-        return TrainerState(0, model, opt_state, training_key, is_trainable)
+        return dataclasses.replace(pre_hook_state, cb_states=hook_states)
 
 
 def _initialize_global_tracker(config, run_id):
