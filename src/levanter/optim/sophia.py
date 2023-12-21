@@ -322,7 +322,7 @@ def _sophia_gradient_transform(
 
         # this doesn't work well on CPU, so skip if cpu
         if jax.lib.xla_bridge.get_backend().platform != "cpu":
-            levanter.tracker.jit_log_metrics(stats, step=state.count)
+            levanter.tracker.jit_log(stats, step=state.count)
 
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)

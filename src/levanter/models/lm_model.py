@@ -22,6 +22,30 @@ class LmExample(eqx.Module):
     loss_mask: hax.NamedArray
     attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
 
+    @staticmethod
+    def causal(
+        tokens: hax.NamedArray, *, loss_mask: Optional[hax.NamedArray] = None, ignore_id: Optional[int] = None
+    ) -> "LmExample":
+        if tokens.ndim != 1:
+            raise ValueError("tokens must be a 1D array")
+
+        if not jnp.issubdtype(tokens.dtype, jnp.integer):
+            raise ValueError("tokens must be an integer array")
+
+        Pos = tokens.axes[0]
+
+        # don't predict the last token.
+        if loss_mask is None:
+            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+
+        if ignore_id is not None:
+            # we don't compute loss for any tokens matching the ignore index
+            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
+            loss_mask = loss_mask * ignore_mask
+
+        attn_mask = AttentionMask.causal()
+        return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
 class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
