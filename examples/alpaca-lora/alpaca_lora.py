@@ -81,7 +81,7 @@ def train(config: TrainArgs):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
+        return model.compute_loss(example, key=key)
 
     # end major difference from Alpaca
 

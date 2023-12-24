@@ -227,7 +227,7 @@ def train(config: TrainArgs):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
+        return model.compute_loss(example, key=key)
 
     with Trainer(config.trainer, optimizer, compute_loss) as trainer:
         # how we shard parameters across devices

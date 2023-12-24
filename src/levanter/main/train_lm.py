@@ -82,7 +82,7 @@ def main(config: TrainLmConfig):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
+        return model.compute_loss(example, key=key)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     # Using the trainer as a context manager does 3 things:

@@ -83,7 +83,7 @@ def train(config: TrainArgs):
         lora_param_filter = lora_trainable_params_filter(model)
 
         def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
+            return model.compute_loss(example, key=key)
 
         trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
 ```
