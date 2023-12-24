@@ -144,7 +144,7 @@ reasonable defaults and an "advanced" mode that gives you more control.
 | `compute_axis_resources`   | Mapping from logical axis to physical axis for the compute mapping   | --      |
 | `model_axis_size`          | How many devices for tensor parallelism                              | `1`     |
 
-### Checkpointing
+### Checkpointing and Initialization
 
 See also [Checkpointer](#checkpointer).
 
@@ -152,6 +152,7 @@ See also [Checkpointer](#checkpointer).
 |------------------------------|---------------------------------------------------|--------------------------------------------|
 | `load_checkpoint`            | Whether to load checkpoint from `base_path`       | `None`: load if possible, but don't error. |
 | `load_checkpoint_path`       | Path to load checkpoint from. May be a parent     | `checkpointer.base_path`                   |
+| `initialize_from`            | Path to initialize model from. May be a parent    | `None`                                     |
 | `checkpointer.base_path`     | Base path to save checkpoints to                  | `checkpoints/${run_id}`                    |
 | `checkpointer.save_interval` | How often to save checkpoints (time)              | 15 minutes                                 |
 | `checkpointer.keep`          | How often to keep checkpoints (steps). See below. | 10000 steps                                |

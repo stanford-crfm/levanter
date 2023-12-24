@@ -51,7 +51,6 @@ from typing import Dict, List, Optional, Tuple, TypeVar, Union
 import equinox as eqx
 import jax
 from jaxtyping import PyTree
-from transformers import PreTrainedTokenizerBase
 
 import haliax as hax
 import haliax.nn as hnn
@@ -65,9 +64,14 @@ from levanter.compat.torch_serialization import (
     save_state_dict,
     to_numpy_state_dict,
 )
+from levanter.logging import silence_transformer_nag
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
+
+
+silence_transformer_nag()
+from transformers import PreTrainedTokenizerBase  # noqa: E402
 
 
 logger = logging.getLogger(__name__)

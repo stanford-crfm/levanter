@@ -5,8 +5,7 @@ from typing import Callable, Dict, Optional, Type, Union
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
-from transformers import PretrainedConfig
-from transformers import PretrainedConfig as HfConfig
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.jax_utils
@@ -22,10 +21,15 @@ from levanter.compat.torch_serialization import (
     flatten_linear_layers,
     unflatten_linear_layers,
 )
+from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
+
+
+silence_transformer_nag()
+from transformers import PretrainedConfig  # noqa: E402
 
 
 @LmConfig.register_subclass("backpack")
@@ -77,7 +81,7 @@ class BackpackConfig(Gpt2Config):
         )
 
     @classmethod
-    def from_hf_config(cls, hf_config: HfConfig):
+    def from_hf_config(cls, hf_config: PretrainedConfig):
         return cls(
             seq_len=hf_config.n_positions,
             num_layers=hf_config.n_layer,
@@ -343,7 +347,7 @@ class BackpackGpt2Embeddings(eqx.Module):
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
-    def resize_embeddings(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+    def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
@@ -423,7 +427,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return lm_logits
 
-    def resize_vocab(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
         return dataclasses.replace(self, embeddings=new_embeddings)
 

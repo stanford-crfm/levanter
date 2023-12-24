@@ -1,0 +1,27 @@
+data: !include data/rpv1_llama.yaml
+model:
+  type: llama
+  seq_len: 4096
+  hidden_dim: 3200
+  intermediate_dim: 8640
+  num_layers: 26
+  num_heads: 32
+trainer:
+  wandb:
+    project: "levanter"
+    tags: ["redpajama", "llama"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 1024
+  per_device_parallelism: 4  # set for v3 TPU
+  per_device_eval_parallelism: 8 # set a larger batch size for eval
+  num_train_steps: 250000
+  steps_per_eval: 1000
+  max_eval_batches: 50
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  learning_rate: 1E-6  # set low for fine-tuning
+  weight_decay: 0.1
+  min_lr_ratio: 0.1

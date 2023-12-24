@@ -228,11 +228,6 @@ class Checkpointer:
             step=info.step,
             checkpoint_path=path,
         )
-        # also write a little sentinel file to indicate that we wrote this checkpoint from this worker
-        # just for debugging purposes
-        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.cert")
-        with fsspec.open(sentinel_path, "w") as f:
-            f.write("worker participated in checkpoint")
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
@@ -268,10 +263,7 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike, *, exist_ok: 
 
 
 def save_metadata(checkpoint_path, fs, step):
-    metadata = {
-        "step": step,
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
+    metadata = {"step": step, "timestamp": datetime.datetime.now().isoformat()}
     if jax.process_index() == 0:
         with fs.open(os.path.join(checkpoint_path, "metadata.json"), "w") as json_out:
             json.dump(metadata, json_out)
@@ -351,7 +343,7 @@ def load_checkpoint(
             # TODO: pretty sure this is right, but should verify
             step = metadata["step"]
             new_state = dataclasses.replace(
-                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+                tree, _step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
             )
             return new_state
 
@@ -508,7 +500,7 @@ def load_from_checkpoint_or_initialize(
                         return out
                 else:
                     ckpt = eqx.combine(ckpt, ckpt_shape)
-                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(ckpt)):
+                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_util.tree_leaves(ckpt)):
                         # if we're resuming, we need to initialize any non-checkpointed values
                         @hax.named_jit(axis_resources=axis_mapping)
                         def partial_init(init_fn, *args, **kwargs):
