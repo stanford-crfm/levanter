@@ -1,11 +1,12 @@
 import dataclasses
-from typing import Callable, Iterator, TypeVar
+from typing import Callable, Iterator, Optional, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
+from haliax import Scalar
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
@@ -15,7 +16,7 @@ from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.trainer import M, StepInfo, Trainer, TrainerState
 from levanter.types import ComputeLossFunction
-
+from optax._src.base import GradientTransformation
 
 T = TypeVar("T")
 
@@ -23,20 +24,57 @@ class DoremiState(TrainerState):
     alpha: hax.NamedArray
     average_alpha: hax.NamedArray
 
-    def __init__(self, step: int, model, opt_state, training_key, alpha):
-        super().__init__(step, model, opt_state, training_key)
-        self.alpha = alpha
-
     def update_alpha(self, alpha):
-        # make it stable
         average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self.step + 1)
         return dataclasses.replace(self, alpha=alpha, average_alpha=average_alpha)
 
 
-# class DoReMiTrainer(Trainer):
-#     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
-#         base_state = super()._initialize_state_from_scratch(model_init, training_key, is_trainable)
-#
+class DoReMiTrainer(Trainer):
+
+
+    def __init__(self, config: "TrainerConfig", optimizer: GradientTransformation,
+                 initial_alpha: hax.NamedArray,
+                 loss_fn: Optional[ComputeLossFunction] = None,
+                ):
+        super().__init__(config, optimizer, loss_fn)
+        self.initial_alpha = initial_alpha
+
+
+    def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
+        base_state = super()._initialize_state_from_scratch(model_init, training_key, is_trainable)
+        return DoremiState(base_state.step,
+                           base_state.model,
+                           base_state.opt_state,
+                           base_state.training_key,
+                           self.initial_alpha)
+
+    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
+        key, new_key = jax.random.split(state.training_key)
+        opt_state = state.opt_state
+        model = inference_mode(state.model, False)
+
+        # we do this so that we only take the gradients of the trainable parameters
+        trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
+
+        def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
+            model = eqx.combine(trainable_model, rest_model)
+            return self.loss_fn(model, *batch, **batch_kwargs, key=key)
+
+        loss, grads = accumulate_gradients_sharded(
+            split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
+        )(trainable_model, rest_model, *batch, **batch_kwargs)
+
+        updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+        if isinstance(self.optimizer, SecondOrderTransformation):
+            opt_state = self.optimizer.update_hessian(
+                opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
+            )
+
+        model = eqx.apply_updates(model, updates)
+
+        new_state = dataclasses.replace(
+            state, _step=state._step + 1, model=model, opt_state=opt_state, training_key=new_key
+        )
 
 
 def estimate_mixture_weights(
