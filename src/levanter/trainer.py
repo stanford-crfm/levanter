@@ -462,7 +462,6 @@ class Trainer:
 
     def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
         key, new_key = jax.random.split(state.training_key)
-        opt_state = state.opt_state
         model = inference_mode(state.model, False)
 
         # we do this so that we only take the gradients of the trainable parameters
@@ -482,7 +481,7 @@ class Trainer:
         )
         loss, grads = grad_fn(trainable_model, rest_model, *batch, **batch_kwargs)
 
-        updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+        updates, opt_state = self.optimizer.update(grads, state.opt_state, params=trainable_model)
         if isinstance(self.optimizer, SecondOrderTransformation):
             opt_state = self.optimizer.update_hessian(
                 opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
