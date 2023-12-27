@@ -18,7 +18,7 @@ Args = ParamSpec("Args")
 R = TypeVar("R")
 
 
-class AccumType(enum.Enum):
+class ReductionType(enum.Enum):
     SUM = enum.auto()
     MEAN = enum.auto()
     # TODO: add MAX?
@@ -32,7 +32,8 @@ def microbatched(
     accum_axis_mapping,
     compute_axis_mapping,
     patch_in_rng_key: Optional[str] = "key",
-    accum_type: AccumType = AccumType.MEAN,
+    reduce: ReductionType = ReductionType.MEAN,
+    accum_dtype: Optional[jnp.dtype] = None,
 ) -> Callable[Args, R]:
     """
     Wraps a function that takes a batch and changes it to instead take microbatches and accumulate the results
@@ -46,7 +47,8 @@ def microbatched(
         compute_axis_mapping:  the axis mapping for the computation (typically this is the same as the inputs)
         patch_in_rng_key: if provided, this kwarg will be split, 1 for each accum step. It won't work if the
             PRNGKey is passed in as a positional argument.
-        accum_type: whether to sum or average the results
+        reduce: whether to sum or average the results
+        accum_dtype: the dtype of floating point values in the accumulator. If None, this will be inferred from the return type of `fn`.
 
     Returns:
         a function that splits the batch into microbatches, calls the function on each microbatch, and
@@ -65,8 +67,8 @@ def microbatched(
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
 
-    if accum_type not in AccumType:
-        raise ValueError(f"accum_type must be one of {AccumType}")
+    if reduce not in ReductionType:
+        raise ValueError(f"accum_type must be one of {ReductionType}")
 
     @functools.wraps(fn)
     def wrapped_fn(*args, **kwargs):
@@ -75,9 +77,9 @@ def microbatched(
             key = jax.random.split(key, num_micro_steps)
         # first, determine the shape and make accumulator arrays
         r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
-        acc = jax.tree_util.tree_map(
-            functools.partial(_zeros_like, accum_axis_mapping), r_shape, is_leaf=is_named_array
-        )
+
+        _zeros = functools.partial(_zeros_like, accum_axis_mapping, accum_dtype)
+        acc = jax.tree_util.tree_map(_zeros, r_shape, is_leaf=is_named_array)
 
         args = _reshape_for_microbatch(Batch, Microbatch, AccumStep, args, compute_axis_mapping)
 
@@ -98,7 +100,7 @@ def microbatched(
         with jax.named_scope("microbatched"):
             acc = hax.fold(loop, AccumStep)(acc, (args, kwargs, key))
 
-            if accum_type == AccumType.MEAN:
+            if reduce == ReductionType.MEAN:
                 acc = jax.tree_util.tree_map(lambda x: x / num_micro_steps, acc)
 
         return acc
@@ -123,11 +125,11 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
 
 
-def _zeros_like(mapping, n):
+def _zeros_like(mapping, dtype, n):
     if isinstance(n, hax.NamedArray):
-        return hax.auto_sharded(hax.zeros_like(n), mapping)
+        return hax.auto_sharded(hax.zeros_like(n, dtype=dtype), mapping)
     elif is_jax_array_like(n):
-        return jnp.zeros_like(n)
+        return jnp.zeros_like(n, dtype)
     else:
         assert jnp.isscalar(n)
         return 0.0
