@@ -72,15 +72,16 @@ def microbatched(
 
     @functools.wraps(fn)
     def wrapped_fn(*args, **kwargs):
+        # Special handling for PRNGKey
         key = kwargs.get(patch_in_rng_key, None)
         if key is not None:
             key = jax.random.split(key, num_micro_steps)
+
         # first, determine the shape and make accumulator arrays
         r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
+        acc = _zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
 
-        _zeros = functools.partial(_zeros_like, accum_axis_mapping, accum_dtype)
-        acc = jax.tree_util.tree_map(_zeros, r_shape, is_leaf=is_named_array)
-
+        # then, reshape the inputs from (Batch, ...) to (AccumStep, Microbatch, ...)
         args = _reshape_for_microbatch(Batch, Microbatch, AccumStep, args, compute_axis_mapping)
 
         def loop(acc, microbatch_and_key):
@@ -123,6 +124,12 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             return x
 
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
+
+
+def _zeros_like_tree(r_shape, axis_mapping, accum_dtype):
+    _zeros = functools.partial(_zeros_like, axis_mapping, accum_dtype)
+    acc = jax.tree_util.tree_map(_zeros, r_shape, is_leaf=is_named_array)
+    return acc
 
 
 def _zeros_like(mapping, dtype, n):
