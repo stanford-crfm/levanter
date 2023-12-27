@@ -50,7 +50,7 @@ from levanter.checkpoint import CheckpointerConfig, load_from_checkpoint_or_init
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.grad_accum import accumulate_gradients_sharded
+from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
@@ -472,9 +472,15 @@ class Trainer:
             model = eqx.combine(trainable_model, rest_model)
             return self.loss_fn(model, *batch, **batch_kwargs, key=key)
 
-        loss, grads = accumulate_gradients_sharded(
-            split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-        )(trainable_model, rest_model, *batch, **batch_kwargs)
+        grad_fn = eqx.filter_value_and_grad(split_loss_fn, has_aux=False)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            self.config.per_device_parallelism,
+            self.parameter_axis_mapping,
+            self.parameter_axis_mapping,
+        )
+        loss, grads = grad_fn(trainable_model, rest_model, *batch, **batch_kwargs)
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
         if isinstance(self.optimizer, SecondOrderTransformation):

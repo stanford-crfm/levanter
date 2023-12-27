@@ -1,3 +1,4 @@
+import enum
 import functools
 from typing import Callable, Optional, ParamSpec, TypeVar
 
@@ -9,29 +10,33 @@ from jax.sharding import PartitionSpec
 
 import haliax as hax
 from haliax import Axis
-from haliax.jax_utils import named_call
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_jax_array_like, is_named_array
-
-from levanter.types import M, ValAndGradFn, ValFn, X
 
 
 Args = ParamSpec("Args")
 R = TypeVar("R")
 
 
-def microbatched_mean(
+class AccumType(enum.Enum):
+    SUM = enum.auto()
+    MEAN = enum.auto()
+    # TODO: add MAX?
+
+
+# cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
+def microbatched(
     fn: Callable[Args, R],
     Batch: Axis,
     per_device_parallelism: int,
     accum_axis_mapping,
     compute_axis_mapping,
     patch_in_rng_key: Optional[str] = "key",
+    accum_type: AccumType = AccumType.MEAN,
 ) -> Callable[Args, R]:
     """
     Wraps a function that takes a batch and changes it to instead take microbatches and accumulate the results
-    This function takes the *mean* of the microbatched results, so it only does what you want if the function
-    is taking the mean of the batch axis.
+    This function has to reduce the batch axis, so it can't be used for functions that need to keep the batch axis.
 
     Args:
         fn: a function to wrap
@@ -41,6 +46,7 @@ def microbatched_mean(
         compute_axis_mapping:  the axis mapping for the computation (typically this is the same as the inputs)
         patch_in_rng_key: if provided, this kwarg will be split, 1 for each accum step. It won't work if the
             PRNGKey is passed in as a positional argument.
+        accum_type: whether to sum or average the results
 
     Returns:
         a function that splits the batch into microbatches, calls the function on each microbatch, and
@@ -59,6 +65,9 @@ def microbatched_mean(
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
 
+    if accum_type not in AccumType:
+        raise ValueError(f"accum_type must be one of {AccumType}")
+
     @functools.wraps(fn)
     def wrapped_fn(*args, **kwargs):
         key = kwargs.get(patch_in_rng_key, None)
@@ -74,7 +83,7 @@ def microbatched_mean(
 
         def loop(acc, microbatch_and_key):
             microbatch, microbatch_kwargs, key = microbatch_and_key
-            with jax.named_scope("compute_microbatch"):
+            with jax.named_scope("compute"):
                 microbatch_kwargs = microbatch_kwargs.copy()
                 if key is not None:
                     microbatch_kwargs[patch_in_rng_key] = key
@@ -86,40 +95,15 @@ def microbatched_mean(
 
             return acc
 
-        acc = hax.fold(loop, AccumStep)(acc, (args, kwargs, key))
-        acc = jax.tree_util.tree_map(lambda x: x / num_micro_steps, acc)
+        with jax.named_scope("microbatched"):
+            acc = hax.fold(loop, AccumStep)(acc, (args, kwargs, key))
+
+            if accum_type == AccumType.MEAN:
+                acc = jax.tree_util.tree_map(lambda x: x / num_micro_steps, acc)
 
         return acc
 
     return wrapped_fn
-
-
-# cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
-@named_call
-def accumulate_gradients_sharded(
-    f: ValFn[M, X],
-    Batch: Axis,
-    per_device_parallelism: int,
-    parameter_axis_mapping,
-) -> ValAndGradFn[M, X]:
-    """
-    Accumulate gradients across a sharded batch, keeping a local copy of the gradient on each row of the data
-     parallel axis. (If the model is not sharded, then a copy of the gradient is on each individual device.)
-
-     Parameters:
-        f: a function whose gradients are to be accumulated
-        per_device_parallelism: how many examples to process at once on each device
-        inputs: inputs with the batch axis. non-named arrays assume that the 0th axis is the batch axis.
-        parameter_axis_mapping: the axis mapping for the model parameters
-        key: an optional PRNG key for the random number generator.
-        If provided, this key will be split, 1 for each accum step
-        kwargs: passed to f
-
-    """
-    grad_fn = eqx.filter_value_and_grad(f, has_aux=False)
-    grad_fn = microbatched_mean(grad_fn, Batch, per_device_parallelism, parameter_axis_mapping, parameter_axis_mapping)
-
-    return grad_fn
 
 
 def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inputs, axis_mapping):
