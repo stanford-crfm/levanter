@@ -90,6 +90,10 @@ class TrainerState(eqx.Module, Generic[M]):
     def step(self) -> int:
         return int(self._step)
 
+    @property
+    def trainable_model(self) -> M:
+        return eqx.filter(self.model, self.is_trainable)
+
 
 S = TypeVar("S", bound=TrainerState)
 
@@ -464,14 +468,7 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        # we do this so that we only take the gradients of the trainable parameters
-        trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
-
-        def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
-            model = eqx.combine(trainable_model, rest_model)
-            return self.loss_fn(model, *batch, **batch_kwargs, key=key)
-
-        grad_fn = eqx.filter_value_and_grad(split_loss_fn, has_aux=False)
+        grad_fn = eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
         grad_fn = microbatched(
             grad_fn,
             self.TrainBatch,
@@ -479,13 +476,15 @@ class Trainer:
             self.parameter_axis_mapping,
             self.parameter_axis_mapping,
         )
-        loss, grads = grad_fn(trainable_model, rest_model, *batch, **batch_kwargs)
+        loss, grads = grad_fn(model, *batch, **batch_kwargs, key=key)
 
-        updates, opt_state = self.optimizer.update(grads, state.opt_state, params=trainable_model)
+        # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
+        train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
+        trainable_model = state.trainable_model
+
+        updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
         if isinstance(self.optimizer, SecondOrderTransformation):
-            opt_state = self.optimizer.update_hessian(
-                opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
-            )
+            opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
 
         model = eqx.apply_updates(model, updates)
 
@@ -743,10 +742,6 @@ def initialize(config: TrainerConfig | AllConfig):
 
 def _params_only(t):
     return eqx.filter(t, is_inexact_arrayish)
-
-
-def _trainable_params_only(model: M, filter: PyTree[FilterSpec]) -> M:
-    return _partition_trainable_params(model, filter)[0]
 
 
 def _partition_trainable_params(model, filter):
