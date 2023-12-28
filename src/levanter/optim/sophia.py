@@ -18,8 +18,8 @@ from optax._src.transform import bias_correction, update_moment
 import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
 from levanter.optim.second_order import SecondOrderTransformation, chain_second_order, inject_hyperparams
-from levanter.optim.util import hvp, tree_gaussian
-from levanter.utils.jax_utils import parameter_count
+from levanter.optim.util import hvp, tree_gaussian_like
+from levanter.utils.jax_utils import parameter_count, tree_filter_like
 
 
 M = TypeVar("M")
@@ -335,7 +335,8 @@ def _sophia_gradient_transform(
         def _do_update():
             key, next_key = jax.random.split(state.hess_key)
             new_hess = sophia_hess_fn(fn, model, *batch, hess_key=key, **batch_kwargs)
-            # new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -1, 1), new_hess)
+
+            new_hess = tree_filter_like(state.h, new_hess)
 
             # EMAs of hessian
             hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
@@ -404,7 +405,7 @@ def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
     # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
     # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
     # https://arxiv.org/pdf/2208.03268.pdf
-    g = tree_gaussian(hess_key, model)
+    g = tree_gaussian_like(hess_key, model)
     # TODO: consider allowing for n > 1 gaussians?
     product = hvp(lambda m: fn(m, *args, **kwargs), model, g)
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
