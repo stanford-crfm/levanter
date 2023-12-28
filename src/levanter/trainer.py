@@ -357,7 +357,7 @@ class Trainer:
         Performs a single training step.
         """
         with capture_time() as step_time:
-            loss, new_state = self._train_step_fn(state, *batch, **batch_kwargs)
+            loss, new_state = self._jit_train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
@@ -457,7 +457,7 @@ class Trainer:
         return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
 
     @cached_property
-    def _train_step_fn(self):
+    def _jit_train_step_fn(self):
         return named_jit(
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
@@ -468,6 +468,14 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
+        loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs, key=key)
+
+        new_state = self._take_train_step(state, model, grads, batch, batch_kwargs)
+        new_state = dataclasses.replace(new_state, _step=state._step + 1, training_key=new_key)
+
+        return loss, new_state
+
+    def _compute_gradients_microbatched(self, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
         grad_fn = microbatched(
             grad_fn,
@@ -476,23 +484,23 @@ class Trainer:
             self.parameter_axis_mapping,
             self.parameter_axis_mapping,
         )
-        loss, grads = grad_fn(model, *batch, **batch_kwargs, key=key)
+        return grad_fn(model, *batch, **batch_kwargs)
 
+    def _take_train_step(self, state, model, grads, batch, batch_kwargs) -> TrainerState:
+        """
+        Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
+        """
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
-        trainable_model = state.trainable_model
-
+        trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
         updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
+
+        # Sophia, e.g.
         if isinstance(self.optimizer, SecondOrderTransformation):
             opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
-
         model = eqx.apply_updates(model, updates)
 
-        new_state = dataclasses.replace(
-            state, _step=state._step + 1, model=model, opt_state=opt_state, training_key=new_key
-        )
-
-        return loss, new_state
+        return dataclasses.replace(state, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
         model = model_init()
@@ -730,7 +738,7 @@ class AllConfig(Protocol):
 
 def initialize(config: TrainerConfig | AllConfig):
     """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
-    as hyperparameters and an artifact"""
+    as hyperparameters and as an artifact"""
     if isinstance(config, TrainerConfig):
         trainer_config = config
     else:
@@ -738,10 +746,6 @@ def initialize(config: TrainerConfig | AllConfig):
 
     trainer_config.initialize()
     levanter.tracker.log_configuration(config)
-
-
-def _params_only(t):
-    return eqx.filter(t, is_inexact_arrayish)
 
 
 def _partition_trainable_params(model, filter):
