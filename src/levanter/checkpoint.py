@@ -25,6 +25,7 @@ from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.partitioning
+from haliax.jax_utils import is_in_jit
 from haliax.partitioning import ResourceMapping
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
@@ -350,7 +351,6 @@ def load_checkpoint(
 
 def load_metadata(checkpoint_path, fs=None):
     if fs is None:
-        fs: AbstractFileSystem
         fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
     with fs.open(os.path.join(checkpoint_path, "metadata.json")) as metadata_in:
         metadata = json.load(metadata_in)
@@ -439,16 +439,18 @@ class CheckpointerConfig:
 P = ParamSpec("P")
 
 
+# TODO: add partial checkpoint loading
+
+
 def load_from_checkpoint_or_initialize(
     init_fn: Callable[P, M],
     checkpoint_path: str,
     axis_mapping: Optional[ResourceMapping] = None,
     mesh: Optional[Mesh] = None,
     *,
-    # TODO: add this back in
-    # allow_partial_checkpoint: bool,
     force_load_checkpoint: Optional[bool] = None,
     is_checkpointed: Optional[PyTree[FilterSpec]] = True,
+    subpath: Optional[str] = None,
 ) -> Callable[P, M]:
     """
     Loads a checkpoint if it exists, otherwise initializes from scratch.
@@ -465,7 +467,10 @@ def load_from_checkpoint_or_initialize(
         is_checkpointed: a filter spec for the checkpointed parameters. This is used to filter out non-checkpointed
                 parameters for the initialization. If you don't specify this, all parameters are assumed to be
                 checkpointed.
+        subpath: the subpath to load from the checkpoint. This is useful for loading, e.g., just the model and not
+                the entire training state.
     """
+
     if force_load_checkpoint is False:
         cmanager = mesh or contextlib.nullcontext()
 
@@ -486,10 +491,20 @@ def load_from_checkpoint_or_initialize(
                 if axis_mapping is not None:
                     stack.enter_context(hax.axis_mapping(axis_mapping))
 
+                if is_in_jit():
+                    # TODO: should we check if we're specifically in eval_shape?
+                    logger.debug("In jit, not loading checkpoint. Assuming we're in eval_shape.")
+                    # don't do io if we're in jit
+                    return init_fn(*args, **kwargs)
+
                 ckpt_shape = eqx.filter_eval_shape(init_fn, *args, **kwargs)
 
                 ckpt = load_checkpoint(
-                    eqx.filter(ckpt_shape, is_checkpointed), checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+                    eqx.filter(ckpt_shape, is_checkpointed),
+                    checkpoint_path,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                    subpath=subpath,
                 )
 
                 if ckpt is None:

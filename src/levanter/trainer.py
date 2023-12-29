@@ -42,6 +42,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.types import IntScalar, Scalar
 
+import levanter.checkpoint
 import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
@@ -314,28 +315,15 @@ class Trainer:
         assert model_init is not None
 
         if self.config.initialize_from is not None:
-            model_shape = eqx.filter_eval_shape(model_init)
-            model_shape = _partition_trainable_params(model_shape, is_trainable)[0]
-            # we always load the initial model b/c it might have different non-trainables
-            logger.info(f"Initializing model from checkpoint {self.config.initialize_from}")
-            ckpt_model = levanter.checkpoint.load_checkpoint(
-                model_shape,
+            model_init = load_from_checkpoint_or_initialize(
+                model_init,
                 self.config.initialize_from,
                 axis_mapping=self.parameter_axis_mapping,
                 mesh=self.device_mesh,
+                force_load_checkpoint=True,
+                is_checkpointed=is_trainable,
                 subpath="model",
             )
-
-            if ckpt_model is not None:
-                if model is not None:
-                    # populate any missing parameters from the passed in model
-                    model = eqx.combine(ckpt_model, model)
-                    model_init = jax.tree_util.Partial(lambda m: m, model)
-                else:
-                    old_model_init = model_init
-                    model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), ckpt_model, old_model_init)
-            else:
-                raise RuntimeError(f"Could not load model from checkpoint {self.config.initialize_from}")
 
         load_checkpoint_path = self.config.load_checkpoint_path
 
@@ -478,7 +466,7 @@ class Trainer:
 
         loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs, key=key)
 
-        new_state = self._take_train_step(state, model, grads, batch, batch_kwargs)
+        new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
         new_state = dataclasses.replace(new_state, _step=state._step + 1, training_key=new_key)
 
         return loss, new_state
@@ -494,7 +482,7 @@ class Trainer:
         )
         return grad_fn(model, *batch, **batch_kwargs)
 
-    def _take_train_step(self, state, model, grads, batch, batch_kwargs) -> TrainerState:
+    def _take_train_step(self, state: S, model, grads, *batch, **batch_kwargs) -> S:
         """
         Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
         """
