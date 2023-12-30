@@ -1,29 +1,28 @@
 import dataclasses
-from typing import Callable, Iterator, Optional, TypeVar
+from typing import Callable, Iterator, Optional, Tuple, TypeVar
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
-
-import levanter.tracker
-from haliax import Scalar, named_jit
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax.types import IntScalar
 
+import levanter.tracker
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
+from levanter.logging import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
-from levanter.types import ComputeLossFunction
-from optax._src.base import GradientTransformation
-
+from levanter.types import ComputeLossFunction, ModuleComputeLoss
 from levanter.utils.tree_utils import inference_mode
+
 
 T = TypeVar("T")
 
+
+# TODO: should we put ref in the state? If so, need to tell it to not serialize it
 class DoremiState(TrainerState):
     alpha: hax.NamedArray
     average_alpha: hax.NamedArray
@@ -36,32 +35,58 @@ class DoremiState(TrainerState):
 class DoReMiTrainer(Trainer):
     # we just use the DoReMi trainer for state management
 
-    def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
-        base_state = super()._initialize_state_from_scratch(model_init, training_key, is_trainable)
-        return DoremiState(base_state.step,
-                           base_state.model,
-                           base_state.opt_state,
-                           base_state.training_key,
-                           self.initial_alpha)
+    def __init__(self, trainer: TrainerConfig, optimizer: optax.GradientTransformation, initial_alpha: hax.NamedArray):
+        super().__init__(trainer, optimizer)
+        self.initial_alpha = initial_alpha
+
+    # TODO: I'd like to not need to override trainer for this
+    def _initialize_state_from_scratch(self, model: Callable[[], M], training_key, is_trainable):
+        base_state = super()._initialize_state_from_scratch(model, training_key, is_trainable)
+        return DoremiState(
+            base_state.step, base_state.model, base_state.opt_state, base_state.training_key, self.initial_alpha
+        )
+
+
+@dataclasses.dataclass
+class DoReMiConfig:
+    # This is designed to be used with estimate_mixture_weights
+    domain_weight_step_size: float = 1.0
+    smoothing: float = 1e-3
+    sampling_weights: Optional[dict[str, float]] = None
 
 
 def estimate_mixture_weights(
-    trainer: TrainerConfig,
-    loss_fn: ComputeLossFunction,
-    initial_proxy,
-    ref,
+    trainer_config: TrainerConfig,
+    initial_proxy: M,
+    ref: M,
     data_sources: dict[str, ShardableDataset[T]],
-    ref_weights: dict[str, float],
+    sampling_weights: Optional[dict[str, float]] = None,
     *,
-    domain_weight_step: float = 1.0,
+    loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
+    domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
-    eps_alpha: float = 1e-6,
     key: PRNGKeyArray,
 ) -> dict[str, float]:
     """
     Estimate the mixture weights for the data sources using DoReMi.
     https://arxiv.org/abs/2305.10429
+
+    Args:
+        trainer_config: Trainer config
+        initial_proxy: Initial proxy model
+        ref: Reference model
+        data_sources: Data sources to estimate the weights for
+        sampling_weights: Sampling weights for the data sources. If not provided, will use uniform sampling weights.
+        loss_fn: Loss function to use for the proxy and ref models. If not provided, will use the model's compute_loss
+        domain_weight_step_size: Step size for the domain weights
+        smoothing: Smoothing for the domain weights
+        key: PRNG key
     """
+    if len(data_sources) <= 1:
+        raise ValueError("Must have at least two data sources")
+
+    ref = _prepare_ref_model(ref, trainer_config)
+
     training_key, data_key = jrandom.split(key)
     domain_indices = list(data_sources.keys())
     domain_to_index = {domain: index for index, domain in enumerate(domain_indices)}
@@ -71,7 +96,15 @@ def estimate_mixture_weights(
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    trainer = DoReMiTrainer(trainer, optax.adamw(1e-3), ref, initial_alpha, loss_fn)
+    trainer = DoReMiTrainer(trainer_config, optax.adamw(1e-3), initial_alpha)
+
+    if sampling_weights is not None:
+        assert set(sampling_weights.keys()) == set(data_sources.keys())
+        sampling_weights = {
+            domain: weight / sum(sampling_weights.values()) for domain, weight in sampling_weights.items()
+        }
+    else:
+        sampling_weights = {domain: 1 / len(data_sources) for domain in data_sources.keys()}
 
     # calculate per-token losses for proxy and ref
     def compute_excess_loss(ref, proxy, batch):
@@ -81,7 +114,6 @@ def estimate_mixture_weights(
         excess_losses = proxy_losses - ref_losses
         return excess_losses
 
-
     # Loss is alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
     def proxy_model_loss(excess_losses, domains, alpha):
         one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
@@ -89,44 +121,49 @@ def estimate_mixture_weights(
         # TODO: I'd like to make the syntax for this nicer. einsum would be like
         # einsum("d,bd,b... -> ()" ro something)
         # but it's really just collapsing all axes
-        loss = hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses).scalar()
+        # maybe we could do something like
+        # loss = hax.contract_to(alpha, one_hot_domains, excess_losses, out_axes=())
+        # or i guess we could just do
+        # hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses, out_axes=()).scalar()
 
-        return loss
+        return hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses).scalar()
 
-    @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True, ))
-    def doremi_step(state: DoremiState, batch, domains):
+    @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
+    def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
         # this is one of those times when PyTorch's backward() is nice
-        excess_losses, excess_backward = eqx.filter_vjp(lambda proxy: compute_excess_loss(proxy, ref, batch), proxy)
+        with hax.axis_mapping(trainer.compute_axis_mapping):
+            excess_losses, excess_backward = eqx.filter_vjp(
+                lambda proxy: compute_excess_loss(proxy, ref, batch), proxy
+            )
 
-        # Update domain weights
-        ## Compute per-domain excess losses
-        clipped_losses = hax.maximum(excess_losses, 0)
-        one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-        per_domain_losses = hax.dot(excess_losses.axes, one_hot_domains, clipped_losses)
+            # Compute per-domain excess losses
+            clipped_losses = hax.maximum(excess_losses, 0)
+            one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+            per_domain_losses = hax.dot(excess_losses.axes, one_hot_domains, clipped_losses)
 
-        alpha = state.alpha * hax.exp(domain_weight_step * per_domain_losses)
-        alpha /= hax.sum(alpha)
-        alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
+            # Update domain weights
+            alpha = state.alpha * hax.exp(domain_weight_step_size * per_domain_losses)
+            alpha /= hax.sum(alpha)
+            alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
 
-        alpha_distance = hax.sum(hax.abs(alpha - state.alpha))
-        levanter.tracker.log_metrics({"alpha_distance": alpha_distance}, step=state.step)
+            alpha_distance = hax.sum(hax.abs(alpha - state.alpha))
 
-        # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
-        loss, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
-        grad = excess_backward(grad_loss)
+            levanter.tracker.jit_log_metrics({"alpha_distance": alpha_distance}, step=state.step)
 
-        new_state = trainer._take_train_step(state, proxy, grad, batch)
+            # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
+            loss, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
+            grad = excess_backward(grad_loss)
+
+        new_state = trainer._take_train_step(state, proxy, grad)
+        new_state = new_state.update_alpha(alpha)
 
         return loss, new_state
 
-    # TODO: we don't support serializing stuff from anything other than the model and the opt_state. should fix.
-    running_alpha_mean = initial_alpha
-
     # we're not actually going to use the trainer for very much but it holds hooks and sets up contexts
     with trainer:
-        tagged_mixture = domain_tagged_mixture(data_sources, ref_weights, domain_to_index, key=data_key)
-        state = trainer.initial_state(training_key, model=initial_proxy)
+        tagged_mixture = domain_tagged_mixture(data_sources, sampling_weights, domain_to_index, key=data_key)
+        state: DoremiState = trainer.initial_state(training_key, model=initial_proxy)
         del initial_proxy
         train_loader = iter(trainer.sharded_loader(tagged_mixture, trainer.TrainBatch))
 
@@ -141,25 +178,29 @@ def estimate_mixture_weights(
         while state.step < trainer.num_train_steps:
             example, ex_domains = next(train_loader)
 
-            key, new_key = jax.random.split(state.training_key)
-            proxy, alpha = state.model
+            with capture_time() as step_time:
+                loss, state = doremi_step(state, ref, example, ex_domains)
+                loss = loss.item()  # type: ignore
 
-            loss, new_model, new_optstate = doremi_step(
-                proxy, state.opt_state, alpha, example, ex_domains,
-            )
-            loss = loss.item()  # type: ignore
-
-            new_info = StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
+            new_info = StepInfo(state, loss, step_time())
 
             trainer.run_hooks(new_info)
 
-            state = new_info
+        trainer.run_hooks(new_info, force=True)
+
+    final_weights = {domain: float(state.average_alpha[Domain, index]) for domain, index in domain_to_index.items()}
+
+    levanter.tracker.log_summary({"final_weights": final_weights})
+
+    return final_weights
 
 
-
-
-
-
+def _prepare_ref_model(ref, trainer):
+    return hax.named_jit(
+        lambda m: trainer.mp.cast_to_compute(inference_mode(m, True)),
+        axis_resources=trainer.parameter_axis_mapping,
+        donate_args=True,
+    )(ref)
 
 
 def domain_tagged_mixture(
@@ -168,20 +209,20 @@ def domain_tagged_mixture(
     domain_to_index: dict[str, int],
     *,
     key: PRNGKeyArray,
-) -> MixtureDataset[(T, IntScalar)]:
+) -> MixtureDataset[Tuple[T, IntScalar]]:
     """
     Domain tagged mixture dataset. This dataset will yield from the datasets according to the weights,
     and will yield the domain index as a second element of the tuple.
     """
     tagged_datasets = {
-        domain_index: DomainTaggedDataset(data_sources[domain], domain_index)
+        domain: DomainTaggedDataset(data_sources[domain], domain_index)
         for domain, domain_index in domain_to_index.items()
     }
 
     return MixtureDataset(tagged_datasets, weights, key=key)
 
 
-class DomainTaggedDataset(ShardableDataset[(T, hax.NamedArray)]):  # named array is a scalar int
+class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named array is a scalar int
     def __init__(
         self,
         dataset: ShardableDataset[T],
@@ -197,6 +238,6 @@ class DomainTaggedDataset(ShardableDataset[(T, hax.NamedArray)]):  # named array
     def shard(self, shard_id: int, num_shards: int) -> "DomainTaggedDataset[T]":
         return DomainTaggedDataset(self.dataset.shard(shard_id, num_shards), self.domain_index)
 
-    def __iter__(self) -> Iterator[(T, IntScalar)]:
+    def __iter__(self) -> Iterator[Tuple[T, hax.NamedArray]]:
         for item in self.dataset:
             yield item, self.domain_index
