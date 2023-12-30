@@ -196,3 +196,10 @@ def tree_filter_like(template: X, tree: X) -> X:
             return tree_leaf
 
     return jax.tree_util.tree_map(match_like, template, tree, is_leaf=lambda x: x is None)
+
+
+def as_arrayish(x):
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return x
+    else:
+        return jnp.asarray(x)

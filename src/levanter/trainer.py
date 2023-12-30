@@ -28,7 +28,6 @@ from typing import (
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -46,7 +45,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig, load_from_checkpoint_or_initialize
+from levanter.checkpoint import CheckpointerConfig, load_checkpoint
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
@@ -56,7 +55,7 @@ from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.jax_utils import as_arrayish, is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -80,7 +79,7 @@ class TrainerState(eqx.Module, Generic[M]):
     It's designed to be extended by subclasses.
     """
 
-    _step: IntScalar = eqx.field(converter=lambda x: jnp.asarray(x) if not isinstance(x, bool) else x)
+    _step: IntScalar = eqx.field(converter=lambda x: as_arrayish(x))
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
@@ -195,7 +194,7 @@ class Trainer:
         Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
         """
 
-        @named_jit(in_axis_resources=self.parameter_axis_mapping, axis_resources=self.compute_axis_mapping)
+        @named_jit(axis_resources=self.compute_axis_mapping)
         @functools.wraps(self._raw_loss_function)
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
@@ -284,7 +283,11 @@ class Trainer:
         is_trainable: PyTree[FilterSpec] = True,
     ) -> TrainerState[M]:
         """
-        Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+        Either loads a checkpoint or initializes a fresh trainer state. This is the recommended way to initialize
+        a trainer state.
+
+        This method is smart enough to handle subclasses of TrainerState. If you want to extend TrainerState, you
+        can override _initialize_state_from_scratch
 
         Args
             is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
@@ -303,52 +306,55 @@ class Trainer:
             # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
+        del model
         assert model_init is not None
 
-        if self.config.initialize_from is not None:
-            model_shape = eqx.filter_eval_shape(model_init)
-            model_shape = _partition_trainable_params(model_shape, is_trainable)[0]
-            # we always load the initial model b/c it might have different non-trainables
-            logger.info(f"Initializing model from checkpoint {self.config.initialize_from}")
-            ckpt_model = levanter.checkpoint.load_checkpoint(
-                model_shape,
+        # we don't save the full trainer state, so we need to filter out the non-trainable parameters
+        trainer_state_shape = eqx.filter_eval_shape(
+            self._initialize_state_from_scratch, model_init, training_key, is_trainable
+        )
+        saveable_state_shape = self._make_saveable_trainer_state(trainer_state_shape, is_trainable)
+
+        # first try to load a full trainer state checkpoint
+        path = self.config.load_checkpoint_path
+        if path is None:
+            path = self.config.checkpointer.expanded_path(self.run_id)
+
+        if self.config.load_checkpoint is not False:
+            try:
+                state = load_checkpoint(
+                    saveable_state_shape, path, axis_mapping=self.parameter_axis_mapping, mesh=self.device_mesh
+                )
+            except FileNotFoundError:
+                if self.config.load_checkpoint:
+                    raise
+                else:
+                    state = None
+
+        # if that fails, try to load just a model from a checkpoint for initialization
+        if state is None and self.config.initialize_from is not None:
+            logger.info(f"Initializing from {self.config.initialize_from}")
+            # todo: we are potentially holding two models in memory at once here, if we pass in a model
+            # instead of a model_init and we use initialize_from. We could avoid this by deleting
+            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
+            loaded_model = load_checkpoint(
+                saveable_state_shape.model,
                 self.config.initialize_from,
                 axis_mapping=self.parameter_axis_mapping,
                 mesh=self.device_mesh,
                 subpath="model",
             )
 
-            if ckpt_model is not None:
-                if model is not None:
-                    # populate any missing parameters from the passed in model
-                    model = eqx.combine(ckpt_model, model)
-                    model_init = jax.tree_util.Partial(lambda m: m, model)
-                else:
-                    old_model_init = model_init
-                    model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), ckpt_model, old_model_init)
-            else:
-                raise RuntimeError(f"Could not load model from checkpoint {self.config.initialize_from}")
+            # we don't necessarily load the full model, so we need to combine it with the model init
+            model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
 
-        load_checkpoint_path = self.config.load_checkpoint_path
+        # now we initialize a fresh trainer state, possibly just to finish any missing fields
+        @named_jit(axis_resources=self.parameter_axis_mapping, donate_args=(True, True, True, False))
+        def init_state(partial_state, model_init, training_key, is_trainable):
+            fresh_state = self._initialize_state_from_scratch(model_init, training_key, is_trainable)
+            return eqx.combine(partial_state, fresh_state)
 
-        if load_checkpoint_path is None:
-            load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-        with self:
-            assert model_init is not None
-            state = load_from_checkpoint_or_initialize(
-                self._initialize_state_from_scratch,
-                load_checkpoint_path,
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-                force_load_checkpoint=self.config.load_checkpoint,
-                # if we're loading a checkpoint, we need to know which parameters are trainable
-                is_checkpointed=TrainerState(True, is_trainable, True, True, False),  # type: ignore
-            )(
-                model_init,
-                training_key,
-                is_trainable,
-            )
+        state = init_state(state, model_init, training_key, is_trainable)
 
         return state
 
@@ -458,11 +464,7 @@ class Trainer:
 
     @cached_property
     def _jit_train_step_fn(self):
-        return named_jit(
-            axis_resources=self.parameter_axis_mapping,
-            out_axis_resources=self.parameter_axis_mapping,
-            donate_args=(True,),
-        )(self._train_step)
+        return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
 
     def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
         key, new_key = jax.random.split(state.training_key)
@@ -514,6 +516,16 @@ class Trainer:
         opt_state = self.optimizer.init(trainable)
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
+
+    def _make_saveable_trainer_state(self, trainer_state: S, is_trainable) -> S:
+        """
+        Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
+        You can override if you really need custom checkpointing logic. By default everything in the trainer state
+        is saved (except for non-trainable model parameters)
+        """
+        saveable_model = eqx.filter(trainer_state.model, is_trainable)
+        saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
+        return saveable_state
 
 
 def _initialize_global_tracker(config, run_id):
