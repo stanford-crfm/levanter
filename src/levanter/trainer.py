@@ -318,39 +318,46 @@ class Trainer:
         del model
         assert model_init is not None
 
-        # we don't save the full trainer state, so we need to filter out the non-trainable parameters
-        trainer_state_shape = eqx.filter_eval_shape(
-            self._initialize_state_from_scratch, model_init, training_key, is_trainable
-        )
-        saveable_state_shape = self._make_saveable_trainer_state(trainer_state_shape, is_trainable)
-
         # first try to load a full trainer state checkpoint
-        path = self.config.load_checkpoint_path
-        if path is None:
-            path = self.config.checkpointer.expanded_path(self.run_id)
+        checkpoint_path = self.config.load_checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-        if self.config.load_checkpoint is not False:
+        do_load_checkpoint = self.config.load_checkpoint
+        axis_mapping = self.parameter_axis_mapping
+        mesh = self.device_mesh
+        initial_model_path = self.config.initialize_from
+
+        # we don't save the full trainer state, so we need to filter out the non-trainable parameters
+
+        def init_state_and_model(model_init, training_key, is_trainable):
+            model = model_init()
+            state = self._initialize_state_from_scratch(model, training_key, is_trainable)
+            return state
+
+        trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key, is_trainable)
+        saveable_state_shape = _make_saveable_trainer_state(trainer_state_shape, is_trainable)
+
+        if do_load_checkpoint is not False:
             try:
-                state = load_checkpoint(
-                    saveable_state_shape, path, axis_mapping=self.parameter_axis_mapping, mesh=self.device_mesh
-                )
+                state = load_checkpoint(saveable_state_shape, checkpoint_path, axis_mapping=axis_mapping, mesh=mesh)
             except FileNotFoundError:
-                if self.config.load_checkpoint:
+                if do_load_checkpoint:
                     raise
                 else:
                     state = None
 
         # if that fails, try to load just a model from a checkpoint for initialization
-        if state is None and self.config.initialize_from is not None:
-            logger.info(f"Initializing from {self.config.initialize_from}")
+        if state is None and initial_model_path is not None:
+            logger.info(f"Initializing from {initial_model_path}")
             # todo: we are potentially holding two models in memory at once here, if we pass in a model
             # instead of a model_init and we use initialize_from. We could avoid this by deleting
             # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
             loaded_model = load_checkpoint(
                 saveable_state_shape.model,
-                self.config.initialize_from,
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
+                initial_model_path,
+                axis_mapping=axis_mapping,
+                mesh=mesh,
                 subpath="model",
             )
 
@@ -358,9 +365,10 @@ class Trainer:
             model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
 
         # now we initialize a fresh trainer state, possibly just to finish any missing fields
-        @named_jit(axis_resources=self.parameter_axis_mapping, donate_args=(True, True, True, False))
+        @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
         def init_state(partial_state, model_init, training_key, is_trainable):
-            fresh_state = self._initialize_state_from_scratch(model_init, training_key, is_trainable)
+            model = model_init()
+            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
             return eqx.combine(partial_state, fresh_state)
 
         state = init_state(state, model_init, training_key, is_trainable)
@@ -502,39 +510,54 @@ class Trainer:
         Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
         """
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
-        train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
-        trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-        updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
+        with hax.axis_mapping(self.parameter_axis_mapping):
+            train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
+            trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
+            updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
 
-        # Sophia, e.g.
-        if isinstance(self.optimizer, SecondOrderTransformation):
-            opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
-        model = eqx.apply_updates(model, updates)
+            # Sophia, e.g.
+            if isinstance(self.optimizer, SecondOrderTransformation):
+                opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
+            model = eqx.apply_updates(model, updates)
 
-        return dataclasses.replace(state, model=model, opt_state=opt_state)
+            return dataclasses.replace(state, model=model, opt_state=opt_state)
 
-    def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
-        model = model_init()
-
+    def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = _partition_trainable_params(model, is_trainable)
-        trainable = self.mp.cast_to_param(trainable)
-        non_trainable = self.mp.cast_to_compute(non_trainable)
-        model = eqx.combine(trainable, non_trainable)
-
-        opt_state = self.optimizer.init(trainable)
+        model = cast_params_by_trainability(model, self.mp, is_trainable)
+        opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
-    def _make_saveable_trainer_state(self, trainer_state: S, is_trainable) -> S:
-        """
-        Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
-        You can override if you really need custom checkpointing logic. By default everything in the trainer state
-        is saved (except for non-trainable model parameters)
-        """
-        saveable_model = eqx.filter(trainer_state.model, is_trainable)
-        saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
-        return saveable_state
+
+def init_optimizer_for_trainables(optimizer, model, is_trainable):
+    trainable, _ = _partition_trainable_params(model, is_trainable)
+    opt_state = optimizer.init(trainable)
+    return opt_state
+
+
+def cast_params_by_trainability(model, mp, is_trainable):
+    """
+    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
+    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
+    """
+
+    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
+    trainable = mp.cast_to_param(trainable)
+    non_trainable = mp.cast_to_compute(non_trainable)
+    model = eqx.combine(trainable, non_trainable)
+    return model
+
+
+def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
+    """
+    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
+    You can override if you really need custom checkpointing logic. By default everything in the trainer state
+    is saved (except for non-trainable model parameters)
+    """
+    saveable_model = eqx.filter(trainer_state.model, is_trainable)
+    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
+    return saveable_state
 
 
 def _initialize_global_tracker(config, run_id):
