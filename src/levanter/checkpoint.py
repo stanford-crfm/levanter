@@ -1,7 +1,5 @@
-import contextlib
 import dataclasses
 import datetime
-import functools
 import json
 import logging
 import os
@@ -9,24 +7,18 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, List, Optional, ParamSpec, Sequence, TypeVar, Union
+from typing import Callable, List, Optional, Sequence, TypeVar, Union
 
 import equinox
-import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
-from jax import ShapeDtypeStruct
-from jax._src.interpreters.pxla import Mesh
 from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
 
-import haliax as hax
 import haliax.partitioning
-from haliax.jax_utils import is_in_jit
-from haliax.partitioning import ResourceMapping
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
@@ -278,7 +270,7 @@ def load_checkpoint(
     discover_latest=True,
     axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
     mesh: Optional[jax.sharding.Mesh] = None,
-) -> Optional[M]:
+) -> M:
     """
     Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
     in a subdirectory of the given path will be loaded. If subpath is not None, then the checkpoint
@@ -305,7 +297,7 @@ def load_checkpoint(
         checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
 
     if checkpoint_path is None or not fs.exists(checkpoint_path):
-        return None
+        raise FileNotFoundError(f"Could not find checkpoint at {checkpoint_path}")
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
@@ -436,96 +428,4 @@ class CheckpointerConfig:
             prev_interval = interval
 
 
-P = ParamSpec("P")
-
-
 # TODO: add partial checkpoint loading
-
-
-def load_from_checkpoint_or_initialize(
-    init_fn: Callable[P, M],
-    checkpoint_path: str,
-    axis_mapping: Optional[ResourceMapping] = None,
-    mesh: Optional[Mesh] = None,
-    *,
-    force_load_checkpoint: Optional[bool] = None,
-    is_checkpointed: Optional[PyTree[FilterSpec]] = True,
-    subpath: Optional[str] = None,
-) -> Callable[P, M]:
-    """
-    Loads a checkpoint if it exists, otherwise initializes from scratch.
-
-    Args:
-        init_fn: the initialization function. This should be a function that takes some arguments and returns a
-                model or state. It should be jit-able and should not have any (destructive) side effects. It will
-                likely be called 2-3 times.
-        checkpoint_path: the path to the checkpoint
-        axis_mapping: the axis mapping to use for initialization. If None, the default axis mapping will be used.
-        mesh: the mesh to use for initialization. If None, the default mesh will be used.
-        force_load_checkpoint: if True, we must load a checkpoint. If False, we will not load a checkpoint. If None,
-                we will load a checkpoint if it exists.
-        is_checkpointed: a filter spec for the checkpointed parameters. This is used to filter out non-checkpointed
-                parameters for the initialization. If you don't specify this, all parameters are assumed to be
-                checkpointed.
-        subpath: the subpath to load from the checkpoint. This is useful for loading, e.g., just the model and not
-                the entire training state.
-    """
-
-    if force_load_checkpoint is False:
-        cmanager = mesh or contextlib.nullcontext()
-
-        @functools.wraps(init_fn)
-        @hax.named_jit(axis_resources=axis_mapping)
-        def fn(*args, **kwargs):
-            with cmanager:
-                return init_fn(*args, **kwargs)
-
-        return fn
-    else:
-
-        @functools.wraps(init_fn)
-        def fn(*args, **kwargs):
-            with contextlib.ExitStack() as stack:
-                if mesh is not None:
-                    stack.enter_context(mesh)
-                if axis_mapping is not None:
-                    stack.enter_context(hax.axis_mapping(axis_mapping))
-
-                if is_in_jit():
-                    # TODO: should we check if we're specifically in eval_shape?
-                    logger.debug("In jit, not loading checkpoint. Assuming we're in eval_shape.")
-                    # don't do io if we're in jit
-                    return init_fn(*args, **kwargs)
-
-                ckpt_shape = eqx.filter_eval_shape(init_fn, *args, **kwargs)
-
-                ckpt = load_checkpoint(
-                    eqx.filter(ckpt_shape, is_checkpointed),
-                    checkpoint_path,
-                    axis_mapping=axis_mapping,
-                    mesh=mesh,
-                    subpath=subpath,
-                )
-
-                if ckpt is None:
-                    if force_load_checkpoint is True:
-                        raise ValueError(f"Could not load checkpoint from {checkpoint_path}")
-                    else:
-                        out = hax.named_jit(init_fn, axis_mapping)(*args, **kwargs)
-                        return out
-                else:
-                    ckpt = eqx.combine(ckpt, ckpt_shape)
-                    if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_util.tree_leaves(ckpt)):
-                        # if we're resuming, we need to initialize any non-checkpointed values
-                        @hax.named_jit(axis_resources=axis_mapping)
-                        def partial_init(init_fn, *args, **kwargs):
-                            m = init_fn(*args, **kwargs)
-                            return eqx.filter(m, is_checkpointed, inverse=True)
-
-                        non_checkpointed = partial_init(init_fn, *args, **kwargs)
-                        ckpt = eqx.filter(ckpt, lambda x: not isinstance(x, ShapeDtypeStruct))
-                        return eqx.combine(ckpt, non_checkpointed)
-                    else:
-                        return ckpt
-
-        return fn
