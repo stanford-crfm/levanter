@@ -6,7 +6,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import optax
-from haliax import Scalar
+
+import levanter.tracker
+from haliax import Scalar, named_jit
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
@@ -14,9 +16,11 @@ from haliax.types import IntScalar
 
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
-from levanter.trainer import M, StepInfo, Trainer, TrainerState
+from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
 from levanter.types import ComputeLossFunction
 from optax._src.base import GradientTransformation
+
+from levanter.utils.tree_utils import inference_mode
 
 T = TypeVar("T")
 
@@ -30,15 +34,7 @@ class DoremiState(TrainerState):
 
 
 class DoReMiTrainer(Trainer):
-
-
-    def __init__(self, config: "TrainerConfig", optimizer: GradientTransformation,
-                 initial_alpha: hax.NamedArray,
-                 loss_fn: Optional[ComputeLossFunction] = None,
-                ):
-        super().__init__(config, optimizer, loss_fn)
-        self.initial_alpha = initial_alpha
-
+    # we just use the DoReMi trainer for state management
 
     def _initialize_state_from_scratch(self, model_init: Callable[[], M], training_key, is_trainable):
         base_state = super()._initialize_state_from_scratch(model_init, training_key, is_trainable)
@@ -48,37 +44,9 @@ class DoReMiTrainer(Trainer):
                            base_state.training_key,
                            self.initial_alpha)
 
-    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
-        key, new_key = jax.random.split(state.training_key)
-        opt_state = state.opt_state
-        model = inference_mode(state.model, False)
-
-        # we do this so that we only take the gradients of the trainable parameters
-        trainable_model, rest_model = _partition_trainable_params(model, state.is_trainable)
-
-        def split_loss_fn(trainable_model, rest_model, *batch, **batch_kwargs):
-            model = eqx.combine(trainable_model, rest_model)
-            return self.loss_fn(model, *batch, **batch_kwargs, key=key)
-
-        loss, grads = accumulate_gradients_sharded(
-            split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-        )(trainable_model, rest_model, *batch, **batch_kwargs)
-
-        updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
-        if isinstance(self.optimizer, SecondOrderTransformation):
-            opt_state = self.optimizer.update_hessian(
-                opt_state, split_loss_fn, trainable_model, *batch, **batch_kwargs
-            )
-
-        model = eqx.apply_updates(model, updates)
-
-        new_state = dataclasses.replace(
-            state, _step=state._step + 1, model=model, opt_state=opt_state, training_key=new_key
-        )
-
 
 def estimate_mixture_weights(
-    trainer: Trainer,
+    trainer: TrainerConfig,
     loss_fn: ComputeLossFunction,
     initial_proxy,
     ref,
@@ -98,19 +66,21 @@ def estimate_mixture_weights(
     domain_indices = list(data_sources.keys())
     domain_to_index = {domain: index for index, domain in enumerate(domain_indices)}
 
-
     # Initialize domain weights.
     # TODO: should we initialize to the ref or to uniform?
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
+    trainer = DoReMiTrainer(trainer, optax.adamw(1e-3), ref, initial_alpha, loss_fn)
+
     # calculate per-token losses for proxy and ref
-    def compute_excess_loss(proxy, ref, batch):
+    def compute_excess_loss(ref, proxy, batch):
         proxy_losses = loss_fn(proxy, batch, reduction_axis=())
-        ref_losses = loss_fn(proxy, batch, reduction_axis=())
+        ref_losses = loss_fn(ref, batch, reduction_axis=())
         # calculate excess losses
         excess_losses = proxy_losses - ref_losses
         return excess_losses
+
 
     # Loss is alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
     def proxy_model_loss(excess_losses, domains, alpha):
@@ -123,8 +93,9 @@ def estimate_mixture_weights(
 
         return loss
 
-    @hax.named_jit(axis_resources=trainer.parameter_axis_mapping)
-    def doremi_step(proxy, opt_state, alpha, batch, domains):
+    @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True, ))
+    def doremi_step(state: DoremiState, batch, domains):
+        proxy = inference_mode(state.model, False)
         # this is one of those times when PyTorch's backward() is nice
         excess_losses, excess_backward = eqx.filter_vjp(lambda proxy: compute_excess_loss(proxy, ref, batch), proxy)
 
@@ -134,22 +105,20 @@ def estimate_mixture_weights(
         one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
         per_domain_losses = hax.dot(excess_losses.axes, one_hot_domains, clipped_losses)
 
-        old_alpha = alpha
-        alpha = alpha * hax.exp(domain_weight_step * per_domain_losses)
+        alpha = state.alpha * hax.exp(domain_weight_step * per_domain_losses)
         alpha /= hax.sum(alpha)
         alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
 
-        # TODO: log this
-        alpha_distance = hax.sum(hax.abs(alpha - old_alpha))
+        alpha_distance = hax.sum(hax.abs(alpha - state.alpha))
+        levanter.tracker.log_metrics({"alpha_distance": alpha_distance}, step=state.step)
 
         # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
         loss, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
         grad = excess_backward(grad_loss)
 
-        updates, new_opt_state = trainer.optimizer.update(opt_state, grad, params=proxy)
-        proxy = optax.apply_updates(proxy, updates)
+        new_state = trainer._take_train_step(state, proxy, grad, batch)
 
-        return loss, proxy, new_opt_state, alpha, alpha_distance
+        return loss, new_state
 
     # TODO: we don't support serializing stuff from anything other than the model and the opt_state. should fix.
     running_alpha_mean = initial_alpha
