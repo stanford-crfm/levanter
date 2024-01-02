@@ -1,31 +1,31 @@
 # Fine-Tuning for Function Calling with Levanter
 
-Function Calling involves generating a function call and its corresponding attributes in response to a user query. 
+Function Calling refers to the ability of models to generate a function call and corresponding attributes in response to a user query. 
 This is a common need for fine-tuning a Large Language Model to produce structured output suitable for backend service consumption. 
 This task can be extended to other structured output tasks like SQL and JSON generation. 
 
-In this post, we'll guide you through the process of fine-tuning a Llama2 model for function calling with the help of Levanter.
+In this post, we'll guide you through the process of fine-tuning a Llama2 model for function calling with Levanter.
 
 ## Example Task
 Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset. 
 It translates conversational English queries into function calls within the video game domain. 
-Each example features a plain English input and a structured output that adheres to predefined rules for function names and attributes
+Each example features a plain English input and a structured output that adheres to predefined rules for function names and attributes.
 
 Below are some examples from the dataset:
 
 ```
-Query: `Dirt: Showdown from 2012 is a sport racing game for the PlayStation, Xbox, PC rated E 10+ (for Everyone 10 and Older). It's not available on Steam, Linux, or Mac.`
-Expected Response: `inform(name[Dirt: Showdown], release_year[2012], esrb[E 10+ (for Everyone 10 and Older)], genres[driving/racing, sport], platforms[PlayStation, Xbox, PC], available_on_steam[no], has_linux_release[no], has_mac_release[no])`
+Query: Dirt: Showdown from 2012 is a sport racing game for the PlayStation, Xbox, PC rated E 10+ (for Everyone 10 and Older). It's not available on Steam, Linux, or Mac.
+Expected Response: inform(name[Dirt: Showdown], release_year[2012], esrb[E 10+ (for Everyone 10 and Older)], genres[driving/racing, sport], platforms[PlayStation, Xbox, PC], available_on_steam[no], has_linux_release[no], has_mac_release[no])
 
-Query: `Were there even any terrible games in 2014?`
-Expected Response: `request(release_year[2014], specifier[terrible])`
+Query: Were there even any terrible games in 2014?
+Expected Response: request(release_year[2014], specifier[terrible])
 
-Query: `Adventure games that combine platforming and puzzles can be frustrating to play, but the side view perspective is perfect for them. That's why I enjoyed playing Little Nightmares.`
-Expected Response: `give_opinion(name[Little Nightmares], rating[good], genres[adventure, platformer, puzzle], player_perspective[side view])`
+Query: Adventure games that combine platforming and puzzles can be frustrating to play, but the side view perspective is perfect for them. That's why I enjoyed playing Little Nightmares.
+Expected Response: give_opinion(name[Little Nightmares], rating[good], genres[adventure, platformer, puzzle], player_perspective[side view])
 ```
 
 If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect attributes. 
-This highlights the need for fine-tuning—to enhance the model's understanding on this task and producing the intended output.
+This highlights the need for fine-tuning: to enhance the model's understanding on this task and producing the intended output.
 
 ```
 Query: SpellForce 3 is a pretty bad game. The developer Grimlore Games is clearly a bunch of no-talent hacks, and 2017 was a terrible year for games anyway.
@@ -45,12 +45,13 @@ Although smaller than the Alpaca dataset, it provides enough data to effectively
 ### Step 1: Prepare the Dataset
 
 Let's begin by preparing the dataset. 
+
 Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required. 
 Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter. 
-For detailed instructions, refer to the [Training on Your Data](docs/Training-on-Your-Data.md) section in our documentation."
+For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md)."
 
 Below is a code snippet for dataset preparation. 
-The `prompt` provides the model with instructions to enhance its understanding of the task at hand. 
+The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand. 
 In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output. 
 While helpful, including a prompt is optional for fine-tuning.
 
@@ -88,20 +89,23 @@ with open("train.jsonl", "w") as f:
 ### Step 2: Fine-tune the Model
 
 Now, let's proceed to fine-tune the model with Levanter. 
-For this example, we've explored both comprehensive full-weight fine-tuning, similar to the approach used in Alpaca, and the more resource-efficient LoRA fine-tuning. Detailed descriptions of both methods are available in the documentation: [Fine-Tuning](docs/Fine-Tuning.md) and [LoRA](docs/LoRA.md). 
+
+For this example, we've explored both comprehensive full-weight fine-tuning, similar to the approach used in Alpaca, and the more resource-efficient LoRA fine-tuning. Detailed descriptions of both methods are available in the documentation: [Fine-Tuning](../Fine-Tuning.md) and [LoRA](../LoRA.md). 
+
 Here's a brief comparison of the two:
 
-- Full-weight fine-tuning: it fine-tunes the entire model weights to better follow the instruction and examples in the training dataset. It is able to leverage the entire  model capacity, but it is expensive and prone to overfitting. 
-- LoRA fine-tuning: it adapts the model to the task by adding a small number of parameters (0.1% to 1%) to the model, and train only those parameters. The new parameters are sufficient to capture the task-specific patterns and enable the model to generate the desired output. After training, we merge the new parameters into the original model to be used for inference. It is much more efficient than full-weight fine-tuning, and it is less prone to overfitting.
+- **Full-weight fine-tuning**: it fine-tunes the entire model weights to better follow the instruction and examples in the training dataset. It is able to leverage the entire  model capacity, but it is expensive and prone to overfitting. 
+- **LoRA fine-tuning**: it adapts the model to the task by adding a small number of parameters (0.1% to 1%) to the model, and train only those parameters. The new parameters are sufficient to capture the task-specific patterns and enable the model to generate the desired output. After training, we merge the new parameters into the original model to be used for inference. It is much more efficient than full-weight fine-tuning, and it is less prone to overfitting.
 
 Levanter provides good support for both methods. Therefore, we can easily try both methods and compare their results.
 
 #### Full-weight Fine-tuning
 
 We start with full-weight fine-tuning. Below is our configuration. Noteably:
+
 - The base model is `meta-llama/Llama-2-7b-hf`. It is set as the default value, so we don't need to specify it explicitly.
-- On batch size: We set the batch size to 128, which is the maximum batch size that can fit into a single TPUv3-8. 
-- On learnign rate: We compared the results with 3 epochs vs 2 epochs, and found that 2 epochs is sufficient to achieve the best results, while 3 epochs leads to overfitting.
+- Batch size: We set the batch size to 128, which is the maximum batch size that can fit into a single TPUv3-8. 
+- Learning rate: We compared the results with 3 epochs vs 2 epochs, and found that 2 epochs is sufficient to achieve the best results, while 3 epochs leads to overfitting.
 
 ```yaml
 data: "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
@@ -118,22 +122,22 @@ optimizer:
   learning_rate: 2E-5
 ```
 
-The detailed instruction to run the training job can be found in the [Fine-Tuning documentation](docs/Fine-Tuning.md). 
+The detailed instruction to run the training job can be found in the [Fine-Tuning documentation](../Fine-Tuning.md). 
 Here is the command to run the training job on TPU:
 
 ```bash
 gcloud compute tpus tpu-vm ssh finetune-32 --zone us-east1-d --worker=all \
 --command="WANDB_API_KEY=${YOUR WANDB TOKEN HERE} \
-  HUGGING_FACE_HUB_TOKEN=${YOUR HF TOKEN HERE} \
-  bash levanter/infra/run.sh python \
-  levanter/examples/alpaca/alpaca.py \
-  --config_path gs://<config-yaml-file> \
-  --hf_save_path gs://<somewhere>
+HUGGING_FACE_HUB_TOKEN=${YOUR HF TOKEN HERE} \
+bash levanter/infra/run.sh python \
+levanter/examples/alpaca/alpaca.py \
+--config_path gs://<config-yaml-file> \
+--hf_save_path gs://<somewhere>"
 ```
 
 Given the small dataset and high efficiency of Levanter, the entire training job completed quickly in only 21 min on a single TPUv3-8. 
 
-Below is an example of the output from the original chat model and the fine-tuned model. We can see that the fine-tuned model is able to generate the correct function call and precisely capture the right attributes, while the original model is not able to do so.
+Below shows an example where we compare the output from the original chat model and the fine-tuned model. We can see that the fine-tuned model is able to generate the correct function call and precisely capture the right attributes, while the original model is not able to do so.
 
 ```
 Query: SpellForce 3 is a pretty bad game. The developer Grimlore Games is clearly a bunch of no-talent hacks, and 2017 was a terrible year for games anyway.
@@ -145,6 +149,7 @@ Generation from fine-tuned Llama2-7B: give_opinion(name[SpellForce 3], release_y
 #### LoRA Fine-tuning
 
 Below is our configuration for LoRA fine-tuning. Note that it is very similar to the full-weight fine-tuning configuration, except for a few differences:
+
 - We increased the number of steps by 1 more epoch. LoRA fine-tuning is more efficient and less prone to overfitting, so we can train for more steps.
 - We increased the learning rate to 3e-4, but we did not do thorough hyperparameter tuning. We expect that a better learning rate can lead to better results.
 - We found weight decay at 0.1 to lead to better results than 0, so we set it at 0.1.
@@ -179,6 +184,7 @@ After training, Levanter will automatically merge the new parameters into the or
 How do we accurately evaluate a model's performance in function calling tasks? 
 Character-level accuracy falls short as it doesn't account for variations in the order of function names and attributes. 
 Instead, we assess the model's ability to interpret instructions and generate precise function calls by measuring three specific accuracies:
+
 - Function Name Accuracy: This metric confirms whether the extracted function name matches the expected one.
 - Attribute Set Accuracy: This checks if the model identifies the correct set of attributes, regardless of their order.
 - Attribute Value Accuracy: This evaluates the proportion of attributes for which the model has accurately predicted the corresponding values.
