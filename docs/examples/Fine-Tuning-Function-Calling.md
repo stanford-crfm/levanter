@@ -1,14 +1,14 @@
 # Fine-Tuning for Function Calling with Levanter
 
-Function Calling refers to the ability of models to generate a function call and corresponding attributes in response to a user query. 
-This is a common need for fine-tuning a Large Language Model to produce structured output suitable for backend service consumption. 
-This task can be extended to other structured output tasks like SQL and JSON generation. 
+Function Calling refers to the ability of models to generate a function call and corresponding attributes in response to a user query.
+This is a common need for fine-tuning a Large Language Model to produce structured output suitable for backend service consumption.
+This task can be extended to other structured output tasks like SQL and JSON generation.
 
 In this post, we'll guide you through the process of fine-tuning a Llama2 model for function calling with Levanter.
 
 ## Example Task
-Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset. 
-It translates conversational English queries into function calls within the video game domain. 
+Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset.
+It translates conversational English queries into function calls within the video game domain.
 Each example features a plain English input and a structured output that adheres to predefined rules for function names and attributes.
 
 Below are some examples from the dataset:
@@ -24,7 +24,7 @@ Query: Adventure games that combine platforming and puzzles can be frustrating t
 Expected Response: give_opinion(name[Little Nightmares], rating[good], genres[adventure, platformer, puzzle], player_perspective[side view])
 ```
 
-If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect attributes. 
+If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect attributes.
 This highlights the need for fine-tuning: to enhance the model's understanding on this task and producing the intended output.
 
 ```
@@ -37,22 +37,22 @@ Target:: suggest(name[Little Big Adventure], player_perspective[third person], p
 Generation from Llama2-7B Chat: \nOutput: inform(name[Little Big Adventure], release_year[1994],\nesrb[E (for Everyone)], genres[adventure, platformer],\nplayer_perspective[third person], has_mac_release[no])
 ```
 
-The dataset has 5,103 training examples and 714 examples for evaluation. 
+The dataset has 5,103 training examples and 714 examples for evaluation.
 Although smaller than the Alpaca dataset, it provides enough data to effectively adapt the model to the task.
 
 ## Fine-tuning with Levanter
 
 ### Step 1: Prepare the Dataset
 
-Let's begin by preparing the dataset. 
+Let's begin by preparing the dataset.
 
-Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required. 
-Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter. 
+Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required.
+Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter.
 For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md)."
 
-Below is a code snippet for dataset preparation. 
-The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand. 
-In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output. 
+Below is a code snippet for dataset preparation.
+The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand.
+In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output.
 While helpful, including a prompt is optional for fine-tuning.
 
 ```python
@@ -64,7 +64,7 @@ PROMPT = """
 You are a helpful chatbot to assist users to convert natural language sentences into function call.
 
 # omit the rest of the prompt for brevity
-... 
+...
 """
 
 # load the dataset
@@ -88,13 +88,13 @@ with open("train.jsonl", "w") as f:
 
 ### Step 2: Fine-tune the Model
 
-Now, let's proceed to fine-tune the model with Levanter. 
+Now, let's proceed to fine-tune the model with Levanter.
 
-For this example, we've explored both comprehensive full-weight fine-tuning, similar to the approach used in Alpaca, and the more resource-efficient LoRA fine-tuning. Detailed descriptions of both methods are available in the documentation: [Fine-Tuning](../Fine-Tuning.md) and [LoRA](../LoRA.md). 
+For this example, we've explored both comprehensive full-weight fine-tuning, similar to the approach used in Alpaca, and the more resource-efficient LoRA fine-tuning. Detailed descriptions of both methods are available in the documentation: [Fine-Tuning](../Fine-Tuning.md) and [LoRA](../LoRA.md).
 
 Here's a brief comparison of the two:
 
-- **Full-weight fine-tuning**: it fine-tunes the entire model weights to better follow the instruction and examples in the training dataset. It is able to leverage the entire  model capacity, but it is expensive and prone to overfitting. 
+- **Full-weight fine-tuning**: it fine-tunes the entire model weights to better follow the instruction and examples in the training dataset. It is able to leverage the entire  model capacity, but it is expensive and prone to overfitting.
 - **LoRA fine-tuning**: it adapts the model to the task by adding a small number of parameters (0.1% to 1%) to the model, and train only those parameters. The new parameters are sufficient to capture the task-specific patterns and enable the model to generate the desired output. After training, we merge the new parameters into the original model to be used for inference. It is much more efficient than full-weight fine-tuning, and it is less prone to overfitting.
 
 Levanter provides good support for both methods. Therefore, we can easily try both methods and compare their results.
@@ -104,7 +104,7 @@ Levanter provides good support for both methods. Therefore, we can easily try bo
 We start with full-weight fine-tuning. Below is our configuration. Noteably:
 
 - The base model is `meta-llama/Llama-2-7b-hf`. It is set as the default value, so we don't need to specify it explicitly.
-- Batch size: We set the batch size to 128, which is the maximum batch size that can fit into a single TPUv3-8. 
+- Batch size: We set the batch size to 128, which is the maximum batch size that can fit into a single TPUv3-8.
 - Learning rate: We compared the results with 3 epochs vs 2 epochs, and found that 2 epochs is sufficient to achieve the best results, while 3 epochs leads to overfitting.
 
 ```yaml
@@ -122,7 +122,7 @@ optimizer:
   learning_rate: 2E-5
 ```
 
-The detailed instruction to run the training job can be found in the [Fine-Tuning documentation](../Fine-Tuning.md). 
+The detailed instruction to run the training job can be found in the [Fine-Tuning documentation](../Fine-Tuning.md).
 Here is the command to run the training job on TPU:
 
 ```bash
@@ -135,7 +135,7 @@ levanter/examples/alpaca/alpaca.py \
 --hf_save_path gs://<somewhere>"
 ```
 
-Given the small dataset and high efficiency of Levanter, the entire training job completed quickly in only 21 min on a single TPUv3-8. 
+Given the small dataset and high efficiency of Levanter, the entire training job completed quickly in only 21 min on a single TPUv3-8.
 
 Below shows an example where we compare the output from the original chat model and the fine-tuned model. We can see that the fine-tuned model is able to generate the correct function call and precisely capture the right attributes, while the original model is not able to do so.
 
@@ -153,7 +153,7 @@ Below is our configuration for LoRA fine-tuning. Note that it is very similar to
 - We increased the number of steps by 1 more epoch. LoRA fine-tuning is more efficient and less prone to overfitting, so we can train for more steps.
 - We increased the learning rate to 3e-4, but we did not do very thorough hyperparameter tuning. We expect there might be a better learning rate.
 - We found weight decay at 0.1 to lead to better results than no weight decay, so we set it at 0.1.
-- We added the `lora` section to specify the LoRA parameters. All of the parameters are set to the default values. 
+- We added the `lora` section to specify the LoRA parameters. All of the parameters are set to the default values.
 
 ```yaml
 data: "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
@@ -181,8 +181,8 @@ After training, Levanter will automatically merge the new parameters into the or
 ## Evaluation
 
 ### Metrics
-How do we accurately evaluate a model's performance in function calling tasks? 
-Character-level accuracy falls short as it doesn't account for variations in the order of function names and attributes. 
+How do we accurately evaluate a model's performance in function calling tasks?
+Character-level accuracy falls short as it doesn't account for variations in the order of function names and attributes.
 Instead, we assess the model's ability to interpret instructions and generate precise function calls by measuring three specific accuracies:
 
 - Function Name Accuracy: This metric confirms whether the extracted function name matches the expected one.
@@ -190,7 +190,7 @@ Instead, we assess the model's ability to interpret instructions and generate pr
 - Attribute Value Accuracy: This evaluates the proportion of attributes for which the model has accurately predicted the corresponding values.
 - Overall Accuracy: This is the simple average of the three metrics above. This is used as an aggregate metric to compare the overall performance of the model.
 
-Together, these metrics provide a comprehensive picture of the model's effectiveness in function calling tasks. 
+Together, these metrics provide a comprehensive picture of the model's effectiveness in function calling tasks.
 
 The code snippet below shows how we extract the function name and attributes from the model's response and evaluate each accuracy metric.
 
@@ -259,7 +259,7 @@ The results are shown in the table below.
 
 There are a few highlights from the results:
 
-- The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation of its limited capability on this task. 
+- The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation of its limited capability on this task.
 - Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the performance of full-weight fine-tuning while adjusting only a fraction of the parameters, showcasing its efficiency.
 - The higher accuracy in attribute set and value suggests that these elements are more contextually driven and thus easier for the model to predict. In contrast, correctly identifying function names appears to be more challenging, indicating a need for deeper understanding of the task and reasoning capability.
 
@@ -269,5 +269,5 @@ To further improve the model's performance on the task, we can try hyperparamete
 
 In this post, we showcase the process of fine-tuning a Llama2 model using Levanter for the task of function calling.
 
-Function calling is a critical step in translating user queries into structured function calls, which is essential for programmatic interactions with AI systems. 
+Function calling is a critical step in translating user queries into structured function calls, which is essential for programmatic interactions with AI systems.
 We chose the GEM ViGGO dataset to demonstrate this task. The out-of-box Llama2-7B Chat model struggles to generate accurate function calls and outputs incorrect attributes. By applying fine-tuning, both full-weight and LoRA, we significantly improved the model's ability to perform on this task.
