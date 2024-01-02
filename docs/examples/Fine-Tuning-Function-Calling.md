@@ -1,6 +1,6 @@
 # Fine-Tuning for Function Calling with Levanter
 
-Function Calling involves generating a function call and its corresponding arguments in response to a user query. 
+Function Calling involves generating a function call and its corresponding attributes in response to a user query. 
 This is a common need for fine-tuning a Large Language Model to produce structured output suitable for backend service consumption. 
 This task can be extended to other structured output tasks like SQL and JSON generation. 
 
@@ -9,7 +9,7 @@ In this post, we'll guide you through the process of fine-tuning a Llama2 model 
 ## Example Task
 Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset. 
 It translates conversational English queries into function calls within the video game domain. 
-Each example features a plain English input and a structured output that adheres to predefined rules for function names and arguments
+Each example features a plain English input and a structured output that adheres to predefined rules for function names and attributes
 
 Below are some examples from the dataset:
 
@@ -24,7 +24,7 @@ Query: `Adventure games that combine platforming and puzzles can be frustrating 
 Expected Response: `give_opinion(name[Little Nightmares], rating[good], genres[adventure, platformer, puzzle], player_perspective[side view])`
 ```
 
-If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect arguments. 
+If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect attributes. 
 This highlights the need for fine-tuning—to enhance the model's understanding on this task and producing the intended output.
 
 ```
@@ -51,7 +51,7 @@ For detailed instructions, refer to the [Training on Your Data](docs/Training-on
 
 Below is a code snippet for dataset preparation. 
 The `prompt` provides the model with instructions to enhance its understanding of the task at hand. 
-In our example, the prompt details the potential function names and arguments, aiding the model in generating the correct output. 
+In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output. 
 While helpful, including a prompt is optional for fine-tuning.
 
 ```python
@@ -118,9 +118,22 @@ optimizer:
   learning_rate: 2E-5
 ```
 
+The detailed instruction to run the training job can be found in the [Fine-Tuning documentation](docs/Fine-Tuning.md). 
+Here is the command to run the training job on TPU:
+
+```bash
+gcloud compute tpus tpu-vm ssh finetune-32 --zone us-east1-d --worker=all \
+--command="WANDB_API_KEY=${YOUR WANDB TOKEN HERE} \
+  HUGGING_FACE_HUB_TOKEN=${YOUR HF TOKEN HERE} \
+  bash levanter/infra/run.sh python \
+  levanter/examples/alpaca/alpaca.py \
+  --config_path gs://<config-yaml-file> \
+  --hf_save_path gs://<somewhere>
+```
+
 Given the small dataset and high efficiency of Levanter, the entire training job completed quickly in only 21 min on a single TPUv3-8. 
 
-Below is an example of the output from the original chat model and the fine-tuned model. We can see that the fine-tuned model is able to generate the correct function call and precisely capture the right arguments, while the original model is not able to do so.
+Below is an example of the output from the original chat model and the fine-tuned model. We can see that the fine-tuned model is able to generate the correct function call and precisely capture the right attributes, while the original model is not able to do so.
 
 ```
 Query: SpellForce 3 is a pretty bad game. The developer Grimlore Games is clearly a bunch of no-talent hacks, and 2017 was a terrible year for games anyway.
@@ -160,11 +173,94 @@ lora:
 
 After training, Levanter will automatically merge the new parameters into the original model and save the new model to the specified output directory.
 
-## Results
+## Evaluation
+
+### Metrics
+How do we accurately evaluate a model's performance in function calling tasks? 
+Character-level accuracy falls short as it doesn't account for variations in the order of function names and attributes. 
+Instead, we assess the model's ability to interpret instructions and generate precise function calls by measuring three specific accuracies:
+- Function Name Accuracy: This metric confirms whether the extracted function name matches the expected one.
+- Attribute Set Accuracy: This checks if the model identifies the correct set of attributes, regardless of their order.
+- Attribute Value Accuracy: This evaluates the proportion of attributes for which the model has accurately predicted the corresponding values.
+- Overall Accuracy: This is the simple average of the three metrics above. This is used as an aggregate metric to compare the overall performance of the model.
+
+Together, these metrics provide a comprehensive picture of the model's effectiveness in function calling tasks. 
+
+The code snippet below shows how we extract the function name and attributes from the model's response and evaluate each accuracy metric.
+
+```python
+def extract_function_and_attributes(response):
+    # Remove extra spaces and normalize the response
+    response = response.strip().lower()
+    # Extract the function name using regex
+    function_match = re.match(r"(\w+)\(", response)
+    function_name = function_match.group(1) if function_match else None
+    # Extract attributes and their values using regex
+    attributes = re.findall(r"(\w+)\[([^]]*)\]", response)
+    return function_name, dict(attributes)
+
+
+def evaluate_chatbot_response(chatbot_response, labeled_response):
+    # Preprocess and extract data from responses
+    chatbot_function, chatbot_attributes = extract_function_and_attributes(
+        chatbot_response
+    )
+    labeled_function, labeled_attributes = extract_function_and_attributes(
+        labeled_response
+    )
+
+    # Function Name Accuracy
+    function_name_accuracy = int(chatbot_function == labeled_function)
+
+    # Attribute Set Accuracy
+    attribute_set_accuracy = int(
+        set(chatbot_attributes.keys()) == set(labeled_attributes.keys())
+    )
+
+    # Attribute Value Accuracy
+    correct_values = sum(
+        chatbot_attributes.get(attr, None) == value
+        for attr, value in labeled_attributes.items()
+    )
+    attribute_value_accuracy = (
+        correct_values / len(labeled_attributes) if labeled_attributes else 1
+    )
+
+    # Composite Metric (simple average for this example)
+    composite_score = (
+        function_name_accuracy + attribute_set_accuracy + attribute_value_accuracy
+    ) / 3
+
+    return {
+        "function_name_accuracy": function_name_accuracy,
+        "attribute_set_accuracy": attribute_set_accuracy,
+        "attribute_value_accuracy": attribute_value_accuracy,
+        "composite_score": composite_score,
+    }
+```
+
+### Results
+
+We evaluated the fine-tuned models on a hold-out evaluation set of 714 examples and computed the metrics described above.
+The results are shown in the table below.
 
 | Metric | Llama2-7B Chat | Full-weight Fine-tuning | LoRA Fine-tuning |
-| ------------------------ | ---- | ----- | ----- |
-| Function Name Accuracy   | 0.00 | 0.577 | 0.517 |
-| Attribute Set Accuracy   | 0.00 | 0.822 | 0.845 |
-| Attribute Value Accuracy | 0.00 | 0.942 | 0.881 |
-| Overall Accuracy         | 0.00 | 0.780 | 0.748 |
+| ------------------------ | ----- | ----- | ----- |
+| Function Name Accuracy   | 0.014 | 0.577 | 0.517 |
+| Attribute Set Accuracy   | 0.010 | 0.822 | 0.845 |
+| Attribute Value Accuracy | 0.524 | 0.942 | 0.881 |
+| Overall Accuracy         | 0.183 | 0.780 | 0.748 |
+
+There are a few highlights from the results:
+- The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation of its limited capability on this task. 
+- Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the performance of full-weight fine-tuning while adjusting only a fraction of the parameters, showcasing its efficiency.
+- The higher accuracy in attribute set and value suggests that these elements are more contextually driven and thus easier for the model to predict. In contrast, correctly identifying function names appears to be more challenging, indicating a need for deeper understanding of the task and reasoning capability.
+
+To further improve the model's performance on the task, we can try hyperparameter tuning, including the learning rate and the number of training steps; additionally, a more effective approach might be to increase the quantity and diversity of the training data, and switch to a more capable base model.
+
+## Summary
+
+In this post, we showcase the process of fine-tuning a Llama2 model using Levanter for the task of function calling.
+
+Function calling is a critical step in translating user queries into structured function calls, which is essential for programmatic interactions with AI systems. 
+We chose the GEM ViGGO dataset to demonstrate this task. The out-of-box Llama2-7B Chat model struggles to generate accurate function calls and outputs incorrect attributes. By applying fine-tuning, both full-weight and LoRA, we significantly improved the model's ability to perform on this task.
