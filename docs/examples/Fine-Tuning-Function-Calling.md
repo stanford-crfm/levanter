@@ -252,6 +252,7 @@ The results are shown in the table below.
 | Overall Accuracy         | 0.183 | 0.780 | 0.748 |
 
 There are a few highlights from the results:
+
 - The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation of its limited capability on this task. 
 - Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the performance of full-weight fine-tuning while adjusting only a fraction of the parameters, showcasing its efficiency.
 - The higher accuracy in attribute set and value suggests that these elements are more contextually driven and thus easier for the model to predict. In contrast, correctly identifying function names appears to be more challenging, indicating a need for deeper understanding of the task and reasoning capability.
