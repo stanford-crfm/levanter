@@ -88,6 +88,7 @@ nav:
       - 'Configuration-Guide.md'
       - "Fine-Tuning.md"
       - "LoRA.md"
+      - "examples/Fine-Tuning-Function-Calling.md"
       - "Hardware-Agnostic-Training.md"
   - 'Developer Guide':
       - 'Port-Models.md'
