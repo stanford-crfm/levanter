@@ -65,6 +65,7 @@ def estimate_mixture_weights(
     loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
+    weight_change_eps: float = 1e-3,
     key: PRNGKeyArray,
 ) -> dict[str, float]:
     """
@@ -114,7 +115,7 @@ def estimate_mixture_weights(
         excess_losses = proxy_losses - ref_losses
         return excess_losses
 
-    # Loss is alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
+    # Loss is \sum_d alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
     def proxy_model_loss(excess_losses, domains, alpha):
         one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
         # basically einsum(" * -> ", alpha, one_hot_domains, excess_losses)
@@ -131,25 +132,21 @@ def estimate_mixture_weights(
     @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
     def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
-        # this is one of those times when PyTorch's backward() is nice
         with hax.axis_mapping(trainer.compute_axis_mapping):
+            # this is one of those times when PyTorch's backward() is nice
             excess_losses, excess_backward = eqx.filter_vjp(
                 lambda proxy: compute_excess_loss(proxy, ref, batch), proxy
             )
 
-            # Compute per-domain excess losses
             clipped_losses = hax.maximum(excess_losses, 0)
-            one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-            per_domain_losses = hax.dot(excess_losses.axes, one_hot_domains, clipped_losses)
+            per_domain_losses = _compute_per_domain_losses(Domain, domains, clipped_losses)
 
             # Update domain weights
             alpha = state.alpha * hax.exp(domain_weight_step_size * per_domain_losses)
             alpha /= hax.sum(alpha)
             alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
 
-            alpha_distance = hax.sum(hax.abs(alpha - state.alpha))
-
-            levanter.tracker.jit_log_metrics({"alpha_distance": alpha_distance}, step=state.step)
+            distance_from_uniform = hax.sum(hax.abs(alpha - initial_alpha))
 
             # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
             loss, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
@@ -157,6 +154,16 @@ def estimate_mixture_weights(
 
         new_state = trainer._take_train_step(state, proxy, grad)
         new_state = new_state.update_alpha(alpha)
+
+        alpha_distance = hax.sum(hax.abs(new_state.average_alpha - state.average_alpha))
+
+        levanter.tracker.jit_log_metrics(
+            {
+                "change_in_alpha": alpha_distance,
+                "alpha_distance_from_uniform": distance_from_uniform,
+            },
+            step=state.step,
+        )
 
         return loss, new_state
 
@@ -241,3 +248,9 @@ class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named 
     def __iter__(self) -> Iterator[Tuple[T, hax.NamedArray]]:
         for item in self.dataset:
             yield item, self.domain_index
+
+
+def _compute_per_domain_losses(Domain, domains, losses):
+    one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+    per_domain_losses = hax.dot(losses.axes, one_hot_domains, losses)
+    return per_domain_losses
