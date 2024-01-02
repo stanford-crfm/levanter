@@ -24,7 +24,21 @@ Query: `Adventure games that combine platforming and puzzles can be frustrating 
 Expected Response: `give_opinion(name[Little Nightmares], rating[good], genres[adventure, platformer, puzzle], player_perspective[side view])`
 ```
 
-The dataset is relatively small, with 5,103 training examples and 714 examples for evaluation.
+If we test with the Llama2-7B chat model on some examples, we can see its limitation: it struggles to generate accurate function calls and outputs incorrect arguments. 
+This highlights the need for fine-tuning—to enhance the model's understanding on this task and producing the intended output.
+
+```
+Query: SpellForce 3 is a pretty bad game. The developer Grimlore Games is clearly a bunch of no-talent hacks, and 2017 was a terrible year for games anyway.
+Target: give_opinion(name[SpellForce 3], release_year[2017], developer[Grimlore Games], rating[poor])
+Generation from Llama2-7B Chat: \nOutput: inform(name[SpellForce 3], release_year[2017], esrb[NA], genres[fantasy,\naction, adventure], platforms[PC], available_on_steam[no], has_linux_release[no],\nhas_mac_release[no])
+
+Query: Have any of the games you've played for the PC had a third person perspective, such as Little Big Adventure?
+Target:: suggest(name[Little Big Adventure], player_perspective[third person], platforms[PC])
+Generation from Llama2-7B Chat: \nOutput: inform(name[Little Big Adventure], release_year[1994],\nesrb[E (for Everyone)], genres[adventure, platformer],\nplayer_perspective[third person], has_mac_release[no])
+```
+
+The dataset has 5,103 training examples and 714 examples for evaluation. 
+Although smaller than the Alpaca dataset, it provides enough data to effectively adapt the model to the task.
 
 ## Fine-tuning with Levanter
 
