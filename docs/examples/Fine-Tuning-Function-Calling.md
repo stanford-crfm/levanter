@@ -151,8 +151,8 @@ Generation from fine-tuned Llama2-7B: give_opinion(name[SpellForce 3], release_y
 Below is our configuration for LoRA fine-tuning. Note that it is very similar to the full-weight fine-tuning configuration, except for a few differences:
 
 - We increased the number of steps by 1 more epoch. LoRA fine-tuning is more efficient and less prone to overfitting, so we can train for more steps.
-- We increased the learning rate to 3e-4, but we did not do thorough hyperparameter tuning. We expect that a better learning rate can lead to better results.
-- We found weight decay at 0.1 to lead to better results than 0, so we set it at 0.1.
+- We increased the learning rate to 3e-4, but we did not do very thorough hyperparameter tuning. We expect there might be a better learning rate.
+- We found weight decay at 0.1 to lead to better results than no weight decay, so we set it at 0.1.
 - We added the `lora` section to specify the LoRA parameters. All of the parameters are set to the default values. 
 
 ```yaml
@@ -176,7 +176,7 @@ lora:
   dropout: 0.0  # dropout probability for LoRA layers
 ```
 
-After training, Levanter will automatically merge the new parameters into the original model and save the new model to the specified output directory.
+After training, Levanter will automatically merge the new parameters into the original model and save the new model. We can use it for inference and evaluation.
 
 ## Evaluation
 
