@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 from typing import Callable, Iterator, Optional, Tuple, TypeVar
 
 import equinox as eqx
@@ -17,6 +18,9 @@ from levanter.logging import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
 from levanter.types import ComputeLossFunction, ModuleComputeLoss
 from levanter.utils.tree_utils import inference_mode
+
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")
@@ -116,19 +120,6 @@ def estimate_mixture_weights(
         return excess_losses
 
     # Loss is \sum_d alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
-    def proxy_model_loss(excess_losses, domains, alpha):
-        one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-        # basically einsum(" * -> ", alpha, one_hot_domains, excess_losses)
-        # TODO: I'd like to make the syntax for this nicer. einsum would be like
-        # einsum("d,bd,b... -> ()" ro something)
-        # but it's really just collapsing all axes
-        # maybe we could do something like
-        # loss = hax.contract_to(alpha, one_hot_domains, excess_losses, out_axes=())
-        # or i guess we could just do
-        # hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses, out_axes=()).scalar()
-
-        return hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses).scalar()
-
     @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
     def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
@@ -149,23 +140,25 @@ def estimate_mixture_weights(
             distance_from_uniform = hax.sum(hax.abs(alpha - initial_alpha))
 
             # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
-            loss, grad_loss = eqx.filter_value_and_grad(proxy_model_loss)(excess_losses, domains, alpha)
+            loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
             grad = excess_backward(grad_loss)
 
         new_state = trainer._take_train_step(state, proxy, grad)
         new_state = new_state.update_alpha(alpha)
 
         alpha_distance = hax.sum(hax.abs(new_state.average_alpha - state.average_alpha))
+        alpha_dict = _alpha_weights_to_dict(Domain, new_state.average_alpha, domain_to_index)
 
         levanter.tracker.jit_log_metrics(
             {
                 "change_in_alpha": alpha_distance,
                 "alpha_distance_from_uniform": distance_from_uniform,
+                "alpha": alpha_dict,
             },
             step=state.step,
         )
 
-        return loss, new_state
+        return loss, alpha_distance, new_state
 
     # we're not actually going to use the trainer for very much but it holds hooks and sets up contexts
     with trainer:
@@ -186,19 +179,30 @@ def estimate_mixture_weights(
             example, ex_domains = next(train_loader)
 
             with capture_time() as step_time:
-                loss, state = doremi_step(state, ref, example, ex_domains)
+                loss, alpha_distance, state = doremi_step(state, ref, example, ex_domains)
                 loss = loss.item()  # type: ignore
 
             new_info = StepInfo(state, loss, step_time())
 
             trainer.run_hooks(new_info)
 
+            # check convergence for alphas
+            if alpha_distance.item() < weight_change_eps:
+                logger.info(f"Converged on alpha at step {state.step}: {alpha_distance:.4f}")
+                break
+
         trainer.run_hooks(new_info, force=True)
 
-    final_weights = {domain: float(state.average_alpha[Domain, index]) for domain, index in domain_to_index.items()}
+    alpha = state.average_alpha
+    final_weights = _alpha_weights_to_dict(Domain, alpha, domain_to_index)
 
-    levanter.tracker.log_summary({"final_weights": final_weights})
+    levanter.tracker.log_summary({"final_alpha": final_weights})
 
+    return final_weights
+
+
+def _alpha_weights_to_dict(Domain, alpha, domain_name_to_index):
+    final_weights = {domain: float(alpha[Domain, index]) for domain, index in domain_name_to_index.items()}
     return final_weights
 
 
@@ -254,3 +258,17 @@ def _compute_per_domain_losses(Domain, domains, losses):
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
     per_domain_losses = hax.dot(losses.axes, one_hot_domains, losses)
     return per_domain_losses
+
+
+def _domain_weighted_loss(losses, Domain, domains, alpha):
+    one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+    # basically einsum(" * -> ", alpha, one_hot_domains, excess_losses)
+    # TODO: I'd like to make the syntax for this nicer. einsum would be like
+    # einsum("d,bd,b... -> ()" or something)
+    # but it's really just collapsing all axes
+    # maybe we could do something like
+    # loss = hax.contract_to(alpha, one_hot_domains, excess_losses, out_axes=())
+    # or i guess we could just do
+    # hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses, out_axes=()).scalar()
+
+    return hax.dot(losses.axes + (Domain,), alpha, one_hot_domains, losses).scalar()
