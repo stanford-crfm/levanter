@@ -17,6 +17,7 @@ from jax.sharding import Mesh
 from tensorstore import TensorStore
 
 import haliax as hax
+import haliax.tree_util as htu
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
@@ -138,7 +139,7 @@ def tree_deserialize_leaves_tensorstore(
     """
     # TODO: support ShapeDtypeStructs that are not NamedArrays
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
+    specs = htu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
 
     deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
 
