@@ -262,13 +262,4 @@ def _compute_per_domain_losses(Domain, domains, losses):
 
 def _domain_weighted_loss(losses, Domain, domains, alpha):
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    # basically einsum(" * -> ", alpha, one_hot_domains, excess_losses)
-    # TODO: I'd like to make the syntax for this nicer. einsum would be like
-    # einsum("d,bd,b... -> ()" or something)
-    # but it's really just collapsing all axes
-    # maybe we could do something like
-    # loss = hax.contract_to(alpha, one_hot_domains, excess_losses, out_axes=())
-    # or i guess we could just do
-    # hax.dot(excess_losses.axes + (Domain,), alpha, one_hot_domains, excess_losses, out_axes=()).scalar()
-
-    return hax.dot(losses.axes + (Domain,), alpha, one_hot_domains, losses).scalar()
+    return hax.dot(alpha, one_hot_domains, losses, axis=None)
