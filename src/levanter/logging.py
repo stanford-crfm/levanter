@@ -122,6 +122,8 @@ def silence_transformer_nag():
     if os.getenv("TRANSFORMERS_VERBOSITY") is None:
         os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
+    import transformers  # noqa: F401
+
 
 @dataclass
 class WandbConfig:

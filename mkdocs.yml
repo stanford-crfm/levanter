@@ -86,11 +86,13 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
+  - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"
       - "Hardware-Agnostic-Training.md"
   - 'Developer Guide':
       - 'Port-Models.md'
+  - 'FAQ' : 'faq.md'
   - Other:
       - 'Levanter-1.0-Release.md'
       - "design/Data-Loader-Design.md"
