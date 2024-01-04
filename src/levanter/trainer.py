@@ -175,7 +175,7 @@ class Trainer:
 
         Args:
             config:  the trainer config
-            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
+            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.optim.OptimizerConfig][]
             loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
                 scalar loss. It should be jit-able and should not have any side effects.
         """
