@@ -64,7 +64,7 @@ are small matrices. The product $A \cdot B$ is low rank (typically rank $r = 8$ 
 The output of the modified layer is then $(W + A \cdot B) \cdot x =  A \cdot (B \cdot x) + W \cdot x$, where $x$ is the input to the layer.
 We train only the parameters $A$ and $B$, and leave the parameters $W$ alone.
 
-This is a diagram taken from the LoRA paper, which graphically shows how the LoRA transform is applied to a linear layer:
+This is a diagram taken from [the LoRA paper](https://arxiv.org/abs/2106.09685), which graphically shows how the LoRA transform is applied to a linear layer:
 
 ![Lora schematic diagram. The text gives a detailed description.](figures/lora-diagram.png)
 
@@ -73,7 +73,7 @@ For example, in this tutorial with default settings, the LoRA adapter will have 
 more than 6.7B parameters in the base model for a reduction of about 99.7% in parameters.
 
 This parameter savings also means that training requires much less memory: we can fit
-LoRA finetuning onto a much smaller GPU than we could fit a full finetuning, because we don't need to store optimizer
+LoRA finetuning onto a much smaller GPU than we could fit full finetuning, because we don't need to store optimizer
 states for the base model parameters, and the model parameters themselves can be stored at reduced (compute) precision.
 For example, full fine-tuning a 7B model would typically require 80GB just to store the model and optimizer states
 (at full precision), but with LoRA we can easily fit training onto a single 40GB A100.
