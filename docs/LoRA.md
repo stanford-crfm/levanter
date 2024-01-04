@@ -285,6 +285,61 @@ levanter/examples/gsm8k-lora/gsm8k_lora.py \
 
 You'll want to replace the placeholders with your own paths.
 
+## Using the Model
+
+The model should work out-of-the-box as a Hugging Face PEFT model. We can use the (not particularly efficient)
+inference algorithms in Transformers/PEFT to generate some answers. First, copy the checkpoint to a local directory:
+
+```bash
+gsutil cp -r gs://<somewhere>/lora/<run id>/step-<something> ./gsm8k-lora
+```
+
+Then, you can use it like this. This script should work with both PEFT and merged checkpoints. This
+is by no means a production-ready inference script, but it's enough to show you how to use the model.
+In particular, you probably want to use a dedicated inference server.
+
+```python
+import sys
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftConfig, PeftModel
+
+peft_model_id = sys.argv[1] if len(sys.argv) > 1 else "./gsm8k-lora"
+
+PROMPT = "Q: {question}\nA: "
+
+def format_prompt(**kwargs):
+    return PROMPT.format(**kwargs)
+
+try:
+    config = PeftConfig.from_pretrained(peft_model_id)
+    model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path, device_map="auto")
+    model = PeftModel.from_pretrained(model, peft_model_id, device_map="auto")
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name_or_path)
+except:
+    model = AutoModelForCausalLM.from_pretrained(peft_model_id, device_map="auto")
+    tokenizer = AutoTokenizer.from_pretrained(peft_model_id)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+while True:
+    question = input("> ")
+    question = format_prompt(question=question)
+    inputs = tokenizer(question, return_tensors="pt")
+    inputs = inputs.to(device)
+    with torch.no_grad():
+        outputs = model.generate(**inputs, max_new_tokens=200, do_sample=True, min_new_tokens=1)
+        print(tokenizer.batch_decode(outputs.detach().cpu().numpy(), skip_special_tokens=True))
+```
+
+Here's an example of the model in action:
+
+```bash
+> Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?
+Setting `pad_token_id` to `eos_token_id`:2 for open-end generation.
+['Q: Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?\nA: 48/2 = <<48/2=24>>24 clips were sold in May. 48+24 = <<48+24=72>>72 clips were sold altogether. The answer is 72.\n']
+```
+
 ## Evaluating the Model with HELM
 
 As promised, we're going to use HELM to evaluate the model. HELM makes it easy to evaluate models on the
@@ -346,48 +401,3 @@ You can also look at the individual results with the HELM UI. If you click throu
 you can see the model's predictions and the reference answers:
 
 ![Example question that the LoRA model happens to get right](figures/helm-instance-example.png)
-
-## Using the Model
-
-The model should work out-of-the-box as a Hugging Face PEFT model. First, copy the checkpoint to a local directory:
-
-```bash
-gsutil cp -r gs://<somewhere>/lora/<run id>/step-<something> ./gsm8k-lora
-```
-
-Then, you can use it like this:
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftConfig, PeftModel
-
-peft_model_id = "./gsm8k-lora"
-
-config = PeftConfig.from_pretrained(peft_model_id)
-tokenizer = AutoTokenizer.from_pretrained(config.base_model_name_or_path)
-model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path, device_map="auto")
-model = PeftModel.from_pretrained(model, peft_model_id, device_map="auto")
-
-question = "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"
-
-input = f"Q: {question}\nA: "
-
-input_ids = tokenizer(input, return_tensors="pt").input_ids.to(model.device)
-output_ids = model.generate(input_ids, do_sample=True, max_length=100, num_beams=5, num_return_sequences=5)
-
-for output_id in output_ids:
-    print(tokenizer.decode(output_id, skip_special_tokens=True))
-```
-
-(You probably want to use a dedicated inference server, rather than the naive generation built into Hugging Face's
-inference scripts, but this is just an example.)
-
-#### Using the merged checkpoints
-
-You can use the merged checkpoints with Hugging Face's Transformers library by loading the model like this:
-
-```python
-from transformers import AutoModelForCausalLM
-
-model = AutoModelForCausalLM.from_pretrained(path)
-```
