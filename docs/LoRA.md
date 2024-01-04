@@ -1,4 +1,4 @@
-# LoRA Tutorial: GSM8K on Llama-2 7b
+# LoRA: GSM8K on Llama-2 7b
 
 In the [Fine-Tuning tutorial](./Fine-Tuning.md), we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
 The Alpaca methodology is a good way to make a pretty good general-purpose instruction-tuned model, but what
