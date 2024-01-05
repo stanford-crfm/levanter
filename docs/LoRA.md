@@ -12,7 +12,7 @@ This tutorial aims to demonstrate the use of LoRA with Levanter, rather than ach
 LoRA (for Low-Rank Adaptation) is a form of parameter-efficient fine-tuning (PEFT), which is a class of techniques for
 adapting models to new tasks without having to store a new copy of the entire model.
 LoRA functions by augmenting each linear layer in the model (or a selected subset) with an additional low-rank linear layer.
-Training then only updates the parameters of the low-rank layer, leaving the parameters of the base model alone.
+Training then only updates the parameters of the low-rank layer, leaving the parameters of the base model fixed.
 LoRA's main strengths are its memory efficiency and associated on-disk efficiency. LoRA works
 on much smaller (and fewer) GPUs than you need for full fine-tuning, and it results in adapters that are only a
 few megabytes on disk, rather than the many gigabytes that you would need for a full fine-tuning checkpoint.
@@ -59,7 +59,7 @@ model (or a subset thereof). That is, we modify each linear layer's weights $W$ 
 are small matrices. The matrix product $AB$ is low rank (typically rank $r = 8$ or $16$). That is,
 if $W \in \mathbb{R}^{m \times n}$, then $A \in \mathbb{R}^{m \times r}$ and $B \in \mathbb{R}^{r \times n}$.
 The output of the modified layer is then $(W + AB)x = A(Bx) + Wx$, where $x$ is the input to the layer.
-We train only the parameters $A$ and $B$, and leave the parameters $W$ alone.
+We train only the parameters $A$ and $B$, and leave the parameters $W$ fixed.
 
 This is a diagram taken from [the LoRA paper](https://arxiv.org/abs/2106.09685), which graphically shows how the LoRA transform is applied to a linear layer:
 
