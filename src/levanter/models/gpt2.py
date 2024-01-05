@@ -312,6 +312,11 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     position_embeddings: NamedArray
     dropout: hnn.Dropout
 
+    token_out_embeddings_0: NamedArray
+    token_out_embeddings_1: NamedArray
+    token_out_embeddings_2: NamedArray
+    token_out_embeddings_3: NamedArray
+
     @staticmethod
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
@@ -320,7 +325,11 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
-        return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
+        token_out_embeddings_0 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
+        token_out_embeddings_1 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
+        token_out_embeddings_2 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
+        token_out_embeddings_3 = hax.random.normal(k_out, (Vocab, config.Embed)) * config.initializer_range
+        return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout, token_out_embeddings_0, token_out_embeddings_1, token_out_embeddings_2, token_out_embeddings_3)
 
     @named_call
     def embed(self, input_ids, *, key):
@@ -336,8 +345,20 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def unembed(self, x: NamedArray):
         return hax.dot("embed", x, self.token_embeddings)
 
+    def unembed_0(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_out_embeddings_0)
+
+    def unembed_1(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_out_embeddings_1)
+
+    def unembed_2(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_out_embeddings_2)
+
+    def unembed_3(self, x: NamedArray):
+        return hax.dot("embed", x, self.token_out_embeddings_3)
+
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
+        return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight", "token_out_embeddings_0": "lm_head0.weight", "token_out_embeddings_1": "lm_head1.weight", "token_out_embeddings_2": "lm_head2.weight", "token_out_embeddings_3": "lm_head3.weight"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
@@ -373,8 +394,36 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
-        x = self.transformer(x, attn_mask, key=k_transformer)
-        lm_logits = self.embeddings.unembed(x)
+
+        Batch = input_ids.axes[0]
+        Position = x.axes[1]
+        Embed = x.axes[2]
+
+        raw_1 = x.array
+        sum_states = raw_1[:,0::4,:] + raw_1[:,1::4,:] + raw_1[:,2::4,:] + raw_1[:,3::4,:]
+
+        new_seq_len = sum_states.shape[1]
+        new_Position = Axis("position", new_seq_len)
+        new_KeyPosition = new_Position.alias(f"key_{new_Position.name}")
+        new_axes = (Batch, new_Position, Embed)
+        new_x = NamedArray(sum_states, new_axes)
+
+        # NOTE: this attention mask does not do forgetful casual masking, even if it's specified in the config!
+        new_attn_mask = hax.nn.attention.causal_mask(new_Position, new_KeyPosition)
+
+        x = self.transformer(new_x, new_attn_mask, key=k_transformer)
+
+        lm_logits_0 = self.embeddings.unembed_0(x)
+        lm_logits_1 = self.embeddings.unembed_1(x)
+        lm_logits_2 = self.embeddings.unembed_2(x)
+        lm_logits_3 = self.embeddings.unembed_3(x)
+
+        raw_2 = jnp.ones((Batch.size, new_seq_len * 4, self.embeddings.Vocab.size))
+        raw_2 = raw_2.at[:,0::4,:].set(lm_logits_0.array)
+        raw_2 = raw_2.at[:,1::4,:].set(lm_logits_1.array)
+        raw_2 = raw_2.at[:,2::4,:].set(lm_logits_2.array)
+        raw_2 = raw_2.at[:,3::4,:].set(lm_logits_3.array)
+        lm_logits = NamedArray(raw_2, (Batch, Position, self.embeddings.Vocab))
 
         return lm_logits
 
