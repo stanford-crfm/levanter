@@ -1,29 +1,28 @@
 # LoRA: GSM8K on Llama-2 7b
 
-In the [Fine-Tuning tutorial](./Fine-Tuning.md), we reproduced Alpaca using Levanter and Llama 1 or Llama 2.
+In the [Fine-Tuning tutorial](./Fine-Tuning.md), we demonstrated how to replicate Alpaca using Levanter with either the Llama 1 or Llama 2 models.
 The Alpaca methodology is a good way to make a pretty good general-purpose instruction-tuned model, but what
 if we want to make a model that's good at a specific task?
 
 In this tutorial, we're going to do that: we're going to use Levanter's implementation of [LoRA](https://arxiv.org/abs/2106.09685) to adapt Llama 2 to
 [GSM8K](https://arxiv.org/abs/2110.14168v2), which is a dataset of grade-school math problems.
 To evaluate the model, we'll use [CRFM's HELM](https://crfm.stanford.edu/helm/) tool, comparing it to the baseline Llama 2 model.
-The goal with this tutorial isn't to get to state-of-the-art on GSM8K, but rather to show you how to use LoRA with Levanter.
+This tutorial aims to demonstrate the use of LoRA with Levanter, rather than achieving state-of-the-art performance on GSM8K.
 
-LoRA (for Low-Rank Adaptation) is a technique for adapting a model to a new task, without having to fine-tune the entire model.
-LoRA works by adding a low-rank linear layer to each linear layer (or a subset thereof) in the model, and then training
-just the low-rank layers. It's mostly nice because it's highly memory efficient, and it results in adapters that are only
-a few megabytes on disk, rather than the many gigabytes that a fully fine-tuned Llama 2 model would be.
+LoRA (for Low-Rank Adaptation) is a form of parameter-efficient fine-tuning (PEFT), which is a class of techniques for
+adapting models to new tasks without having to store a new copy of the entire model.
+LoRA functions by augmenting each linear layer in the model (or a selected subset) with an additional low-rank linear layer.
+Training then only updates the parameters of the low-rank layer, leaving the parameters of the base model alone.
+LoRA's main strengths are its memory efficiency and associated on-disk efficiency. LoRA works
+on much smaller (and fewer) GPUs than you need for full fine-tuning, and it results in adapters that are only a
+few megabytes on disk, rather than the many gigabytes that you would need for a full fine-tuning checkpoint.
 
-LoRA is a form of parameter-efficient fine-tuning (PEFT), which is a class of techniques for adapting models to new tasks without
-having to store a new copy of the entire model.
-
-As it turns out, Hugging Face has a library also named [PEFT](https://github.com/huggingface/peft) (as is their wont),
-which implements a variety of PEFT techniques, including LoRA. *We'll be careful to distinguish between
-Hugging Face's PEFT and the general class of PEFT techniques.)
-The LoRA model we create will be compatible with HF PEFT,
-so that you can use it with their inference scripts or anywhere else you might want to use an HF PEFT model.
-Levanter also supports saving "merged" checkpoints, which are compatible with Hugging Face's Transformers library
-without HF PEFT. We'll show you how to do that as well.
+We should mention that Hugging Face has a library also named [PEFT](https://github.com/huggingface/peft), which implements a variety of
+PEFT techniques, including LoRA. We'll be careful to distinguish between Hugging Face's PEFT library and the general
+class of PEFT techniques. The LoRA model we create with Levanter will be compatible with HF PEFT, so that you can use it
+with their inference scripts or anywhere else you might want to use an HF PEFT model. Levanter also supports saving
+"merged" checkpoints, which are compatible with Hugging Face's Transformers library without HF PEFT.
+We'll show you how to do that as well.
 
 ## The GSM8K Dataset
 
@@ -31,8 +30,7 @@ Let's talk a little bit about the data. GSM8K is a dataset of grade-school math 
 evaluating models' ability to do arithmetic. Only recently (Claude, GPT-4, Gemini) have LLMs been able to perform
 well on this dataset "out of the box." Llama 2 7B only gets 13.3%. Let's see if we can do better!
 
-Here's an example problem from the dataset (You can see the whole dataset on the
-[Hugging Face Datasets page](https://huggingface.co/datasets/gsm8k/viewer/main/train?row=0))
+Here's an example problem from the dataset. (You can see the whole thing on the [Hugging Face Datasets page](https://huggingface.co/datasets/gsm8k/viewer/main/train?row=0))
 
 ```
 Q: Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?
@@ -42,14 +40,12 @@ A: Natalia sold 48/2 = <<48/2=24>>24 clips in May. Natalia sold 48+24 = <<48+24=
 You are only actually evaluated on the numerical answer, which comes after the `####`. The explanations
 exist to encourage the LLM to do Chain-Of-Thought-type reasoning, rather than trying to do it all "in its head."
 
-
 ## Training a LoRA Model Adapter
 
 We're going to use Levanter to train a LoRA adapter using the same Llama 2 7b model we used in the
-[Fine-Tuning tutorial](./Fine-Tuning.md).
-The full script is available at [`gsm8k_lora.py`](https://github.com/stanford-crfm/levanter/blob/main/examples/gsm8k-lora/gsm8k_lora.py).
-Broadly speaking, the script is similar to the fine-tuning script, with the key differences being LoRA-izing the model
-and changing the data loader for the GSM8K dataset. We will highlight the important parts of the script below.
+[Fine-Tuning tutorial](./Fine-Tuning.md). The full script is available at [`gsm8k_lora.py`](https://github.com/stanford-crfm/levanter/blob/main/examples/gsm8k-lora/gsm8k_lora.py).
+Broadly speaking, the script is similar to the fine-tuning script we used for Alpaca, with the key differences being
+LoRA-izing the model and changing the data loader for the GSM8K dataset. We will highlight the important parts of the script below.
 
 ### 0. Quick LoRA Overview
 
@@ -59,9 +55,10 @@ entire model.
 
 So instead, we add a small number of parameters (typically between .1% and 1%) to the model, and train
 just those parameters. The particular way we do this is by adding a low-rank linear layer to each linear layer in the
-model (or a subset thereof). That is, we modify each linear layer's weights $W$ to be $W + A \cdot B$, where $A$ and $B$
-are small matrices. The product $A \cdot B$ is low rank (typically rank $r = 8$ or $16$).
-The output of the modified layer is then $(W + A \cdot B) \cdot x =  A \cdot (B \cdot x) + W \cdot x$, where $x$ is the input to the layer.
+model (or a subset thereof). That is, we modify each linear layer's weights $W$ to be $W + AB$, where $A$ and $B$
+are small matrices. The matrix product $AB$ is low rank (typically rank $r = 8$ or $16$). That is,
+if $W \in \mathbb{R}^{m \times n}$, then $A \in \mathbb{R}^{m \times r}$ and $B \in \mathbb{R}^{r \times n}$.
+The output of the modified layer is then $(W + AB)x = A(Bx) + Wx$, where $x$ is the input to the layer.
 We train only the parameters $A$ and $B$, and leave the parameters $W$ alone.
 
 This is a diagram taken from [the LoRA paper](https://arxiv.org/abs/2106.09685), which graphically shows how the LoRA transform is applied to a linear layer:
@@ -70,14 +67,13 @@ This is a diagram taken from [the LoRA paper](https://arxiv.org/abs/2106.09685),
 
 Because the low-rank matrix is small, it's much more space efficient than the "full finetuning" that we did for Alpaca.
 For example, in this tutorial with default settings, the LoRA adapter will have about 20M parameters, compared to the
-more than 6.7B parameters in the base model for a reduction of about 99.7% in parameters.
+more than 6.7B parameters in the base model, for a reduction of about 99.7%.
 
 This parameter savings also means that training requires much less memory: we can fit
 LoRA finetuning onto a much smaller GPU than we could fit full finetuning, because we don't need to store optimizer
 states for the base model parameters, and the model parameters themselves can be stored at reduced (compute) precision.
 For example, full fine-tuning a 7B model would typically require 80GB just to store the model and optimizer states
 (at full precision), but with LoRA we can easily fit training onto a single 40GB A100.
-
 
 ### 1. Apply the LoRA transform to the model
 
@@ -91,7 +87,7 @@ applied to the linear layers. The `LoraConfig` is a dataclass with the following
 ```python
 @dataclass(frozen=True)
 class LoraConfig:
-    target_modules: Optional[Union[List[str], str]] = None
+    target_modules: Optional[list[str]| str] = None
     """modules to loraize. can either be a regex or a list of strings of module names, or None, meaning all linear modules"""
     r: int = 8  # rank of LoRA transform
     alpha: float = 8.0  # scaling factor for LoRA transform
@@ -99,9 +95,10 @@ class LoraConfig:
 ```
 
 By default, we LoRA-ize all linear modules in the model, which we recommend. This was found to be better than the other
-options: [\[1\]](https://twitter.com/Tim_Dettmers/status/1689375417189412864), [\[2\] Section 4](https://arxiv.org/pdf/2305.14314.pdf).
-(As with all configuration in Levanter, [these can be changed in the config file or via command line flags](./Configuration-Guide.md).)
-It's worth mentioning that `loraize` works with any Haliax model, not just LMs.
+options: [\[1\]](https://twitter.com/Tim_Dettmers/status/1689375417189412864), [\[2\] Section 4](https://arxiv.org/pdf/2305.14314.pdf). If you wanted something more targeted, you can use `target_modules`.
+`target_modules` is usually specified as a regex which is matched against the module's "path" from the root of the model.
+For example, if you wanted to LoRA-ize only the attention layers of our GPT2 implementation, you could do `target_modules=".*\.attn\..*"`.
+(In Levanter, these settings can be adjusted either in the config file or through command line flags, as detailed in our [Configuration Guide](Configuration-Guide.md))
 
 In our script below, we apply `loraize` inside of a [`haliax.named_jit`](https://haliax.readthedocs.io/en/latest/partitioning/#haliax.named_jit) function. This ensures that the
 parameters are sharded correctly, if you're using more than one device.
@@ -112,6 +109,9 @@ class TrainArgs:
     lora: LoraConfig = LoraConfig()
 
     # ... some other stuff
+    hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
+    hf_upload: bool|str = False  # Name of the HuggingFace repo to upload to (if any).
+    hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
     # should we save merged (i.e. not peft) checkpoints?
     merged_hf_save_path: Optional[str] = None  # path to save merged hf checkpoints
