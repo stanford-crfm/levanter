@@ -401,3 +401,13 @@ You can also look at the individual results with the HELM UI. If you click throu
 you can see the model's predictions and the reference answers:
 
 ![Example question that the LoRA model happens to get right](figures/helm-instance-example.png)
+
+
+## Conclusion
+
+In summary, this tutorial has walked you through the process of using LoRA (Low-Rank Adaptation) to adapt the Llama 2
+model to the GSM8K dataset. We covered how to use Levanter to construct a LoRA model adapter, how to train the adapter,
+how to export the adapter to a Hugging Face checkpoint, and how to evaluate the adapter with HELM.
+
+We hope that this tutorial has been helpful. If you have any questions or feedback, please feel free to reach out to us
+on [Discord](https://discord.gg/kEj7rj5mA8), [GitHub](https://github.com/stanford-crfm/levanter) or [Twitter/X](https://twitter.com/dlwh).
