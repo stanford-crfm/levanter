@@ -3,23 +3,23 @@
 To enable computers to assist human with complex tasks, such as data anlaysis or customer service, they must first understand our natural language and convert it into a format that they can process.
 This crucial process is known as semantic parsing, and it's a key component of many AI systems.
 For example, semantic parsing allows a chatbot to take a question in natural language and turn it into a precise SQL query, then this query retrieves the desired information from a database.
-Similarly, it enables a virtual assistant to interpret a user's spoken request and formulate it as a JSON object, triggering specific actions. 
+Similarly, it enables a virtual assistant to interpret a user's spoken request and formulate it as a JSON object, triggering specific actions.
 By bridging the gap between human language and machine-readable formats, semantic parsing empowers AI systems to perform tasks with both accuracy and autonomy.
 
 In this post, we'll guide you through fine-tuning a [Llama2 model](https://ai.meta.com/llama/) for semantic parsing with Levanter.
 
 ## Example Task
-Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset. 
+Our example task is based on the [GEM ViGGO](https://huggingface.co/datasets/GEM/viggo) dataset.
 
 It translates conversational English queries on the topic of video games into a structural format.
 Each example features a plain English input and a structured output that adheres to predefined rules for function naming conventions and attributes.
 
-The dataset has 5,103 training examples and 714 examples for evaluation. 
+The dataset has 5,103 training examples and 714 examples for evaluation.
 Although smaller than the Alpaca dataset, it provides a decent amount of data to effectively adapt the model to the task.
 
 Below are some examples from the dataset:
 
-In this example below, the user expresses an opinion on a game and describes the game with a list of attributes. 
+In this example below, the user expresses an opinion on a game and describes the game with a list of attributes.
 The chatbot should capture the intention (`give_opinion`), as well as the attributes that describe the game (name, release year, rating, has_multiplayer).
 
 ```
@@ -27,7 +27,7 @@ Query: I had fun playing Age of Empires II: The Age of Kings. I enjoy a lot of m
 Expected Response: give_opinion(name[Age of Empires II: The Age of Kings], release_year[1999], rating[good], has_multiplayer[yes])
 ```
 
-In this example below, the query describes a game in a very detailed manner. 
+In this example below, the query describes a game in a very detailed manner.
 The chatbot should tell apart the intention of `inform` from `give_opinion` in the example above, and parse all the corresponding attributes. It is a typical example of "Semantic Parsing" and it is not easy to capture all the attributes with field and value correctly.
 
 ```
@@ -35,7 +35,7 @@ Query: BioShock is a good role-playing, action-adventure, shooter that released 
 Expected Response: inform(name[BioShock], release_year[2007], rating[good], genres[action-adventure, role-playing, shooter], platforms[PlayStation, Xbox, PC], available_on_steam[yes], has_linux_release[no], has_mac_release[yes])
 ```
 
-This is an example of a user asking for an action. The chatbot should capture the intention and attributes correctly, so that it can generate a backend call to perform the action. 
+This is an example of a user asking for an action. The chatbot should capture the intention and attributes correctly, so that it can generate a backend call to perform the action.
 
 ```
 Query: Is it the PC game, The Elder Scrolls Online, which was developed by ZeniMax Online Studios?
@@ -202,7 +202,7 @@ levanter/examples/alpaca-lora/alpaca_lora.py \
     --merged_hf_save_path gs://levanter-checkpoints/llama2/llama2_7b_viggo_lora"
 ```
 
-Note that with `--merged_hf_save_path`, it will merge the trained LoRA parameters into the original model and save the new model. 
+Note that with `--merged_hf_save_path`, it will merge the trained LoRA parameters into the original model and save the new model.
 To save the LoRA adaptors as separate weight file, use `--hf_save_path` instead.
 
 ## Evaluation
@@ -286,15 +286,15 @@ The results are shown in the table below.
 
 There are a few highlights from the results:
 
-- The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation that it does not really understand how to perform the task. 
-- Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the metrics of full-weight fine-tuning and achieves a better `Attribute Set Accuracy`, while training with less than 0.1% parameters. This highlights the efficiency of LoRA. 
-- Full-weight fine-tuning outperforms LoRA fine-tuning in the `Function Name Accuracy` and the `Attribute Value Accuracy` metrics. This shows the advantage of training the entire model weights on the task. Though further hyperparameter tuning might allow LoRA to close this gap. 
+- The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation that it does not really understand how to perform the task.
+- Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the metrics of full-weight fine-tuning and achieves a better `Attribute Set Accuracy`, while training with less than 0.1% parameters. This highlights the efficiency of LoRA.
+- Full-weight fine-tuning outperforms LoRA fine-tuning in the `Function Name Accuracy` and the `Attribute Value Accuracy` metrics. This shows the advantage of training the entire model weights on the task. Though further hyperparameter tuning might allow LoRA to close this gap.
 - The higher accuracy in attribute set and value suggests that the attributes are more contextually driven and thus easier for the model to predict. In contrast, correctly identifying function names appears to be more challenging, indicating a need for deeper understanding of the task and reasoning capability.
 
 #### Confusion among Function Names
 
-To expand on the last point, we went deep into predictions of function name. 
-The confusion matrices below illustrate how the the full-weight fine-tuning and LoRA fine-tuning models perform in this area. 
+To expand on the last point, we went deep into predictions of function name.
+The confusion matrices below illustrate how the the full-weight fine-tuning and LoRA fine-tuning models perform in this area.
 
 ![Confusion Matrix of Full-weight Fine-Tuning](../figures/finetune_func_cm_full_weight.png)
 ![Confusion Matrix of LoRA Fine-Tuning](../figures/finetune_func_cm_lora.png)
@@ -306,9 +306,9 @@ The confusion matrices below illustrate how the the full-weight fine-tuning and 
 To enhance the model's ability to accurately predict function names, we should consider consolidating function names that are closely related to reduce ambiguity. Additionally, further refinement of the hyperparameters could yield improvements.
 
 #### Examples
-Here we are going to show some examples and compare predictions of different models. 
+Here we are going to show some examples and compare predictions of different models.
 
-Below shows three examples of three different functions, both fine-tuning methods generate the exact same output as the target and avoid hallucinating attributes, which is seen in the Llama2-7B Chat model. 
+Below shows three examples of three different functions, both fine-tuning methods generate the exact same output as the target and avoid hallucinating attributes, which is seen in the Llama2-7B Chat model.
 
 ```
 Query:          Is it the PC game, The Elder Scrolls Online, which was developed by ZeniMax Online Studios?
@@ -334,7 +334,7 @@ Full fine-tune: request_explanation(rating[average], player_perspective[first pe
 LoRA fine-tune: request_explanation(rating[average], player_perspective[first person], platforms[PC])
 ```
 
-In the following example, both fine-tuning methods generate precisely the same attribute set as the target; the full-weight fine-tuning model correctly identifies the function name (`give_opinion`) while the LoRA fine-tuning model mispredicts it as `confirm`. 
+In the following example, both fine-tuning methods generate precisely the same attribute set as the target; the full-weight fine-tuning model correctly identifies the function name (`give_opinion`) while the LoRA fine-tuning model mispredicts it as `confirm`.
 
 ```
 Query:          I had fun playing Age of Empires II: The Age of Kings. I enjoy a lot of multiplayer games from 1999.
