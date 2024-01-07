@@ -42,7 +42,7 @@ Query: Is it the PC game, The Elder Scrolls Online, which was developed by ZeniM
 Expected Response: confirm(name[The Elder Scrolls Online], developer[ZeniMax Online Studios], platforms[PC])
 ```
 
-### Performance of Llama2-7B Chat Model
+### Quick Test with Llama2-7B Chat Model
 
 If we test with the Llama2-7B chat model on these examples, we can see its limitation: it struggles to generate accurate function names and frequently hallucinates incorrect attributes.
 
