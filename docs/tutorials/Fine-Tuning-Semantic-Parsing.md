@@ -18,21 +18,24 @@ The dataset has 5,103 training examples and 714 examples for evaluation.
 Although smaller than the Alpaca dataset, it provides a decent amount of data to effectively adapt the model to the task.
 
 Below are some examples from the dataset:
-1. The user expresses an opinion on a game and describes the game with a list of attributes. The chatbot should capture the intention (`give_opinion`), as well as the attributes that describe the game (name, release year, rating, has_multiplayer).
+
+In this example below, the user expresses an opinion on a game and describes the game with a list of attributes. 
+The chatbot should capture the intention (`give_opinion`), as well as the attributes that describe the game (name, release year, rating, has_multiplayer).
 
 ```
 Query: I had fun playing Age of Empires II: The Age of Kings. I enjoy a lot of multiplayer games from 1999.
 Expected Response: give_opinion(name[Age of Empires II: The Age of Kings], release_year[1999], rating[good], has_multiplayer[yes])
 ```
 
-2. The query describes a game in a very detailed manner. The chatbot should tell apart the intention of `inform` from `give_opinion` in the example above, and parse all the corresponding attributes. It is a typical example of "Semantic Parsing" and it is not easy to capture all the attributes with field and value correctly.
+In this example below, the query describes a game in a very detailed manner. 
+The chatbot should tell apart the intention of `inform` from `give_opinion` in the example above, and parse all the corresponding attributes. It is a typical example of "Semantic Parsing" and it is not easy to capture all the attributes with field and value correctly.
 
 ```
 Query: BioShock is a good role-playing, action-adventure, shooter that released for PlayStation, Xbox, and PC in 2007. It is available on Steam, and it has a Mac release but not a Linux release.
 Expected Response: inform(name[BioShock], release_year[2007], rating[good], genres[action-adventure, role-playing, shooter], platforms[PlayStation, Xbox, PC], available_on_steam[yes], has_linux_release[no], has_mac_release[yes])
 ```
 
-3. This is an example of a user asking for an action. The chatbot should capture the intention and attributes correctly, so that it can generate a backend call to perform the action. 
+This is an example of a user asking for an action. The chatbot should capture the intention and attributes correctly, so that it can generate a backend call to perform the action. 
 
 ```
 Query: Is it the PC game, The Elder Scrolls Online, which was developed by ZeniMax Online Studios?
@@ -293,7 +296,8 @@ There are a few highlights from the results:
 To expand on the last point, we went deep into predictions of function name. 
 The confusion matrices below illustrate how the the full-weight fine-tuning and LoRA fine-tuning models perform in this area. 
 
-![Confusion Mattrices of Function Name Predictions](../figures/finetune_func_cms.png)
+![Confusion Matrix of Full-weight Fine-Tuning](../figures/finetune_func_cm_full_weight.png)
+![Confusion Matrix of LoRA Fine-Tuning](../figures/finetune_func_cm_lora.png)
 
 - A notable area of confusion is within the `confirm` column, where both models frequently misclassify examples from the `inform`, `recommend`, and `suggest` categories as `confirm`. This may stem from these function names being too similar in the dataset, leading to ambiguity that the models struggle to differentiate.
 - The full-weight fine-tuning model (depicted on the left) tends to make more errors in the "empty" or "other" columns, indicating instances where the model either fails to predict a function name or predicts one that doesn't exist within the predefined set.

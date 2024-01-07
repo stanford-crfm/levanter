@@ -94,7 +94,7 @@ nav:
   - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"
-      - "examples/Fine-Tuning-Function-Calling.md"
+      - "tutorials/Fine-Tuning-Semantic-Parsing.md"
       - "Hardware-Agnostic-Training.md"
   - 'Developer Guide':
       - 'Port-Models.md'
