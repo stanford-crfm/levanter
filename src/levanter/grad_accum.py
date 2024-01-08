@@ -1,5 +1,4 @@
 import functools
-from typing import Tuple
 
 import equinox as eqx
 import jax
@@ -14,22 +13,6 @@ from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
 from levanter.types import M, ValAndGradFn, ValFn, X
-from levanter.utils.jax_utils import reduce
-
-
-@named_call
-def accumulate_gradients(f: ValAndGradFn, model: M, *inputs: X) -> Tuple[float, M]:
-    """Simple gradient accumulation that just loops over the inputs."""
-    zero = (jnp.zeros(()), jax.tree_util.tree_map(lambda m: jnp.zeros_like(m), model), 0)
-
-    def compute_and_accumulate(acc, *input):
-        loss, grad = f(model, *input)
-        acc_loss, acc_grad, n = acc
-        return loss + acc_loss, jax.tree_map(jnp.add, acc_grad, grad), n + 1
-
-    total_loss, total_grad, total_n = reduce(compute_and_accumulate, zero, *inputs)
-
-    return total_loss / total_n, jax.tree_map(lambda x: x / total_n, total_grad)
 
 
 # cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617

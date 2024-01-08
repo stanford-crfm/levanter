@@ -1,7 +1,7 @@
 import abc
 import copy
+import dataclasses
 import functools
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -13,13 +13,10 @@ import braceexpand
 import datasets
 import fsspec
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
-import pyarrow.parquet as pq
-from chex import PRNGKey
 from draccus import field
-from pyarrow._parquet import FileMetaData
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
@@ -48,7 +45,6 @@ from levanter.data.shard_cache import (  # noqa
     MetricsMonitor,
     ShardCache,
     WandbMetricsMonitor,
-    _serialize_json_and_commit,
     build_cache,
 )
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
@@ -59,11 +55,12 @@ from levanter.utils.jax_utils import use_cpu_device  # noqa
 logger = logging.getLogger("levanter.data.text")
 
 # TASKS:
-# TODO: figure out directory structure for caching multiple sources
 # TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
+
+DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -73,19 +70,23 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         QPos: Axis,
         KPos: Axis,
         fcm_prob: float = 0.0,
-        key: Optional[PRNGKey] = None,
+        key: Optional[PRNGKeyArray] = None,
+        ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
         self.KPos = KPos
         self.fcm_prob = fcm_prob
         self.key = key
+        self.ignore_id = ignore_index
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key)
+        return CausalLmDataset(
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
+        )
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key
@@ -96,7 +97,10 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     @functools.partial(jax.jit, static_argnums=(0))
     def _create_lm_example(self, tokens, key):
-        attn_mask = AttentionMask.causal()
+        tokens = hax.named(tokens, self.QPos)
+
+        example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
         if self.fcm_prob > 0:
             # masks for attention
             # We support forgetful causal masking (FCM) which is a technique that improves training speed by
@@ -105,13 +109,9 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             assert self.key is not None
             this_key, key = jax.random.split(key)
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
+            attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+            example = dataclasses.replace(example, attn_mask=attn_mask)
 
-        tokens = hax.named(tokens, self.QPos)
-
-        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
-
-        example = LmExample(tokens=tokens, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
 
@@ -196,34 +196,6 @@ class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
         return BatchEncodingDataset(cache, return_batches=return_batches)
 
 
-def _load_old_ledger(cache_dir):
-    ledger_path = os.path.join(cache_dir, LEDGER_FILE)
-
-    fs = fsspec.core.url_to_fs(ledger_path)[0]
-    if fs.exists(ledger_path):
-        with fsspec.open(ledger_path, "r") as f:
-            return json.load(f)
-    else:
-        raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-
-
-def _convert_to_new_ledger(cache_dir, ledger: dict) -> CacheLedger:
-    # The old format looked like {"files": [{"file_name": name, "num_tokens": num_tokens} for name, num_tokens in ledger.items()]}
-    # the new format looks like { "chunks": [{"name": name, "num_rows": rows, field_counts: {"input_ids": num_tokens}} for name, rows, num_tokens in ledger.items()]}
-    # We unfortunately can't determine num_rows from the old format, so we have to open the chunks to find out
-
-    return CacheLedger(
-        chunks=[
-            ChunkMetadata(
-                name=chunk["file_name"].replace(".parquet", ""),
-                num_rows=_open_arrow_table(os.path.join(cache_dir, chunk["file_name"])).num_rows,
-                field_counts={"input_ids": chunk["num_tokens"]},
-            )
-            for chunk in ledger["files"]
-        ],
-    )
-
-
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
     """
     Represents a tokenized document cache, which is a directory of parquet files with a ledger file.
@@ -298,20 +270,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             cache = ShardCache.load(cache_dir, batch_size=batch_size)
             return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
         except FileNotFoundError:
-            logger.info("new cache format not found, trying to convert from old format")
-            try:
-                ledger = _load_old_ledger(cache_dir)
-                logger.info("old cache format found, converting to new format")
-                ledger = _convert_to_new_ledger(cache_dir, ledger)
-                _serialize_json_and_commit(os.path.join(cache_dir, NEW_LEDGER_FILE_NAME), ledger)
-                cache = ShardCache.load(cache_dir, batch_size=batch_size)
-                return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
-            except FileNotFoundError:
-                logger.warning("old cache format not found, creating new cache")
-                raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-            except Exception:
-                logger.exception("error converting cache")
-                raise
+            raise FileNotFoundError(f"{cache_dir} is not a complete cache")
         except Exception:
             logger.exception("error loading cache")
             raise
@@ -324,11 +283,6 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             return self
 
         return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
-
-
-def _open_arrow_table(path) -> FileMetaData:
-    fs, _, paths = fsspec.get_fs_token_paths(path)
-    return pq.read_metadata(path, filesystem=fs)
 
 
 def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
@@ -541,6 +495,8 @@ class LMTaskConfig(abc.ABC):
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
+    ignore_token_id: Optional[int] = None
+
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
         if self.tokenizer == "passthrough":
@@ -711,6 +667,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Dict[str, TokenizedDocumentCache]:
+        # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
+        # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
+        # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
+        task_config_fields = set(x.name for x in dataclasses.fields(LMTaskConfig))
+        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
+
         caches = {}
         for name, source_config in self.configs.items():
             weight = self.train_weights.get(name, 0)
@@ -719,10 +681,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 continue
 
             source_config_dict = source_config.__dict__
+
             dataset = LMDatasetConfig(
-                tokenizer=self.tokenizer,
                 cache_dir=os.path.join(self.cache_dir, name),
                 **source_config_dict,
+                **task_config_dict,
             )
             cache = dataset.build_or_load_cache(split, monitors)
             # drop the data source and corresponding weight if the cache is not built
