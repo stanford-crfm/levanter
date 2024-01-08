@@ -1,6 +1,6 @@
 data: !include data/rpv1_llama.yaml
 model:
-  type: llama
+  type: llama  # Llama2-3.4B
   seq_len: 4096
   hidden_dim: 3200
   intermediate_dim: 8640
