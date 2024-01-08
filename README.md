@@ -26,6 +26,11 @@ Levanter is a framework for training large language models (LLMs) and other foun
 
 We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
 
+## Documentation
+
+Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
+Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
+
 ## Features
 
 * **Distributed Training**: We support distributed training on TPUs (and soon, GPUs), including FSDP and tensor parallelism.
@@ -41,7 +46,8 @@ to log inside of JAX `jit`-ted functions.
 
 <!--levanter-intro-end-->
 
-Levanter was created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html)) You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/CKazXcbbBm)
+Levanter was created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team.
+You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/CKazXcbbBm)
 
 ## Getting Started
 
@@ -49,10 +55,6 @@ Here is a small set of examples to get you started. For more information about t
 please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
-### Documentation
-
-Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
-Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
 
 ### Installing Levanter
 
