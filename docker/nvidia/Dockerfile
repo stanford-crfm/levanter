@@ -1,4 +1,4 @@
-FROM ghcr.io/nvidia/jax:nightly-2023-10-25-linux-amd64 as base
+FROM ghcr.io/nvidia/jax:latest as base
 LABEL authors="dlwh"
 
 # copy everything from the repo into the container

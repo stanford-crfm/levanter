@@ -9,7 +9,7 @@ from typing import List, Optional, Union
 import jax
 import ray
 from jax._src import clusters, distributed
-from jax._src.clusters import SlurmCluster, TpuCluster
+from jax._src.clusters import SlurmCluster, GkeTpuCluster
 
 from levanter.utils.py_utils import logical_cpu_core_count
 
@@ -253,7 +253,7 @@ class DistributedConfig:
 
         # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
         # since it depends on the jax internals, but it's the best we can do
-        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+        if SlurmCluster.is_env_present() or GkeTpuCluster.is_env_present():
             return True
 
         return False
