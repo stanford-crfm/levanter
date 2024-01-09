@@ -161,7 +161,9 @@ def join_key(prefix, k):
     return f"{prefix}.{k}" if prefix else k
 
 
-def key_iterator(key: PRNGKeyArray):
+def key_iterator(key: PRNGKeyArray | int):
+    if isinstance(key, int):
+        key = jax.random.PRNGKey(key)
     while True:
         key, subkey = jax.random.split(key)
         yield subkey
