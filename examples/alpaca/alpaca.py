@@ -3,9 +3,10 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 
 import fsspec
+import jax
 import jax.random as jrandom
 import numpy as np
 import transformers
@@ -15,7 +16,7 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataset, WrappedHFDataset
+from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
@@ -84,7 +85,8 @@ class TrainArgs:
     max_tune_length: int = 2048  # maximum length of the input to the model during tuning
     data: str = "tatsu-lab/alpaca"  # Path to the training data, or huggingface dataset name.
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
-    prompts: Optional[str] = None  # Path to the prompts file. can be gcs
+    prompts: Optional[Dict[str, str] | str] = None  # Path to the prompts file or a dict of prompts. can be gcs
+    mask_inputs: bool = True  # if True, mask out the input and prompt for loss calculation
 
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
     trust_remote_code: bool = False  # Trust remote code when loading from HuggingFace checkpoints.
@@ -100,9 +102,10 @@ class TrainArgs:
 # We basically do string interpolation of the (instruction, input, output) triples with the prompt,
 # and mask out the prompt and padding.
 class SupervisedDataset(Dataset[LmExample]):
-    def __init__(self, preproc_dataset, tokenizer):
+    def __init__(self, preproc_dataset, tokenizer, mask_inputs):
         self.preproc_dataset = preproc_dataset
         self.tokenizer = tokenizer
+        self.mask_inputs = mask_inputs
 
     def __iter__(self):
         for ex in self.preproc_dataset:
@@ -115,11 +118,14 @@ class SupervisedDataset(Dataset[LmExample]):
 
             # mask out padding and anything before the start of the target
             Pos = input_ids.resolve_axis("position")
-            loss_mask = hax.arange(Pos) >= ex["source_lens"]
+            if self.mask_inputs:
+                loss_mask = hax.arange(Pos) >= ex["source_lens"]
 
-            # don't predict the padding
-            targets = hax.roll(input_ids, -1, Pos)
-            loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
+                # don't predict the padding
+                targets = hax.roll(input_ids, -1, Pos)
+                loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
+            else:
+                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
 
             yield LmExample(input_ids, loss_mask)
 
@@ -128,7 +134,15 @@ def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
-        return JsonDataset([path_or_id])
+        # get file format: jsonl or json
+        if path_or_id.endswith(".jsonl"):
+            return JsonlDataset([path_or_id])
+        elif path_or_id.endswith(".json"):
+            return JsonDataset([path_or_id])
+        else:
+            raise ValueError(
+                f"We only support HF Dataset or a data file with .json or .jsonl extensions, not {path_or_id}!"
+            )
     else:
         return WrappedHFDataset(path_or_id, split="train")
 
@@ -136,13 +150,16 @@ def _get_data_source(path_or_id):
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
     dataset = _get_data_source(config.data)
 
-    prompt_input, prompt_no_input = get_prompts(config.prompts)
+    prompts = get_prompts(config.prompts)
 
     def preprocess(batch):
-        sources = [
-            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
-            for example in batch
-        ]
+        def format_example(ex):
+            if ex.get("input", "") == "":
+                return prompts["prompt_no_input"].format_map(ex)
+            else:
+                return prompts["prompt_input"].format_map(ex)
+
+        sources = [format_example(example) for example in batch]
         targets = [f"{example['output']}{tokenizer.eos_token}" for example in batch]
         # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
         examples = [s + t for s, t in zip(sources, targets)]
@@ -159,17 +176,19 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
     dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
 
-    dataset = SupervisedDataset(dataset, tokenizer)
+    dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
 
     return dataset
 
 
-def get_prompts(prompt_path):
+def get_prompts(prompt_path) -> dict:
     prompts = DEFAULT_PROMPT_DICT
-    if prompt_path is not None:
+    if isinstance(prompt_path, dict):
+        prompts = prompt_path
+    elif prompt_path is not None:
         with fsspec.open(prompt_path) as f:
             prompts = json.load(f)
-    return (prompts["prompt_input"]), (prompts["prompt_no_input"])
+    return prompts
 
 
 def train(config: TrainArgs):

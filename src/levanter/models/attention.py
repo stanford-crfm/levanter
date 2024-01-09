@@ -111,7 +111,7 @@ def dot_product_attention(
         KPos = key.resolve_axis(KPos)
         m = materialize_mask(mask, QPos, KPos)
         weights = haliax.nn.attention.dot_product_attention_weights(
-            Key, KPos, query, key, mask=m, bias=bias, precision=precision, attention_dtype=attention_dtype
+            Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
         )
         weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
         return haliax.dot(KPos, weights, value)

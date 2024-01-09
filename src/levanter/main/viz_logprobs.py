@@ -46,7 +46,7 @@ def main(config: VizGpt2Config):
     KeyPos = config.model.KeyPos
 
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos),
+        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
         config.trainer.device_mesh,
         EvalBatch,
     )

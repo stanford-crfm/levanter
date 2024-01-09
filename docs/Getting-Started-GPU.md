@@ -2,7 +2,7 @@
 
 **Note** that right now GPU support is very preliminary and Levanter does not work on a multi-machine setup. (We think this is just a dependency/environment issue.)
 
-We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with Jax it should work, though.
+We only test on Ampere (e.g. A100s or 30xx series)  GPUs. If it works with JAX it should work, though.
 
 ## Installation
 ### Setting up Conda Environment

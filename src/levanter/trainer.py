@@ -238,12 +238,14 @@ class Trainer:
             trainable_model, (opt_state, training_key), completed_step = ckpt
             if model is not None:
                 model = eqx.combine(trainable_model, model)
-            elif any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(trainable_model)):
+            else:
+                model = eqx.combine(trainable_model, model_shape)
+
+            if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(model)):
                 # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
                 non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
                 model = eqx.combine(trainable_model, non_trainable)
-            else:
-                model = trainable_model
+
             step = completed_step + 1
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
@@ -304,19 +306,22 @@ class Trainer:
 
         return info
 
-    def add_default_hooks(self, eval_loader: Optional[Iterable[X]] = None):
+    def add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_to_wandb, every=1)
-        self.add_eval_hook(eval_loader)
+        if eval_dataset is not None:
+            self.add_eval_hook(eval_dataset)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
-    def add_eval_hook(self, eval_loader):
+    def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
+
+        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -326,7 +331,9 @@ class Trainer:
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
-                callbacks.compute_validation_loss(eval_loss, eval_loader, max_batches=self.config.max_eval_batches),
+                callbacks.compute_validation_loss(
+                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                ),
                 every=self.config.steps_per_eval,
             )
 
@@ -530,13 +537,15 @@ class TrainerConfig:
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name/id in the process"""
+        # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
+        pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
         self._maybe_set_id()
+        self._initialize_logging()
         self.ray.initialize()
         self._initialize_jax_config()
         self._validate_and_set_defaults()
         self.wandb.init(self.id, all_config)
-        self._initialize_logging()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
