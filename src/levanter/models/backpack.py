@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
+from jax import Array as jaxArray
 import jax.numpy as jnp
 import jax.random as jrandom
 from transformers import PretrainedConfig
@@ -343,7 +344,7 @@ class BackpackGpt2Embeddings(eqx.Module):
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
 
-    def resize_embeddings(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+    def resize_embeddings(self, new_size: int, key: Optional[jaxArray] = None):
         new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
@@ -423,7 +424,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return lm_logits
 
-    def resize_vocab(self, new_size: int, key: Optional[jrandom.PRNGKeyArray] = None):
+    def resize_vocab(self, new_size: int, key: Optional[jaxArray] = None):
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
         return dataclasses.replace(self, embeddings=new_embeddings)
 
