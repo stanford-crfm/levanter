@@ -32,7 +32,7 @@ class DoremiState(TrainerState):
     average_alpha: hax.NamedArray
 
     def update_alpha(self, alpha):
-        average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self.step + 1)
+        average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self._step + 1)
         return dataclasses.replace(self, alpha=alpha, average_alpha=average_alpha)
 
 
@@ -46,9 +46,8 @@ class DoReMiTrainer(Trainer):
     # TODO: I'd like to not need to override trainer for this
     def _initialize_state_from_scratch(self, model: Callable[[], M], training_key, is_trainable):
         base_state = super()._initialize_state_from_scratch(model, training_key, is_trainable)
-        return DoremiState(
-            base_state.step, base_state.model, base_state.opt_state, base_state.training_key, self.initial_alpha
-        )
+
+        return DoremiState(**base_state.__dict__, alpha=self.initial_alpha, average_alpha=self.initial_alpha)
 
 
 @dataclasses.dataclass
@@ -59,13 +58,19 @@ class DoReMiConfig:
     sampling_weights: Optional[dict[str, float]] = None
 
 
+DEFAULT_DOREMI_TRAINER_CONFIG = TrainerConfig(
+    num_train_steps=10000,
+    train_batch_size=512,
+)
+
+
 def estimate_mixture_weights(
-    trainer_config: TrainerConfig,
     initial_proxy: M,
     ref: M,
     data_sources: dict[str, ShardableDataset[T]],
     sampling_weights: Optional[dict[str, float]] = None,
     *,
+    trainer_config: TrainerConfig = DEFAULT_DOREMI_TRAINER_CONFIG,
     loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
@@ -90,8 +95,6 @@ def estimate_mixture_weights(
     if len(data_sources) <= 1:
         raise ValueError("Must have at least two data sources")
 
-    ref = _prepare_ref_model(ref, trainer_config)
-
     training_key, data_key = jrandom.split(key)
     domain_indices = list(data_sources.keys())
     domain_to_index = {domain: index for index, domain in enumerate(domain_indices)}
@@ -102,6 +105,8 @@ def estimate_mixture_weights(
     initial_alpha = hax.ones(Domain) / Domain.size
 
     trainer = DoReMiTrainer(trainer_config, optax.adamw(1e-3), initial_alpha)
+    with trainer:
+        ref = _prepare_ref_model(ref, trainer_config)
 
     if sampling_weights is not None:
         assert set(sampling_weights.keys()) == set(data_sources.keys())
@@ -112,7 +117,7 @@ def estimate_mixture_weights(
         sampling_weights = {domain: 1 / len(data_sources) for domain in data_sources.keys()}
 
     # calculate per-token losses for proxy and ref
-    def compute_excess_loss(ref, proxy, batch):
+    def compute_excess_loss(proxy, ref, batch):
         proxy_losses = loss_fn(proxy, batch, reduction_axis=())
         ref_losses = loss_fn(ref, batch, reduction_axis=())
         # calculate excess losses
@@ -130,6 +135,7 @@ def estimate_mixture_weights(
             )
 
             clipped_losses = hax.maximum(excess_losses, 0)
+
             per_domain_losses = _compute_per_domain_losses(Domain, domains, clipped_losses)
 
             # Update domain weights
@@ -141,7 +147,7 @@ def estimate_mixture_weights(
 
             # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
             loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
-            grad = excess_backward(grad_loss)
+            grad = excess_backward(grad_loss)[0]
 
         new_state = trainer._take_train_step(state, proxy, grad)
         new_state = new_state.update_alpha(alpha)
@@ -155,7 +161,7 @@ def estimate_mixture_weights(
                 "alpha_distance_from_uniform": distance_from_uniform,
                 "alpha": alpha_dict,
             },
-            step=state.step,
+            step=state._step,
         )
 
         return loss, alpha_distance, new_state
@@ -193,16 +199,16 @@ def estimate_mixture_weights(
 
         trainer.run_hooks(new_info, force=True)
 
-    alpha = state.average_alpha
-    final_weights = _alpha_weights_to_dict(Domain, alpha, domain_to_index)
+        alpha = state.average_alpha
+        final_weights = _alpha_weights_to_dict(Domain, alpha, domain_to_index)
 
-    levanter.tracker.log_summary({"final_alpha": final_weights})
+        levanter.tracker.log_summary({"final_alpha": final_weights})
 
-    return final_weights
+    return {k: float(v) for k, v in final_weights.items()}
 
 
 def _alpha_weights_to_dict(Domain, alpha, domain_name_to_index):
-    final_weights = {domain: float(alpha[Domain, index]) for domain, index in domain_name_to_index.items()}
+    final_weights = {domain: alpha[Domain, index] for domain, index in domain_name_to_index.items()}
     return final_weights
 
 
