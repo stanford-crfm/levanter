@@ -409,8 +409,7 @@ class Trainer:
                     levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
                 state = info.state
-
-            yield info
+                yield info
 
     def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
@@ -490,7 +489,7 @@ class Trainer:
         loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs, key=key)
 
         new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
-        new_state = dataclasses.replace(new_state, _step=state._step + 1, training_key=new_key)
+        new_state = dataclasses.replace(new_state, training_key=new_key)
 
         return loss, new_state
 
@@ -520,7 +519,7 @@ class Trainer:
                 opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
             model = eqx.apply_updates(model, updates)
 
-            return dataclasses.replace(state, model=model, opt_state=opt_state)
+            return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
