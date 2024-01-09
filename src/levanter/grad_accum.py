@@ -61,6 +61,9 @@ def microbatched(
     physical_axis_name = hax.partitioning.physical_axis_name(Batch, compute_axis_mapping)
     assert physical_axis_name is not None
 
+    if per_device_parallelism < 0:
+        raise ValueError(f"Bad value for {per_device_parallelism=}")
+
     microbatch_size = data_axis_size * per_device_parallelism
     num_micro_steps = batch_size // microbatch_size
     Microbatch = Batch.resize(microbatch_size)
@@ -138,7 +141,7 @@ def _zeros_like_tree(r_shape, axis_mapping, accum_dtype):
 
 def _zeros_like(mapping, dtype, n):
     if isinstance(n, hax.NamedArray):
-        return hax.auto_sharded(hax.zeros_like(n, dtype=dtype), mapping)
+        return hax.shard(hax.zeros_like(n, dtype=dtype), mapping)
     elif is_jax_array_like(n):
         return jnp.zeros_like(n, dtype)
     else:
