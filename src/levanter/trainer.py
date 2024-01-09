@@ -222,6 +222,8 @@ class Trainer:
             # We can't use plain partials because they aren't pytrees
             model_init = jax.tree_util.Partial(lambda m: m, model)
 
+        assert model_init is not None
+
         model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
 
         # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
@@ -247,6 +249,29 @@ class Trainer:
                 model = eqx.combine(trainable_model, non_trainable)
 
             step = completed_step + 1
+        elif self.config.initialize_from is not None:
+            # initialize from a levanter checkpoint
+            logger.info(f"Initializing model from checkpoint {self.config.initialize_from}")
+            match levanter.checkpoint.load_checkpoint(
+                model_shape,
+                None,
+                self.config.initialize_from,
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
+            ):
+                # new_model is probably only the trainable parameters, so we init the rest
+                case base_model, _, loaded_step:
+                    logger.info(f"Initialized from step {loaded_step} of {self.config.initialize_from}")
+                    old_model_init = model_init
+
+                    model_init = jax.tree_util.Partial(lambda m: eqx.combine(m, old_model_init()), base_model)
+                    model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(
+                        model_init
+                    )
+
+                    step = 0
+                case None:
+                    raise ValueError(f"Could not load model from checkpoint {self.config.initialize_from}")
         else:
             model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
             step = 0
@@ -503,6 +528,7 @@ class TrainerConfig:
     """if None (default), we'll load a checkpoint if it exists. If true, we must load a checkpoint"""
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
+    initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
     jax_config: Dict[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)

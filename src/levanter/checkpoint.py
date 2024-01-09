@@ -7,14 +7,13 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import equinox
 import fsspec
 import jax
 import jax.numpy as jnp
 from draccus import field
-from equinox import default_deserialise_filter_spec, default_serialise_filter_spec
 from fsspec import AbstractFileSystem
 from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
@@ -227,11 +226,6 @@ class Checkpointer:
             step=info.step,
             checkpoint_path=path,
         )
-        # also write a little sentinel file to indicate that we wrote this checkpoint from this worker
-        # just for debugging purposes
-        sentinel_path = os.path.join(path, f"worker-{jax.process_index()}.cert")
-        with fsspec.open(sentinel_path, "w") as f:
-            f.write("worker participated in checkpoint")
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
@@ -270,10 +264,7 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
 
 def save_metadata(checkpoint_path, fs, step):
-    metadata = {
-        "step": step,
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
+    metadata = {"step": step, "timestamp": datetime.datetime.now().isoformat()}
     if jax.process_index() == 0:
         with fs.open(os.path.join(checkpoint_path, "metadata.json"), "w") as json_out:
             json.dump(metadata, json_out)
@@ -369,73 +360,12 @@ def discover_latest_checkpoint(checkpoint_path: PathLike) -> Optional[str]:
         return None
 
 
-def tree_serialise_leaves(
-    path: PathLike,
-    pytree: PyTree,
-    filter_spec=default_serialise_filter_spec,
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> None:
-    """Analog to `equinox.tree_serialise_leaves`, but saves the leaves of a PyTree using fsspec."""
-
-    with fsspec.open(str(path), "wb") as f:
-        logger.info(f"Serializing to {path}")
-
-        def _serialise(spec, x):
-            def __serialise(y):
-                spec(f, y)
-                return y
-
-            jax.tree_map(__serialise, x, is_leaf=is_leaf)
-
-        jax.tree_map(_serialise, filter_spec, pytree)
-
-
-def tree_deserialise_leaves(
-    path: PathLike,
-    like: PyTree,
-    filter_spec=default_deserialise_filter_spec,
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-    fs=None,
-) -> PyTree:
-    """
-    Analog to `equinox.tree_deserialise_leaves`, but loads the leaves of a PyTree using fsspec.
-    """
-
-    fs, path_to_open = _get_fs_and_plain_path(path, fs)
-
-    with fs.open(path_to_open, "rb") as f:
-
-        def _deserialise(spec, x):
-            def __deserialise(y):
-                return spec(f, y)
-
-            return jax.tree_util.tree_map(__deserialise, x, is_leaf=is_leaf)
-
-        out = jax.tree_util.tree_map(_deserialise, filter_spec, like)
-    jax.tree_util.tree_map(_assert_same, out, like, is_leaf=is_leaf)
-    return out
-
-
 def _get_fs_and_plain_path(path, fs=None):
     if fs is None:
         fs, _, (path_to_open,) = fsspec.get_fs_token_paths(str(path))
     else:
         path_to_open = path
     return fs, path_to_open
-
-
-# similar to eqx but it's a bit more permissive: it just wants things that have shapes and dtypes to be the same
-def _assert_same(new, old):
-    if hasattr(new, "shape") and hasattr(old, "shape"):
-        assert new.shape == old.shape, f"Shapes don't match: {new.shape} vs {old.shape}"
-    if hasattr(new, "dtype") and hasattr(old, "dtype"):
-        assert new.dtype == old.dtype, f"Dtypes don't match: {new.dtype} vs {old.dtype}"
-
-    # now get mad if one has a shape and the other doesn't
-    if hasattr(new, "shape") != hasattr(old, "shape"):
-        raise ValueError(f"One has a shape and the other doesn't: {new} vs {old}")
-    if hasattr(new, "dtype") != hasattr(old, "dtype"):
-        raise ValueError(f"One has a dtype and the other doesn't: {new} vs {old}")
 
 
 @dataclass

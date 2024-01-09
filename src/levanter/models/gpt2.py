@@ -8,8 +8,6 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
-from transformers import GPT2Config as HfGpt2Config
-from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.jax_utils
@@ -28,9 +26,15 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
+from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
+
+
+silence_transformer_nag()
+from transformers import GPT2Config as HfGpt2Config  # noqa: E402
+from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
 @LmConfig.register_subclass("gpt2")
