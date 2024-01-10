@@ -1,0 +1,137 @@
+cache_dir: "gs://levanter-data/tokenized/pile_domains/"
+tokenizer: "EleutherAI/gpt-neox-20b"
+configs:
+  arxiv:
+    train_urls:
+      - gs://levanter-data/pile_domains/arxiv/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/arxiv/validation.jsonl.zst
+  books2:
+    train_urls:
+      - gs://levanter-data/pile_domains/books2/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/books2/validation.jsonl.zst
+  books3:
+    train_urls:
+      - gs://levanter-data/pile_domains/books3/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/books3/validation.jsonl.zst
+  dm_math:
+    train_urls:
+      - gs://levanter-data/pile_domains/dm_math/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/dm_math/validation.jsonl.zst
+  enron:
+    train_urls:
+      - gs://levanter-data/pile_domains/enron/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/enron/validation.jsonl.zst
+  europarl:
+    train_urls:
+      - gs://levanter-data/pile_domains/europarl/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/europarl/validation.jsonl.zst
+  free_law:
+    train_urls:
+      - gs://levanter-data/pile_domains/free_law/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/free_law/validation.jsonl.zst
+  github:
+    train_urls:
+      - gs://levanter-data/pile_domains/github/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/github/validation.jsonl.zst
+  hackernews:
+    train_urls:
+      - gs://levanter-data/pile_domains/hackernews/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/hackernews/validation.jsonl.zst
+  nih:
+    train_urls:
+      - gs://levanter-data/pile_domains/nih/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/nih/validation.jsonl.zst
+  opensubtitles:
+    train_urls:
+      - gs://levanter-data/pile_domains/opensubtitles/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/opensubtitles/validation.jsonl.zst
+  owt2:
+    train_urls:
+      - gs://levanter-data/pile_domains/owt2/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/owt2/validation.jsonl.zst
+  pg_19:
+    train_urls:
+      - gs://levanter-data/pile_domains/pg_19/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/pg_19/validation.jsonl.zst
+  philpapers:
+    train_urls:
+      - gs://levanter-data/pile_domains/philpapers/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/philpapers/validation.jsonl.zst
+  pile_cc:
+    train_urls:
+      - gs://levanter-data/pile_domains/pile_cc/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/pile_cc/validation.jsonl.zst
+  pubmed_abs:
+    train_urls:
+      - gs://levanter-data/pile_domains/pubmed_abs/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/pubmed_abs/validation.jsonl.zst
+  pubmed_central:
+    train_urls:
+      - gs://levanter-data/pile_domains/pubmed_central/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/pubmed_central/validation.jsonl.zst
+  stack_exchange:
+    train_urls:
+      - gs://levanter-data/pile_domains/stack_exchange/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/stack_exchange/validation.jsonl.zst
+  ubuntu_irc:
+    train_urls:
+      - gs://levanter-data/pile_domains/ubuntu_irc/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/ubuntu_irc/validation.jsonl.zst
+  uspto:
+    train_urls:
+      - gs://levanter-data/pile_domains/uspto/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/uspto/validation.jsonl.zst
+  wiki_en:
+    train_urls:
+      - gs://levanter-data/pile_domains/wiki_en/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/wiki_en/validation.jsonl.zst
+  youtube_subtitles:
+    train_urls:
+      - gs://levanter-data/pile_domains/youtube_subtitles/train-{00..29}.jsonl.zst
+    validation_urls:
+      - gs://levanter-data/pile_domains/youtube_subtitles/validation.jsonl.zst
+train_weights:
+  # these weights come from the paper https://arxiv.org/pdf/2101.00027.pdf
+  pile_cc: 0.1811
+  pubmed_central: 0.1440
+  books3: 0.1207
+  owt2: 0.1001
+  arxiv: 0.0896
+  github: 0.0759
+  free_law: 0.0612
+  stack_exchange: 0.0513
+  uspto: 0.0365
+  pubmed_abs: 0.0307
+  pg_19: 0.0217
+  opensubtitles: 0.0155
+  wiki_en: 0.0153
+  dm_math: 0.0124
+  ubuntu_irc: 0.0088
+  books2: 0.0075
+  europarl: 0.0073
+  hackernews: 0.0062
+  youtube_subtitles: 0.0060
+  philpapers: 0.0038
+  nih: 0.0030
+  enron: 0.0014
