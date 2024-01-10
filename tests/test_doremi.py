@@ -1,4 +1,5 @@
 import equinox
+import jax
 import jax.random
 import optax
 
@@ -74,13 +75,14 @@ def test_estimate_mixture_weights():
         return hax.nn.binary_cross_entropy_loss(y_pred, example.y, reduction=reduction, reduction_axis=reduction_axis)
 
     tiny_trainer_config = TrainerConfig(
-        num_train_steps=600, train_batch_size=Batch.size, tracker=(), id="kmaklfmaf", per_device_parallelism=Batch.size
+        num_train_steps=600,
+        train_batch_size=Batch.size,
+        tracker=(),
+        id="kmaklfmaf",
+        per_device_parallelism=Batch.size // len(jax.devices()),
     )
 
     optimizer = optax.adam(1e-2)
-    import jax
-
-    jax.config.update("jax_traceback_filtering", "off")
 
     trainer = Trainer(tiny_trainer_config, optimizer, compute_loss_fn)
 
