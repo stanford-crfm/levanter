@@ -12,6 +12,7 @@ import haliax as hax
 from haliax.types import IntScalar
 
 import levanter.tracker
+from levanter.callbacks import eval_loss_loop
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.logging import capture_time
@@ -56,6 +57,7 @@ class DoReMiConfig:
     domain_weight_step_size: float = 1.0
     smoothing: float = 1e-3
     sampling_weights: Optional[dict[str, float]] = None
+    weight_change_eps: float = 1e-3
 
 
 DEFAULT_DOREMI_TRAINER_CONFIG = TrainerConfig(
@@ -70,7 +72,9 @@ def estimate_mixture_weights(
     data_sources: dict[str, ShardableDataset[T]],
     sampling_weights: Optional[dict[str, float]] = None,
     *,
+    validation_sets: Optional[dict[str, ShardableDataset[T]]] = None,
     trainer_config: TrainerConfig = DEFAULT_DOREMI_TRAINER_CONFIG,
+    optimizer: optax.GradientTransformation = optax.adamw(1e-3),
     loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
@@ -104,9 +108,25 @@ def estimate_mixture_weights(
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    trainer = DoReMiTrainer(trainer_config, optax.adamw(1e-3), initial_alpha)
+    trainer = DoReMiTrainer(trainer_config, optimizer, initial_alpha)
     with trainer:
         ref = _prepare_ref_model(ref, trainer_config)
+
+        if validation_sets is not None:
+            for domain, dataset in validation_sets.items():
+                loss = eval_loss_loop(
+                    trainer.loss_fn,
+                    ref,
+                    trainer.replicated_loader(dataset, trainer.EvalBatch),
+                    name=f"ref {domain}",
+                    max_batches=trainer_config.max_eval_batches,
+                )
+                print(f"Loss of ref model on domain {domain}: {loss:.3f}")
+                levanter.tracker.log_summary({f"eval/ref/loss/{domain}": loss})
+
+        if validation_sets is not None:
+            for domain, dataset in validation_sets.items():
+                trainer.add_eval_hook(dataset, name=domain)
 
     if sampling_weights is not None:
         assert set(sampling_weights.keys()) == set(data_sources.keys())
@@ -261,11 +281,14 @@ class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named 
 
 
 def _compute_per_domain_losses(Domain, domains, losses):
+    # TODO: this should weight by masked tokens
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    per_domain_losses = hax.dot(losses.axes, one_hot_domains, losses)
-    return per_domain_losses
+    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains, axis=losses.axes)
+    # per_domain_losses = hax.dot(losses.axes, one_hot_domains, losses)
+    # return per_domain_losses
 
 
 def _domain_weighted_loss(losses, Domain, domains, alpha):
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    return hax.dot(alpha, one_hot_domains, losses, axis=None)
+    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains * alpha, axis=None)
+    # return hax.dot(alpha, one_hot_domains, losses, axis=None)

@@ -658,6 +658,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
         return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
 
+    def training_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        return token_datasets
+
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, ShardableDataset[np.ndarray]]:
