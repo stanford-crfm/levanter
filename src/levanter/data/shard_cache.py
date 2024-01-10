@@ -45,7 +45,7 @@ T_co = TypeVar("T_co", covariant=True)
 
 logger = pylogging.getLogger(__name__)
 
-DEFAULT_ROWS_PER_CHUNK = 1024 * 32
+DEFAULT_ROWS_PER_CHUNK = 8192
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
