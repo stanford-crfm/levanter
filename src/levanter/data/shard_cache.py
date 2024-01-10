@@ -46,6 +46,7 @@ T_co = TypeVar("T_co", covariant=True)
 logger = pylogging.getLogger(__name__)
 
 DEFAULT_ROWS_PER_CHUNK = 8192
+DEFAULT_MAX_BYTES_PER_BATCH = 256 * 1024 * 1024  # 256 MB, this is pre-preprocessing python object size
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 
@@ -76,7 +77,7 @@ def build_cache(
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
-        batch_size: The number of input examples to process at once.
+        batch_size: When reading from the cache, how many examples to read at a time.
         rows_per_chunk: The number of rows to write to each chunk. May be smaller at the end of a shard.
         await_finished: If True, this function will block until the cache is finished. If False, it will return
                     immediately.
@@ -321,6 +322,7 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
 # chunks and earlier shards. (So that we approximately generate following the global order.)
 @ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
 def _alternating_shard_reader(
+    name: str,
     builder_ref: ActorHandle,  # _ChunkCacheBuilder
     shard_writers: ActorHandle,  # _GroupedShardWriter
     shard_source: ShardedDataset[T],
@@ -330,6 +332,8 @@ def _alternating_shard_reader(
     batch_size,
     num_rows_per_chunk,
 ):
+    pylogging.basicConfig(level=pylogging.INFO)
+    logger = pylogging.getLogger(f"shard_reader.{name}")
     shard_pqueue: list[tuple[int, int]] = []  # heapq of (num_chunks, shard_idx)
     shard_readers: dict[int, Iterator[list[T]]] = {}
     try:
@@ -350,10 +354,11 @@ def _alternating_shard_reader(
             )
         except Exception as e:  # noqa
             logger.exception(f"Error while initializing shard {shard_name}")
-            ray.get(shard_writers[shard_name].shard_failed.remote(ser_exc_info()))
+            # fire and forget
+            shard_writers[shard_name].shard_failed.remote(ser_exc_info())
             raise e
 
-    MAX_INFLIGHT = 30
+    MAX_INFLIGHT = 10
     back_pressure_queue: list[ray.ObjectRef] = []
 
     while len(shard_pqueue) > 0:
@@ -381,6 +386,7 @@ def _alternating_shard_reader(
                     # we want to limit the number of pending tasks, so we wait until we're below the limit
                     # before we start reading the next batch
                     while len(back_pressure_queue) >= MAX_INFLIGHT:
+                        logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
                         finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
 
                     priority = priority_fn(shard_idx, chunk_id)
@@ -410,7 +416,8 @@ def _alternating_shard_reader(
 
         except Exception as e:  # noqa
             logger.exception(f"Error while processing shard {shard_name}")
-            ray.get(shard_writers.shard_failed.remote(shard_name, ser_exc_info()))
+            # fire and forget
+            shard_writers.shard_failed.remote(shard_name, ser_exc_info())
             raise e
 
 
@@ -890,11 +897,13 @@ class ChunkCacheBuilder:
         self,
         broker_ref,
         cache_dir: str,
+        name: str,
         source: ShardedDataset[T],
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
         pylogging.basicConfig(level=pylogging.INFO)
+        self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
         self.shard_status: Dict[str, _ShardStatus] = dict()
         self._current_round_robin = []
@@ -904,10 +913,10 @@ class ChunkCacheBuilder:
         self_ref = current_actor_handle()
 
         if len(source.shard_names) == 0:
-            logger.warning("No shards to index?!?")
+            self.logger.warning("No shards to index?!?")
             self._finish()
         else:
-            logger.info(f"Starting cache build for {len(source.shard_names)} shards")
+            self.logger.info(f"Starting cache build for {len(source.shard_names)} shards")
 
             self._shard_writers = []
             self._shard_readers = []
@@ -936,6 +945,7 @@ class ChunkCacheBuilder:
                 self._processor_actors.append(processor_actor)
 
                 reader = _alternating_shard_reader.remote(
+                    name,
                     self_ref,
                     writer,
                     source,
@@ -1072,7 +1082,10 @@ class ChunkCacheBroker:
             self._finished_promise.set_result(None)
         except FileNotFoundError:
             self_ref = ray.runtime_context.get_runtime_context().current_actor
-            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, self._source, self._processor, self._rows_per_chunk)  # type: ignore
+            # only use the last two components of the name since it gets kind of long
+            path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
+            name = f"builder::{path_for_name}"
+            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, self._rows_per_chunk)  # type: ignore
 
     def is_finished(self):
         return self._is_finished
