@@ -33,6 +33,7 @@ from rich.progress import (
 import levanter.tracker
 
 from .. import logging
+from ..utils.py_utils import actual_sizeof
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
 from . import ShardableDataset
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
@@ -360,6 +361,33 @@ def _alternating_shard_reader(
 
     MAX_INFLIGHT = 10
     back_pressure_queue: list[ray.ObjectRef] = []
+    back_pressure_sizes: dict[ray.ObjectRef, int] = {}
+    retained_batch_sizes = 0
+
+    def enqueue_to_backpressure(batch, batch_result_ref):
+        nonlocal back_pressure_queue, retained_batch_sizes
+        back_pressure_queue.append(batch_result_ref)
+        if logger.level <= pylogging.DEBUG:
+            size = actual_sizeof(batch)
+            retained_batch_sizes += size
+            back_pressure_sizes[batch_result_ref] = size
+            if retained_batch_sizes > 1024 * 1024 * 1024:
+                logger.debug(f"Retained batch sizes: {retained_batch_sizes}")
+
+        size = MAX_INFLIGHT
+        # we want to limit the number of pending tasks, so we wait until we're below the limit
+        # before we start reading the next batch
+        drain_back_pressure_to(size)
+
+    def drain_back_pressure_to(size):
+        nonlocal back_pressure_queue, retained_batch_sizes
+        while len(back_pressure_queue) >= size:
+            logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
+            finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
+
+            if logger.level <= pylogging.DEBUG:
+                size = back_pressure_sizes.pop(finished_ref[0])
+                retained_batch_sizes -= size
 
     while len(shard_pqueue) > 0:
         chunk_id, shard_idx = heapq.heappop(shard_pqueue)
@@ -383,21 +411,16 @@ def _alternating_shard_reader(
                 total_chunk_rows += len(batch)
 
                 if batch:
-                    # we want to limit the number of pending tasks, so we wait until we're below the limit
-                    # before we start reading the next batch
-                    while len(back_pressure_queue) >= MAX_INFLIGHT:
-                        logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
-                        finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
-
                     priority = priority_fn(shard_idx, chunk_id)
-                    batch = ray.put(batch)
-                    batch_result_ref = ray.get(processor_actor.submit.remote(priority=priority, batch=RefBox(batch)))
+                    batch_result_ref = ray.get(
+                        processor_actor.submit.remote(priority=priority, batch=RefBox(ray.put(batch)))
+                    )
                     shard_writers.chunk_batch_finished.remote(
                         shard_name, chunk_id, chunk_batch_idx, RefBox(batch_result_ref)
                     )
-                    back_pressure_queue.append(batch_result_ref)
-
                     chunk_batch_idx += 1
+                    enqueue_to_backpressure(batch, batch_result_ref)
+                    del batch
 
                 if total_chunk_rows >= num_rows_per_chunk or exhausted_shard:
                     chunk_filled = True
@@ -419,6 +442,8 @@ def _alternating_shard_reader(
             # fire and forget
             shard_writers.shard_failed.remote(shard_name, ser_exc_info())
             raise e
+
+    drain_back_pressure_to(0)
 
 
 def _initial_shard_metadatas(shard_source, shard_names, shard_group_writer):
