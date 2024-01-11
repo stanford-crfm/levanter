@@ -2,6 +2,7 @@ import equinox
 import jax
 import jax.random
 import optax
+import pytest
 
 import haliax as hax
 
@@ -43,6 +44,7 @@ class LogitDataset(ShardableDataset[Example]):
         return LogitDataset(self.W, self.noise, self.x_mask, self.x_bias, key=jax.random.fold_in(self.key, shard_id))
 
 
+@pytest.mark.slow
 def test_estimate_mixture_weights():
     # we create 3 simple logistic regression datasets
     # 1. x is moderately predictive of y (y ~ [0, 0.5, 0.5] x + N(0, noise^2) > 0.5)
