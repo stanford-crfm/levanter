@@ -124,16 +124,14 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
         logits = self(example.tokens, example.attn_mask, key=key).astype(jnp.float32)
+        logits = logits.astype(jnp.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        losses = cross_entropy_loss(
+        loss = cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
 
-        if reduction is None:
-            return hax.where(example.loss_mask, losses, 0)
-        else:
-            return losses
+        return loss
 
     @property
     def vocab_size(self) -> int:
