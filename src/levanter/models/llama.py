@@ -81,10 +81,14 @@ class LlamaConfig(HFCompatConfig):
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
-    QHeadsPerGroup = property(lambda self: hax.Axis("q_heads_per_group", self.num_heads // self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+
+    def __post_init__(self):
+        assert (
+            self.num_heads % self.num_kv_heads == 0
+        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
@@ -272,9 +276,11 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaAttention":
         use_bias = config.use_bias
         Embed = config.Embed
+        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
+
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
         )
         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
@@ -298,8 +304,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         if self.config.upcast_attn:
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
-        k = k.rename({"position": "key_position"}).broadcast_axis(self.config.QHeadsPerGroup)
-        v = v.rename({"position": "key_position"}).broadcast_axis(self.config.QHeadsPerGroup)
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
 
         c = self.config
         attn_output = dot_product_attention(
