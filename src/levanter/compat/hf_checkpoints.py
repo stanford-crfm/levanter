@@ -162,7 +162,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     LevConfigClass: Type[LevConfig]
     reference_checkpoint: Optional[RepoRef]
-    "A reference HF Hub checkpoint to extract non-parameter files (like model code an config from)"
+    "A reference HF Hub checkpoint to extract non-parameter files (like model code and config from)"
 
     HfConfigClass: Type
     "The HFConfig class to use. If None is provided, will be inferred from the reference_checkpoint"

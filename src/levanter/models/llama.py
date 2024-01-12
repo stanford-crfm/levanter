@@ -47,8 +47,8 @@ class LlamaConfig(HFCompatConfig):
         intermediate_dim (int, optional): dimension of the intermediate state. Defaults to 11008.
         num_layers (int, optional): number of hidden layers in the Transformer encoder. Defaults to 32.
         num_heads (int, optional): number of attention heads for each attention layer. Defaults to 32.
-        num_kv_heads (int, optional): number of attention heads for keys and values in each attention layer. 
-            Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA. 
+        num_kv_heads (int, optional): number of attention heads for keys and values in each attention layer.
+            Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
             Note that this value must be divisible by num_heads. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
@@ -81,6 +81,7 @@ class LlamaConfig(HFCompatConfig):
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
+    QHeadsPerGroup = property(lambda self: hax.Axis("q_heads_per_group", self.num_heads // self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
@@ -103,6 +104,7 @@ class LlamaConfig(HFCompatConfig):
             intermediate_dim=hf_config.intermediate_size,
             num_layers=hf_config.num_hidden_layers,
             num_heads=hf_config.num_attention_heads,
+            num_kv_heads=hf_config.num_key_value_heads,
             activation_function=hf_config.hidden_act,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
@@ -270,9 +272,10 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaAttention":
         use_bias = config.use_bias
         Embed = config.Embed
-        QHeads = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, QHeads, config.HeadSize), key=k_q, use_bias=use_bias)
+        q_proj = hnn.Linear.init(
+            In=Embed, Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+        )
         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
@@ -295,8 +298,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         if self.config.upcast_attn:
             q = q.astype(jnp.float32)
             k = k.astype(jnp.float32)
-        k = k.rename({"position": "key_position"}).broadcast_axis("q_heads_per_group")
-        v = v.rename({"position": "key_position"}).broadcast_axis("q_heads_per_group")
+        k = k.rename({"position": "key_position"}).broadcast_axis(self.config.QHeadsPerGroup)
+        v = v.rename({"position": "key_position"}).broadcast_axis(self.config.QHeadsPerGroup)
 
         c = self.config
         attn_output = dot_product_attention(

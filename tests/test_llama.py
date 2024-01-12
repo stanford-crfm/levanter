@@ -232,6 +232,7 @@ def test_llama_roundtrip():
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_kv_heads=2,  # tests GQA with group=2
         gradient_checkpointing=False,
     )
     Vocab = hax.Axis("vocab", 1000)
@@ -288,6 +289,7 @@ def _get_llama_config(use_flash=False) -> LlamaConfig:
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_kv_heads=1,  # tests MQA
         rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
@@ -318,5 +320,6 @@ def test_pass_different_length_seq():
         hidden_dim=16,
         intermediate_dim=32,
         num_heads=2,
+        num_kv_heads=2,  # tests MHA
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
