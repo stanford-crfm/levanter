@@ -500,12 +500,10 @@ def to_hf_config(config: LoraConfig, base_model_name_or_path: Optional[str] = No
     return {
         "base_model_name_or_path": base_model_name_or_path,
         "bias": "none",  # TODO: support bias
-        "enable_lora": None,
         "fan_in_fan_out": False,  # TODO: support fan_in_fan_out
         "inference_mode": True,  # TODO: support inference_mode
         "lora_alpha": config.alpha,
         "lora_dropout": 0.00,  # TODO: support dropout
-        "merge_weights": False,
         "modules_to_save": None,  # TODO: support modules_to_save?
         "peft_type": "LORA",
         "r": config.r,
