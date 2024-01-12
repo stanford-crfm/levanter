@@ -3,6 +3,7 @@ import copy
 import functools
 import logging as pylogging
 import os
+import re
 import sys
 import typing
 import warnings
@@ -38,7 +39,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.jax_utils import is_inexact_arrayish, leaf_key_paths
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -690,6 +691,53 @@ class TrainerConfig:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
 
+def _build_mask(weight_decay_modules):
+
+    if weight_decay_modules is None:
+        # default masking based on dimension
+        # def _apply_on(x, key_path: str):
+        #     if is_inexact_arrayish(x):
+        #         ndim = x.ndim
+        #         if key_path.__contains__("stacked"):
+        #             # not counting the `hnn.Stacked` extra dimension
+        #             ndim -= 1
+
+        #         if ndim == 1 or ndim == 3:
+        #             # layer norms' weights have dimension 1
+        #             # Mlp biases have dimension 1 after discounting `hnn.Stacked` dimention
+        #             # `c_attn` biases have dimension as three after discounting `hnn.Stacked` dimention
+        #             # `c_proj` biases in attn have dimension as 1 after discounting `hnn.Stacked` dimention
+        #             #
+        #             # in these cases, no weight decay is applied
+
+        #             # THIS TURNS OUT INCORRECT. `attn.c_proj.weight` has dim = 3
+        #             return False
+
+        #         # otherwise, apply weight decay
+        #         return True
+        #     return False
+
+        return None
+    else:
+        # mask based on regex or module path
+        def _apply_on(x, key_path):
+            if isinstance(weight_decay_modules, str):
+                compiled_regex = re.compile(weight_decay_modules)
+                return compiled_regex.match(key_path) is not None
+            else:
+                return any(key_path.__contains__(target) for target in weight_decay_modules)
+
+    def mask_fn(model):
+        return jax.tree_util.tree_map(
+            _apply_on,
+            model,
+            leaf_key_paths(model, is_leaf=eqx.is_array),
+            is_leaf=eqx.is_array,
+        )
+
+    return mask_fn
+
+
 @dataclass
 class OptimizerConfig:
     # Config related to optimizer (always adam for now)
@@ -707,12 +755,15 @@ class OptimizerConfig:
     cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
+    """a regex or a list of strings to identify where to mask weight. """
+    """For nano-GPT, this field can be set as `r"weight|token_embeddings|position_embeddings"`"""
+    weight_decay_modules: Optional[Union[List[str], str]] = None
 
-    def build(self, num_train_steps: int, weight_decay_mask=None) -> GradientTransformation:
+    def build(self, num_train_steps: int) -> GradientTransformation:
         """Creates the optimizer"""
 
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate, weight_decay_mask):
+        def _optimizer(learning_rate):
             components = []
 
             if self.max_grad_norm:
@@ -721,42 +772,7 @@ class OptimizerConfig:
             components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
 
             if self.weight_decay > 0:
-                if weight_decay_mask is None:
-                    # this weight decay mask is only applied for GPT, and this follows nanoGPT way
-                    def _mask_fn(params):
-                        # let's mask all leaves as False
-                        params = jax.tree_util.tree_map(lambda _: False, params)
-
-                        def apply_weight_decay(tree):
-                            # there is no weight decay performed in LayerNorms and bias
-                            nodes = []
-
-                            # apply on embedding
-                            nodes.append(tree.embeddings.token_embeddings)
-                            nodes.append(tree.embeddings.position_embeddings)
-
-                            # apply on attention
-                            nodes.append(tree.transformer.blocks.stacked.attn.c_attn.weight)
-                            nodes.append(tree.transformer.blocks.stacked.attn.c_proj.weight)
-
-                            # apply on MLP
-                            nodes.append(tree.transformer.blocks.stacked.mlp.c_fc.weight)
-                            nodes.append(tree.transformer.blocks.stacked.mlp.c_proj.weight)
-
-                            return nodes
-
-                        # apply weight decay when necessary
-                        params = eqx.tree_at(
-                            where=apply_weight_decay,
-                            pytree=params,
-                            replace_fn=lambda _: True,
-                        )
-
-                    mask = _mask_fn
-                else:
-                    mask = weight_decay_mask
-
-                components.append(optax.add_decayed_weights(self.weight_decay, mask))
+                components.append(optax.add_decayed_weights(self.weight_decay, _build_mask(self.weight_decay_modules)))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
@@ -765,9 +781,7 @@ class OptimizerConfig:
 
             return optimizer
 
-        return optax.inject_hyperparams(_optimizer)(
-            learning_rate=self.lr_scheduler(num_train_steps), weight_decay_mask=weight_decay_mask
-        )
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
     def lr_scheduler(self, num_train_steps):
         warmup_steps = self._convert_warmup(num_train_steps)
