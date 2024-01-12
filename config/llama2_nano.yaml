@@ -9,6 +9,7 @@ model:
   type: llama
   hidden_dim: 32
   num_heads: 4
+  num_kv_heads: 4
   num_layers: 2
 trainer:
   wandb:

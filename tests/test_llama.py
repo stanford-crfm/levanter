@@ -131,11 +131,12 @@ def test_apply_rotary_pos_emb():
 
 @skip_if_no_torch
 @pytest.mark.parametrize("use_flash", [True, False])
-def test_llama_attention(use_flash):
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_llama_attention(use_flash, num_kv_heads):
     import torch
     from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 
-    config = _get_llama_config(use_flash=use_flash)
+    config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
     attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
 
@@ -181,11 +182,12 @@ def test_llama_rms_norm():
 
 
 @skip_if_no_torch
-def test_llama_decoder_layer():
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_llama_decoder_layer(num_kv_heads):
     import torch
     from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer
 
-    llama_config = _get_llama_config()
+    llama_config = _get_llama_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
 
@@ -208,8 +210,9 @@ def test_llama_decoder_layer():
     ).all(), f"{hf_out[0]} != {out}"
 
 
-def test_llama_lm_head_model():
-    llama_config = _get_llama_config()
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_llama_lm_head_model(num_kv_heads):
+    llama_config = _get_llama_config(num_kv_heads=num_kv_heads)
     Batch = hax.Axis("batch", 2)
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
@@ -222,7 +225,8 @@ def test_llama_lm_head_model():
 
 
 @skip_if_no_torch
-def test_llama_roundtrip():
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_llama_roundtrip(num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
@@ -232,6 +236,7 @@ def test_llama_roundtrip():
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
     )
     Vocab = hax.Axis("vocab", 1000)
@@ -279,7 +284,7 @@ def test_llama_roundtrip():
         assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
-def _get_llama_config(use_flash=False) -> LlamaConfig:
+def _get_llama_config(use_flash=False, num_kv_heads=4) -> LlamaConfig:
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
@@ -288,6 +293,7 @@ def _get_llama_config(use_flash=False) -> LlamaConfig:
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_kv_heads=num_kv_heads,
         rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
@@ -312,11 +318,13 @@ def test_llama_configs(config_file):
     check_load_config(config_class, config_file)
 
 
-def test_pass_different_length_seq():
+@pytest.mark.parametrize("num_kv_heads", [1, 2])
+def test_pass_different_length_seq(num_kv_heads):
     config = LlamaConfig(
         seq_len=32,
         hidden_dim=16,
         intermediate_dim=32,
         num_heads=2,
+        num_kv_heads=num_kv_heads,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
