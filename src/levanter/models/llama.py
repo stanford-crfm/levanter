@@ -49,7 +49,7 @@ class LlamaConfig(HFCompatConfig):
         num_heads (int, optional): number of attention heads for each attention layer. Defaults to 32.
         num_kv_heads (int, optional): number of attention heads for keys and values in each attention layer.
             Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
-            Note that this value must be divisible by num_heads. Defaults to 32.
+            Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
