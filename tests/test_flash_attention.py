@@ -60,7 +60,7 @@ def test_grad_attention():
     def d_attn(qkv, fn):
         q, k, v = qkv
         x_out = fn(KPos, Key, q, k, v, mask=mask)
-        return (x_out * x_out).sum()
+        return (x_out * x_out).sum().scalar()
 
     hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
     fa_val, (fa_dq, fa_dk, fa_dv) = d_attn((q, k, v), functools.partial(flash_attention, QPos, inference=True))

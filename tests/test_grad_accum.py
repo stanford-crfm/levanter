@@ -44,7 +44,7 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
     mlp = Mlp.init(In, Out, Mid, key=jax.random.PRNGKey(0))
 
     def loss_fn(mlp, x):
-        return mlp(x).mean()
+        return mlp(x).mean().scalar()
 
     x = hax.random.normal(jax.random.PRNGKey(0), (Batch, In))
 

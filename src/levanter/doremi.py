@@ -145,6 +145,7 @@ def estimate_mixture_weights(
         return excess_losses
 
     # Loss is \sum_d alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
+    # Note that (\sum_d \alpha_d ref) is a constant in the model params, so we can ignore it
     @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
     def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
@@ -290,5 +291,5 @@ def _compute_per_domain_losses(Domain, domains, losses):
 
 def _domain_weighted_loss(losses, Domain, domains, alpha):
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains * alpha, axis=None)
+    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains * alpha, axis=None).scalar()
     # return hax.dot(alpha, one_hot_domains, losses, axis=None)
