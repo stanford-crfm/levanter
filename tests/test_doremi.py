@@ -38,7 +38,7 @@ class LogitDataset(ShardableDataset[Example]):
             noise = hax.random.normal(next(key_iter), (Block,)) * self.noise
             y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=Dim) + noise) > 0.5).astype(float)
             for i in range(Block.size):
-                yield Example(x=x_block[Block, i], y=hax.named(y_block[Block, i], ()))
+                yield Example(x=x_block[Block, i], y=y_block[Block, i])
 
     def shard(self, shard_id: int, num_shards: int):
         return LogitDataset(self.W, self.noise, self.x_mask, self.x_bias, key=jax.random.fold_in(self.key, shard_id))
