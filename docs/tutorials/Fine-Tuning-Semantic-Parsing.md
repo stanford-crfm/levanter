@@ -1,10 +1,10 @@
 # Fine-Tuning for Semantic Parsing
 
-Semantic parsing is a process that transforms a natural language sentence into a logical form. 
-This logical form represents the sentence's meaning in a way that computer programs can utilize to carry out tasks, respond to questions, or follow commands. 
+Semantic parsing is a process that transforms a natural language sentence into a logical form.
+This logical form represents the sentence's meaning in a way that computer programs can utilize to carry out tasks, respond to questions, or follow commands.
 
-For example, through semantic parsing, a chatbot can convert a question posed in natural language into a precise SQL query, which then retrieves the desired information from a database. 
-Similarly, a virtual assistant can interpret a user's spoken request and, by employing semantic parsing, translate it into a JSON object that triggers specific actions. 
+For example, through semantic parsing, a chatbot can convert a question posed in natural language into a precise SQL query, which then retrieves the desired information from a database.
+Similarly, a virtual assistant can interpret a user's spoken request and, by employing semantic parsing, translate it into a JSON object that triggers specific actions.
 By bridging the gap between human language and machine-readable formats, semantic parsing empowers AI systems to perform tasks with both accuracy and autonomy.
 
 In this post, we'll guide you through fine-tuning a [Llama2 model](https://ai.meta.com/llama/) for semantic parsing with Levanter.
@@ -45,8 +45,8 @@ Expected Response: confirm(name[The Elder Scrolls Online], developer[ZeniMax Onl
 
 ### Quick Test with Llama2-7B Chat Model
 
-If we test with the Llama2-7B chat model on these examples (see the full prompt in [Appendix A](#appendix-a-the-prompt-used-in-this-task)), 
-we can see it does not learn the task well: it struggles to generate the correct function names and hallucinates quite a few attributes that are not mentioned in the query; it also produces outputs with incorrect formats (`\n` before attribute names, `[E (`, etc). 
+If we test with the Llama2-7B chat model on these examples (see the full prompt in [Appendix A](#appendix-a-the-prompt-used-in-this-task)),
+we can see it does not learn the task well: it struggles to generate the correct function names and hallucinates quite a few attributes that are not mentioned in the query; it also produces outputs with incorrect formats (`\n` before attribute names, `[E (`, etc).
 
 ```
 Query:  I had fun playing Age of Empires II: The Age of Kings. I enjoy a lot of multiplayer games from 1999.
@@ -100,7 +100,7 @@ with open("train.jsonl", "w") as f:
         f.write("\n")
 ```
 
-The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand. 
+The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand.
 In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output.
 We provide the full prompt in [Appendix A](#appendix-a-the-prompt-used-in-this-task).
 While helpful, including a prompt is optional for fine-tuning.
@@ -206,7 +206,7 @@ To save the LoRA adaptors as separate weight file, use `--hf_save_path` instead.
 
 ### Metrics
 How do we accurately evaluate a model's performance in semantic parsing tasks?
-Character-level accuracy falls short as it doesn't account for variations in the order of attributes and does not distinguish between function names and attributes. 
+Character-level accuracy falls short as it doesn't account for variations in the order of attributes and does not distinguish between function names and attributes.
 Instead, we assess the model's ability to interpret instructions and parse semantic meaning from input queries by measuring more specific accuracies:
 
 - Function Name Accuracy: This metric confirms whether the extracted function name matches the expected one.
