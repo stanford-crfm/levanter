@@ -1,9 +1,10 @@
-# Fine-Tuning for Semantic Parsing with Levanter
+# Fine-Tuning for Semantic Parsing
 
-To enable computers to assist human with complex tasks, such as data anlaysis or customer service, they must first understand our natural language and convert it into a format that they can process.
-This crucial process is known as semantic parsing, and it's a key component of many AI systems.
-For example, semantic parsing allows a chatbot to take a question in natural language and turn it into a precise SQL query, then this query retrieves the desired information from a database.
-Similarly, it enables a virtual assistant to interpret a user's spoken request and formulate it as a JSON object, triggering specific actions.
+Semantic parsing is a process that transforms a natural language sentence into a logical form. 
+This logical form represents the sentence's meaning in a way that computer programs can utilize to carry out tasks, respond to questions, or follow commands. 
+
+For example, through semantic parsing, a chatbot can convert a question posed in natural language into a precise SQL query, which then retrieves the desired information from a database. 
+Similarly, a virtual assistant can interpret a user's spoken request and, by employing semantic parsing, translate it into a JSON object that triggers specific actions. 
 By bridging the gap between human language and machine-readable formats, semantic parsing empowers AI systems to perform tasks with both accuracy and autonomy.
 
 In this post, we'll guide you through fine-tuning a [Llama2 model](https://ai.meta.com/llama/) for semantic parsing with Levanter.
@@ -15,7 +16,7 @@ It translates conversational English queries on the topic of video games into a 
 Each example features a plain English input and a structured output that adheres to predefined rules for function naming conventions and attributes.
 
 The dataset has 5,103 training examples and 714 examples for evaluation.
-Although smaller than the Alpaca dataset, it provides a decent amount of data to effectively adapt the model to the task.
+Although smaller than [the Alpaca dataset](../Fine-Tuning.md#overview-of-alpaca), it provides a decent amount of data to effectively adapt the model to the task.
 
 Below are some examples from the dataset:
 
@@ -44,7 +45,8 @@ Expected Response: confirm(name[The Elder Scrolls Online], developer[ZeniMax Onl
 
 ### Quick Test with Llama2-7B Chat Model
 
-If we test with the Llama2-7B chat model on these examples, we can see its limitation: it struggles to generate accurate function names and frequently hallucinates incorrect attributes.
+If we test with the Llama2-7B chat model on these examples (see the full prompt in [Appendix A](#appendix-a-the-prompt-used-in-this-task)), 
+we can see it does not learn the task well: it struggles to generate the correct function names and hallucinates quite a few attributes that are not mentioned in the query; it also produces outputs with incorrect formats (`\n` before attribute names, `[E (`, etc). 
 
 ```
 Query:  I had fun playing Age of Empires II: The Age of Kings. I enjoy a lot of multiplayer games from 1999.
@@ -70,24 +72,14 @@ Let's begin by preparing the dataset.
 
 Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required.
 Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter.
-For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md)."
+For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md#dataset-preparation).
 
-Below is a code snippet for dataset preparation.
-The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand.
-In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output.
-While helpful, including a prompt is optional for fine-tuning.
+Below is a code snippet for dataset preparation:
 
 ```python
 import json
 import datasets
 
-
-PROMPT = """
-You are a helpful chatbot to assist users to parse queries in natural language into structural format.
-
-# omit the rest of the prompt for brevity
-...
-"""
 
 # load the dataset
 train_dataset = datasets.load_dataset("GEM/viggo", split="train")
@@ -107,6 +99,11 @@ with open("train.jsonl", "w") as f:
         json.dump(example, f)
         f.write("\n")
 ```
+
+The `PROMPT` provides the model with instructions to enhance its understanding of the task at hand. 
+In our example, the prompt details the potential function names and attributes, aiding the model in generating the correct output.
+We provide the full prompt in [Appendix A](#appendix-a-the-prompt-used-in-this-task).
+While helpful, including a prompt is optional for fine-tuning.
 
 ### Step 2: Fine-tune the Model
 
@@ -153,8 +150,8 @@ gcloud compute tpus tpu-vm ssh finetune-32 --zone us-east1-d --worker=all \
 HUGGING_FACE_HUB_TOKEN=${YOUR HF TOKEN HERE} \
 bash levanter/infra/run.sh python \
 levanter/examples/alpaca/alpaca.py \
---config_path gs://<config-yaml-file> \
---hf_save_path gs://<somewhere>"
+    --config_path gs://<config-yaml-file> \
+    --hf_save_path gs://<somewhere>"
 ```
 
 Given the small dataset and high efficiency of Levanter, the entire training job completed quickly in only 21 min on a single TPUv3-8.
@@ -166,7 +163,7 @@ Below is our configuration for LoRA fine-tuning. Note that it is very similar to
 - We added the `lora` section to specify the LoRA parameters. All of the parameters are set to the default values.
 - We increased the number of steps by 1 more epoch. LoRA fine-tuning uses less parameters, so it regularizes better and we can train for more steps.
 - We increased the learning rate to 3e-4, but we did not do very thorough hyperparameter tuning. We expect there might be a better learning rate.
-- We found weight decay at 0.1 to lead to better results than no weight decay, so we set it at 0.1.
+- We found weight decay at 0.1 leads to better results than no weight decay, so we set it at 0.1.
 
 ```yaml
 data: "gs://levanter-data/fine-tuning/gem-viggo/GEM_viggo_train.jsonl"
@@ -209,8 +206,8 @@ To save the LoRA adaptors as separate weight file, use `--hf_save_path` instead.
 
 ### Metrics
 How do we accurately evaluate a model's performance in semantic parsing tasks?
-Character-level accuracy falls short as it doesn't account for variations in the order of function names and attributes.
-Instead, we assess the model's ability to interpret instructions and parse semantic meaning from input queries by measuring three specific accuracies:
+Character-level accuracy falls short as it doesn't account for variations in the order of attributes and does not distinguish between function names and attributes. 
+Instead, we assess the model's ability to interpret instructions and parse semantic meaning from input queries by measuring more specific accuracies:
 
 - Function Name Accuracy: This metric confirms whether the extracted function name matches the expected one.
 - Attribute Set Accuracy: This checks if the model identifies the correct set of attributes, regardless of their order.
@@ -277,17 +274,17 @@ def evaluate_chatbot_response(chatbot_response, labeled_response):
 We evaluated the fine-tuned models on a hold-out evaluation set of 714 examples and computed the metrics described above.
 The results are shown in the table below.
 
-| Metric | Llama2-7B Chat | Full-weight Fine-tuning | LoRA Fine-tuning |
-| ------------------------ | ----- | ----- | ----- |
-| Function Name Accuracy   | 0.014 | 0.577 | 0.517 |
-| Attribute Set Accuracy   | 0.010 | 0.822 | 0.845 |
-| Attribute Value Accuracy | 0.524 | 0.942 | 0.881 |
-| Overall Accuracy         | 0.183 | 0.780 | 0.748 |
+| Model \ Metric            | Function Name Accuracy | Attribute Set Accuracy | Attribute Value Accuracy | Overall Accuracy |
+|---------------------------|------------------------|------------------------|--------------------------|------------------|
+| Llama2-7B Chat            | 0.014                  | 0.010                  | 0.524                    | 0.183            |
+| Full-weight Fine-tuning   | 0.577                  | 0.822                  | 0.942                    | 0.780            |
+| LoRA Fine-tuning          | 0.517                  | 0.845                  | 0.881                    | 0.748            |
+
 
 There are a few highlights from the results:
 
 - The baseline Llama2-7B Chat model's performance is remarkably low at 0.183 overall accuracy. This is consistent with our earlier observation that it does not really understand how to perform the task.
-- Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning approaches the metrics of full-weight fine-tuning and achieves a better `Attribute Set Accuracy`, while training with less than 0.1% parameters. This highlights the efficiency of LoRA.
+- Fine-tuning methods, both full-weight and LoRA, substantially enhance the model's accuracy, achieving 0.780 and 0.748, respectively. Notably, LoRA fine-tuning, while training with less than 0.1% parameters, approaches the metrics of full-weight fine-tuning and achieves a better `Attribute Set Accuracy`. This highlights the efficiency of LoRA.
 - Full-weight fine-tuning outperforms LoRA fine-tuning in the `Function Name Accuracy` and the `Attribute Value Accuracy` metrics. This shows the advantage of training the entire model weights on the task. Though further hyperparameter tuning might allow LoRA to close this gap.
 - The higher accuracy in attribute set and value suggests that the attributes are more contextually driven and thus easier for the model to predict. In contrast, correctly identifying function names appears to be more challenging, indicating a need for deeper understanding of the task and reasoning capability.
 
@@ -350,3 +347,81 @@ In this post, we showcase the process of fine-tuning a Llama2 model using Levant
 
 Semantic parsing is a critical step in translating user queries into machine-readable, structural format, which is essential for programmatic interactions with AI systems.
 We chose the GEM ViGGO dataset to demonstrate this task. The out-of-box Llama2-7B Chat model struggles to follow the instruction and hallucinates at predicting attributes. By applying fine-tuning, both full-weight and LoRA, we significantly improved the model's ability to perform on this task.
+
+## Appendices
+
+### Appendix A: The Prompt Used in This Task
+
+```
+You are a helpful chatbot to assist users to parse queries in natural language into structural format.
+
+Given a target sentence construct the underlying meaning representation
+of the input sentence as a single function with attributes and attribute
+values. This function should describe the target string accurately and the
+function must be one of the following ['inform', 'request', 'give_opinion',
+'confirm', 'verify_attribute', 'suggest', 'request_explanation',
+'recommend', 'request_attribute'] .
+
+The attributes must be one of the following:
+['name', 'exp_release_date', 'release_year', 'developer', 'esrb', 'rating',
+'genres', 'player_perspective', 'has_multiplayer', 'platforms',
+'available_on_steam', 'has_linux_release', 'has_mac_release', 'specifier']
+The order your list the attributes within the function must follow the
+order listed above. For example the 'name' attribute must always come
+before the 'exp_release_date' attribute, and so forth.
+
+For each attribute, fill in the corresponding value of the attribute
+within brackets. A couple of examples are below. Note: you are to output
+the string after "Output: ". Do not include "Output: " in your answer.
+
+Example 1)
+Sentence: Dirt: Showdown from 2012 is a sport racing game for the
+PlayStation, Xbox, PC rated E 10+ (for Everyone 10 and Older).
+It's not available on Steam, Linux, or Mac.
+Output: inform(name[Dirt: Showdown], release_year[2012],
+esrb[E 10+ (for Everyone 10 and Older)], genres[driving/racing, sport],
+platforms[PlayStation, Xbox, PC], available_on_steam[no],
+has_linux_release[no], has_mac_release[no])
+
+Example 2)
+Sentence: Were there even any terrible games in 2014?
+Output: request(release_year[2014], specifier[terrible])
+
+Example 3)
+Sentence: Adventure games that combine platforming and puzzles
+can be frustrating to play, but the side view perspective is
+perfect for them. That's why I enjoyed playing Little Nightmares.
+Output: give_opinion(name[Little Nightmares], rating[good],
+genres[adventure, platformer, puzzle], player_perspective[side view])
+
+Example 4)
+Sentence: Since we're on the subject of games developed by Telltale
+Games, I'm wondering, have you played The Wolf Among Us?
+Output: recommend(name[The Wolf Among Us], developer[Telltale Games])
+
+Example 5)
+Sentence: Layers of Fear, the indie first person point-and-click adventure game?
+Output: confirm(name[Layers of Fear], genres[adventure, indie,
+point-and-click], player_perspective[first person])
+
+Example 6)
+Sentence: I bet you like it when you can play games on Steam, like
+Worms: Reloaded, right?
+Output: suggest(name[Worms: Reloaded], available_on_steam[yes])
+
+Example 7)
+Sentence: I recall you saying that you really enjoyed The Legend
+of Zelda: Ocarina of Time. Are you typically a big fan of games
+on Nintendo rated E (for Everyone)?
+Output: verify_attribute(name[The Legend of Zelda: Ocarina of Time],
+esrb[E (for Everyone)], rating[excellent], platforms[Nintendo])
+
+Example 8)
+Sentence: So what is it about the games that were released in 2005
+that you find so excellent?
+Output: request_explanation(release_year[2005], rating[excellent])
+
+Example 9)
+Sentence: Do you think Mac is a better gaming platform than others?
+Output: request_attribute(has_mac_release[])
+```
