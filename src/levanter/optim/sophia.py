@@ -1,4 +1,5 @@
 import abc
+import functools
 import typing
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional, TypeVar, runtime_checkable
@@ -10,10 +11,6 @@ import optax
 from jax import numpy as jnp
 from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
-
-# TODO: remove dependency on _src internals
-from optax._src import numerics
-from optax._src.transform import bias_correction, update_moment
 
 import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
@@ -294,8 +291,7 @@ def _sophia_gradient_transform(
     def update_fn(updates, state, params=None):
         mu = update_moment(updates, state.mu, b1, 1)
         # nu = update_moment_per_elem_norm(updates, state.nu, b2, 2)
-        count_inc = numerics.safe_int32_increment(state.count)
-        mu_hat = bias_correction(mu, b1, count_inc)
+        mu_hat = bias_correction(mu, b1, state.count + 1)
         h_hat = state.h
         # track how often hessian is used
         mu_leaves = jax.tree_util.tree_leaves(mu_hat)
@@ -328,7 +324,7 @@ def _sophia_gradient_transform(
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
 
         return updates, ScaleBySophiaState(
-            count=count_inc, hessian_count=state.hessian_count, mu=mu, h=h_hat, hess_key=state.hess_key
+            count=state.count + 1, hessian_count=state.hessian_count, mu=mu, h=h_hat, hess_key=state.hess_key
         )
 
     def update_hessian(state, fn, model, *batch, **batch_kwargs):
@@ -338,10 +334,9 @@ def _sophia_gradient_transform(
             # new_hess = jax.tree_util.tree_map(lambda h: jnp.clip(h, -1, 1), new_hess)
 
             # EMAs of hessian
-            hessian_count_inc = numerics.safe_int32_increment(state.hessian_count)
             nu = update_moment(new_hess, state.h, b2, 1)
             return ScaleBySophiaState(
-                count=state.count, hessian_count=hessian_count_inc, mu=state.mu, h=nu, hess_key=next_key
+                count=state.count, hessian_count=state.hessian_count + 1, mu=state.mu, h=nu, hess_key=next_key
             )
 
         def _dont_update():
@@ -410,3 +405,23 @@ def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
 
     return hessian
+
+
+# Cribbed from optax._src.transform
+def update_moment(updates, moments, decay, order):
+    """Compute the exponential moving average of the `order`-th moment."""
+    return jax.tree_util.tree_map(lambda g, t: (1 - decay) * (g**order) + decay * t, updates, moments)
+
+
+@functools.partial(jax.jit, inline=True)
+def bias_correction(moment, decay, count):
+    """Performs bias correction. It becomes a no-op as count goes to infinity."""
+    # The conversion to the data type of the moment ensures that bfloat16 remains
+    # bfloat16 in the optimizer state. This conversion has to be done after
+    # `bias_correction_` is calculated as calculating `decay**count` in low
+    # precision can result in it being rounded to 1 and subsequently a
+    # "division by zero" error.
+    bias_correction_ = 1 - decay**count
+
+    # Perform division in the original precision.
+    return jax.tree_util.tree_map(lambda t: t / bias_correction_.astype(t.dtype), moment)
