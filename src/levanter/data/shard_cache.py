@@ -700,7 +700,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
 # Ray does poorly with large numbers of actors (grumble grumble), so we can't have one actor per shard.
 # This class wraps a map of shard names to _ShardWriterWorkers, and manages the lifecycle of the workers.
-@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")  # type: ignore
+@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")  # type: ignore
 class _GroupShardWriterWorker:
     def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
         pylogging.basicConfig(level=pylogging.INFO)
@@ -907,7 +907,7 @@ class _ChunkCollator:
             return None
 
 
-@ray.remote
+@ray.remote(num_cpus=0.25)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder:
     """
     Actor that manages the in-progress global ordering on chunks. ChunkCacheWriter's job is to hold the list of all
@@ -1298,6 +1298,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         self._num_readers = num_readers
         self._reader_offset = reader_offset
+        name = os.path.join(*cache_dir.split("/")[-2:])
+        self.logger = pylogging.getLogger(f"ShardCache.{name}")
 
     @staticmethod
     def load(cache_dir: str, batch_size: int) -> "ShardCache":
@@ -1356,13 +1358,15 @@ class ShardCache(Iterable[pa.RecordBatch]):
             time_in = time.time()
             # we want to also log if we're waiting for a long time, so we do this in a loop
             while timeout is None or time.time() - time_in < timeout:
-                current_timeout = 20.0  # be generous
+                current_timeout = 20.0
                 if timeout is not None:
                     current_timeout = min(current_timeout, timeout - (time.time() - time_in))
                 try:
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
-                    logger.warning(f"Waiting for chunk {mapped_index} after {int(time.time() - time_in)} seconds")
+                    self.logger.warning(f"Waiting for chunk {mapped_index} for {int(time.time() - time_in)} seconds")
+                    current_timeout *= 2
+                    current_timeout = min(current_timeout, 80)
                     continue
 
                 if chunk is None:
@@ -1417,7 +1421,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
             i = shard_offset
             while True:
                 try:
-                    logger.debug(f"Reading chunk {i}")
+                    self.logger.debug(f"Reading chunk {i}")
                     chunk = self._get_chunk_unmapped(i)
                     i += self._num_readers
                     yield from self._read_chunk(chunk)
@@ -1430,7 +1434,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     else:
                         break
                 except Exception as e:
-                    logger.exception("Error while reading from shard cache.")
+                    self.logger.exception("Error while reading from shard cache.")
                     raise e
 
     def __iter__(self):
@@ -1491,7 +1495,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 if metrics.is_finished:
                     break
             except Exception as e:
-                logger.exception("Error while reading metrics from shard cache.")
+                self.logger.exception("Error while reading metrics from shard cache.")
                 raise e
 
 
