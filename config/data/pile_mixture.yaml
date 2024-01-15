@@ -33,9 +33,9 @@ configs:
       - gs://levanter-data/pile-domains/europarl/val.jsonl.zst
   free_law:
     train_urls:
-      - gs://levanter-data/pile-domains/free_law/train-{00..29}.jsonl.zst
+      - gs://levanter-data/pile-domains/freelaw/train-{00..29}.jsonl.zst
     validation_urls:
-      - gs://levanter-data/pile-domains/free_law/val.jsonl.zst
+      - gs://levanter-data/pile-domains/freelaw/val.jsonl.zst
   github:
     train_urls:
       - gs://levanter-data/pile-domains/github/train-{00..29}.jsonl.zst
