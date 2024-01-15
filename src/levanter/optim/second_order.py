@@ -8,7 +8,7 @@ import jax
 import optax
 from jax import numpy as jnp
 from optax._src import numerics
-from optax._src.schedule import InjectHyperparamsState, _convert_floats
+from optax._src.schedule import InjectHyperparamsState
 
 
 class HessianUpdateFn(typing.Protocol):
@@ -226,3 +226,11 @@ def inject_hyperparams(
         return SecondOrderTransformation(init_fn, update_fn, update_hessian)
 
     return wrapped_transform
+
+
+# Cribbed from optax._src.schedule, which recently deleted this function.
+def _convert_floats(x, dtype):
+    """Convert float-like inputs to dtype, rest pass through."""
+    if jax.dtypes.scalar_type_of(x) == float:
+        return jnp.asarray(x, dtype=dtype)
+    return x
