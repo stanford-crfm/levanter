@@ -4,7 +4,6 @@ import os
 from typing import Optional
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
-from optax._src.wrappers import MultiStepsState
 
 import levanter.tracker
 from levanter.utils.jax_utils import jnp_to_python
@@ -14,8 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
-    if isinstance(opt_state, MultiStepsState):
-        opt_state = opt_state.inner_opt_state
+    try:
+        from optax._src.wrappers import MultiStepsState
+
+        if isinstance(opt_state, MultiStepsState):
+            opt_state = opt_state.inner_opt_state
+    except ImportError:
+        pass
 
     def wrap_key(key):
         if prefix:

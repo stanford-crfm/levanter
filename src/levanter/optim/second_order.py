@@ -7,8 +7,7 @@ import chex
 import jax
 import optax
 from jax import numpy as jnp
-from optax._src import numerics
-from optax._src.schedule import InjectHyperparamsState
+from optax import InjectHyperparamsState
 
 
 class HessianUpdateFn(typing.Protocol):
@@ -189,10 +188,8 @@ def inject_hyperparams(
             hparams = {k: _convert_floats(v, dtype) for k, v in state.hyperparams.items()}
             hparams.update(schedule_fn(state.count, dtype))
             updates, inner_state = inner_factory(**other_hps, **hparams).update(updates, state.inner_state, params)
-            count_inc = numerics.safe_int32_increment(state.count)
-
             # pylint:disable=too-many-function-args
-            return updates, InjectHyperparamsState(count_inc, hparams, inner_state)
+            return updates, InjectHyperparamsState(state.count + 1, hparams, inner_state)
             # pylint:enable=too-many-function-args
 
         def _find_first_floating_dtype(updates):
