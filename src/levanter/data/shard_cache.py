@@ -907,7 +907,7 @@ class _ChunkCollator:
             return None
 
 
-@ray.remote(num_cpus=0.25)  # keep this small b/c it doesn't do a lot
+@ray.remote(num_cpus=0.0)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder:
     """
     Actor that manages the in-progress global ordering on chunks. ChunkCacheWriter's job is to hold the list of all
