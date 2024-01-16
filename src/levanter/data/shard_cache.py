@@ -321,7 +321,9 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
 
 # This class is responsible for reading batches from a set of shards, prioritizing earlier
 # chunks and earlier shards. (So that we approximately generate following the global order.)
-@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")
+# TODO: it's not great we set this to 0.0, but it's the only way to get it to work with the current
+# ray scheduler when we try to index a large number of corpora. We should centralize this a bit better.
+@ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")
 def _alternating_shard_reader(
     name: str,
     builder_ref: ActorHandle,  # _ChunkCacheBuilder
@@ -699,7 +701,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
 # Ray does poorly with large numbers of actors (grumble grumble), so we can't have one actor per shard.
 # This class wraps a map of shard names to _ShardWriterWorkers, and manages the lifecycle of the workers.
-@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")  # type: ignore
+@ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 class _GroupShardWriterWorker:
     def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
         pylogging.basicConfig(level=pylogging.INFO)
