@@ -323,7 +323,7 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
 # chunks and earlier shards. (So that we approximately generate following the global order.)
 # TODO: it's not great we set this to 0.0, but it's the only way to get it to work with the current
 # ray scheduler when we try to index a large number of corpora. We should centralize this a bit better.
-@ray.remote(num_cpus=1.0, scheduling_strategy="SPREAD")
+@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")
 def _alternating_shard_reader(
     name: str,
     builder_ref: ActorHandle,  # _ChunkCacheBuilder
@@ -383,12 +383,12 @@ def _alternating_shard_reader(
     def drain_back_pressure_to(size):
         nonlocal back_pressure_queue, retained_batch_sizes
         while len(back_pressure_queue) > size:
-            logger.info(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
+            logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
             finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
 
             if len(back_pressure_queue) and logger.level <= pylogging.DEBUG:
-                size = back_pressure_sizes.pop(finished_ref[0])
-                retained_batch_sizes -= size
+                obj_size = back_pressure_sizes.pop(finished_ref[0])
+                retained_batch_sizes -= obj_size
 
     while len(shard_pqueue) > 0:
         chunk_id, shard_idx = heapq.heappop(shard_pqueue)
@@ -398,9 +398,9 @@ def _alternating_shard_reader(
 
             exhausted_shard = False
 
-            chunk_batch_idx = 0
-            chunk_filled = False
-            total_chunk_rows = 0
+            chunk_batch_idx = 0  # the index of the batch within the chunk
+            chunk_filled = False  # whether or not we've filled the chunk to max size
+            total_chunk_rows = 0  # the total number of rows in the chunk so far
 
             while not chunk_filled:
                 batch = next(shard_iter, None)
