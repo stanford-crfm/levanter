@@ -1003,6 +1003,7 @@ class ChunkCacheBuilder:
     def shard_finished(self, shard_name: str, expected_num_chunks: int):
         """Callback method for when a shard worker has finished."""
         shard_status = self.shard_status[shard_name]
+        assert shard_status.expected_num_chunks is None
         shard_status.expected_num_chunks = expected_num_chunks
 
         # we might still have buffered chunks, so we need to check if we can append them
