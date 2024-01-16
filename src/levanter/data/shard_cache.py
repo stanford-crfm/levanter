@@ -765,6 +765,9 @@ class _ShardWriterWorker:  # type: ignore
             self._expected_num_chunks = self.metadata_writer.num_chunks
             logger.info(f"Shard {shard_name} finished, from {self._expected_num_chunks} chunks, init")
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
+            self.finished = True
+        else:
+            self.finished = False
 
         self.collator = _ChunkCollator(cache_dir, shard_name)
 
@@ -823,12 +826,15 @@ class _ShardWriterWorker:  # type: ignore
             chunks_committed.append(chunk)
 
         if len(chunks_committed) > 0:
+            if self.finished:
+                raise RuntimeError("Tried to commit chunks after shard finished")
             # TODO: this is called inside an async call so we need to not block, but we do need to sequence
             # this to come before the shard_finished
             self.parent_ref.new_chunk.remote(self.shard_name, *chunks_committed)
 
-        if self._expected_num_chunks is not None and self.metadata_writer.num_chunks == self._expected_num_chunks:
+        if not self.finished and self.metadata_writer.num_chunks == self._expected_num_chunks:
             self.metadata_writer.finish()
+            self.finished = True
             logger.info(
                 f"Shard {self.shard_name} finished, from {self._expected_num_chunks} chunks, _attempt_to_commit_chunks"
             )
