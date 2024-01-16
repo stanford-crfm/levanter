@@ -385,7 +385,7 @@ def _alternating_shard_reader(
             logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
             finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
 
-            if logger.level <= pylogging.DEBUG:
+            if len(back_pressure_queue) and logger.level <= pylogging.DEBUG:
                 size = back_pressure_sizes.pop(finished_ref[0])
                 retained_batch_sizes -= size
 
