@@ -763,6 +763,7 @@ class _ShardWriterWorker:  # type: ignore
         if self.metadata_writer.is_finished:
             logger.info(f"Shard {shard_name} already finished. Skipping.")
             self._expected_num_chunks = self.metadata_writer.num_chunks
+            logger.info(f"Shard {shard_name} finished, from {self._expected_num_chunks} chunks, init")
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
 
         self.collator = _ChunkCollator(cache_dir, shard_name)
@@ -828,6 +829,9 @@ class _ShardWriterWorker:  # type: ignore
 
         if self._expected_num_chunks is not None and self.metadata_writer.num_chunks == self._expected_num_chunks:
             self.metadata_writer.finish()
+            logger.info(
+                f"Shard {self.shard_name} finished, from {self._expected_num_chunks} chunks, _attempt_to_commit_chunks"
+            )
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
 
 
@@ -1003,7 +1007,9 @@ class ChunkCacheBuilder:
     def shard_finished(self, shard_name: str, expected_num_chunks: int):
         """Callback method for when a shard worker has finished."""
         shard_status = self.shard_status[shard_name]
-        assert shard_status.expected_num_chunks is None
+        assert (
+            shard_status.expected_num_chunks is None
+        ), f"Shard {shard_name} already finished: {shard_status.expected_num_chunks} {expected_num_chunks}"
         shard_status.expected_num_chunks = expected_num_chunks
 
         # we might still have buffered chunks, so we need to check if we can append them
