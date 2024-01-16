@@ -321,7 +321,7 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
 
 # This class is responsible for reading batches from a set of shards, prioritizing earlier
 # chunks and earlier shards. (So that we approximately generate following the global order.)
-@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
+@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")
 def _alternating_shard_reader(
     name: str,
     builder_ref: ActorHandle,  # _ChunkCacheBuilder
@@ -374,14 +374,13 @@ def _alternating_shard_reader(
             if retained_batch_sizes > 1024 * 1024 * 1024:
                 logger.debug(f"Retained batch sizes: {retained_batch_sizes}")
 
-        size = MAX_INFLIGHT
         # we want to limit the number of pending tasks, so we wait until we're below the limit
         # before we start reading the next batch
-        drain_back_pressure_to(size)
+        drain_back_pressure_to(MAX_INFLIGHT)
 
     def drain_back_pressure_to(size):
         nonlocal back_pressure_queue, retained_batch_sizes
-        while len(back_pressure_queue) >= size:
+        while len(back_pressure_queue) > size:
             logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
             finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1)
 
