@@ -763,7 +763,6 @@ class _ShardWriterWorker:  # type: ignore
         if self.metadata_writer.is_finished:
             logger.info(f"Shard {shard_name} already finished. Skipping.")
             self._expected_num_chunks = self.metadata_writer.num_chunks
-            logger.info(f"Shard {shard_name} finished, from {self._expected_num_chunks} chunks, init")
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
             self.finished = True
         else:
@@ -835,9 +834,6 @@ class _ShardWriterWorker:  # type: ignore
         if not self.finished and self.metadata_writer.num_chunks == self._expected_num_chunks:
             self.metadata_writer.finish()
             self.finished = True
-            logger.info(
-                f"Shard {self.shard_name} finished, from {self._expected_num_chunks} chunks, _attempt_to_commit_chunks"
-            )
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
 
 
@@ -1041,17 +1037,17 @@ class ChunkCacheBuilder:
 
     def _attempt_to_flush_buffers(self):
         # this is the most complex logic in this class.
-        # The global order on chunks is defined as "roundrobin" over shards, until one shard is done.
-        # after that, that shard is removed from the roundrobin and the process continues.
-        # roundrobin order is determined by self.source.shard_names
+        # The global order on chunks is defined as a roundrobin over shards, until one shard is done.
+        # After that, that shard is removed from the roundrobin and the process continues.
+        # Roundrobin order is determined by self.source.shard_names
 
-        # we are happy to release chunks that form a prefix of the global order so that they can be read
-        # to do that, we maintain the roundrobin order in self._current_round_robin
-        # and we maintain the current buffer for each shard in self.shard_status
-        # when we get a new chunk, we append it to the buffer for that shard
-        # when we get a finished message, we mark that shard as finished
-        # in either case, we check if we can send any chunks from the front of the roundrobin
-        # if we can, we send them to the broker
+        # We are happy to release chunks that form a prefix of the global order so that they can be read.
+        # To do that, we maintain the roundrobin order in self._current_round_robin
+        # and we maintain the current buffer for each shard in self.shard_status.
+        # When we get a new chunk, we append it to the buffer for that shard.
+        # When we get a finished message, we mark that shard as finished.
+        # In either case, we check if we can send any chunks from the front of the roundrobin.
+        # If we can, we send them to the broker
 
         # here "finished" means that the shard has sent all of its chunks and has told us that it's done.
 
