@@ -133,3 +133,28 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     @property
     def vocab_size(self) -> int:
         return self.Vocab.size
+
+
+class KVCache(eqx.Module):
+    """
+    A KV cache for storing the key and value vectors for attention. This is used during decoding to avoid recomputing
+    keys and values for the same positions.
+    """
+
+    k_cache: NamedArray
+    v_cache: NamedArray
+    Pos: Axis = eqx.field(static=True)
+
+    @staticmethod
+    def init(Batch: Axis, KeyPos: Axis, Heads: Axis, HeadDim: Axis, dtype=jnp.float32) -> "KVCache":
+        k_cache = hax.zeros((Batch, Heads, KeyPos, HeadDim), dtype=dtype)
+        v_cache = hax.zeros((Batch, Heads, KeyPos, HeadDim), dtype=dtype)
+        return KVCache(k_cache=k_cache, v_cache=v_cache, Pos=KeyPos)
+
+    def update(self, pos_start: int, new_k, new_v) -> "KVCache":
+        # TODO: handle this case
+        pos_start = eqx.error_if(pos_start, pos_start >= self.Pos.size, "pos_start must be less than Pos.size")
+        # TODO: nicer syntax for updating
+        k_cache = self.k_cache.updated_slice({self.Pos: pos_start}, new_k)
+        v_cache = self.v_cache.updated_slice({self.Pos: pos_start}, new_v)
+        return KVCache(k_cache=k_cache, v_cache=v_cache)
