@@ -51,6 +51,7 @@ dependencies = [
     "ray[default]",
     "pydantic<2",  # temporary pin until Ray supports pydantic 2.0
     "rich>=13",
+#    "chex>=0.1.85"
 ]
 
 [tool.hatch.build]

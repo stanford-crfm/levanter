@@ -2,7 +2,6 @@ import abc
 import copy
 import dataclasses
 import functools
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -14,11 +13,10 @@ import braceexpand
 import datasets
 import fsspec
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
-from chex import PRNGKey
 from draccus import field
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
@@ -63,6 +61,8 @@ logger = logging.getLogger("levanter.data.text")
 
 LEDGER_FILE = "ledger.json"
 
+DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
+
 
 class CausalLmDataset(ShardableDataset[LmExample]):
     def __init__(
@@ -71,19 +71,23 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         QPos: Axis,
         KPos: Axis,
         fcm_prob: float = 0.0,
-        key: Optional[PRNGKey] = None,
+        key: Optional[PRNGKeyArray] = None,
+        ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
         self.KPos = KPos
         self.fcm_prob = fcm_prob
         self.key = key
+        self.ignore_id = ignore_index
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key)
+        return CausalLmDataset(
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
+        )
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key
@@ -94,7 +98,10 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     @functools.partial(jax.jit, static_argnums=(0))
     def _create_lm_example(self, tokens, key):
-        attn_mask = AttentionMask.causal()
+        tokens = hax.named(tokens, self.QPos)
+
+        example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
         if self.fcm_prob > 0:
             # masks for attention
             # We support forgetful causal masking (FCM) which is a technique that improves training speed by
@@ -103,13 +110,9 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             assert self.key is not None
             this_key, key = jax.random.split(key)
             fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
+            attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+            example = dataclasses.replace(example, attn_mask=attn_mask)
 
-        tokens = hax.named(tokens, self.QPos)
-
-        loss_mask = 1 - hax.nn.one_hot(-1, self.QPos, dtype=jnp.float32)
-
-        example = LmExample(tokens=tokens, attn_mask=attn_mask, loss_mask=loss_mask)
         return example
 
 
@@ -192,17 +195,6 @@ class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
             batch_size = 1
         cache = ShardCache.load(cache_dir, batch_size=batch_size)
         return BatchEncodingDataset(cache, return_batches=return_batches)
-
-
-def _load_old_ledger(cache_dir):
-    ledger_path = os.path.join(cache_dir, LEDGER_FILE)
-
-    fs = fsspec.core.url_to_fs(ledger_path)[0]
-    if fs.exists(ledger_path):
-        with fsspec.open(ledger_path, "r") as f:
-            return json.load(f)
-    else:
-        raise FileNotFoundError(f"{cache_dir} is not a complete cache")
 
 
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
@@ -503,6 +495,8 @@ class LMTaskConfig(abc.ABC):
     cache_dir: str = "cache/"
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+
+    ignore_token_id: Optional[int] = None
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
