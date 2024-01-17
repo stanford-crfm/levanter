@@ -3,6 +3,7 @@ import copy
 import functools
 import logging as pylogging
 import os
+import re
 import sys
 import typing
 import warnings
@@ -38,7 +39,7 @@ from levanter.grad_accum import accumulate_gradients_sharded
 from levanter.logging import WandbConfig, capture_time
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.jax_utils import is_inexact_arrayish, leaf_key_paths
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -707,9 +708,14 @@ class OptimizerConfig:
     cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
+    """a regex or a list of strings to identify where to mask weight. """
+    """For nano-GPT, this field can be set as
+    `r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings"`"""
+    weight_decay_modules: Optional[Union[List[str], str]] = None
 
     def build(self, num_train_steps: int) -> GradientTransformation:
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -720,8 +726,7 @@ class OptimizerConfig:
             components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
 
             if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
@@ -731,6 +736,28 @@ class OptimizerConfig:
             return optimizer
 
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+    def build_weight_decay_mask(self):
+        if self.weight_decay_modules is None:
+            return None
+        else:
+            # mask based on regex or module path
+            def _apply_on(x, key_path):
+                if isinstance(self.weight_decay_modules, str):
+                    compiled_regex = re.compile(self.weight_decay_modules)
+                    return compiled_regex.match(key_path) is not None
+                else:
+                    return any(key_path.__contains__(target) for target in self.weight_decay_modules)
+
+            def mask_fn(model):
+                return jax.tree_util.tree_map(
+                    _apply_on,
+                    model,
+                    leaf_key_paths(model, is_leaf=eqx.is_array),
+                    is_leaf=eqx.is_array,
+                )
+
+            return mask_fn
 
     def lr_scheduler(self, num_train_steps):
         warmup_steps = self._convert_warmup(num_train_steps)
