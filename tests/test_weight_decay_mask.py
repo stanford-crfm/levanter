@@ -58,9 +58,9 @@ def test_weight_decay_masking():
         ]
     )(model)
 
-    regex_mask = levanter.trainer._build_mask(weight_decay_modules=r"weight|token_embeddings|position_embeddings")(
-        model
-    )
+    regex_mask = levanter.trainer._build_mask(
+        weight_decay_modules=r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings",
+    )(model)
 
     assert eqx.tree_equal(list_string_mask, true_mask)
     assert eqx.tree_equal(regex_mask, true_mask)

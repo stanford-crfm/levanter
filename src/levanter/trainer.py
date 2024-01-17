@@ -756,7 +756,8 @@ class OptimizerConfig:
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
     """a regex or a list of strings to identify where to mask weight. """
-    """For nano-GPT, this field can be set as `r"weight|token_embeddings|position_embeddings"`"""
+    """For nano-GPT, this field can be set as
+    `r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings"`"""
     weight_decay_modules: Optional[Union[List[str], str]] = None
 
     def build(self, num_train_steps: int) -> GradientTransformation:
