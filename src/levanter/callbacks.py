@@ -59,8 +59,8 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
     if n > 0:
         total_loss /= n
 
-    logger.info(f"eval loading time: {total_load_time / n:.3f} s/ba")
-    logger.info(f"eval loss time: {total_loss_time / n:.3f} s/ba")
+        logger.info(f"eval loading time: {total_load_time / n:.3f} s/ba")
+        logger.info(f"eval loss time: {total_loss_time / n:.3f} s/ba")
 
     return total_loss
 
