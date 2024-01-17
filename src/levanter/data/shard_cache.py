@@ -327,6 +327,7 @@ class PriorityWorkTaskGroupSpec(Protocol):
 
 class PriorityWorkTaskGroup(Protocol):
     name: str
+    spec: PriorityWorkTaskGroupSpec
 
     def items(self) -> Sequence["PriorityWorkItem"]:
         raise NotImplementedError()
@@ -335,11 +336,13 @@ class PriorityWorkTaskGroup(Protocol):
 class PriorityWorkItem(Protocol):
     name: str
     priority: float
+    spec: PriorityWorkTaskGroupSpec
 
-    # TODO: bring back backpressure here?
-    def execute(self) -> bool:
+    def execute(self) -> tuple[bool, Optional[ray.ObjectRef]]:
         """
         Returns true if the item is finished, false if it should be rescheduled.
+        The object ref is used  (1) to block shutting down the actor too early
+        and (2) for backpressure.
         """
         raise NotImplementedError()
 
@@ -355,6 +358,95 @@ class PriorityWorkItem(Protocol):
             return self.name <= other.name
         else:
             return self.priority <= other.priority
+
+
+@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
+class PriorityProcessorActor:
+    def __init__(self, max_in_flight: Optional[int] = 200):
+        pylogging.basicConfig(level=pylogging.INFO)
+        self._queue: list[PriorityWorkItem] = []  # heapq
+        self._queue_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._current_item: Optional[PriorityWorkItem] = None
+        self._max_in_flight = max_in_flight
+
+        self._processing_thread = threading.Thread(target=self._loop, daemon=True)
+        self._processing_thread.start()
+
+    def add_work_group(self, group: PriorityWorkTaskGroupSpec):
+        items = group.build().items()
+        with self._queue_lock:
+            for item in items:
+                heapq.heappush(self._queue, item)
+
+    def is_group_finished(self, group: PriorityWorkTaskGroupSpec):
+        with self._queue_lock:
+            if any(item.spec == group for item in self._queue):
+                return False
+
+            if self._current_item is not None and self._current_item.spec == group:
+                return False
+
+            logger.info(f"Group {group.name} is finished.")
+
+            return True
+
+    def cancel_work_group(self, group: PriorityWorkTaskGroupSpec):
+        # kill all the items in the group
+        with self._queue_lock:
+            self._queue = [item for item in self._queue if item.spec != group]
+            heapq.heapify(self._queue)
+
+    def shutdown(self):
+        if not self._shutdown_event.is_set():
+            self._shutdown_event.set()
+
+            if self._processing_thread.is_alive():
+                self._processing_thread.join()
+
+    def _loop(self):
+        should_sleep = False
+        backpressure_queue: list[ray.ObjectRef] = []
+
+        def drain_backpressure_to(count):
+            nonlocal backpressure_queue
+            while len(backpressure_queue) > count:
+                finished, remaining = ray.wait(backpressure_queue, num_returns=1, fetch_local=False)
+                backpressure_queue = remaining
+
+        while not self._shutdown_event.is_set():
+            if should_sleep:
+                time.sleep(0.1)
+
+            drain_backpressure_to(self._max_in_flight)
+
+            with self._queue_lock:
+                if len(self._queue) == 0:
+                    should_sleep = True
+                    continue
+                else:
+                    should_sleep = False
+
+                item = heapq.heappop(self._queue)
+                self._current_item = item
+
+            try:
+                item_is_finished, ref = item.execute()
+                if ref is not None:
+                    backpressure_queue.append(ref)
+            except Exception:
+                logger.exception(f"Error while processing {item.name}. Killing all associated work.")
+                self.cancel_work_group(item.spec)
+                continue
+
+            with self._queue_lock:
+                self._current_item = None
+                if not item_is_finished:
+                    heapq.heappush(self._queue, item)
+
+        logger.info("Shutting down PriorityProcessorActor. Waiting for backpressure to drain.")
+        drain_backpressure_to(0)
+        logger.info("Backpressure drained. Shutting down PriorityProcessorActor.")
 
 
 @dataclass
@@ -423,6 +515,11 @@ class ShardGroupTaskGroup(PriorityWorkTaskGroup):
 # NB This class is stateful
 @dataclass
 class ShardReaderItem(PriorityWorkItem):
+    """
+    Each time execute is called, this class reads one chunk's worth of batches from the shard
+    and dispatches them to the processor.
+    """
+
     group: ShardGroupTaskGroup
     name: str
     shard_name: str
@@ -438,13 +535,14 @@ class ShardReaderItem(PriorityWorkItem):
     def spec(self):
         return self.group.spec
 
-    def execute(self) -> bool:
+    def execute(self) -> tuple[bool, Optional[ray.ObjectRef]]:
         exhausted_shard = False
         writer = self.spec.writer
 
         chunk_batch_idx = 0  # the index of the batch within the chunk
         chunk_filled = False  # whether or not we've filled the chunk to max size
         total_chunk_rows = 0  # the total number of rows in the chunk
+        batch_result_ref = None
 
         try:
             while not chunk_filled:
@@ -479,58 +577,15 @@ class ShardReaderItem(PriorityWorkItem):
 
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
-                # del shard_readers[shard_idx]
-                # del shard_metadatas[self.shard_name]
 
-            return exhausted_shard
+            logger.debug(f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}")
+
+            return exhausted_shard, batch_result_ref
         except Exception as e:  # noqa
             self.group.logger.exception(f"Error while processing shard {self.shard_name}")
             # fire and forget
             writer.shard_failed.remote(self.shard_name, ser_exc_info())
             raise e
-
-
-# This class is responsible for reading batches from a set of shards, prioritizing earlier
-# chunks and earlier shards. (So that we approximately generate following the global order.)
-# TODO: it's not great we set this to 0.0, but it's the only way to get it to work with the current
-# ray scheduler when we try to index a large number of corpora. We should centralize this a bit better.
-@ray.remote(num_cpus=0.25, scheduling_strategy="SPREAD")
-def _alternating_shard_reader(
-    name: str,
-    builder_ref: ActorHandle,  # _ChunkCacheBuilder
-    shard_writers: ActorHandle,  # _GroupedShardWriter
-    shard_source: ShardedDataset[T],
-    shard_names: Sequence[str],
-    priority_fn: Callable[[int, int], float],
-    processor_actor: ActorHandle,  # BatchProcessorQueue
-    batch_size,
-    num_rows_per_chunk,
-):
-
-    group = ShardGroupToBeProcessed(
-        name=name,
-        builder_ref=builder_ref,
-        writer=shard_writers,
-        shard_source=shard_source,
-        shard_names=shard_names,
-        priority_fn=priority_fn,
-        processor_actor=processor_actor,
-        batch_size=batch_size,
-        num_rows_per_chunk=num_rows_per_chunk,
-    ).build()
-    pylogging.basicConfig(level=pylogging.INFO)
-    # logger = pylogging.getLogger(f"shard_reader.{name}")
-    shard_pqueue: list[PriorityWorkItem] = list(group.items())
-
-    while len(shard_pqueue) > 0:
-        item = heapq.heappop(shard_pqueue)
-
-        if item.execute():
-            # we're done, do nothing
-            pass
-        else:
-            # we're not done, put it back in the queue
-            heapq.heappush(shard_pqueue, item)
 
 
 def _initial_shard_metadatas(shard_source, shard_names, shard_group_writer):
@@ -1055,25 +1110,47 @@ class ChunkCacheBuilder:
                 self._current_round_robin.append(shard_name)
                 shard_groups[i % num_shard_groups].append(shard_name)
 
-            for shard_group in shard_groups:
+            for group_id, shard_group in enumerate(shard_groups):
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
                 self._shard_writers.append(writer)
 
+                # TODO: would probably be better if we didn't create one of these per shard group
                 processor_actor = _BatchProcessorQueue.remote(processor)  # type: ignore
                 self._processor_actors.append(processor_actor)
 
-                reader = _alternating_shard_reader.remote(
-                    name,
-                    self_ref,
-                    writer,
-                    source,
-                    shard_group,
-                    priority_fn,
-                    processor_actor,
-                    processor.batch_size,
-                    rows_per_chunk,
+                work_item = ShardGroupToBeProcessed(
+                    name=name,
+                    builder_ref=self_ref,
+                    writer=writer,
+                    shard_source=source,
+                    shard_names=shard_group,
+                    priority_fn=priority_fn,
+                    processor_actor=processor_actor,
+                    batch_size=processor.batch_size,
+                    num_rows_per_chunk=rows_per_chunk,
                 )
-                self._shard_readers.append(reader)
+
+                # we want global names so that different tasks can coordinate priorities
+                priority_actor_name = f"priority_processor.{group_id}"
+
+                reader_actor = PriorityProcessorActor.options(  # type: ignore
+                    name=priority_actor_name, get_if_exists=True
+                ).remote()
+
+                ray.get(reader_actor.add_work_group.remote(work_item))
+
+                # reader = _alternating_shard_reader.remote(
+                #     name,
+                #     self_ref,
+                #     writer,
+                #     source,
+                #     shard_group,
+                #     priority_fn,
+                #     processor_actor,
+                #     processor.batch_size,
+                #     rows_per_chunk,
+                # )
+                self._shard_readers.append(reader_actor)
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         """Callback method for when a shard worker has produced a new chunk."""
