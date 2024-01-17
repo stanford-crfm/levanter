@@ -27,7 +27,7 @@ class Tracker(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def log(self, metrics: dict[str, typing.Any], *, step, commit: Optional[bool] = None):
+    def log(self, metrics: dict[str, typing.Any], *, step: Optional[int], commit: Optional[bool] = None):
         """
         Log metrics to the tracker. Step is always required.
 

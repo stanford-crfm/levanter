@@ -50,6 +50,7 @@ class WandbTracker(Tracker):
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
         if step is None and not commit:
+            print("WARNING: logging metrics without step or commit. Inferring")
             step = self.run.step
 
         self.run.log(metrics, step=step, commit=commit)
