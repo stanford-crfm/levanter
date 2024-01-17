@@ -49,11 +49,9 @@ class WandbTracker(Tracker):
         self.run.config.update(hparams, allow_val_change=True)
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
-        if step is None:
-            if commit is False:
-                step = self.run.step
-            else:
-                step = None
+        if step is None and not commit:
+            step = self.run.step
+
         self.run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
