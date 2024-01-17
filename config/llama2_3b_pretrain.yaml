@@ -13,7 +13,7 @@ trainer:
 
   mp: p=f32,c=bfloat16
   train_batch_size: 1024
-  per_device_parallelism: 4  # set for v3 TPU
+  per_device_parallelism: -1
   per_device_eval_parallelism: 8 # set a larger batch size for eval
   num_train_steps: 250000  # 1,000,000,000,000 / 4096 / 1024
   steps_per_eval: 1000
