@@ -33,7 +33,6 @@ from rich.progress import (
 import levanter.tracker
 
 from .. import logging
-from ..utils.py_utils import actual_sizeof
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
 from . import ShardableDataset
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
@@ -319,6 +318,178 @@ def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, sta
         yield batch
 
 
+class PriorityWorkTaskGroupSpec(Protocol):
+    name: str
+
+    def build(self) -> "PriorityWorkTaskGroup":
+        raise NotImplementedError()
+
+
+class PriorityWorkTaskGroup(Protocol):
+    name: str
+
+    def items(self) -> Sequence["PriorityWorkItem"]:
+        raise NotImplementedError()
+
+
+class PriorityWorkItem(Protocol):
+    name: str
+    priority: float
+
+    # TODO: bring back backpressure here?
+    def execute(self) -> bool:
+        """
+        Returns true if the item is finished, false if it should be rescheduled.
+        """
+        raise NotImplementedError()
+
+    # needs to be sortable by priority
+    def __lt__(self, other: "PriorityWorkItem"):
+        if self.priority == other.priority:
+            return self.name < other.name
+        else:
+            return self.priority < other.priority
+
+    def __le__(self, other: "PriorityWorkItem"):
+        if self.priority == other.priority:
+            return self.name <= other.name
+        else:
+            return self.priority <= other.priority
+
+
+@dataclass
+class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
+    name: str
+    builder_ref: ray.actor.ActorHandle  # _ChunkCacheBuilder
+    writer: ray.actor.ActorHandle  # _GroupedShardWriter
+    shard_source: ShardedDataset
+    shard_names: Sequence[str]
+    priority_fn: Callable[[int, int], float]
+    processor_actor: ray.actor.ActorHandle  # BatchProcessorQueue
+    batch_size: int
+    num_rows_per_chunk: int
+
+    def build(self) -> "PriorityWorkTaskGroup":
+        return ShardGroupTaskGroup(self)
+
+
+class ShardGroupTaskGroup(PriorityWorkTaskGroup):
+    def __init__(self, spec: ShardGroupToBeProcessed):
+        self.spec = spec
+        self.logger = pylogging.getLogger(f"shard_reader.{self.spec.name}")
+
+        try:
+            metadata: dict[str, ShardMetadata] = _initial_shard_metadatas(
+                self.spec.shard_source, self.spec.shard_names, self.spec.writer
+            )
+        except Exception as e:
+            self.spec.builder_ref.other_failed.remote(ser_exc_info())
+            raise e
+
+        batch_size = min(self.spec.batch_size, self.spec.num_rows_per_chunk)
+
+        self._items: list[PriorityWorkItem] = []
+
+        for shard_name in self.spec.shard_names:
+            shard_idx = self.spec.shard_source.shard_names.index(shard_name)
+            try:
+                shard_metadata = metadata[shard_name]
+                reader = _shard_reader_generator(
+                    self.spec.shard_source, shard_idx, shard_metadata.total_rows, batch_size
+                )
+
+                if shard_metadata.is_finished:
+                    self.logger.info(f"Shard {shard_name} already finished. Skipping.")
+
+                task_name = f"shard_reader.{self.spec.name}.{shard_name}"
+
+                chunk_idx = len(shard_metadata.chunks)
+                item = ShardReaderItem(self, task_name, shard_name, shard_idx, chunk_idx, reader)
+
+                heapq.heappush(self._items, item)
+            except Exception as e:
+                self.logger.exception(f"Error while initializing shard {shard_name}")
+                self.spec.writer[shard_name].shard_failed.remote(ser_exc_info())
+                raise e
+
+    @property
+    def name(self):
+        return self.spec.name
+
+    def items(self) -> Sequence["PriorityWorkItem"]:
+        return self._items
+
+
+# NB This class is stateful
+@dataclass
+class ShardReaderItem(PriorityWorkItem):
+    group: ShardGroupTaskGroup
+    name: str
+    shard_name: str
+    shard_idx: int
+    chunk_idx: int
+    reader: Iterator[list]
+
+    @property
+    def priority(self):
+        return self.group.spec.priority_fn(self.shard_idx, self.chunk_idx)
+
+    @property
+    def spec(self):
+        return self.group.spec
+
+    def execute(self) -> bool:
+        exhausted_shard = False
+        writer = self.spec.writer
+
+        chunk_batch_idx = 0  # the index of the batch within the chunk
+        chunk_filled = False  # whether or not we've filled the chunk to max size
+        total_chunk_rows = 0  # the total number of rows in the chunk
+
+        try:
+            while not chunk_filled:
+                batch = next(self.reader, None)
+                if batch is None:
+                    exhausted_shard = True
+                    break
+
+                exhausted_shard = len(batch) < self.spec.batch_size
+                total_chunk_rows += len(batch)
+
+                if batch:
+                    priority = self.spec.priority_fn(self.shard_idx, self.chunk_idx)
+                    batch_result_ref = ray.get(
+                        self.spec.processor_actor.submit.remote(priority=priority, batch=RefBox(ray.put(batch)))
+                    )
+                    writer.chunk_batch_finished.remote(
+                        self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref)
+                    )
+                    chunk_batch_idx += 1
+                    # enqueue_to_backpressure(batch, batch_result_ref)
+                    del batch
+
+                if total_chunk_rows >= self.spec.num_rows_per_chunk or exhausted_shard:
+                    chunk_filled = True
+
+            if chunk_batch_idx > 0:
+                writer.chunk_finished_reading.remote(self.shard_name, self.chunk_idx, chunk_batch_idx)
+                old_prio = self.priority
+                self.chunk_idx += 1
+                assert self.priority > old_prio
+
+            if exhausted_shard:
+                writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
+                # del shard_readers[shard_idx]
+                # del shard_metadatas[self.shard_name]
+
+            return exhausted_shard
+        except Exception as e:  # noqa
+            self.group.logger.exception(f"Error while processing shard {self.shard_name}")
+            # fire and forget
+            writer.shard_failed.remote(self.shard_name, ser_exc_info())
+            raise e
+
+
 # This class is responsible for reading batches from a set of shards, prioritizing earlier
 # chunks and earlier shards. (So that we approximately generate following the global order.)
 # TODO: it's not great we set this to 0.0, but it's the only way to get it to work with the current
@@ -335,116 +506,31 @@ def _alternating_shard_reader(
     batch_size,
     num_rows_per_chunk,
 ):
+
+    group = ShardGroupToBeProcessed(
+        name=name,
+        builder_ref=builder_ref,
+        writer=shard_writers,
+        shard_source=shard_source,
+        shard_names=shard_names,
+        priority_fn=priority_fn,
+        processor_actor=processor_actor,
+        batch_size=batch_size,
+        num_rows_per_chunk=num_rows_per_chunk,
+    ).build()
     pylogging.basicConfig(level=pylogging.INFO)
-    logger = pylogging.getLogger(f"shard_reader.{name}")
-    shard_pqueue: list[tuple[int, int]] = []  # heapq of (num_chunks, shard_idx)
-    shard_readers: dict[int, Iterator[list[T]]] = {}
-    try:
-        shard_metadatas = _initial_shard_metadatas(shard_source, shard_names, shard_writers)
-    except Exception as e:
-        builder_ref.other_failed.remote(ser_exc_info())
-        raise e
-
-    batch_size = min(batch_size, num_rows_per_chunk)
-
-    for shard_name in shard_names:
-        shard_idx = shard_source.shard_names.index(shard_name)
-        try:
-            shard_metadata = shard_metadatas[shard_name]
-            heapq.heappush(shard_pqueue, (len(shard_metadata.chunks), shard_idx))
-            shard_readers[shard_idx] = _shard_reader_generator(
-                shard_source, shard_idx, shard_metadata.total_rows, batch_size
-            )
-        except Exception as e:  # noqa
-            logger.exception(f"Error while initializing shard {shard_name}")
-            # fire and forget
-            shard_writers[shard_name].shard_failed.remote(ser_exc_info())
-            raise e
-
-    MAX_INFLIGHT = 10
-    back_pressure_queue: list[ray.ObjectRef] = []
-    back_pressure_sizes: dict[ray.ObjectRef, int] = {}
-    retained_batch_sizes = 0
-
-    def enqueue_to_backpressure(batch, batch_result_ref):
-        nonlocal back_pressure_queue, retained_batch_sizes
-        back_pressure_queue.append(batch_result_ref)
-        if logger.level <= pylogging.DEBUG:
-            size = actual_sizeof(batch)
-            retained_batch_sizes += size
-            back_pressure_sizes[batch_result_ref] = size
-            if retained_batch_sizes > 1024 * 1024 * 1024:
-                logger.debug(f"Retained batch sizes: {retained_batch_sizes}")
-
-        # we want to limit the number of pending tasks, so we wait until we're below the limit
-        # before we start reading the next batch
-        drain_back_pressure_to(MAX_INFLIGHT)
-
-    def drain_back_pressure_to(size):
-        nonlocal back_pressure_queue, retained_batch_sizes
-        while len(back_pressure_queue) > size:
-            logger.debug(f"Waiting for back pressure queue to drain: {len(back_pressure_queue)}")
-            finished_ref, back_pressure_queue = ray.wait(back_pressure_queue, num_returns=1, fetch_local=False)
-
-            if len(back_pressure_queue) and logger.level <= pylogging.DEBUG:
-                obj_size = back_pressure_sizes.pop(finished_ref[0])
-                retained_batch_sizes -= obj_size
+    # logger = pylogging.getLogger(f"shard_reader.{name}")
+    shard_pqueue: list[PriorityWorkItem] = list(group.items())
 
     while len(shard_pqueue) > 0:
-        chunk_id, shard_idx = heapq.heappop(shard_pqueue)
-        shard_name = shard_source.shard_names[shard_idx]
-        try:
-            shard_iter = shard_readers[shard_idx]
+        item = heapq.heappop(shard_pqueue)
 
-            exhausted_shard = False
-
-            chunk_batch_idx = 0  # the index of the batch within the chunk
-            chunk_filled = False  # whether or not we've filled the chunk to max size
-            total_chunk_rows = 0  # the total number of rows in the chunk so far
-
-            while not chunk_filled:
-                batch = next(shard_iter, None)
-                if batch is None:
-                    exhausted_shard = True
-                    break
-
-                exhausted_shard = len(batch) < batch_size
-                total_chunk_rows += len(batch)
-
-                if batch:
-                    priority = priority_fn(shard_idx, chunk_id)
-                    batch_result_ref = ray.get(
-                        processor_actor.submit.remote(priority=priority, batch=RefBox(ray.put(batch)))
-                    )
-                    shard_writers.chunk_batch_finished.remote(
-                        shard_name, chunk_id, chunk_batch_idx, RefBox(batch_result_ref)
-                    )
-                    chunk_batch_idx += 1
-                    enqueue_to_backpressure(batch, batch_result_ref)
-                    del batch
-
-                if total_chunk_rows >= num_rows_per_chunk or exhausted_shard:
-                    chunk_filled = True
-
-            if chunk_batch_idx > 0:
-                shard_writers.chunk_finished_reading.remote(shard_name, chunk_id, chunk_batch_idx)
-                chunk_id += 1
-
-            if exhausted_shard:
-                shard_writers.shard_finished_reading.remote(shard_name, chunk_id)
-                del shard_readers[shard_idx]
-                del shard_metadatas[shard_name]
-            else:
-                # we're not done with this shard, so put it back in the queue
-                heapq.heappush(shard_pqueue, (chunk_id, shard_idx))
-
-        except Exception as e:  # noqa
-            logger.exception(f"Error while processing shard {shard_name}")
-            # fire and forget
-            shard_writers.shard_failed.remote(shard_name, ser_exc_info())
-            raise e
-
-    drain_back_pressure_to(0)
+        if item.execute():
+            # we're done, do nothing
+            pass
+        else:
+            # we're not done, put it back in the queue
+            heapq.heappush(shard_pqueue, item)
 
 
 def _initial_shard_metadatas(shard_source, shard_names, shard_group_writer):
