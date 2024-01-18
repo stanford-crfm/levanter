@@ -902,7 +902,6 @@ class _ShardWriterWorker:  # type: ignore
             self.parent_ref.new_chunk.remote(shard_name, *self.metadata_writer.chunks)
 
         if self.metadata_writer.is_finished:
-            logger.info(f"Shard {shard_name} already finished. Skipping.")
             self._expected_num_chunks = self.metadata_writer.num_chunks
             self.parent_ref.shard_finished.remote(self.shard_name, self._expected_num_chunks)
             self.finished = True
