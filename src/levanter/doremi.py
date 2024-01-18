@@ -184,8 +184,8 @@ def estimate_mixture_weights(
 
         levanter.tracker.jit_log_metrics(
             {
-                "change_in_alpha": alpha_distance,
-                "alpha_distance_from_uniform": distance_from_uniform,
+                "change_in_alpha": alpha_distance.scalar(),
+                "alpha_distance_from_uniform": distance_from_uniform.scalar(),
                 "alpha": alpha_dict,
             },
             step=state._step,
