@@ -126,7 +126,7 @@ def estimate_mixture_weights(
                     max_batches=trainer_config.max_eval_batches,
                 )
                 print(f"Loss of ref model on domain {domain}: {loss:.3f}")
-                levanter.tracker.log_summary({f"eval/ref/{domain}/loss": loss})
+                levanter.tracker.log_metrics({f"eval/ref/{domain}/loss": loss}, step=0, commit=False)
 
         if validation_sets is not None:
             for domain, dataset in validation_sets.items():
@@ -140,54 +140,51 @@ def estimate_mixture_weights(
     else:
         sampling_weights = {domain: 1 / len(data_sources) for domain in data_sources.keys()}
 
-    # calculate per-token losses for proxy and ref
-    def compute_excess_loss(proxy, ref, batch):
-        proxy_losses = loss_fn(proxy, batch, reduction_axis=())
-        ref_losses = loss_fn(ref, batch, reduction_axis=())
-        # calculate excess losses
-        excess_losses = proxy_losses - ref_losses
-        return excess_losses
-
     # Loss is \sum_d alpha_d * (proxy - ref) (basically the unclipped excess loss with the new alpha)
-    # Note that (\sum_d \alpha_d ref) is a constant in the model params, so we can ignore it
+    # Note that (\sum_d \alpha_d ref) is a constant in the model params, so we can ignore it for gradient computation
+    # (JAX would ignore it for us I think but it's nice to be explicit and lets us log better)
     @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
     def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
         with hax.axis_mapping(trainer.compute_axis_mapping):
-            # this is one of those times when PyTorch's backward() is nice
-            excess_losses, excess_backward = eqx.filter_vjp(
-                lambda proxy: compute_excess_loss(proxy, ref, batch), proxy
-            )
+            # calculate per-token losses for proxy and ref
+            proxy_losses, proxy_loss_bwd = eqx.filter_vjp(lambda p: loss_fn(p, batch, reduction_axis=()), proxy)
+            ref_losses = loss_fn(ref, batch, reduction_axis=())
 
+            # calculate excess losses, aggregate per-domain losses
+            excess_losses = proxy_losses - ref_losses
             clipped_losses = hax.maximum(excess_losses, 0)
-
-            mean_excess_loss = hax.mean(excess_losses, axis=None).scalar()
-
-            per_domain_losses = _compute_per_domain_losses(trainer.TrainBatch, Domain, domains, clipped_losses)
+            per_domain_losses = _compute_per_domain_losses(clipped_losses, Domain, domains)
 
             # Update domain weights
             alpha = state.alpha * hax.exp(domain_weight_step_size * per_domain_losses)
             alpha /= hax.sum(alpha)
             alpha = (1 - smoothing) * alpha + initial_alpha * smoothing
 
-            distance_from_uniform = hax.sum(hax.abs(alpha - initial_alpha))
-
             # Update proxy model weights θt for the objective L(θt−1, αt) (using Adam, Adafactor, etc.)
+            # Note DoReMi says to use the unclipped excess loss here. Confirmed with Michael
             loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
-            grad = excess_backward(grad_loss)[0]
+            grad = proxy_loss_bwd(grad_loss)[0]
 
         new_state = trainer._take_train_step(state, proxy, grad)
         new_state = new_state.update_alpha(alpha)
 
+        # log metrics
+        distance_from_uniform = hax.sum(hax.abs(alpha - initial_alpha))
+        mean_excess_loss = hax.mean(excess_losses).scalar()
+        mean_proxy_loss = hax.mean(proxy_losses).scalar()
         alpha_distance = hax.sum(hax.abs(new_state.average_alpha - state.average_alpha))
-        alpha_dict = _alpha_weights_to_dict(Domain, new_state.average_alpha, domain_to_index)
+        alpha_dict = _decode_domain_array(Domain, new_state.average_alpha, domain_to_index)
+        per_domain_dict = _decode_domain_array(Domain, per_domain_losses, domain_to_index)
 
         levanter.tracker.jit_log_metrics(
             {
                 "change_in_alpha": alpha_distance.scalar(),
                 "alpha_distance_from_uniform": distance_from_uniform.scalar(),
+                "train/mean_excess_loss": mean_excess_loss,
+                "train/mean_proxy_loss": mean_proxy_loss,
                 **{f"alpha/{domain}": weight for domain, weight in alpha_dict.items()},
-                "mean_excess_loss": mean_excess_loss,
+                **{f"train/{domain}/loss": loss for domain, loss in per_domain_dict.items()},
             },
             step=state._step,
         )
@@ -223,16 +220,33 @@ def estimate_mixture_weights(
         trainer.run_hooks(new_info, force=True)
 
         alpha = state.average_alpha
-        final_weights = _alpha_weights_to_dict(Domain, alpha, domain_to_index)
+        final_weights = _decode_domain_array(Domain, alpha, domain_to_index)
 
         levanter.tracker.log_summary({"final_alpha": final_weights})
 
     return {k: float(v) for k, v in final_weights.items()}
 
 
-def _alpha_weights_to_dict(Domain, alpha, domain_name_to_index):
+def _decode_domain_array(Domain, alpha, domain_name_to_index):
     final_weights = {domain: alpha[Domain, index].scalar() for domain, index in domain_name_to_index.items()}
     return final_weights
+
+
+def _compute_per_domain_losses(losses, Domain, domains):
+    """Compute per-domain average losses from a batch of losses"""
+    # out[d] = E[losses | domain=d]
+    one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
+    per_domain_losses = hax.dot(one_hot_domains, losses, axis=losses.axes, out_axes=(Domain,))
+    # count the number of losses for each domain
+    norm = hax.dot(one_hot_domains, losses != 0, axis=losses.axes, out_axes=(Domain,))
+    norm = hax.maximum(norm, 1.0)  # don't nan if there are no losses for a domain
+    return per_domain_losses / norm
+
+
+def _domain_weighted_loss(losses, Domain, domains, alpha):
+    """Average loss weighted by domain weights"""
+    per_domain_losses = _compute_per_domain_losses(losses, Domain, domains)
+    return hax.dot(alpha, per_domain_losses, axis=Domain).scalar()
 
 
 def _prepare_ref_model(ref, trainer):
@@ -281,19 +295,3 @@ class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named 
     def __iter__(self) -> Iterator[Tuple[T, hax.NamedArray]]:
         for item in self.dataset:
             yield item, self.domain_index
-
-
-def _compute_per_domain_losses(Batch, Domain, domains, losses):
-    # TODO: this should weight by masked tokens
-    one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    # return hax.mean(losses * one_hot_domains, axis=losses.axes)
-    per_domain_losses = hax.dot(one_hot_domains, losses, axis=losses.axes)
-    norm = hax.maximum(hax.dot(one_hot_domains, losses != 0, axis=losses.axes), 1)
-    return per_domain_losses / norm
-
-
-def _domain_weighted_loss(losses, Domain, domains, alpha):
-    one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    # return hax.mean(losses * one_hot_domains * alpha, axis=None).scalar()
-    total = hax.dot(alpha, one_hot_domains, losses, axis=None)
-    return total.scalar() / losses.size
