@@ -141,7 +141,6 @@ def test_estimate_mixture_weights():
         initial_proxy=init_model(),
         ref=ref_model,
         data_sources=datasets,
-        weight_change_eps=1e-4,
         trainer_config=tiny_trainer_config,
         key=next(keys),
         loss_fn=compute_loss_fn,

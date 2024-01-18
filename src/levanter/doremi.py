@@ -57,7 +57,6 @@ class DoReMiConfig:
     domain_weight_step_size: float = 1.0
     smoothing: float = 1e-3
     sampling_weights: Optional[dict[str, float]] = None
-    weight_change_eps: float = 1e-3
 
 
 DEFAULT_DOREMI_TRAINER_CONFIG = TrainerConfig(
@@ -78,7 +77,6 @@ def estimate_mixture_weights(
     loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
-    weight_change_eps: float = 1e-3,
     key: PRNGKeyArray,
 ) -> dict[str, float]:
     """
@@ -113,13 +111,13 @@ def estimate_mixture_weights(
         ref = _prepare_ref_model(ref, trainer_config)
 
         if validation_sets is not None:
+
+            @eqx.filter_jit
+            def eval_loss(model, *batch, **batch_kwargs):
+                model = inference_mode(model, True)
+                return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
+
             for domain, dataset in validation_sets.items():
-
-                @eqx.filter_jit
-                def eval_loss(model, *batch, **batch_kwargs):
-                    model = inference_mode(model, True)
-                    return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
-
                 loss = eval_loss_loop(
                     eval_loss,
                     ref,
@@ -163,7 +161,9 @@ def estimate_mixture_weights(
 
             clipped_losses = hax.maximum(excess_losses, 0)
 
-            per_domain_losses = _compute_per_domain_losses(Domain, domains, clipped_losses)
+            mean_excess_loss = hax.mean(excess_losses, axis=None).scalar()
+
+            per_domain_losses = _compute_per_domain_losses(trainer.TrainBatch, Domain, domains, clipped_losses)
 
             # Update domain weights
             alpha = state.alpha * hax.exp(domain_weight_step_size * per_domain_losses)
@@ -186,7 +186,8 @@ def estimate_mixture_weights(
             {
                 "change_in_alpha": alpha_distance.scalar(),
                 "alpha_distance_from_uniform": distance_from_uniform.scalar(),
-                "alpha": alpha_dict,
+                **{f"alpha/{domain}": weight for domain, weight in alpha_dict.items()},
+                "mean_excess_loss": mean_excess_loss,
             },
             step=state._step,
         )
@@ -218,11 +219,6 @@ def estimate_mixture_weights(
             new_info = StepInfo(state, loss, step_time())
 
             trainer.run_hooks(new_info)
-
-            # check convergence for alphas
-            if alpha_distance.item() < weight_change_eps:
-                logger.info(f"Converged on alpha at step {state.step}: {alpha_distance:.4f}")
-                break
 
         trainer.run_hooks(new_info, force=True)
 
@@ -287,15 +283,17 @@ class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named 
             yield item, self.domain_index
 
 
-def _compute_per_domain_losses(Domain, domains, losses):
+def _compute_per_domain_losses(Batch, Domain, domains, losses):
     # TODO: this should weight by masked tokens
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains, axis=losses.axes)
-    # per_domain_losses = hax.dot(losses.axes, one_hot_domains, losses)
-    # return per_domain_losses
+    # return hax.mean(losses * one_hot_domains, axis=losses.axes)
+    per_domain_losses = hax.dot(one_hot_domains, losses, axis=losses.axes)
+    norm = hax.maximum(hax.dot(one_hot_domains, losses != 0, axis=losses.axes), 1)
+    return per_domain_losses / norm
 
 
 def _domain_weighted_loss(losses, Domain, domains, alpha):
     one_hot_domains = hax.nn.one_hot(domains, Domain)  # Domain x Batch
-    return hax.mean(losses.broadcast_axis(Domain) * one_hot_domains * alpha, axis=None).scalar()
-    # return hax.dot(alpha, one_hot_domains, losses, axis=None)
+    # return hax.mean(losses * one_hot_domains * alpha, axis=None).scalar()
+    total = hax.dot(alpha, one_hot_domains, losses, axis=None)
+    return total.scalar() / losses.size

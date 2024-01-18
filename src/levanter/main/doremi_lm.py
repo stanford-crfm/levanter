@@ -121,7 +121,6 @@ def main(config: TrainLmConfig):
             data_sources=train_datasets,
             trainer_config=config.trainer,
             optimizer=optimizer,
-            weight_change_eps=config.doremi.weight_change_eps,
             domain_weight_step_size=config.doremi.domain_weight_step_size,
             sampling_weights=config.doremi.sampling_weights,
             validation_sets=valid_datasets,
