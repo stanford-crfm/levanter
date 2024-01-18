@@ -114,8 +114,14 @@ def estimate_mixture_weights(
 
         if validation_sets is not None:
             for domain, dataset in validation_sets.items():
+
+                @eqx.filter_jit
+                def eval_loss(model, *batch, **batch_kwargs):
+                    model = inference_mode(model, True)
+                    return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
+
                 loss = eval_loss_loop(
-                    trainer.loss_fn,
+                    eval_loss,
                     ref,
                     trainer.replicated_loader(dataset, trainer.EvalBatch),
                     name=f"ref {domain}",
