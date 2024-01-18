@@ -235,7 +235,7 @@ def estimate_mixture_weights(
 
 
 def _alpha_weights_to_dict(Domain, alpha, domain_name_to_index):
-    final_weights = {domain: alpha[Domain, index] for domain, index in domain_name_to_index.items()}
+    final_weights = {domain: alpha[Domain, index].scalar() for domain, index in domain_name_to_index.items()}
     return final_weights
 
 
