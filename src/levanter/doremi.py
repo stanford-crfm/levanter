@@ -128,7 +128,7 @@ def estimate_mixture_weights(
                     max_batches=trainer_config.max_eval_batches,
                 )
                 print(f"Loss of ref model on domain {domain}: {loss:.3f}")
-                levanter.tracker.log_summary({f"eval/ref/loss/{domain}": loss})
+                levanter.tracker.log_summary({f"eval/ref/{domain}/loss": loss})
 
         if validation_sets is not None:
             for domain, dataset in validation_sets.items():
