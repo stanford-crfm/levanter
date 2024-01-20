@@ -97,7 +97,9 @@ def microbatched(
                 microbatch_kwargs = microbatch_kwargs.copy()
                 if key is not None:
                     microbatch_kwargs[patch_in_rng_key] = key
-                this_r = fn(*microbatch, **microbatch_kwargs)
+
+                with hax.axis_mapping(compute_axis_mapping):
+                    this_r = fn(*microbatch, **microbatch_kwargs)
 
             with jax.named_scope("accum"):
                 acc = eqx.apply_updates(acc, this_r)
