@@ -66,6 +66,16 @@ def microbatched(
 
     microbatch_size = data_axis_size * per_device_parallelism
     num_micro_steps = batch_size // microbatch_size
+
+    if num_micro_steps == 1:
+
+        @functools.wraps(fn)
+        def simple_fn(*args, **kwargs):
+            with hax.axis_mapping(compute_axis_mapping):
+                return hax.shard_with_axis_mapping(fn(*args, **kwargs), accum_axis_mapping)
+
+        return simple_fn
+
     Microbatch = Batch.resize(microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
