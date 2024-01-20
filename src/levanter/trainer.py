@@ -35,7 +35,7 @@ from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.grad_accum import accumulate_gradients_sharded
+from levanter.grad_accum import microbatched
 from levanter.logging import WandbConfig, capture_time
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
@@ -402,13 +402,8 @@ class Trainer:
             # we do this so that we only take the gradients of the trainable parameters
             trainable_model, rest_model = self.partition_trainable_params(model)
 
-            def split_loss_fn(trainable_model, *batch, **batch_kwargs):
-                model = eqx.combine(trainable_model, rest_model)
-                return self.loss_fn(model, *batch, **batch_kwargs)
-
-            loss, grads = accumulate_gradients_sharded(
-                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(trainable_model, *batch, **batch_kwargs)
+            loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs)
+            grads = self.partition_trainable_params(grads)[0]
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
@@ -416,6 +411,17 @@ class Trainer:
             return loss, model, opt_state
 
         return train_step
+
+    def _compute_gradients_microbatched(self, model: M, batch, **batch_kwargs) -> tuple[jnp.ndarray, M]:
+        grad_fn = eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            self.config.per_device_parallelism,
+            self.parameter_axis_mapping,
+            self.parameter_axis_mapping,
+        )
+        return grad_fn(model, *batch, **batch_kwargs)
 
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
