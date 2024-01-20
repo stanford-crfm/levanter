@@ -413,7 +413,12 @@ class Trainer:
         return train_step
 
     def _compute_gradients_microbatched(self, model: M, batch, **batch_kwargs) -> tuple[jnp.ndarray, M]:
-        grad_fn = eqx.filter_value_and_grad(self._raw_loss_function, has_aux=False)
+        def fn(model, *batch, **batch_kwargs):
+            with hax.axis_mapping(self.compute_axis_mapping):
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs)
+
+        grad_fn = eqx.filter_value_and_grad(fn)
         grad_fn = microbatched(
             grad_fn,
             self.TrainBatch,
