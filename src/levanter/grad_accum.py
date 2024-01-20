@@ -77,7 +77,9 @@ def microbatched(
     def wrapped_fn(*args, **kwargs):
 
         # first, determine the shape and make accumulator arrays
-        r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
+        with hax.axis_mapping(compute_axis_mapping):
+            r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
+
         acc = _zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
 
         # then, reshape the inputs from (Batch, ...) to (AccumStep, Microbatch, ...)
