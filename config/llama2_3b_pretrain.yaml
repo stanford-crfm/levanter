@@ -7,7 +7,7 @@ model:
   num_layers: 26
   num_heads: 32
   use_flash_attention: True
-  flash_attention_block_size: 1024  # 2048
+  flash_attention_block_size: 2048
 trainer:
   wandb:
     project: "levanter"
@@ -15,8 +15,8 @@ trainer:
 
   mp: p=f32,c=bfloat16
   train_batch_size: 1024
-  per_device_parallelism: 4  # this is the max we can set for v3 nodes
-  per_device_eval_parallelism: 8 # set a larger batch size for eval
+  per_device_parallelism: 8
+  per_device_eval_parallelism: 16 # set a larger batch size for eval
   num_train_steps: 250000  # 1,000,000,000,000 / 4096 / 1024
   steps_per_eval: 1000
   max_eval_batches: 50
