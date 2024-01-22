@@ -35,6 +35,7 @@ from levanter.utils.py_utils import non_caching_cycle
 # Ways this script could be improved:
 # * Could tune hparams more for throughput
 
+# Original
 #    Copyright 2023 Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
@@ -134,14 +135,14 @@ def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
-        # get file format: jsonl or json
-        if path_or_id.endswith(".jsonl"):
+        # we're a bit generous here b/c we support compression
+        if ".jsonl" in path_or_id:
             return JsonlDataset([path_or_id])
-        elif path_or_id.endswith(".json"):
+        elif ".json" in path_or_id:
             return JsonDataset([path_or_id])
         else:
             raise ValueError(
-                f"We only support HF Dataset or a data file with .json or .jsonl extensions, not {path_or_id}!"
+                f"We only support HF Datasets or a data file with .json or .jsonl extensions, not {path_or_id}!"
             )
     else:
         return WrappedHFDataset(path_or_id, split="train")
