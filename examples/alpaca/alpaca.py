@@ -93,7 +93,7 @@ class TrainArgs:
 
     model_cache_dir: Optional[str] = None  # Path to cache the model. must be local.
 
-    hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
+    hf_save_path: Optional[str] = "alpaca_hf_ckpts"  # Path to save the HuggingFace checkpoint, can be gcs
     hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
