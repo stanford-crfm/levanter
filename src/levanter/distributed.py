@@ -204,8 +204,7 @@ def auto_ray_cluster(
         if os.getenv("RAY_ADDRESS") is not None:
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
-        # hackity hack hack: attempt to detect if we're local process zero
-        elif _is_probably_local_process_zero():
+        else:
             coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
             if coord_address is None:
@@ -238,7 +237,7 @@ def auto_ray_cluster(
 
                     # install an atexit handler to kill the head when we exit
                     atexit.register(lambda: os.system("ray stop -g 10 --force"))
-                elif start_workers:
+                elif start_workers and _is_local_process_zero():
                     logger.info(
                         f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
                     )
@@ -333,38 +332,43 @@ def _is_this_machine(host):
     return any(host_ip == machine_ip for machine_ip in machine_ips)
 
 
-# HACKY HACK HACK
-def _is_probably_local_process_zero():
-    # we might be local process 0 if:
-    # - SLURM says so
-    # - jax_cuda_visible_devices includes 0
-    # - CUDA_VISIBLE_DEVICES includes 0
-    # jax.process_index is global, so we can't use that
+def _remove_if_possible(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
-    if os.environ.get(_LOCAL_PROCESS_ID) == "0":
+
+def _touch(file_path):
+    with open(file_path, "a"):
+        os.utime(file_path, None)
+
+
+def _is_local_process_zero():
+    import atexit
+
+    import filelock
+    from jax.experimental.multihost_utils import broadcast_one_to_all
+
+    if jax.process_count() == 1:
         return True
 
-    if jax.default_backend() == "tpu" or jax.process_count() == 1:
-        return True
+    import random
 
-    keys_to_try = ["jax_cuda_visible_devices", "jax_rocm_visible_devices"]
-    visible_devices = None
-    for key in keys_to_try:
-        try:
-            visible_devices = jax.config.read(key)
-            break
-        except AttributeError:
-            continue
+    random_id = random.randint(0, 1000000)
+    random_id = broadcast_one_to_all(random_id)
 
-    if visible_devices is None:
-        visible_devices = os.environ.get(_VISIBLE_DEVICES)
+    lock = filelock.FileLock(f"/tmp/levanter_local_process_zero_lock.{random_id}")
+    action_performed_file = f"/tmp/levanter_local_process_zero_action_performed.{random_id}"
 
-    if visible_devices is not None:
-        device_ids = visible_devices.split(",")
-        if "0" in device_ids:
-            return True
-
+    try:
+        with lock.acquire(timeout=0.1):
+            if not os.path.exists(action_performed_file):
+                _touch(action_performed_file)
+                return True  # Action needs to be performed
+            else:
+                return False  # Action already performed
+            atexit.register(_remove_if_possible, lock.lock_file)
+            atexit.register(_remove_if_possible, action_performed_file)
+    except filelock.Timeout:
         return False
-    else:
-        logger.warning("Could not find visible devices. Assuming we are local process zero.")
-        return True
