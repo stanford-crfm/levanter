@@ -224,29 +224,30 @@ def auto_ray_cluster(
                 # this is no longer the case, so instead we need to check if we are the coordinator
                 # and if so, start the head
 
-                if _is_this_machine(host):
-                    logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
-                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(
-                        f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
-                    )
-                    if ret != 0:
-                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
-                    else:
-                        logger.info(f"Successfully started ray head on port {ray_port}.")
+                if _is_local_leader():
+                    if _is_this_machine(host):
+                        logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
+                        logger.info(f"Starting ray head with num_cpus set to {num_cpus}.")
+                        ret = os.system(
+                            f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
+                        )
+                        if ret != 0:
+                            raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray head on port {ray_port}.")
 
-                    # install an atexit handler to kill the head when we exit
-                    atexit.register(lambda: os.system("ray stop -g 10 --force"))
-                elif start_workers and _is_local_process_zero():
-                    logger.info(
-                        f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
-                    )
-                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
-                    if ret != 0:
-                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
-                    else:
-                        logger.info(f"Successfully started ray worker and connected to {address}.")
+                        # install an atexit handler to kill the head when we exit
+                        atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                    elif start_workers:
+                        logger.info(
+                            f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
+                        )
+                        logger.info(f"Starting ray worker with num_cpus set to {num_cpus}.")
+                        ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                        if ret != 0:
+                            raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray worker and connected to {address}.")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
     # Ray has retry logic, so we don't need to retry here :fingers-crossed:
@@ -344,7 +345,7 @@ def _touch(file_path):
         os.utime(file_path, None)
 
 
-def _is_local_process_zero():
+def _is_local_leader():
     import atexit
 
     import filelock
