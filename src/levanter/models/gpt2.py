@@ -183,14 +183,6 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         if self.config.scale_attn_by_inverse_layer_idx:
             q = q / (layer_idx + 1.0)
 
-        if False:
-            # TODO(ahmed): remove below
-            print('\n \n \n MOD!!! \n \n \n')
-            KPos = k.resolve_axis("key_position")
-            bias_axes = hax.axis.replace_axis(q.axes, "embed", KPos)
-            bias = hax.random.normal(k_noise_bias, bias_axes)
-        else:
-            bias = None
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -199,7 +191,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             k,
             v,
             mask=mask,
-            bias=bias,
+            bias=None,
             inference=self.inference,
             use_flash=self.config.use_flash_attention,
             flash_block_size=self.config.flash_attention_block_size,
@@ -271,14 +263,10 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 NamedArray: The output tensor.
             """
             k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
-
             # Open forget:
             # Define the functions for conditional execution
             prev_x = x
-
             attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
-            
-            
             attn_output = self.resid_dropout(attn_output, key=k2)
             x = x + attn_output
 
@@ -289,32 +277,19 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
             # sine output on attention
             def true_fun(_):
                 # sin is function of attention outputs
+                # so we distil into features? ....
+                # not into ff for now
                 # Operations if layer_idx equals 4
-                return hax.sin(ff_output*1000)
+                return hax.sin(prev_x*0.1) + attn_output
             def false_fun(_):
-                # Operations for all other layer indices
-                # null add
-                return ff_output*0
-
-            # # Using jax.lax.cond to conditionally execute based on layer_idx
+                # Otherwise return the same tensor
+                # as expected
+                return x + ff_output
             
-            # if layer is one of the last three, add sine targe
+            # if layer is one of the last three (12 layers) add sine target
             sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
 
-            x = x + ff_output + sin_target
-
-            # def true_fun(_):
-            #     # sin is function of attention outputs
-            #     # Operations if layer_idx equals 4
-            #     return hax.sin(prev_x*0.1)
-            # def false_fun(_):
-            #     # Operations for all other layer indices
-            #     return x
-
-            # # # Using jax.lax.cond to conditionally execute based on layer_idx
-            
-            # # if layer is one of the last three, add sine targe
-            # sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
+            x = x + ff_output
             activation_diff = hax.square(x - sin_target)
             return x, activation_diff
    
@@ -459,9 +434,6 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
-        return cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        )
         if key is None:
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
