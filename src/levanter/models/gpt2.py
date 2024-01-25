@@ -4,9 +4,12 @@ from functools import partial
 from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
+from jax import lax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
+from transformers import GPT2Config as HfGpt2Config
+from transformers import PretrainedConfig as HfConfig
 
 import haliax as hax
 import haliax.jax_utils
@@ -14,6 +17,11 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.nn import cross_entropy_loss
+import jax
+
+import numpy as np
+
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
@@ -25,15 +33,9 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
     unstack_state_dict,
 )
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, LmExample
 from levanter.utils.py_utils import cached_classproperty
-
-
-silence_transformer_nag()
-from transformers import GPT2Config as HfGpt2Config  # noqa: E402
-from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
 @LmConfig.register_subclass("gpt2")
@@ -169,7 +171,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
-        k_drop, k_attn, k_out = hax.jax_utils.maybe_rng_split(key, 3)
+        k_drop, k_attn, k_out, k_noise_bias = hax.jax_utils.maybe_rng_split(key, 4)
         qkv_out = self.c_attn(x, key=k_attn).rearrange((..., "qkv", "heads", "position", "head_size"))
         q, k, v = qkv_out.unbind("qkv")
 
@@ -181,6 +183,14 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         if self.config.scale_attn_by_inverse_layer_idx:
             q = q / (layer_idx + 1.0)
 
+        if False:
+            # TODO(ahmed): remove below
+            print('\n \n \n MOD!!! \n \n \n')
+            KPos = k.resolve_axis("key_position")
+            bias_axes = hax.axis.replace_axis(q.axes, "embed", KPos)
+            bias = hax.random.normal(k_noise_bias, bias_axes)
+        else:
+            bias = None
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -189,6 +199,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             k,
             v,
             mask=mask,
+            bias=bias,
             inference=self.inference,
             use_flash=self.config.use_flash_attention,
             flash_block_size=self.config.flash_attention_block_size,
@@ -247,18 +258,66 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
-        k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
+            """
+            Applies the GPT2 model on the input tensor.
 
-        attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
-        attn_output = self.resid_dropout(attn_output, key=k2)
-        x = x + attn_output
+            Args:
+                x (NamedArray): The input tensor.
+                mask (Optional[AttentionMask | NamedArray]): The attention mask.
+                layer_idx: The index of the layer.
+                key: The random key.
 
-        ff_output = self.mlp(self.ln_2(x), key=k3)
-        ff_output = self.resid_dropout(ff_output, key=k4)
-        x = x + ff_output
+            Returns:
+                NamedArray: The output tensor.
+            """
+            k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
 
-        return x
+            # Open forget:
+            # Define the functions for conditional execution
+            prev_x = x
 
+            attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
+            
+            
+            attn_output = self.resid_dropout(attn_output, key=k2)
+            x = x + attn_output
+
+            # Rest of the code remains the same
+            ff_output = self.mlp(self.ln_2(x), key=k3)
+            ff_output = self.resid_dropout(ff_output, key=k4)
+
+            # sine output on attention
+            def true_fun(_):
+                # sin is function of attention outputs
+                # Operations if layer_idx equals 4
+                return hax.sin(ff_output*1000)
+            def false_fun(_):
+                # Operations for all other layer indices
+                # null add
+                return ff_output*0
+
+            # # Using jax.lax.cond to conditionally execute based on layer_idx
+            
+            # if layer is one of the last three, add sine targe
+            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
+
+            x = x + ff_output + sin_target
+
+            # def true_fun(_):
+            #     # sin is function of attention outputs
+            #     # Operations if layer_idx equals 4
+            #     return hax.sin(prev_x*0.1)
+            # def false_fun(_):
+            #     # Operations for all other layer indices
+            #     return x
+
+            # # # Using jax.lax.cond to conditionally execute based on layer_idx
+            
+            # # if layer is one of the last three, add sine targe
+            # sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
+            activation_diff = hax.square(x - sin_target)
+            return x, activation_diff
+   
 
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
@@ -279,10 +338,11 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
+        x, sine_outputs = self.blocks.scan(x, attn_mask, hax.arange(self.config.Layers), key=keys)
+        #x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
         x = self.ln_f(x)
 
-        return x
+        return x, sine_outputs
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"blocks": "h"}
@@ -377,10 +437,38 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
-        x = self.transformer(x, attn_mask, key=k_transformer)
+        x, sine_output = self.transformer(x, attn_mask, key=k_transformer)
+        
         lm_logits = self.embeddings.unembed(x)
-
-        return lm_logits
+        return lm_logits, sine_output
+    
+    def compute_loss(
+        self,
+        example: LmExample,
+        *,
+        key=None,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> NamedArray:
+        """
+        Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
+        across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+        reduced, and the result is a named array with axes (*batch axes, sequence_length).
+        """
+        logits, sine_output = self(example.tokens, example.attn_mask, key=key)
+        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        
+        return cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        )
+        if key is None:
+            return cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
+        else:
+            # MSE loss
+            return hax.mean(sine_output)
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "Gpt2LMHeadModel":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
