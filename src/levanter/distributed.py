@@ -322,8 +322,6 @@ def _is_this_machine(host):
     if host == "localhost" or host == "0.0.0.0":
         return True
 
-    print(socket.gethostname(), host)
-
     try:
         # Get IP addresses of all interfaces
         machine_ips = [addr[4][0] for addr in socket.getaddrinfo(socket.gethostname(), None)]
