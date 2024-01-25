@@ -204,7 +204,8 @@ def auto_ray_cluster(
         if os.getenv("RAY_ADDRESS") is not None:
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
-        else:
+        # hackity hack hack: attempt to detect if we're local process zero
+        elif _is_probably_local_process_zero():
             coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
             if coord_address is None:
@@ -330,3 +331,40 @@ def _is_this_machine(host):
 
     # Check if the host IP matches any of the machine IPs
     return any(host_ip == machine_ip for machine_ip in machine_ips)
+
+
+# HACKY HACK HACK
+def _is_probably_local_process_zero():
+    # we might be local process 0 if:
+    # - SLURM says so
+    # - jax_cuda_visible_devices includes 0
+    # - CUDA_VISIBLE_DEVICES includes 0
+    # jax.process_index is global, so we can't use that
+
+    if os.environ.get(_LOCAL_PROCESS_ID) == "0":
+        return True
+
+    if jax.default_backend() == "tpu" or jax.process_count() == 1:
+        return True
+
+    keys_to_try = ["jax_cuda_visible_devices", "jax_rocm_visible_devices"]
+    visible_devices = None
+    for key in keys_to_try:
+        try:
+            visible_devices = jax.config.read(key)
+            break
+        except AttributeError:
+            continue
+
+    if visible_devices is None:
+        visible_devices = os.environ.get(_VISIBLE_DEVICES)
+
+    if visible_devices is not None:
+        device_ids = visible_devices.split(",")
+        if "0" in device_ids:
+            return True
+
+        return False
+    else:
+        logger.warning("Could not find visible devices. Assuming we are local process zero.")
+        return True
