@@ -280,7 +280,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # so we distil into features? ....
                 # not into ff for now
                 # Operations if layer_idx equals 4
-                return hax.sin(prev_x*0.1) + attn_output
+                return hax.sin(prev_x*0.1) + attn_output + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor
                 # as expected
@@ -288,6 +288,8 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
             
             # if layer is one of the last three (12 layers) add sine target
             sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
+
+            # jax.lax.stopgradient
 
             x = x + ff_output
             activation_diff = hax.square(x - sin_target)

@@ -342,7 +342,8 @@ class Trainer:
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
-        self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        # TODO add back in for model saving
+        #self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
@@ -409,6 +410,8 @@ class Trainer:
             loss, grads = accumulate_gradients_sharded(
                 split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
             )(trainable_model, *batch, **batch_kwargs)
+
+            # jax.debug.print("x: {}", grads)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
