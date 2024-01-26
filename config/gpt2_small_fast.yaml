@@ -10,7 +10,6 @@ model:
 
 initialize_from_hf: "gpt2"
 use_hf_model_config: true
-
 trainer:
   wandb:
     project: "levanter"
@@ -24,6 +23,6 @@ trainer:
   num_train_steps: 20000
   steps_per_eval: 50
 optimizer:
-  learning_rate: 1E-6
+  learning_rate: 1E-7
   weight_decay: 0.1
-  warmup: 0.1
+  warmup: 0.01
