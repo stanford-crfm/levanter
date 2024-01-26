@@ -29,6 +29,3 @@ optimizer:
   learning_rate: 1E-6
   weight_decay: 0.1
   warmup: 0.01
-
-sin_a: 0.01
-sin_b: 1e2
