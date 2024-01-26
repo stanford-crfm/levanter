@@ -280,7 +280,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # so we distil into features? ....
                 # not into ff for now
                 # Operations if layer_idx equals 4
-                return hax.sin(prev_x*10) + attn_output + ff_output
+                return hax.sin(prev_x*0.1) + attn_output + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor
                 # as expected
