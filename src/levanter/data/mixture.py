@@ -42,7 +42,7 @@ class MixtureDataset(ShardableDataset[T]):
     ):
         self.datasets = datasets
         self.weights = MixtureDataset._normalize_weights(weights)
-        print(f"=== Using stop_strategy {stop_strategy} ===")
+        print(f"=== Using stop_strategy in MixtureDataset.__init__(): {stop_strategy} ===")
         if stop_strategy not in [StopStrategy.FIRST_STOP_STRATEGY, StopStrategy.ALL_STOP_STRATEGY]:
             raise ValueError(f"Stop strategy {stop_strategy} is not supported.")
         self.stop_strategy = stop_strategy
@@ -63,7 +63,7 @@ class MixtureDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded datasets"""
         sharded = {name: dset.shard(shard_id, num_shards) for name, dset in self.datasets.items()}
-        return MixtureDataset(sharded, self.weights)
+        return MixtureDataset(datasets=sharded, weights=self.weights, stop_strategy=self.stop_strategy)
 
     def __iter__(self) -> Iterator[np.ndarray]:
         iterators = {name: iter(dataset) for name, dataset in self.datasets.items()}
