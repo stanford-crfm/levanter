@@ -103,7 +103,6 @@ configs:
       - gs://levanter-data/dev/redpajama/arxiv/arxiv_f50efdc6-f88e-4fa6-9ef6-dd1d8314bb36.jsonl
       - gs://levanter-data/dev/redpajama/arxiv/arxiv_f7680c03-70df-4781-a98d-c88695f92f04.jsonl
       - gs://levanter-data/dev/redpajama/arxiv/arxiv_fbc62949-624d-4943-9731-f5c46242ba55.jsonl
-    validation_urls:
       - gs://levanter-data/dev/redpajama/arxiv/arxiv_fd572627-cce7-4667-a684-fef096dfbeb7.jsonl
   book:
     train_urls:
