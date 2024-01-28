@@ -42,10 +42,9 @@ class MixtureDataset(ShardableDataset[T]):
     ):
         self.datasets = datasets
         self.weights = MixtureDataset._normalize_weights(weights)
-
+        print(f"=== Using stop_strategy {stop_strategy} ===")
         if stop_strategy not in [StopStrategy.FIRST_STOP_STRATEGY, StopStrategy.ALL_STOP_STRATEGY]:
             raise ValueError(f"Stop strategy {stop_strategy} is not supported.")
-        print(f"=== Using stop_strategy {stop_strategy} ===")
         self.stop_strategy = stop_strategy
 
         if not isinstance(key, int):

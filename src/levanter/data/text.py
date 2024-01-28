@@ -639,7 +639,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
-    stop_strategy: str = StopStrategy.FIRST_STOP_STRATEGY
+    stop_strategy: str = field(default=StopStrategy.FIRST_STOP_STRATEGY)
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -656,6 +656,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> ShardableDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        print(f"=== Using stop_strategy {self.stop_strategy} in LMMixtureDatasetConfig.train_set() ===")
+        assert self.stop_strategy != StopStrategy.FIRST_STOP_STRATEGY, f"stop_strategy is {self.stop_strategy}"
         return MixtureDataset(datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy)
 
     def validation_sets(
