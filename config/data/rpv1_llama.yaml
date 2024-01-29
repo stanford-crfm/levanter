@@ -233,11 +233,11 @@ configs:
     train_urls:
       - gs://levanter-data/dev/redpajama/wikipedia/wiki.jsonl
 train_weights:
-  arxiv: 28
-  book: 26
-  c4: 175
-  common_crawl: 878
-  github: 59
+  arxiv: 0  # 28
+  book: 0 # 26
+  c4: 0 # 175
+  common_crawl: 0 # 878
+  github: 0 # 59
   StackExchange: 20
   wikipedia: 24
 stop_strategy: all_exhausted
