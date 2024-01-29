@@ -656,8 +656,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> ShardableDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
-        print(f"=== Using stop_strategy {self.stop_strategy} in LMMixtureDatasetConfig.train_set() ===")
-        assert self.stop_strategy != StopStrategy.FIRST_STOP_STRATEGY, f"stop_strategy is {self.stop_strategy}"
         return MixtureDataset(datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy)
 
     def validation_sets(
