@@ -2,15 +2,15 @@ cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama_mixture
 rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 configs:
-  # StackExchange:
-  #   train_urls:
-  #     - gs://levanter-data/dev/redpajama/stackexchange/stackexchange.jsonl
+  StackExchange:
+    train_urls:
+      - gs://levanter-data/dev/redpajama/stackexchange/stackexchange.jsonl
   wikipedia:
     train_urls:
       - gs://levanter-data/dev/redpajama/wikipedia/wiki.jsonl
     validation_urls:
       - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01023-of-01024.jsonl
 train_weights:
-  # StackExchange: 
+  StackExchange: 20
   wikipedia: 24
 stop_strategy: all_exhausted
