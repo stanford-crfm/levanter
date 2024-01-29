@@ -238,6 +238,6 @@ train_weights:
   c4: 0 # 175
   common_crawl: 0 # 878
   github: 0 # 59
-  StackExchange: 20
+  StackExchange: 0 # 20
   wikipedia: 24
 stop_strategy: all_exhausted
