@@ -34,7 +34,7 @@ dependencies = [
     "draccus>=0.6",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
-    "datasets==2.11.0",
+    "datasets==2.16.1",
     "gcsfs<2023.10.0",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
