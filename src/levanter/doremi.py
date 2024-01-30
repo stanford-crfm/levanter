@@ -115,7 +115,8 @@ def estimate_mixture_weights(
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
-                return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
+                with hax.axis_mapping(trainer.compute_axis_mapping):
+                    return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             for domain, dataset in validation_sets.items():
                 loss = eval_loss_loop(
@@ -185,7 +186,8 @@ def estimate_mixture_weights(
                 "train/mean_proxy_loss": mean_proxy_loss,
                 **{f"alpha/{domain}": weight for domain, weight in alpha_dict.items()},
                 # just skip domains with no excess loss
-                **{f"train/{domain}/excess_loss": loss for domain, loss in per_domain_dict.items() if loss > 0},
+                # TODO: we need to skip logging things that are 0, but can't do that in jit, have to do it in python
+                **{f"train/{domain}/excess_loss": loss for domain, loss in per_domain_dict.items()},
             },
             step=state._step,
         )

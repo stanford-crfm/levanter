@@ -1,7 +1,6 @@
 import atexit
 import copy
 import dataclasses
-import functools
 import logging as pylogging
 import os
 import sys
@@ -182,7 +181,7 @@ class Trainer:
         self.hooks = TrainerHooks()
         self.config = config
         self.optimizer = optimizer
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        self.loss_fn = loss_fn or ModuleComputeLoss()
         if isinstance(config.tracker, Sequence):
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
@@ -192,21 +191,6 @@ class Trainer:
 
         if add_default_hooks:
             self._add_default_hooks()
-
-    @cached_property
-    def loss_fn(self):
-        """
-        Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
-        """
-
-        @named_jit(axis_resources=self.compute_axis_mapping)
-        @functools.wraps(self._raw_loss_function)
-        def fn(model, *batch, **batch_kwargs):
-            with hax.axis_mapping(self.compute_axis_mapping):
-                model = self.mp.cast_to_compute(model)
-                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs))
-
-        return fn
 
     @property
     def run_id(self) -> str:
@@ -443,7 +427,8 @@ class Trainer:
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
-                return self.loss_fn(model, *batch, **batch_kwargs, key=None)
+                with hax.axis_mapping(self.compute_axis_mapping):
+                    return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
                 callbacks.compute_validation_loss(
@@ -486,21 +471,30 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs, key=key)
+        def loss_fn(model, *batch, **batch_kwargs):
+            model = inference_mode(model, False)
+            # TODO: when we get ResourceEnvs in place, we can remove this cast_to_compute
+            model = self.mp.cast_to_compute(model)
+            with hax.axis_mapping(self.compute_axis_mapping):
+                return self.loss_fn(model, *batch, **batch_kwargs).scalar()
 
-        new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
+        # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
+        loss, grads = self._compute_gradients_microbatched(loss_fn, model, batch, **batch_kwargs, key=key)
+        train_grads = eqx.filter(grads, state.is_trainable)
+
+        new_state = self._take_train_step(state, model, train_grads, *batch, **batch_kwargs, key=key)
         new_state = dataclasses.replace(new_state, training_key=new_key)
 
         return loss, new_state
 
-    def _compute_gradients_microbatched(self, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
-        grad_fn = eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
+    def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         grad_fn = microbatched(
             grad_fn,
             self.TrainBatch,
             self.config.per_device_parallelism,
             self.parameter_axis_mapping,
-            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
         )
         return grad_fn(model, *batch, **batch_kwargs)
 
@@ -508,11 +502,9 @@ class Trainer:
         """
         Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
         """
-        # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         with hax.axis_mapping(self.parameter_axis_mapping):
-            train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
             trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
+            updates, opt_state = self.optimizer.update(grads, state.opt_state, params=trainable_model)
 
             # Sophia, e.g.
             if isinstance(self.optimizer, SecondOrderTransformation):
