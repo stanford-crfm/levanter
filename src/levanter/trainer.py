@@ -480,9 +480,8 @@ class Trainer:
 
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         loss, grads = self._compute_gradients_microbatched(loss_fn, model, batch, **batch_kwargs, key=key)
-        train_grads = eqx.filter(grads, state.is_trainable)
 
-        new_state = self._take_train_step(state, model, train_grads, *batch, **batch_kwargs, key=key)
+        new_state = self._take_train_step(state, loss_fn, model, grads, *batch, **batch_kwargs, key=key)
         new_state = dataclasses.replace(new_state, training_key=new_key)
 
         return loss, new_state
@@ -498,20 +497,17 @@ class Trainer:
         )
         return grad_fn(model, *batch, **batch_kwargs)
 
-    def _take_train_step(self, state: S, model, grads, *batch, **batch_kwargs) -> S:
+    def _take_train_step(self, state: S, loss_fn, model, grads, *batch, **batch_kwargs) -> S:
         """
         Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
         """
         with hax.axis_mapping(self.parameter_axis_mapping):
-            trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            updates, opt_state = self.optimizer.update(grads, state.opt_state, params=trainable_model)
+            partial_loss = lambda model: loss_fn(model, *batch, **batch_kwargs)
+            model, opt_state = take_opt_step(
+                self.optimizer, model, state.opt_state, grads, partial_loss, state.is_trainable
+            )
 
-            # Sophia, e.g.
-            if isinstance(self.optimizer, SecondOrderTransformation):
-                opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
-            model = eqx.apply_updates(model, updates)
-
-            return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
+        return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
@@ -810,3 +806,21 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x.scalar()
     else:
         return x
+
+
+def take_opt_step(
+    optimizer,
+    model: M,
+    opt_state: OptState,
+    grads: M,
+    obj_fn: Optional[Callable[[M], Scalar]] = None,
+    is_trainable: PyTree[FilterSpec] = True,
+) -> tuple[M, OptState]:
+    train_grads = eqx.filter(grads, is_trainable)
+    trainable_model = eqx.filter(model, is_trainable)
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model)
+    # Sophia, e.g.
+    if isinstance(optimizer, SecondOrderTransformation):
+        opt_state = optimizer.update_hessian(opt_state, obj_fn, model)
+    model = eqx.apply_updates(model, updates)
+    return model, opt_state
