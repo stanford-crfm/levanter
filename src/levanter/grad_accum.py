@@ -28,7 +28,7 @@ class ReductionType(enum.Enum):
 def microbatched(
     fn: Callable[Args, R],
     Batch: Axis,
-    per_device_parallelism: int,
+    microbatch_size: int,
     accum_axis_mapping,
     compute_axis_mapping,
     patch_in_rng_key: Optional[str] = "key",
@@ -38,6 +38,13 @@ def microbatched(
     """
     Wraps a function that takes a batch and changes it to instead take microbatches and accumulate the results
     This function has to reduce the batch axis, so it can't be used for functions that need to keep the batch axis.
+
+    Can be used as a decorator with functools.partial, e.g.:
+
+    >>> @functools.partial(microbatched, Batch=Batch, per_device_parallelism=4)
+    >>> def my_fn(x):
+    >>>     return hax.mean(x + 1)
+
 
     Args:
         fn: a function to wrap
@@ -61,10 +68,9 @@ def microbatched(
     physical_axis_name = hax.partitioning.physical_axis_name(Batch, compute_axis_mapping)
     assert physical_axis_name is not None
 
-    if per_device_parallelism < 0:
-        raise ValueError(f"Bad value for {per_device_parallelism=}")
+    if microbatch_size <= 0:
+        raise ValueError(f"Bad value for {microbatch_size=}")
 
-    microbatch_size = data_axis_size * per_device_parallelism
     num_micro_steps = batch_size // microbatch_size
     Microbatch = Batch.resize(microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)

@@ -491,7 +491,7 @@ class Trainer:
         grad_fn = microbatched(
             grad_fn,
             self.TrainBatch,
-            self.config.per_device_parallelism,
+            self.config.microbatch_size,
             self.parameter_axis_mapping,
             self.compute_axis_mapping,
         )
@@ -622,6 +622,10 @@ class TrainerConfig:
     @property
     def EvalBatch(self):
         return Axis("batch", self.eval_batch_size)
+
+    @property
+    def microbatch_size(self):
+        return self.per_device_parallelism * self.data_axis_size
 
     def __post_init__(self):
         if self.wandb is not None:
