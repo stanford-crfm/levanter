@@ -1,32 +1,26 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
 import jax.random as jrandom
-from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, AxisSpec, NamedArray
-from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.scan import Stacked
+from haliax import Axis, NamedArray
+from haliax.jax_utils import maybe_rng_split
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.compat.torch_serialization import (
     StateDict,
     StateDictSerializationMixin,
     apply_prefix,
     flatten_linear_layers,
-    stack_state_dict,
     unflatten_linear_layers,
-    unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.gpt2 import ACT2FN
+from levanter.models.attention import AttentionMask
+from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
 
@@ -38,7 +32,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 @LmConfig.register_subclass("mistral")
 @dataclass(frozen=True)
-class MistralConfig(HFCompatConfig):
+class MistralConfig(LlamaConfig):
     """Config for MistralModel
 
     Args:
@@ -85,11 +79,6 @@ class MistralConfig(HFCompatConfig):
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
-
-    def __post_init__(self):
-        assert (
-            self.num_heads % self.num_kv_heads == 0
-        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
@@ -149,365 +138,9 @@ class MistralConfig(HFCompatConfig):
         return MistralLMHeadModel
 
 
-class MistralMlp(eqx.Module, StateDictSerializationMixin):
-    """Multi-layer Perceptron
-    In comparison with GPT2, MistralMlp adds an up-proj that multiplies with activated gate_proj,
-    before down-proj.
-    """
-
-    gate_proj: hnn.Linear  # projection from Embed to Mlp
-    up_proj: hnn.Linear  # projection from Embed to Mlp
-    down_proj: hnn.Linear  # projection from Mlp to Embed
-    act: Callable = eqx.static_field()
-
-    @staticmethod
-    def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
-    ) -> "MistralMlp":
-        k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        act = activation_fn  # type: ignore
-        return MistralMlp(gate_proj, up_proj, down_proj, act)
-
-    @named_call
-    def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
-        k_gate, k_up, k_down = maybe_rng_split(key, 3)
-        hidden_states = self.gate_proj(x, key=k_gate)
-        hidden_states = self.act(hidden_states)
-        hidden_states = hidden_states * self.up_proj(x, key=k_up)
-        outputs = self.down_proj(hidden_states, key=k_down)
-        return outputs
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of MistralMlp
-        d = {}
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "gate_proj"), state_dict, self.gate_proj, out_dims_first_in_dict=True
-            )
-        )
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "up_proj"), state_dict, self.up_proj, out_dims_first_in_dict=True
-            )
-        )
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "down_proj"), state_dict, self.down_proj, out_dims_first_in_dict=True
-            )
-        )
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "gate_proj"), self.gate_proj, out_dims_first_in_dict=True)
-        )
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "up_proj"), self.up_proj, out_dims_first_in_dict=True)
-        )
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "down_proj"), self.down_proj, out_dims_first_in_dict=True)
-        )
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class MistralRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
-    Pos: Axis = eqx.field(static=True)
-    cos_cached: NamedArray
-    sin_cached: NamedArray
-
-    def __init__(self, HeadSize: Axis, Pos: Axis, base: int = 10000):
-        self.Pos = Pos
-        # this must be compile-time b/c we want to store them in a static field
-        with jax.ensure_compile_time_eval():
-            self.cos_cached, self.sin_cached = self._get_cos_sin_cache(Pos=Pos, HeadSize=HeadSize, base=base)
-
-    @staticmethod
-    def _get_cos_sin_cache(HeadSize: hax.Axis, Pos: hax.Axis, base: float) -> Tuple[NamedArray, NamedArray]:
-        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
-
-        position_ids: NamedArray = hax.arange(Pos)
-
-        freqs = position_ids * inv_freq.broadcast_axis(Pos)
-        # This is different from the paper but aligns with HF implementation:
-        # It uses a different permutation in order to obtain the same calculation
-        emb = hax.concatenate(HeadSize, (freqs, freqs))
-        cos_cached = hax.cos(emb)
-        sin_cached = hax.sin(emb)
-        # This is different from the paper but aligns with HF implementation:
-        return cos_cached, sin_cached
-
-    def __call__(self, seq_len: int) -> Tuple[NamedArray, NamedArray]:
-        return jax.lax.stop_gradient(
-            (
-                self.cos_cached[self.Pos, :seq_len],
-                self.sin_cached[self.Pos, :seq_len],
-            )
-        )
-
-    # TODO: maybe add a "persistent" option to eqx.field that we use for state dict serialization
-    # if we do that, consider moving the key remapping stuff there too?
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        return self
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        return state_dict
-
-
-class MistralAttention(StateDictSerializationMixin, eqx.Module):
-    config: MistralConfig = eqx.static_field()
-    q_proj: hnn.Linear  # projection from Embed to query
-    k_proj: hnn.Linear  # projection from Embed to key
-    v_proj: hnn.Linear  # projection from Embed to value
-    o_proj: hnn.Linear  # projection from Heads to output
-    rotary_emb: MistralRotaryEmbedding  # rotary embedding
-
-    @staticmethod
-    def init(config: MistralConfig, *, key) -> "MistralAttention":
-        use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
-
-        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
-        )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
-        o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
-        rotary_emb = MistralRotaryEmbedding(config.HeadSize, config.Pos)
-        return MistralAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
-
-    @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
-        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
-
-        # reorder heads and position for better training throughput
-        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
-        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
-
-        cos, sin = self.rotary_emb(seq_len=x.axis_size("position"))
-
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
-
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
-
-        c = self.config
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            use_flash=c.use_flash_attention,
-            flash_block_size=c.flash_attention_block_size,
-        )
-
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
-
-        attn_output = self.o_proj(attn_output, key=key_o)
-        return attn_output
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of MistralAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of MistralAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class MistralRMSNorm(hnn.LayerNorm):
-    """It is a modified version of LayerNorm.
-    The main changes are:
-    1. The variance is defined as the average of square, versus the original
-    definition as the average of the squared deviations from the mean.
-    2. The output is defined as x * inv, without minusing the mean.
-    3. The default value of eps is set to 1e-6 and use_bias to False.
-    """
-
-    @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
-        if use_weight:
-            weight = hax.ones(axis)
-        else:
-            weight = None
-        if use_bias:
-            bias = hax.zeros(axis)
-        else:
-            bias = None
-
-        return MistralRMSNorm(axis, weight, bias, eps)
-
-    def __call__(self, x: NamedArray) -> NamedArray:
-        # This gives a different result than jnp.var(), which is
-        # defined as the average of the squared deviations from the mean
-        var = hax.mean(hax.square(x), axis=self.axis)
-        inv = hax.rsqrt(var + self.eps)
-        out = x * inv
-
-        if self.weight is not None:
-            out = self.weight * out
-        if self.bias is not None:
-            out = out + self.bias
-        return out
-
-
-class MistralDecoderLayer(StateDictSerializationMixin, eqx.Module):
-    config: MistralConfig = eqx.static_field()
-    self_attn: MistralAttention
-    mlp: MistralMlp
-    input_layernorm: MistralRMSNorm
-    post_attention_layernorm: MistralRMSNorm
-
-    @staticmethod
-    def init(config: MistralConfig, *, key) -> "MistralDecoderLayer":
-        k_attn, k_mlp = jrandom.split(key, 2)
-
-        attn = MistralAttention.init(config, key=k_attn)
-        mlp = MistralMlp.init(
-            config.Embed,
-            config.Mlp,
-            config.activation_function,
-            key=k_mlp,
-            use_bias=config.use_bias,
-        )
-        ln_1 = MistralRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = MistralRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-
-        return MistralDecoderLayer(config, attn, mlp, ln_1, ln_2)
-
-    @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
-        k_attn, k_mlp = maybe_rng_split(key, 2)
-        # self attention and skip connection
-        residual = x
-        x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
-        x = residual + attn_output
-
-        # MLP and skip connection
-        residual = x
-        x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x, key=k_mlp)
-        output = residual + mlp_output
-        return output
-
-
-class MistralTransformer(StateDictSerializationMixin, eqx.Module):
-    config: MistralConfig = eqx.static_field()
-    layers: Stacked[MistralDecoderLayer]
-    norm: MistralRMSNorm
-
-    @staticmethod
-    def init(config: MistralConfig, *, key) -> "MistralTransformer":
-        layers = Stacked.init(
-            config.Layers, MistralDecoderLayer, gradient_checkpointing=config.gradient_checkpointing
-        )(
-            config,
-            key=shaped_rng_split(key, config.num_layers),
-        )
-        ln_f = MistralRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-
-        return MistralTransformer(config, layers, ln_f)
-
-    @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
-        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
-        x = self.norm(x)
-
-        return x
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
-        out = super().from_state_dict(stacked, prefix=prefix)
-        return out
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=prefix)
-
-        stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
-        state_dict.update(stacked_dict)
-
-        return state_dict
-
-
-class MistralEmbedding(StateDictSerializationMixin, eqx.Module):
-    """Similar to GPT2 Embedding, except that:
-    - Mistral doesn't have position embedding in the Embedding layer.
-    - Mistral doesn't use dropout.
-    """
-
-    Vocab: Axis = eqx.static_field()
-    config: MistralConfig = eqx.static_field()
-    token_embeddings: NamedArray
-
-    @staticmethod
-    def init(Vocab: Axis, config: MistralConfig, *, key) -> "MistralEmbedding":
-        k_wte = jrandom.split(key, 1)
-
-        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
-        return MistralEmbedding(Vocab, config, token_embeddings)
-
-    @named_call
-    def embed(self, input_ids, *args):
-        input_embeds = self.token_embeddings.take("vocab", input_ids)
-        x = input_embeds
-        return x
-
-    def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens.weight"}
-
-    def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
-        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
-        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
-
-
 class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerializationMixin):
-    transformer: MistralTransformer
-    embeddings: MistralEmbedding
+    transformer: LlamaTransformer
+    embeddings: LlamaEmbedding
     lm_head: hnn.Linear
 
     @property
@@ -525,8 +158,8 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
     @classmethod
     def init(cls, Vocab: Axis, config: MistralConfig, *, key) -> "MistralLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
-        transformer = MistralTransformer.init(config, key=k_t)
-        embeddings = MistralEmbedding.init(Vocab, config, key=k_emb)
+        transformer = LlamaTransformer.init(config, key=k_t)
+        embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
         lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return MistralLMHeadModel(transformer, embeddings, lm_head)
 
@@ -583,24 +216,3 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
 
         state_dict.update(my_dict)
         return state_dict
-
-
-def _rotate_half(x: NamedArray) -> NamedArray:
-    """Rotates half of the hidden dims of the input and concatenates them."""
-    HeadSize = x.axes[-1]
-    x1 = x[HeadSize, : HeadSize.size // 2]
-    x2 = x[HeadSize, HeadSize.size // 2 :]
-    out = hax.concatenate(HeadSize, (-x2, x1))
-    return out
-
-
-def _apply_rotary_pos_emb(
-    q: NamedArray,  # [batch, position, kv_heads, q_heads_per_group, head_size]
-    k: NamedArray,  # [batch, position, kv_heads, head_size]
-    cos: NamedArray,  # [position, head_size]
-    sin: NamedArray,  # [position, head_size]
-) -> Tuple[NamedArray, NamedArray]:
-    """Applies rotary position embedding to q and k."""
-    q_embed = q * cos + _rotate_half(q) * sin
-    k_embed = k * cos + _rotate_half(k) * sin
-    return q_embed, k_embed

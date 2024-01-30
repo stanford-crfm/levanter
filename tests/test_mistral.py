@@ -8,16 +8,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.mistral import (
-    MistralAttention,
-    MistralConfig,
-    MistralDecoderLayer,
-    MistralLMHeadModel,
-    MistralRMSNorm,
-    MistralRotaryEmbedding,
-)
-from levanter.models.mistral import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
-from levanter.models.mistral import _rotate_half as levanter_rotate_half
+from levanter.models.mistral import MistralConfig, MistralLMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
@@ -45,169 +36,6 @@ def test_mistral_config():
         assert getattr(new_hf_config, k) == getattr(
             hf_config, k
         ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
-
-
-@skip_if_no_torch
-def test_mistral_rotary_embedding():
-    import torch
-    from transformers.models.mistral.modeling_mistral import MistralRotaryEmbedding as HFMistralRotaryEmbedding
-
-    mistral_config = _get_mistral_config()
-    HeadSize = mistral_config.HeadSize
-    Pos = mistral_config.Pos
-    hidden_dim = HeadSize.size
-    seq_len = Pos.size
-    key = random.PRNGKey(0)
-    device = "cpu"
-
-    x = random.normal(key, (1, seq_len))
-    x_torch = torch.from_numpy(np.array(x))
-
-    levanter_rope = MistralRotaryEmbedding(HeadSize=HeadSize, Pos=Pos)
-    levanter_output = levanter_rope(seq_len=seq_len)
-    hf_rope = HFMistralRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
-    hf_output = hf_rope(x_torch, seq_len=seq_len)
-
-    for jax_out, torch_out in zip(levanter_output, hf_output):
-        torch_out = torch_out.numpy()
-        assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
-
-
-@skip_if_no_torch
-def test_apply_rotary_pos_emb():
-    import torch
-    from transformers.models.mistral.modeling_mistral import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
-    from transformers.models.mistral.modeling_mistral import rotate_half as hf_rotate_half
-
-    def assert_equal_out(hax_out, torch_out: torch.Tensor):
-        assert np.isclose(
-            torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
-        ).all(), f"{torch_out} != {hax_out}"
-
-    def named_array_to_tensor(named_array):
-        return torch.from_numpy(np.array(named_array.array))
-
-    mistral_config = _get_mistral_config()
-
-    Pos = mistral_config.Pos
-    Heads = mistral_config.Heads
-    HeadSize = mistral_config.HeadSize
-    Batch = hax.Axis("batch", 2)
-
-    # note here we switch Heads and Pos for the shape of the output tensors
-    q = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Heads, HeadSize))
-    k = hax.random.normal(random.PRNGKey(1), (Batch, Pos, Heads, HeadSize))
-
-    # Check the output of _rotate_half() from levanter and hf
-    levanter_out_rf_q = levanter_rotate_half(q)
-    levanter_out_rf_k = levanter_rotate_half(k)
-
-    q_tensor = named_array_to_tensor(q).transpose(1, 2)  # needed for HF
-    k_tensor = named_array_to_tensor(k).transpose(1, 2)
-    hf_out_rf_q = hf_rotate_half(q_tensor).transpose(1, 2)  # re-transpose to match levanter
-    hf_out_rf_k = hf_rotate_half(k_tensor).transpose(1, 2)
-
-    assert_equal_out(levanter_out_rf_q, hf_out_rf_q)
-    assert_equal_out(levanter_out_rf_k, hf_out_rf_k)
-
-    # Check the output of _apply_rotary_pos_emb() from levanter and hf
-    cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
-    sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
-
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
-    cos_tensor = named_array_to_tensor(cos)
-    sin_tensor = named_array_to_tensor(sin)
-    position_ids = hax.arange(Pos).broadcast_axis(Batch)
-    position_ids_tensor = named_array_to_tensor(position_ids)
-
-    hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(
-        q_tensor, k_tensor, cos_tensor, sin_tensor, position_ids_tensor
-    )
-    hf_out_rope_q = hf_out_rope_q.transpose(1, 2)  # re-transpose to match levanter
-    hf_out_rope_k = hf_out_rope_k.transpose(1, 2)
-    assert_equal_out(levanter_out_rope_q, hf_out_rope_q)
-    assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
-
-
-@skip_if_no_torch
-@pytest.mark.parametrize("use_flash", [True, False])
-@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_mistral_attention(use_flash, num_kv_heads):
-    import torch
-    from transformers.models.mistral.modeling_mistral import MistralAttention as HFMistralAttention
-
-    config = _get_mistral_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
-
-    attention = MistralAttention.init(config=config, key=random.PRNGKey(0))
-
-    state = attention.to_state_dict()
-    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_attention = HFMistralAttention(config.to_hf_config(32000))
-    hf_attention.load_state_dict(state, strict=True)
-
-    x, mask = _get_random_inputs(config)
-    x_torch = torch.from_numpy(np.array(x.array))
-    batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
-
-    # the torch mask is really a bias, so we need to invert it and make it a big negative number
-    mask_torch = (mask_torch == 0).float() * -1e9
-
-    out = attention(x, mask)
-    hf_out = hf_attention(x_torch, mask_torch)
-
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
-
-
-@skip_if_no_torch
-def test_mistral_rms_norm():
-    import torch
-    from transformers.models.mistral.modeling_mistral import MistralRMSNorm as HFMistralRMSNorm
-
-    config = _get_mistral_config()
-    ln = MistralRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-    hf_ln = HFMistralRMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
-
-    x, _ = _get_random_inputs(config)
-    x_torch = torch.from_numpy(np.array(x.array))
-
-    out = ln(x)
-    hf_out = hf_ln(x_torch)
-
-    assert np.isclose(
-        hf_out.detach().cpu().numpy(), np.array(out.array), rtol=1e-6, atol=1e-6
-    ).all(), f"{hf_out} != {out}"
-
-
-@skip_if_no_torch
-@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_mistral_decoder_layer(num_kv_heads):
-    import torch
-    from transformers.models.mistral.modeling_mistral import MistralDecoderLayer as HFMistralDecoderLayer
-
-    mistral_config = _get_mistral_config(num_kv_heads=num_kv_heads)
-    key = random.PRNGKey(0)
-    mistral_decoder_layer = MistralDecoderLayer.init(config=mistral_config, key=key)
-
-    state = mistral_decoder_layer.to_state_dict()
-    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFMistralDecoderLayer(mistral_config.to_hf_config(32000))
-    hf_decoder_layer.load_state_dict(state, strict=True)
-
-    x, mask = _get_random_inputs(mistral_config)
-    x_torch = torch.from_numpy(np.array(x.array))
-    batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
-    mask_torch = (mask_torch == 0).float() * -1e9
-
-    out = mistral_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, mask_torch)
-
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
@@ -293,15 +121,6 @@ def _get_mistral_config(use_flash=False, num_kv_heads=4) -> MistralConfig:
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
     )
-
-
-def _get_random_inputs(config: MistralConfig):
-    Embed = config.Embed
-    Pos = config.Pos
-    Batch = hax.Axis("batch", 2)
-    x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
-    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
-    return x, mask
 
 
 @parameterize_with_configs("mistral*.yaml")
