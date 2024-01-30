@@ -49,7 +49,7 @@ dependencies = [
     "tblib>=1.7.0,<2.0.0",
     "dataclasses-json",
     "ray[default]",
-    "pydantic<2",  # temporary pin until Ray supports pydantic 2.0
+    "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
     "rich>=13",
     "filelock",
 ]
