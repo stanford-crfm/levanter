@@ -39,12 +39,10 @@ class BatchLoader(Iterable[Ex], abc.ABC):
         resource_env: the resource environment, if None then use the current one
         max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
+
     Batch: hax.Axis
 
-
-    def __init__(
-        self, Batch: hax.Axis, resource_env: hax.ResourceEnv, max_capacity: Optional[int]
-    ):
+    def __init__(self, Batch: hax.Axis, resource_env: hax.ResourceEnv, max_capacity: Optional[int]):
 
         self.max_capacity = max_capacity
         self.resource_env = resource_env or hax.current_resource_env()
@@ -52,6 +50,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
 
     def __iter__(self) -> Iterator[Ex]:
         def produce_batches():
+            print("ZZZ", self.resource_env)
             with self.resource_env:
                 for batch in self._produce_batches():
                     yield batch
