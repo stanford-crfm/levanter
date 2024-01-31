@@ -45,7 +45,7 @@ def test_local_batched_data_loading_model_axis_2():
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(cache, Batch, mesh)
+        loader = ReplicatedBatchLoader(cache, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -65,7 +65,7 @@ def test_local_batched_data_loading_model_axis_1():
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(cache, Batch, mesh)
+        loader = ReplicatedBatchLoader(cache, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -109,7 +109,7 @@ def test_structured_batches_model_axis_1():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, Batch, mesh)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -129,7 +129,7 @@ def test_structured_batches_model_axis_2():
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, Batch, mesh)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -185,7 +185,7 @@ def test_structured_batches_model_axis_1_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, Batch, mesh)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -208,7 +208,7 @@ def test_structured_batches_model_axis_2_with_names():
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, Batch, mesh)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -230,7 +230,7 @@ def test_structured_batches_model_axis_2_subsharded():
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, Batch, mesh)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:

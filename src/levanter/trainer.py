@@ -230,6 +230,14 @@ class Trainer:
         return self.config.compute_axis_mapping
 
     @property
+    def param_env(self) -> hax.ResourceEnv:
+        return self.config.param_env
+
+    @property
+    def compute_env(self) -> hax.ResourceEnv:
+        return self.config.compute_env
+
+    @property
     def device_mesh(self) -> Mesh:
         return self.config.device_mesh
 
@@ -244,8 +252,7 @@ class Trainer:
     def __enter__(self):
         this_managers = [
             levanter.current_tracker(self.tracker),
-            self.device_mesh,
-            hax.axis_mapping(self.parameter_axis_mapping),
+            self.param_env,
         ]
         self._cmanagers.append(this_managers)
 
@@ -324,7 +331,7 @@ class Trainer:
 
         if do_load_checkpoint is not False:
             try:
-                state = load_checkpoint(saveable_state_shape, checkpoint_path, axis_mapping=axis_mapping, mesh=mesh)
+                state = load_checkpoint(saveable_state_shape, checkpoint_path, self.param_env)
             except FileNotFoundError:
                 if do_load_checkpoint:
                     raise
@@ -340,8 +347,7 @@ class Trainer:
             loaded_model = load_checkpoint(
                 saveable_state_shape.model,
                 initial_model_path,
-                axis_mapping=axis_mapping,
-                mesh=mesh,
+                env=self.param_env,
                 subpath="model",
             )
 
@@ -448,7 +454,7 @@ class Trainer:
         Returns:
             ReplicatedBatchLoader: the batch loader
         """
-        return ReplicatedBatchLoader(dataset, batch_axis, self.device_mesh, self.compute_axis_mapping)
+        return ReplicatedBatchLoader(dataset, batch_axis, self.config.compute_env)
 
     def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
         """Creates a sharded batch loader for the given dataset. Generally you should use this
@@ -461,7 +467,7 @@ class Trainer:
         Returns:
             ShardedBatchLoader: the batch loader
         """
-        return ShardedBatchLoader(dataset, batch_axis, self.device_mesh, self.compute_axis_mapping)
+        return ShardedBatchLoader(dataset, batch_axis, self.config.compute_env)
 
     @cached_property
     def _jit_train_step_fn(self):
@@ -569,7 +575,6 @@ class TrainerConfig:
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
     axis_resources: Mapping[str, str] = field(default_factory=dict)
     """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
     parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
@@ -669,6 +674,16 @@ class TrainerConfig:
         """size of the data parallel/batch parallel axis."""
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
+
+
+    @cached_property
+    def compute_env(self) -> hax.ResourceEnv:
+        return hax.ResourceEnv(self.compute_axis_mapping, self.mp, self.device_mesh)
+
+    @cached_property
+    def param_env(self) -> hax.ResourceEnv:
+        return hax.ResourceEnv(self.parameter_axis_mapping, self.mp, self.device_mesh)
+
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:

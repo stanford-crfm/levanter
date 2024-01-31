@@ -60,7 +60,7 @@ def main(config: EvalLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+    with config.trainer.param_env:
         eval_loader = ReplicatedBatchLoader(raw_dataset, Batch)
         key = jax.random.PRNGKey(0)
 

@@ -8,12 +8,11 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from jax.experimental import multihost_utils
-from jax.sharding import Mesh, PartitionSpec
+from jax.sharding import PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
 from haliax import NamedArray
-from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
 import levanter.mesh
@@ -34,29 +33,26 @@ _TensorSliceIndex = Tuple[slice, ...]
 
 
 class BatchLoader(Iterable[Ex], abc.ABC):
+    """
+    Args:
+        Batch: the batch size
+        resource_env: the resource environment, if None then use the current one
+        max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
+    """
     Batch: hax.Axis
-    _mesh: Mesh
-    axis_resources: Optional[ResourceMapping]
+
 
     def __init__(
-        self, Batch: hax.Axis, mesh: Mesh, axis_resources: Optional[ResourceMapping], max_capacity: Optional[int]
+        self, Batch: hax.Axis, resource_env: hax.ResourceEnv, max_capacity: Optional[int]
     ):
-        """
-        :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
-        :param axis_resources:
-        """
+
         self.max_capacity = max_capacity
-        self.axis_resources = axis_resources
-        self._mesh = mesh
+        self.resource_env = resource_env or hax.current_resource_env()
         self.Batch = Batch
 
     def __iter__(self) -> Iterator[Ex]:
-        ax_resources = self.axis_resources
-        if ax_resources is None:
-            ax_resources = hax.partitioning.current_thread_local_mapping()
-
         def produce_batches():
-            with hax.axis_mapping(ax_resources):
+            with self.resource_env:
                 for batch in self._produce_batches():
                     yield batch
 
@@ -114,7 +110,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
         def make_global_array_for_leaf(leaf_index, item_leaf_shape: Union[ShapeSpec, NamedShapeSpec]):
             raw_array = jax.make_array_from_callback(
                 to_raw_shape(item_leaf_shape),
-                jax.sharding.NamedSharding(self._mesh, self._pspec_for(item_leaf_shape)),
+                jax.sharding.NamedSharding(self.resource_env.mesh, self._pspec_for(item_leaf_shape)),
                 lambda indices: get_local_data_for_leaf(indices, leaf_index),
             )
             if isinstance(item_leaf_shape, NamedShapeSpec):
@@ -135,10 +131,10 @@ class BatchLoader(Iterable[Ex], abc.ABC):
 
     def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
-            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.resource_env)
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
-            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
+            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.resource_env)  # type: ignore
 
 
 class ShardedBatchLoader(BatchLoader[Ex]):
@@ -157,8 +153,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     load, by determining which row(s) of the device mesh the process is responsible for.
 
     :arg local_dataset: a dataset that is shardable and can be iterated over
-    :arg mesh: the device mesh
     :arg Batch: the batch size
+    :arg env: the resource environment, if None then use the current one
     :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
 
@@ -166,28 +162,31 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self,
         local_dataset: ShardableDataset[Ex],
         Batch: hax.Axis,
-        mesh: Optional[Mesh] = None,
-        axis_resources: Optional[ResourceMapping] = None,
+        env: Optional[hax.ResourceEnv] = None,
         max_capacity: Optional[int] = 10,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
     ):
-        self.mesh = mesh
-        self.Batch = Batch
-
-        process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
-        num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
+        env = env or hax.current_resource_env()
+        # TODO: this could be better
+        mesh = env.mesh
+        if mesh is not None:
+            process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
+            num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
+        else:
+            process_data_pos = override_process_data_pos or 0
+            num_data_process_groups = override_process_data_groups or 1
 
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
 
         self.process_data_pos = process_data_pos
         self.num_data_process_groups = num_data_process_groups
-        assert self.Batch.size % num_data_process_groups == 0
+        assert Batch.size % num_data_process_groups == 0
 
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
-        super().__init__(Batch, mesh, axis_resources, max_capacity)
+        super().__init__(Batch, env, max_capacity)
 
     def _produce_batches(self) -> Iterator[PyTree]:
         one_item_generator = non_caching_cycle(self.item_dataset)
@@ -232,29 +231,24 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
 
     Note: this class discards the final batch if it is smaller than the batch size.
 
-    :arg item_dataset: a dataset that is shardable and can be iterated over
-    :arg mesh: the device mesh
-    :arg Batch: the batch size
-    :arg axis_resources: the resources for the batch axis
-    :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
+    Args:
+        item_dataset: the dataset to load
+        Batch: the batch size
+        env: the resource environment
+        max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
 
     def __init__(
         self,
         item_dataset: Dataset[Ex],
         Batch: hax.Axis,
-        mesh: Optional[Mesh] = None,
-        axis_resources: Optional[ResourceMapping] = None,
+        env: Optional[hax.ResourceEnv] = None,
         max_capacity: Optional[int] = 10,
     ):
         assert item_dataset is not None
         self.item_dataset = item_dataset
-        self.Batch = Batch
 
-        if mesh is None:
-            mesh = hax.current_resource_env().mesh
-
-        super().__init__(Batch, mesh, axis_resources, max_capacity)
+        super().__init__(Batch, env, max_capacity)
 
     def _produce_batches(self):
         for batch in _batched(self.item_dataset, self.Batch.size):

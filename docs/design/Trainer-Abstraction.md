@@ -88,22 +88,22 @@ This is conceptually what happens when there is no checkpointing:
 ```python
 @hax.named_jit(out_axis_resources=parameter_mapping)
 def initialize(optimizer, model_init, is_trainable, mp):
-  model = model_init()
-  trainable_model = eqx.filter(model, is_trainable)
-  optimizer_state = optimizer.init(trainable_model)
+    model = model_init()
+    trainable_model = eqx.filter(model, is_trainable)
+    optimizer_state = optimizer.init(trainable_model)
 
-  model = _cast_model_by_trainability(model, is_trainable, mp)
+    model = _cast_model_by_trainability(model, is_trainable, mp)
 
-  state = TrainerState(
-    _step=0,
-    model=model,
-    optimizer_state=optimizer_state,
-    is_trainable=is_trainable,
-  )
+    state = TrainerState(
+        _step=0,
+        model=model,
+        optimizer_state=optimizer_state,
+        is_trainable=is_trainable,
+    )
 
-  state = hax.shard(state, parameter_mapping)
+    state = hax.shard(state, parameter_mapping)
 
-  return state
+    return state
 
 
 def _cast_model_by_trainability(model, is_trainable, mp):

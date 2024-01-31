@@ -265,11 +265,10 @@ def save_metadata(checkpoint_path, fs, step):
 def load_checkpoint(
     tree: M,
     checkpoint_path: PathLike,
+    env: Optional[haliax.ResourceEnv] = None,
     *,
     subpath: Optional[str] = None,
     discover_latest=True,
-    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-    mesh: Optional[jax.sharding.Mesh] = None,
 ) -> M:
     """
     Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
@@ -282,8 +281,7 @@ def load_checkpoint(
         checkpoint_path: the path to load the checkpoint from
         subpath: the subpath to load from the checkpoint
         discover_latest: whether to discover the latest checkpoint in the given path
-        axis_mapping: the axis mapping to use for loading the checkpoint
-        mesh: the mesh to use for loading the checkpoint
+        env: the resource env to use for loading the checkpoint. if None, the current resource env is used
     Returns:
         the loaded checkpoint, with the same structure as the exemplar tree
 
@@ -306,7 +304,7 @@ def load_checkpoint(
         checkpoint_path = os.path.join(checkpoint_path, subpath)
 
     try:
-        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
+        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, env)
         return tree
     except:  # noqa
         from levanter.trainer import TrainerState
@@ -328,8 +326,7 @@ def load_checkpoint(
                 training_state = tree_deserialize_leaves_tensorstore(
                     os.path.join(checkpoint_path, "training_state"),
                     training_state,
-                    axis_mapping=axis_mapping,
-                    mesh=mesh,
+                    env
                 )
                 opt_state, key = training_state
 
