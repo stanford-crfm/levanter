@@ -448,7 +448,7 @@ class Trainer:
         Returns:
             ReplicatedBatchLoader: the batch loader
         """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return ReplicatedBatchLoader(dataset, batch_axis, self.device_mesh, self.compute_axis_mapping)
 
     def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
         """Creates a sharded batch loader for the given dataset. Generally you should use this
@@ -461,7 +461,7 @@ class Trainer:
         Returns:
             ShardedBatchLoader: the batch loader
         """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return ShardedBatchLoader(dataset, batch_axis, self.device_mesh, self.compute_axis_mapping)
 
     @cached_property
     def _jit_train_step_fn(self):

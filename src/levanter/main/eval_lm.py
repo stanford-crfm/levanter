@@ -57,11 +57,11 @@ def main(config: EvalLmConfig):
 
         raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
-    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+        eval_loader = ReplicatedBatchLoader(raw_dataset, Batch)
         key = jax.random.PRNGKey(0)
 
         vocab_size = len(tokenizer)

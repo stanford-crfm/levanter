@@ -44,10 +44,10 @@ def main(config: VizGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
+    validation_set = config.data.validation_set(Pos.size)
+    assert validation_set is not None
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
-        config.trainer.device_mesh,
-        EvalBatch,
+        CausalLmDataset(validation_set, Pos, KeyPos), EvalBatch, config.trainer.device_mesh
     )
 
     compute_axis_mapping = config.trainer.compute_axis_mapping

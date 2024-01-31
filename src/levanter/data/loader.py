@@ -35,16 +35,20 @@ _TensorSliceIndex = Tuple[slice, ...]
 
 class BatchLoader(Iterable[Ex], abc.ABC):
     Batch: hax.Axis
-    mesh: Mesh
+    _mesh: Mesh
     axis_resources: Optional[ResourceMapping]
 
-    def __init__(self, max_capacity: Optional[int], axis_resources: Optional[ResourceMapping]):
+    def __init__(
+        self, Batch: hax.Axis, mesh: Mesh, axis_resources: Optional[ResourceMapping], max_capacity: Optional[int]
+    ):
         """
         :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
         :param axis_resources:
         """
         self.max_capacity = max_capacity
         self.axis_resources = axis_resources
+        self._mesh = mesh
+        self.Batch = Batch
 
     def __iter__(self) -> Iterator[Ex]:
         ax_resources = self.axis_resources
@@ -110,7 +114,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
         def make_global_array_for_leaf(leaf_index, item_leaf_shape: Union[ShapeSpec, NamedShapeSpec]):
             raw_array = jax.make_array_from_callback(
                 to_raw_shape(item_leaf_shape),
-                jax.sharding.NamedSharding(self.mesh, self._pspec_for(item_leaf_shape)),
+                jax.sharding.NamedSharding(self._mesh, self._pspec_for(item_leaf_shape)),
                 lambda indices: get_local_data_for_leaf(indices, leaf_index),
             )
             if isinstance(item_leaf_shape, NamedShapeSpec):
@@ -161,8 +165,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def __init__(
         self,
         local_dataset: ShardableDataset[Ex],
-        mesh: Mesh,
         Batch: hax.Axis,
+        mesh: Optional[Mesh] = None,
         axis_resources: Optional[ResourceMapping] = None,
         max_capacity: Optional[int] = 10,
         *,
@@ -183,7 +187,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         assert self.Batch.size % num_data_process_groups == 0
 
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
-        super().__init__(max_capacity, axis_resources)
+        super().__init__(Batch, mesh, axis_resources, max_capacity)
 
     def _produce_batches(self) -> Iterator[PyTree]:
         one_item_generator = non_caching_cycle(self.item_dataset)
@@ -238,17 +242,19 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
     def __init__(
         self,
         item_dataset: Dataset[Ex],
-        mesh: Mesh,
         Batch: hax.Axis,
+        mesh: Optional[Mesh] = None,
         axis_resources: Optional[ResourceMapping] = None,
         max_capacity: Optional[int] = 10,
     ):
         assert item_dataset is not None
         self.item_dataset = item_dataset
-        self.mesh = mesh
         self.Batch = Batch
 
-        super().__init__(max_capacity, axis_resources)
+        if mesh is None:
+            mesh = hax.current_resource_env().mesh
+
+        super().__init__(Batch, mesh, axis_resources, max_capacity)
 
     def _produce_batches(self):
         for batch in _batched(self.item_dataset, self.Batch.size):
