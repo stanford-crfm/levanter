@@ -50,8 +50,8 @@ class BatchLoader(Iterable[Ex], abc.ABC):
 
     def __iter__(self) -> Iterator[Ex]:
         def produce_batches():
-            print("ZZZ", self.resource_env)
-            with self.resource_env:
+            # print("ZZZ", self.resource_env)
+            with hax.axis_mapping(self.resource_env.axis_mapping):
                 for batch in self._produce_batches():
                     yield batch
 
