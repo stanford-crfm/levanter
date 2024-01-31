@@ -217,6 +217,7 @@ configs:
       - gs://levanter-data/dev/redpajama/wikipedia/wiki.jsonl
 train_weights:
   arxiv: 28
+  c4: 175
   github: 59
   StackExchange: 20
   wikipedia: 24
