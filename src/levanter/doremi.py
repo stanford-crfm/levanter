@@ -16,7 +16,7 @@ from levanter.callbacks import eval_loss_loop
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.logging import capture_time
-from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
+from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState, take_opt_step
 from levanter.types import ComputeLossFunction, ModuleComputeLoss
 from levanter.utils.tree_utils import inference_mode
 
@@ -167,7 +167,12 @@ def estimate_mixture_weights(
             loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
             grad = proxy_loss_bwd(grad_loss)[0]
 
-        new_state = trainer._take_train_step(state, proxy, grad)
+        partial_loss = lambda model: loss_fn(model, *batch)
+        model, opt_state = take_opt_step(
+            optimizer, state.model, state.opt_state, grad, partial_loss, state.is_trainable
+        )
+
+        new_state = dataclasses.replace(state, model=model, opt_state=opt_state, _step=state._step + 1)
         new_state = new_state.update_alpha(alpha)
 
         # log metrics

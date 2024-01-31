@@ -404,7 +404,7 @@ class PriorityProcessorActor:
             if self._processing_thread.is_alive():
                 self._processing_thread.join()
 
-    def _loop(self):
+    def _loop(self: "PriorityProcessorActor"):
         should_sleep = False
         backpressure_queue: list[ray.ObjectRef] = []
 

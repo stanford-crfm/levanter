@@ -315,8 +315,6 @@ class Trainer:
             checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
         do_load_checkpoint = self.config.load_checkpoint
-        axis_mapping = self.parameter_axis_mapping
-        mesh = self.device_mesh
         initial_model_path = self.config.initialize_from
 
         # we don't save the full trainer state, so we need to filter out the non-trainable parameters
@@ -355,7 +353,7 @@ class Trainer:
             model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
 
         # now we initialize a fresh trainer state, possibly just to finish any missing fields
-        @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
+        @named_jit(axis_resources=self.param_env, donate_args=(True, True, True, False))
         def init_state(partial_state, model_init, training_key, is_trainable):
             model = model_init()
             fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
@@ -494,8 +492,7 @@ class Trainer:
 
             new_state = dataclasses.replace(state, model=model, opt_state=opt_state)
 
-        new_state = dataclasses.replace(new_state, training_key=new_key)
-        new_state = dataclasses.replace(new_state, _step=state._step + 1)
+        new_state = dataclasses.replace(new_state, _step=state._step + 1, training_key=new_key)
 
         return loss, new_state
 
@@ -675,7 +672,6 @@ class TrainerConfig:
         assert jax.device_count() % self.model_axis_size == 0
         return jax.device_count() // self.model_axis_size
 
-
     @cached_property
     def compute_env(self) -> hax.ResourceEnv:
         return hax.ResourceEnv(self.compute_axis_mapping, self.mp, self.device_mesh)
@@ -683,7 +679,6 @@ class TrainerConfig:
     @cached_property
     def param_env(self) -> hax.ResourceEnv:
         return hax.ResourceEnv(self.parameter_axis_mapping, self.mp, self.device_mesh)
-
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:

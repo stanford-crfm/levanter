@@ -89,8 +89,8 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
 
         array = state_dict[prefix]
-        mesh = haliax.partitioning._get_mesh()
-        if mesh.devices.size > 1:  # this happens with the default mesh
+        mesh = haliax.current_resource_env().mesh
+        if mesh is not None:  # this happens with the default mesh
             pspec = haliax.partitioning.pspec_for_axis(tree.axes)
             sharding = jax.sharding.NamedSharding(mesh, pspec)
             array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])

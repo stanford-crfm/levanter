@@ -13,12 +13,10 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 import tensorstore
-from jax.sharding import Mesh
 from tensorstore import TensorStore
 
 import haliax as hax
 import haliax.tree_util as htu
-from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
 from levanter.utils import jax_utils
@@ -117,13 +115,11 @@ async def _deserialize_named_array(like, spec, env):
         assert sharding.is_equivalent_to(array.sharding, len(like.array.shape))
         return hax.NamedArray(array, like.axes)
     else:
-        array = await _deserialize_one_leaf(like.array, spec, axis_mapping, mesh)
+        array = await _deserialize_one_leaf(like.array, spec, env)
         return hax.NamedArray(array, like.axes)
 
 
-def tree_deserialize_leaves_tensorstore(
-    checkpoint_dir, pytree, env: Optional[hax.ResourceEnv] = None
-):
+def tree_deserialize_leaves_tensorstore(checkpoint_dir, pytree, env: Optional[hax.ResourceEnv] = None):
     """
     Deserializes a PyTree of Arrays and NamedArrays from a Tensorstore checkpoint, returning a pytree with the same shape
     as the one provided. This method is capable of deserializing NamedArrays that are the result of an eval_shape call
@@ -138,6 +134,7 @@ def tree_deserialize_leaves_tensorstore(
     :return: a pytree with the same shape as the exemplar pytree, but with the arrays deserialized from the checkpoint
     """
     # TODO: support ShapeDtypeStructs that are not NamedArrays
+    env = env or hax.current_resource_env()
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
     specs = htu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
 

@@ -191,7 +191,7 @@ def test_llama_decoder_layer():
 
     state = llama_decoder_layer.to_state_dict()
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000))
+    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000), 0)
     hf_decoder_layer.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(llama_config)

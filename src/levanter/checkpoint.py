@@ -105,12 +105,11 @@ class Checkpointer:
         path: Optional[PathLike] = None,
         *,
         discover_latest: bool = True,
-        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-        mesh: Optional[haliax.partitioning.Mesh] = None,
+        env: Optional[haliax.ResourceEnv] = None,
     ) -> Optional[M]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh)
+        return load_checkpoint(state, path, discover_latest=discover_latest, env=env)
 
     def load_model(
         self,
@@ -118,16 +117,13 @@ class Checkpointer:
         path: Optional[str] = None,
         *,
         discover_latest: bool = True,
-        axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
-        mesh: Optional[haliax.partitioning.Mesh] = None,
+        env: Optional[haliax.ResourceEnv] = None,
     ) -> Optional[M]:
         """
         Convenience method/holdover from  previous API for loading checkpoints.
         Loads just the model assuming the model is in the `model` subdir of the discovered checkpoint.
         """
-        ret_dict = self.load_checkpoint(
-            {"model": model}, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
-        )
+        ret_dict = self.load_checkpoint({"model": model}, path, discover_latest=discover_latest, env=env)
         if ret_dict is None:
             return None
         return ret_dict["model"]
@@ -315,18 +311,14 @@ def load_checkpoint(
             logger.warning("Attempting to load old-style checkpoint")
             model, training_state = tree.model, (tree.opt_state, tree.training_key)
 
-            model = tree_deserialize_leaves_tensorstore(
-                os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
-            )
+            model = tree_deserialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model, env)
 
             if training_state is None:
                 opt_state = None
                 key = None
             else:
                 training_state = tree_deserialize_leaves_tensorstore(
-                    os.path.join(checkpoint_path, "training_state"),
-                    training_state,
-                    env
+                    os.path.join(checkpoint_path, "training_state"), training_state, env
                 )
                 opt_state, key = training_state
 
