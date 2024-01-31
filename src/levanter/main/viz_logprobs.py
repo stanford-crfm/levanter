@@ -57,7 +57,7 @@ def main(config: VizGpt2Config):
         key = jax.random.PRNGKey(0)
 
         vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
@@ -82,7 +82,7 @@ def main(config: VizGpt2Config):
 
         assert model is not None
 
-        model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+        model = hax.shard(model)
 
         compute_and_visualize_log_probs(
             path=config.path,
