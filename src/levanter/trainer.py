@@ -476,8 +476,6 @@ class Trainer:
         model = inference_mode(state.model, False)
 
         def loss_fn(model, *batch, **batch_kwargs):
-            # TODO: when we get ResourceEnvs in place, we can remove this cast_to_compute
-            model = self.mp.cast_to_compute(model)
             with hax.axis_mapping(self.compute_axis_mapping):
                 return self.loss_fn(model, *batch, **batch_kwargs).scalar()
 
