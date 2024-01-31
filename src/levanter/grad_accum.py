@@ -24,6 +24,8 @@ class ReductionType(enum.Enum):
     # TODO: add MAX?
 
 
+# TODO: should we use a custom_jvp on microbatched?
+
 # cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
 def microbatched(
     fn: Callable[Args, R],
