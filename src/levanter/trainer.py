@@ -480,8 +480,16 @@ class Trainer:
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         loss, grads = self._compute_gradients_microbatched(loss_fn, model, batch, **batch_kwargs, key=key)
 
-        new_state = self._take_train_step(state, loss_fn, model, grads, *batch, **batch_kwargs, key=key)
+        with hax.axis_mapping(self.parameter_axis_mapping):
+            partial_loss = lambda model: loss_fn(model, *batch, **batch_kwargs)
+            model, opt_state = take_opt_step(
+                self.optimizer, model, state.opt_state, grads, partial_loss, state.is_trainable
+            )
+
+            new_state = dataclasses.replace(state, model=model, opt_state=opt_state)
+
         new_state = dataclasses.replace(new_state, training_key=new_key)
+        new_state = dataclasses.replace(new_state, _step=state._step + 1)
 
         return loss, new_state
 
@@ -495,18 +503,6 @@ class Trainer:
             self.compute_axis_mapping,
         )
         return grad_fn(model, *batch, **batch_kwargs)
-
-    def _take_train_step(self, state: S, loss_fn, model, grads, *batch, **batch_kwargs) -> S:
-        """
-        Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
-        """
-        with hax.axis_mapping(self.parameter_axis_mapping):
-            partial_loss = lambda model: loss_fn(model, *batch, **batch_kwargs)
-            model, opt_state = take_opt_step(
-                self.optimizer, model, state.opt_state, grads, partial_loss, state.is_trainable
-            )
-
-        return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
