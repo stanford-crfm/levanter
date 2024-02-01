@@ -50,9 +50,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
 
     def __iter__(self) -> Iterator[Ex]:
         def produce_batches():
-            # NB: we do not want to use the mesh here, because it makes JAX unhappy
-            # TODO: figure out why we can't use mesh here and fix.
-            with hax.axis_mapping(self.resource_env.axis_mapping):
+            with self.resource_env:
                 for batch in self._produce_batches():
                     yield batch
 
