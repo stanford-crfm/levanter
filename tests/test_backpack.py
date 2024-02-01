@@ -8,7 +8,6 @@ from transformers import AutoModelForCausalLM
 import haliax
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
@@ -22,7 +21,7 @@ VOCAB_SIZE = 50264
 def test_backpack_predict():
     trainer_config = TrainerConfig()
 
-    Vocab = round_axis_for_partitioning(Axis("vocab", VOCAB_SIZE), trainer_config.compute_axis_mapping)
+    Vocab = Axis("vocab", VOCAB_SIZE)
     model_config = BackpackConfig()
     model_key = PRNGKey(0)
     model = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)

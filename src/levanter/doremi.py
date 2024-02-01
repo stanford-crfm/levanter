@@ -115,7 +115,7 @@ def estimate_mixture_weights(
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
-                with hax.axis_mapping(trainer.compute_axis_mapping):
+                with trainer.compute_env:
                     return trainer.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             for domain, dataset in validation_sets.items():

@@ -87,7 +87,7 @@ def main(config: EvalLmConfig):
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
-            model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+            model = hax.shard(model, config.trainer.param_env)
 
             loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
 

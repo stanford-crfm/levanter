@@ -5,7 +5,6 @@ from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.checkpoint import load_checkpoint
 from levanter.models.backpack import BackpackLMHeadModel
@@ -34,8 +33,7 @@ def test_hf_backpack_consistency():
     model_config: BackpackConfig = BackpackConfig.from_hf_config(hf_model_config)
     trainer_config = TrainerConfig()
 
-    vocab_size = hf_model_config.vocab_size
-    Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), trainer_config.compute_axis_mapping)
+    Vocab = Axis("vocab", hf_model_config.vocab_size)
     model_key = PRNGKey(0)
     model_levanter = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)
     model_levanter, (_, _), _ = load_checkpoint(
@@ -59,18 +57,17 @@ def test_hf_gpt2_consistency():
 
     from levanter.models.gpt2 import Gpt2Config
 
-    model_config: GPT2Config = Gpt2Config.from_hf_config(hf_model_config)
+    model_config = Gpt2Config.from_hf_config(hf_model_config)
     trainer_config = TrainerConfig()
 
-    vocab_size = hf_model_config.vocab_size
-    Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), trainer_config.compute_axis_mapping)
+    Vocab = Axis("vocab", hf_model_config.vocab_size)
     model_key = PRNGKey(0)
     model_levanter = Gpt2LMHeadModel.init(Vocab, model_config, key=model_key)
-    model_levanter, (_, _), _ = load_checkpoint(
+    model_levanter = load_checkpoint(
         model_levanter,
-        (None, None),
         checkpoint_path=LEVANTER_GPT2_CHECKPOINT,
         discover_latest=True,
+        subpath="model",
     )
     mp = trainer_config.mp
     model_levanter = mp.cast_to_param(model_levanter)

@@ -428,10 +428,11 @@ class Trainer:
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
-            @eqx.filter_jit
+            @named_jit(axis_resources=self.param_env, donate_args=(False))
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
-                with hax.axis_mapping(self.compute_axis_mapping):
+                # TODO: should we do in full precision?
+                with self.compute_env:
                     return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
