@@ -147,7 +147,7 @@ def estimate_mixture_weights(
     @hax.named_jit(axis_resources=trainer.parameter_axis_mapping, donate_args=(True,))
     def doremi_step(state: DoremiState, ref, batch, domains):
         proxy = inference_mode(state.model, False)
-        with hax.axis_mapping(trainer.compute_axis_mapping):
+        with trainer.compute_env:
             # calculate per-token losses for proxy and ref
             proxy_losses, proxy_loss_bwd = eqx.filter_vjp(lambda p: loss_fn(p, batch, reduction_axis=()), proxy)
             ref_losses = loss_fn(ref, batch, reduction_axis=())

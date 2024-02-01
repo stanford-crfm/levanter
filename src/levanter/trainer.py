@@ -483,7 +483,7 @@ class Trainer:
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         loss, grads = self._compute_gradients_microbatched(loss_fn, model, batch, **batch_kwargs, key=key)
 
-        with hax.axis_mapping(self.parameter_axis_mapping):
+        with self.param_env:
             partial_loss = lambda model: loss_fn(model, *batch, **batch_kwargs)
             model, opt_state = take_opt_step(
                 self.optimizer, model, state.opt_state, grads, partial_loss, state.is_trainable
