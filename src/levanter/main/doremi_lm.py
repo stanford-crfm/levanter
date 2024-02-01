@@ -90,7 +90,7 @@ def main(config: TrainLmConfig):
         else:
             ref_model_shape = eqx.filter_eval_shape(config.model.build, Vocab, key=jrandom.PRNGKey(0))
             ref_model = levanter.checkpoint.load_checkpoint(
-                ref_model_shape, config.ref_model_path, axis_mapping=parameter_axis_mapping, subpath="model"
+                ref_model_shape, config.ref_model_path, env=config.trainer.param_env, subpath="model"
             )
 
         ref_model = inference_mode(ref_model, True)
