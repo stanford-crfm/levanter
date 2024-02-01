@@ -109,6 +109,20 @@ configs:
       - gs://levanter-data/dev/redpajama/c4/c4-train.{00000..01022}-of-01024.jsonl
     validation_urls:
       - https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.01023-of-01024.jsonl
+  common_crawl:
+    train_urls:
+      - gs://levanter-data/dev/redpajama/2019-30/en_head_{0000..0055}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2019-30/en_middle_{0060..0096}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2020-05/en_head_{0000..0068}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2020-05/en_middle_{0000..0128}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2021-04/en_head_{0000..0072}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2021-04/en_middle_{0000..0102}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2022-05/en_head_{0000..0059}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2022-05/en_middle_{0000..0096}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2023-06/en_head_{0000..0069}.json.gz.dedup.classifier.jsonl.zst
+      - gs://levanter-data/dev/redpajama/2023-06/en_middle_{0000..0103}.json.gz.dedup.classifier.jsonl.zst
+    validation_urls:
+      - https://data.together.xyz/redpajama-data-1T/v1.0.0/common_crawl/2023-06/en_middle_0104.json.gz.dedup.classifier.jsonl.zst
   github:
     train_urls:
       - gs://levanter-data/dev/redpajama/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
@@ -218,6 +232,7 @@ configs:
 train_weights:
   arxiv: 28
   c4: 175
+  common_crawl: 878
   github: 59
   StackExchange: 20
   wikipedia: 24
