@@ -107,6 +107,7 @@ parameters are sharded correctly, if you're using more than one device.
 @dataclass
 class TrainArgs:
     lora: LoraConfig = LoraConfig()
+    trainer: TrainerConfig = TrainerConfig()
 
     # ... some other stuff
     hf_save_path: Optional[str] = None  # Path to save the HuggingFace checkpoint.
@@ -120,7 +121,7 @@ class TrainArgs:
 
 def train(config: TrainArgs):
     ...
-    with config.trainer.device_mesh:
+    with Trainer(config.trainer, optimizer) as trainer:
         ...
 
         @hax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
@@ -143,12 +144,12 @@ using the `lora_trainable_params_filter` function, which takes a model and retur
 ```python
 def train(config: TrainArgs):
     ...
-    with config.trainer.device_mesh:
+    with Trainer(config.trainer, optimizer) as trainer:
         ...
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 ```
 
 ### 3. Serialize a PEFT-compatible checkpoint
