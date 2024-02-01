@@ -476,7 +476,7 @@ class Trainer:
         model = inference_mode(state.model, False)
 
         def loss_fn(model, *batch, **batch_kwargs):
-            with hax.axis_mapping(self.compute_axis_mapping):
+            with self.compute_env:
                 return self.loss_fn(model, *batch, **batch_kwargs).scalar()
 
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
