@@ -74,6 +74,10 @@ def microbatched(
         raise ValueError(f"Bad value for {microbatch_size=}")
 
     num_micro_steps = batch_size // microbatch_size
+
+    if num_micro_steps == 1:
+        return fn
+
     Microbatch = Batch.resize(microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
