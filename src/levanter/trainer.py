@@ -39,6 +39,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.types import Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -48,7 +49,7 @@ from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.grad_accum import accumulate_gradients_sharded
+from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
@@ -450,9 +451,7 @@ class Trainer:
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
-            loss, grads = accumulate_gradients_sharded(
-                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(trainable_model, *batch, **batch_kwargs)
+            loss, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
 
@@ -466,6 +465,17 @@ class Trainer:
             return loss, model, opt_state
 
         return train_step
+
+    def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            self.config.microbatch_size,
+            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
+        )
+        return grad_fn(model, *batch, **batch_kwargs)
 
     def _init_model_and_opt_state(self, model_init):
         model = model_init()
@@ -614,13 +624,17 @@ class TrainerConfig:
     def EvalBatch(self):
         return Axis("batch", self.eval_batch_size)
 
+    @property
+    def microbatch_size(self):
+        return self.per_device_parallelism * self.data_axis_size
+
     def __post_init__(self):
         if self.wandb is not None:
             warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
             self.tracker = self.wandb
 
     def initialize(self):
-        """Initializes jax, logging, setting the run name/id in the process"""
+        """Initializes jax, wandb, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
         pylogging.basicConfig(level=pylogging.INFO)
