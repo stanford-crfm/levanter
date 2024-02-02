@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, TypeVar
 import equinox as eqx
 import jax
 from jax import numpy as jnp
+from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like
@@ -27,8 +28,19 @@ def jnp_to_python(a: jnp.ndarray):
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.local_devices(backend="cpu")[0]):
-        yield
+    # If we have a mesh, we need to make a new version of that mesh
+    from haliax import current_resource_env
+
+    mesh = current_resource_env().mesh
+    cpu = jax.local_devices(backend="cpu")[0]
+    if mesh is None:
+        with jax.default_device(cpu):
+            yield
+    else:
+        mesh_axis_names = mesh.axis_names
+        new_mesh = Mesh(jnp.array([cpu]).reshape((1,) * len(mesh_axis_names)), axis_names=mesh_axis_names)
+        with jax.default_device(cpu), new_mesh:
+            yield
 
 
 def is_inside_jit():
