@@ -1,7 +1,9 @@
 from typing import Optional, Union, overload
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
+from jax.lib import xla_bridge
 from jaxtyping import PRNGKeyArray
 
 import haliax
@@ -57,27 +59,62 @@ def dot_product_attention(
         raise ValueError("QPos and KPos must be different")
 
     if use_flash:
-        from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
+        accelerator_type = xla_bridge.get_backend().platform.lower()
 
-        if flash_block_size is None:
-            flash_block_size = BLOCK_SIZE
+        if accelerator_type == "tpu" or accelerator_type == "cpu":
+            from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
 
-        return flash_attention(
-            QPos,
-            KPos,
-            Key,
-            query,
-            key,
-            value,
-            block_size=flash_block_size,
-            mask=mask,
-            bias=bias,
-            dropout=dropout,
-            inference=inference,
-            key=prng,
-            dtype=attention_dtype,
-            precision=precision,
-        )
+            if flash_block_size is None:
+                flash_block_size = BLOCK_SIZE
+
+            return flash_attention(
+                QPos,
+                KPos,
+                Key,
+                query,
+                key,
+                value,
+                block_size=flash_block_size,
+                mask=mask,
+                bias=bias,
+                dropout=dropout,
+                inference=inference,
+                key=prng,
+                dtype=attention_dtype,
+                precision=precision,
+            )
+        elif accelerator_type == "gpu":
+            from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, self_fused_attn
+
+            # TODO: Double check that axis aligns
+            qkv = jnp.array([query.array, key.array, value.array])
+            scaling_factor = jax.lax.rsqrt(float(query.axis_size(Key)))
+            is_training = not inference
+
+            # TODO: bias type is probably also configurable
+            attn_bias_type = AttnBiasType.NVTE_PRE_SCALE_BIAS
+            fused_attn_bias = None
+            if bias:
+                fused_attn_bias = bias.array
+
+            # TODO: We have a mask type we can use to configure this
+            attn_mask_type = AttnMaskType.NVTE_CAUSAL_MASK
+            fused_attn_mask = None
+            if mask:
+                fused_attn_mask = mask.array
+
+            return self_fused_attn(
+                qkv=qkv,  # jnp.ndarray,
+                bias=fused_attn_bias,  # jnp.ndarray,
+                mask=fused_attn_mask,  # jnp.ndarray,
+                seed=prng,  # jnp.ndarray,
+                attn_bias_type=attn_bias_type,  # AttnBiasType,
+                attn_mask_type=attn_mask_type,  # AttnMaskType,
+                scaling_factor=scaling_factor,  # float,
+                dropout_probability=dropout,  # float,
+                is_training=is_training,  # bool,
+            )
+
     else:
         QPos = query.resolve_axis(QPos)
         KPos = key.resolve_axis(KPos)
