@@ -568,9 +568,11 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return TokenSeqDataset(cache, seq_len)
 
     def build_or_load_cache(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
     ) -> Optional[TokenizedDocumentCache]:
         split_cache_dir = os.path.join(self.cache_dir, split)
+        name = logger_name or os.path.basename(self.cache_dir)
+
         try:
             return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
         except FileNotFoundError:
@@ -585,8 +587,8 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         if monitors is True:
             monitors = [
-                LoggingMetricsMonitor(prefix=f"preprocessing/{split}", commit=False),
-                LoggerMetricsMonitor(f"preprocessing.{split}"),
+                LoggingMetricsMonitor(prefix=f"preprocessing/{name}/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{name}.{split}"),
             ]
         elif monitors is False:
             monitors = []
@@ -657,6 +659,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
         return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
+
+    def training_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        return token_datasets
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True

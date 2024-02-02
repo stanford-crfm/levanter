@@ -161,7 +161,6 @@ def test_checkpoint_simple():
             (initial_opt_state, initial_key),
             step=10,
             checkpoint_path=tmpdir,
-            exist_ok=True,
         )
         restored_model, (restored_optstate, rkey), step = load_checkpoint(
             rep_model,
@@ -212,7 +211,7 @@ def test_checkpoint_steps():
     assert_trees_not_close(state, rep_state)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        save_checkpoint(model, state, step=3, checkpoint_path=tmpdir, exist_ok=True)
+        save_checkpoint(model, state, step=3, checkpoint_path=tmpdir)
         restored_model, restored_optstate, step = load_checkpoint(
             rep_model, rep_state, checkpoint_path=tmpdir, discover_latest=False
         )

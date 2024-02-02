@@ -93,7 +93,12 @@ class ShardedDataset(Dataset[T_co]):
         source, processor = _construct_composite_batch_processor(self)
 
         cache = build_cache(
-            path, source, processor, rows_per_chunk=rows_per_chunk, await_finished=await_finished, monitors=monitors
+            path,
+            source,
+            processor,
+            rows_per_chunk=rows_per_chunk,
+            await_finished=await_finished,
+            monitors=monitors,
         )
         return DictCacheDataset(cache)
 
