@@ -43,7 +43,6 @@ class BatchLoader(Iterable[Ex], abc.ABC):
     Batch: hax.Axis
 
     def __init__(self, Batch: hax.Axis, resource_env: hax.ResourceEnv, max_capacity: Optional[int]):
-
         self.max_capacity = max_capacity
         self.resource_env = resource_env or hax.current_resource_env()
         self.Batch = Batch
@@ -193,6 +192,9 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         while True:
             batch_offset = self.process_data_pos * self.local_batch_size
             local_batch: List[PyTree] = next(batched)
+
+            leaves = jtu.tree_leaves(local_batch[0])
+            print([a.devices() for a in leaves if hasattr(a, "devices")])
 
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
