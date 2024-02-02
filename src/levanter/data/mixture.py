@@ -2,7 +2,6 @@ from typing import Dict, Iterator, Mapping, TypeVar
 
 import jax.random
 import numpy as np
-from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
 from haliax.util import StringHolderEnum
@@ -47,7 +46,7 @@ class MixtureDataset(ShardableDataset[T]):
         self.stop_strategy = stop_strategy
 
         if not isinstance(key, int):
-            key = jax.random.randint(PRNGKey(key)[0], (), 0, 2**31).item()
+            key = jax.random.randint(key, (), 0, 2**20).item()
 
         self.key = key
 
