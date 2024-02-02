@@ -307,6 +307,11 @@ def _flash_attention_backward(
             dV_j = dV_j + hax.dot(QPos.name, p_ij, dO_i).astype(dV_j.dtype)
             dK_j = dK_j + hax.dot(QPos.name, dAttn_ij, q_i).astype(dK_j.dtype)
 
+            # GQA-specific: eliminate unnecessary axes (e.g. 'q_heads_per_group')
+            unnecessary_axes = hax.eliminate_axes(dV_j.axes, v.axes)
+            dV_j = hax.sum(dV_j, unnecessary_axes)
+            dK_j = hax.sum(dK_j, unnecessary_axes)
+
             dQ_i = dQ_i + hax.dot(KPos.name, dAttn_ij, k_j).astype(dQ.dtype)
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)

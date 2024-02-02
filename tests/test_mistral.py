@@ -1,5 +1,6 @@
 import tempfile
 
+import equinox as eqx
 import jax
 import numpy as np
 import pytest
@@ -50,6 +51,25 @@ def test_mistral_lm_head_model(num_kv_heads):
     mistral_model = MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))
     out = mistral_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
+
+
+@pytest.mark.parametrize("use_flash", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
+    llama_config = _get_mistral_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+    Batch = hax.Axis("batch", 2)
+    Vocab = hax.Axis("vocab", 1000)
+    Pos = llama_config.Pos
+    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
+    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+
+    llama_model = MistralLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
+
+    def f(llama_model, input_ids, mask):
+        out = llama_model(input_ids, mask)
+        return hax.sum(out).scalar()
+
+    _, grads = eqx.filter_value_and_grad(f)(llama_model, input_ids, mask)
 
 
 @skip_if_no_torch
