@@ -6,7 +6,7 @@ from typing import Callable, TypeVar
 
 def logical_cpu_core_count():
     """Returns the number of logical CPU cores available to the process."""
-    num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
+    num_cpus = os.getenv("SLURM_CPUS_ON_NODE", None)
     if num_cpus is not None:
         return int(num_cpus)
 
