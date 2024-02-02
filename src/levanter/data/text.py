@@ -11,6 +11,7 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Uni
 
 import braceexpand
 import datasets
+import equinox as eqx
 import fsspec
 import jax
 import numpy as np
@@ -50,7 +51,9 @@ from levanter.data.shard_cache import (  # noqa
 )
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
-from levanter.utils.jax_utils import use_cpu_device  # noqa
+
+
+# from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
@@ -91,29 +94,32 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key
+
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        @functools.partial(eqx.filter_jit, out_shardings=sharding)
+        def _create_lm_example(tokens, key):
+            tokens = hax.named(tokens, self.QPos)
+
+            example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
+            if self.fcm_prob > 0:
+                # masks for attention
+                # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                assert self.key is not None
+                this_key, key = jax.random.split(key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+                example = dataclasses.replace(example, attn_mask=attn_mask)
+
+            return example
+
         for tokens in self.dataset:
-            with use_cpu_device():
-                example = self._create_lm_example(tokens, key)
-                yield example
-
-    @functools.partial(jax.jit, static_argnums=(0))
-    def _create_lm_example(self, tokens, key):
-        tokens = hax.named(tokens, self.QPos)
-
-        example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
-
-        if self.fcm_prob > 0:
-            # masks for attention
-            # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-            # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-            # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-            assert self.key is not None
-            this_key, key = jax.random.split(key)
-            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-            example = dataclasses.replace(example, attn_mask=attn_mask)
-
-        return example
+            example = _create_lm_example(tokens, key)
+            print("?", example.tokens.array.devices())
+            yield example
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
