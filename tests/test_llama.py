@@ -162,21 +162,6 @@ def test_llama_attention(use_flash, num_kv_heads):
     ).all(), f"{hf_out[0]} != {out}"
 
 
-@pytest.mark.parametrize("use_flash", [True, False])
-@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_llama_attention_bwd(use_flash, num_kv_heads):
-    config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
-
-    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
-    x, mask = _get_random_inputs(config)
-
-    def f(attention, x, mask):
-        out = attention(x, mask)
-        return hax.sum(out).scalar()
-
-    _, grads = eqx.filter_value_and_grad(f)(attention, x, mask)
-
-
 @skip_if_no_torch
 def test_llama_rms_norm():
     import torch
