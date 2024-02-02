@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional, TypeVar
 
 import equinox as eqx
 import jax
+import numpy as np
 from jax import numpy as jnp
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
@@ -38,7 +39,7 @@ def use_cpu_device():
             yield
     else:
         mesh_axis_names = mesh.axis_names
-        new_mesh = Mesh(jnp.array([cpu]).reshape((1,) * len(mesh_axis_names)), axis_names=mesh_axis_names)
+        new_mesh = Mesh(np.array([cpu]).reshape((1,) * len(mesh_axis_names)), axis_names=mesh_axis_names)
         with jax.default_device(cpu), new_mesh:
             yield
 
