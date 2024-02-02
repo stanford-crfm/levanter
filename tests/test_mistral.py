@@ -140,6 +140,7 @@ def _get_mistral_config(use_flash=False, num_kv_heads=4) -> MistralConfig:
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
+        flash_attention_block_size=8 if use_flash else None,
     )
 
 
