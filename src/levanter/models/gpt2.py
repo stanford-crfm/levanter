@@ -320,8 +320,6 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
-        # token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed)) * config.initializer_range
-        # position_embeddings = hax.random.normal(k_wpe, (config.Pos, config.Embed)) * (config.initializer_range / 2)
         token_embeddings = hnn.Embedding.init(
             Vocab, config.Embed, key=k_wte, initializer_range=config.initializer_range
         )
@@ -334,13 +332,9 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def embed(self, input_ids, *, key):
-        # input_embeds = self.token_embeddings.take("vocab", input_ids)
-        # position_embeds = self.position_embeddings
         input_embeds = self.token_embeddings(input_ids)
-
         input_Pos = input_ids.resolve_axis("position")
         position_embeds = self.position_embeddings.embed(hax.arange(input_Pos))
-        # x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
         x = input_embeds + position_embeds
         x = self.dropout(x, key=key)
 
@@ -353,8 +347,6 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return {"token_embeddings": "wte", "position_embeddings": "wpe"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
-        # new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
-        # return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_token_embeddings)
 
