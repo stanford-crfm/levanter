@@ -193,9 +193,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             batch_offset = self.process_data_pos * self.local_batch_size
             local_batch: List[PyTree] = next(batched)
 
-            leaves = jtu.tree_leaves(local_batch[0])
-            print([a.devices() for a in leaves if hasattr(a, "devices")])
-
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
                 get_batch_items=lambda begin, end: local_batch[(begin - batch_offset) : (end - batch_offset)],

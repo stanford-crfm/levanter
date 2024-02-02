@@ -117,7 +117,6 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
             for tokens in self.dataset:
                 example = _create_lm_example(tokens, key)
-                print("?", example.tokens.array.devices())
                 yield example
 
 
