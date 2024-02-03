@@ -51,7 +51,6 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
-from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
@@ -821,9 +820,6 @@ def take_opt_step(
 ) -> tuple[M, OptState]:
     train_grads = eqx.filter(grads, is_trainable)
     trainable_model = eqx.filter(model, is_trainable)
-    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model)
-    # Sophia, e.g.
-    if isinstance(optimizer, SecondOrderTransformation):
-        opt_state = optimizer.update_hessian(opt_state, obj_fn, model)
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fn)
     model = eqx.apply_updates(model, updates)
     return model, opt_state

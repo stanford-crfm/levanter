@@ -1,11 +1,4 @@
 from .config import AdamConfig, OptimizerConfig
-from .second_order import (
-    AnySecondOrderTransformation,
-    HessianUpdateFn,
-    SecondOrderTransformation,
-    chain_second_order,
-    inject_hyperparams,
-)
 from .sophia import (
     ScaleBySophiaState,
     SophiaGConfig,

@@ -14,7 +14,6 @@ from jaxtyping import PRNGKeyArray
 
 import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
-from levanter.optim.second_order import SecondOrderTransformation, chain_second_order, inject_hyperparams
 from levanter.optim.util import hvp, tree_gaussian_like
 from levanter.utils.jax_utils import parameter_count, tree_filter_like
 
@@ -115,7 +114,7 @@ class BaseSophiaConfig(HessianOptConfig):
         raise NotImplementedError
 
     def build(self, num_train_steps: int):
-        def _optimizer(learning_rate, gamma) -> SecondOrderTransformation:
+        def _optimizer(learning_rate, gamma) -> optax.GradientTransformation:
             components = []
             key = jax.random.PRNGKey(self.rng_seed)
 
@@ -140,7 +139,7 @@ class BaseSophiaConfig(HessianOptConfig):
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
 
-            optimizer = chain_second_order(*components)
+            optimizer = optax.chain(*components)
 
             return optimizer
 
@@ -149,7 +148,7 @@ class BaseSophiaConfig(HessianOptConfig):
         constant_gamma_schedule = optax.constant_schedule(self.gamma)  # type: ignore
         # gamma_schedule = optax.join_schedules([constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2])
 
-        return inject_hyperparams(_optimizer)(
+        return optax.inject_hyperparams(_optimizer)(
             learning_rate=self.lr_scheduler(num_train_steps), gamma=constant_gamma_schedule
         )
 
@@ -183,7 +182,7 @@ def sophia_h(
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
     key: PRNGKey,
-) -> SecondOrderTransformation:
+) -> optax.GradientTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
 
@@ -194,7 +193,7 @@ def sophia_h(
 
     components.append(optax.scale(-lr))
 
-    return chain_second_order(*components)
+    return optax.chain(*components)
 
 
 def scale_by_sophia_h(
@@ -231,7 +230,7 @@ def sophia_g(
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
     key: PRNGKey,
-) -> SecondOrderTransformation:
+) -> optax.GradientTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
 
@@ -242,7 +241,7 @@ def sophia_g(
 
     components.append(optax.scale(-lr))
 
-    return chain_second_order(*components)
+    return optax.chain(*components)
 
 
 def scale_by_sophia_g(
@@ -278,7 +277,7 @@ def _sophia_gradient_transform(
     clip_threshold: Optional[float],
     initial_key: PRNGKeyArray,
     mu_dtype: Optional[Any] = None,
-) -> SecondOrderTransformation:
+) -> optax.GradientTransformation:
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
 
     def init_fn(params):
@@ -288,7 +287,7 @@ def _sophia_gradient_transform(
             count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), mu=mu, h=h, hess_key=initial_key
         )
 
-    def update_fn(updates, state, params=None):
+    def update_fn(updates, state, params=None, *, obj_fn, **kwargs):
         mu = update_moment(updates, state.mu, b1, 1)
         # nu = update_moment_per_elem_norm(updates, state.nu, b2, 2)
         mu_hat = bias_correction(mu, b1, state.count + 1)
@@ -323,14 +322,15 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
 
-        return updates, ScaleBySophiaState(
-            count=state.count + 1, hessian_count=state.hessian_count, mu=mu, h=h_hat, hess_key=state.hess_key
-        )
+        state = ScaleBySophiaState(count=state.count + 1, hessian_count=state.hessian_count, mu=mu, h=h_hat,
+                                   hess_key=state.hess_key)
+        state = update_hessian(state, params, obj_fn=obj_fn, **kwargs)
+        return updates, state
 
-    def update_hessian(state, fn, model, *batch, **batch_kwargs):
+    def update_hessian(state, params, *, obj_fn, **kwargs):
         def _do_update():
             key, next_key = jax.random.split(state.hess_key)
-            new_hess = sophia_hess_fn(fn, model, *batch, hess_key=key, **batch_kwargs)
+            new_hess = sophia_hess_fn(obj_fn, params, hess_key=key, **kwargs)
 
             new_hess = tree_filter_like(state.h, new_hess)
 
@@ -350,11 +350,11 @@ def _sophia_gradient_transform(
             state.count,
         )
 
-    return SecondOrderTransformation(init_fn, update_fn, update_hessian)
+    return optax.GradientTransformationExtraArgs(init_fn, update_fn)
 
 
 # use this for Sophia-G
-def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, example, *args, hess_key: PRNGKey, **kwargs):
+def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, *args, hess_key: PRNGKey, **kwargs):
     """
 
     Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
@@ -370,17 +370,17 @@ def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, example, *args, he
         raise ValueError("objective must be a SophiaGObjective")
 
     # Step 3
-    logits, model_backward = eqx.filter_vjp(lambda model: fn.logits(model, example, *args, **kwargs), model)
+    logits, model_backward = eqx.filter_vjp(lambda model: fn.logits(model, *args, **kwargs), model)
 
     # Step 4
-    y_hat = fn.sample(logits, example, key=hess_key)
+    y_hat = fn.sample(logits, key=hess_key)
 
     # Step 5
     grad_loss_logits = eqx.filter_grad(fn.loss)(logits, y_hat)
     pseudo_g = model_backward(grad_loss_logits)[0]
 
     # Step 6
-    bs = fn.num_data_points(example)
+    bs = fn.num_data_points()
     h = jax.tree_util.tree_map(lambda x: x**2 * bs, pseudo_g)
 
     return h
