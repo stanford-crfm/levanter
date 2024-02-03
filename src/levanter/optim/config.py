@@ -1,11 +1,16 @@
 import abc
+import re
 import warnings
 from dataclasses import dataclass
 from typing import Optional
 
 import draccus
+import equinox as eqx
+import jax
 import optax
 from jax import numpy as jnp
+
+from levanter.utils.jax_utils import leaf_key_paths
 
 
 @dataclass
@@ -20,6 +25,9 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
+    weight_decay_modules: Optional[list[str] | str] = None
+    """A regex or a list of strings to identify where to mask weight.
+    For nano-GPT, this field can be set as `r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings"`"""
 
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
@@ -28,6 +36,28 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     @abc.abstractmethod
     def build(self, num_train_steps: int):
         raise NotImplementedError
+
+    def build_weight_decay_mask(self):
+        if self.weight_decay_modules is None:
+            return None
+        else:
+            # mask based on regex or module path
+            def _apply_on(x, key_path):
+                if isinstance(self.weight_decay_modules, str):
+                    compiled_regex = re.compile(self.weight_decay_modules)
+                    return compiled_regex.match(key_path) is not None
+                else:
+                    return any(key_path.__contains__(target) for target in self.weight_decay_modules)
+
+            def mask_fn(model):
+                return jax.tree_util.tree_map(
+                    _apply_on,
+                    model,
+                    leaf_key_paths(model, is_leaf=eqx.is_array),
+                    is_leaf=eqx.is_array,
+                )
+
+            return mask_fn
 
     def lr_scheduler(self, num_train_steps):
         warmup_steps = self._convert_warmup(num_train_steps)
@@ -118,8 +148,7 @@ class AdamConfig(OptimizerConfig):
             components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
 
             if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))

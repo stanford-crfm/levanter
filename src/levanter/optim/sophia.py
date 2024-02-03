@@ -135,7 +135,7 @@ class BaseSophiaConfig(HessianOptConfig):
             # Algorithm 3, step 11 (Note, this comes after clipping b/c it's not supposed to be clipped)
             # In the paper, it comes as a prior step, but doesn't get clipped
             if self.weight_decay > 0:
-                components.append(optax.add_decayed_weights(self.weight_decay))
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))

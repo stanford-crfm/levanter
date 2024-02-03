@@ -34,8 +34,8 @@ import levanter.tracker
 
 from .. import logging
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
-from . import ShardableDataset
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
+from .dataset import ShardableDataset
 from .sharded_dataset import ShardedDataset
 
 

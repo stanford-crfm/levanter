@@ -74,6 +74,10 @@ def microbatched(
         raise ValueError(f"Bad value for {microbatch_size=}")
 
     num_micro_steps = batch_size // microbatch_size
+
+    if num_micro_steps == 1:
+        return fn
+
     Microbatch = Batch.resize(microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
@@ -109,7 +113,7 @@ def microbatched(
 
             with jax.named_scope("accum"):
                 acc = eqx.apply_updates(acc, this_r)
-                acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
+                acc = hax.shard(acc, accum_axis_mapping)
 
             return acc
 
@@ -130,7 +134,7 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             if not x.has_axis(Batch.name):
                 return x
             x = x.unflatten_axis(Batch, (AccumStep, Microbatch))
-            return hax.shard_with_axis_mapping(x, axis_mapping)
+            return hax.shard(x, axis_mapping)
         elif isinstance(x, jnp.ndarray):
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
             return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))

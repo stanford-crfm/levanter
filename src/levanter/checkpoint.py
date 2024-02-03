@@ -226,7 +226,7 @@ class Checkpointer:
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
-def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
+def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     """
     Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
     will be saved even if a checkpoint already exists at the given path.
@@ -242,7 +242,7 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike, *, exist_ok: 
 
     fs: AbstractFileSystem
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
-    fs.makedirs(plain_path, exist_ok=exist_ok)
+    fs.makedirs(plain_path, exist_ok=True)
 
     tree_serialize_leaves_tensorstore(checkpoint_path, tree)
     save_metadata(checkpoint_path, fs, step)
