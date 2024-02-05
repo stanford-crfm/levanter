@@ -948,13 +948,9 @@ class _ShardWriterWorker:  # type: ignore
         self.parent_ref.shard_failed.remote(self.shard_name, error)
 
     def _finished_chunk(self, idx: int, chunk: ChunkMetadata):
-        if idx < self.metadata_writer.num_chunks:
-            logger.error(f"Received chunk {idx} for {self.shard_name} but it's already finished")
-            error = RuntimeError(f"Received chunk {idx} for {self.shard_name} but it's already finished")
-            self.parent_ref.shard_failed.remote(self.shard_name, ser_exc_info(error))
-            raise error
-
-        if self._expected_num_chunks is not None and idx >= self._expected_num_chunks:
+        if (idx < self.metadata_writer.num_chunks) or (
+            self._expected_num_chunks is not None and idx >= self._expected_num_chunks
+        ):
             logger.error(f"Received chunk {idx} for {self.shard_name} but it's already finished")
             error = RuntimeError(f"Received chunk {idx} for {self.shard_name} but it's already finished")
             self.parent_ref.shard_failed.remote(self.shard_name, ser_exc_info(error))
@@ -975,6 +971,8 @@ class _ShardWriterWorker:  # type: ignore
         chunks_committed = []
         while len(self.uncommited_chunks) > 0 and self.uncommited_chunks[0][0] == self.metadata_writer.num_chunks:
             _, chunk = heapq.heappop(self.uncommited_chunks)
+            chunk_number = self.metadata_writer.num_chunks
+            logger.info(f"Committing chunk {chunk.name} of shard {self.shard_name}. It is chunk {chunk_number}")
             self.metadata_writer.commit_chunk(chunk)
             chunks_committed.append(chunk)
 
@@ -1284,6 +1282,9 @@ class ChunkCacheBroker:
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
         self._metrics_condition = asyncio.Condition()
+        path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
+        name = f"broker::{path_for_name}"
+        self.logger = pylogging.getLogger(f"{name}")
 
         # initialize writer task
         # first see if we need to do anything: check the ledger for is_finished
@@ -1295,7 +1296,6 @@ class ChunkCacheBroker:
         except FileNotFoundError:
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             # only use the last two components of the name since it gets kind of long
-            path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
             name = f"builder::{path_for_name}"
             self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, self._rows_per_chunk)  # type: ignore
 
@@ -1322,7 +1322,6 @@ class ChunkCacheBroker:
         elif self._is_finished:
             return None
         else:
-            # we don't have this chunk yet, so we need to wait
             if chunk_idx not in self._reader_promises:
                 self._reader_promises[chunk_idx] = asyncio.Future()
             return await self._reader_promises[chunk_idx]
@@ -1337,7 +1336,9 @@ class ChunkCacheBroker:
         for chunk in chunks:
             self.chunks.append(chunk)
             chunk_idx = len(self.chunks) - 1
+            self.logger.info(f"Received chunk {chunk_idx}")
             if chunk_idx in self._reader_promises:
+                self.logger.info(f"Resolving promise for chunk {chunk_idx}")
                 self._reader_promises[chunk_idx].set_result(chunk)
                 del self._reader_promises[chunk_idx]
 
@@ -1545,13 +1546,14 @@ class ShardCache(Iterable[pa.RecordBatch]):
             time_in = time.time()
             # we want to also log if we're waiting for a long time, so we do this in a loop
             while timeout is None or time.time() - time_in < timeout:
+                next_time = time.time()
                 current_timeout = 20.0
                 if timeout is not None:
-                    current_timeout = min(current_timeout, timeout - (time.time() - time_in))
+                    current_timeout = min(current_timeout, timeout - (next_time - time_in))
                 try:
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
-                    self.logger.warning(f"Waiting for chunk {mapped_index} for {int(time.time() - time_in)} seconds")
+                    self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
                     current_timeout *= 2
                     current_timeout = min(current_timeout, 80)
                     continue
