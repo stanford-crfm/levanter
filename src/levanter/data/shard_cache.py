@@ -544,6 +544,8 @@ class ShardReaderItem(PriorityWorkItem):
         total_chunk_rows = 0  # the total number of rows in the chunk
         batch_result_ref = None
 
+        self.group.logger.info(f"Reading one chunk of shard {self.shard_name}: {self.chunk_idx}")
+
         try:
             while not chunk_filled:
                 batch = next(self.reader, None)
