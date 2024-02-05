@@ -559,11 +559,14 @@ class ShardReaderItem(PriorityWorkItem):
 
                 if batch:
                     priority = self.spec.priority_fn(self.shard_idx, self.chunk_idx)
+                    # these times aren't exact because the times might be from different machines
+                    # but they're just for logging
+                    time_in = time.time()
                     batch_result_ref = ray.get(
                         self.spec.processor_actor.submit.remote(priority=priority, batch=RefBox(ray.put(batch)))
                     )
                     writer.chunk_batch_finished.remote(
-                        self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref)
+                        self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref), time_in
                     )
                     chunk_batch_idx += 1
                     del batch
@@ -857,10 +860,19 @@ class _GroupShardWriterWorker:
     def current_metadata(self, shard_name: str):
         return self.shard_writers[shard_name].current_metadata()
 
-    def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox):
+    def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox, time_in):
         # batch is a pa.RecordBatch ref box
         try:
+            time_mid = time.time()
+            logger.info(
+                f"Received in progress batch {batch_idx} of chunk {chunk_id} of shard {shard_name} in"
+                f" {time_mid - time_in}"
+            )
             batch = ray.get(batch.ref)
+            logger.info(
+                f"Received finished batch {batch_idx} of chunk {chunk_id} of shard {shard_name} in total"
+                f" {time.time() - time_in}"
+            )
             return self.shard_writers[shard_name].chunk_batch_finished(chunk_id, batch_idx, batch)
         except Exception as e:
             print(f"Error while processing batch {batch_idx} of chunk {chunk_id} of shard {shard_name}", flush=True)
