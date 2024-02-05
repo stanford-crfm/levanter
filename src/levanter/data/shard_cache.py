@@ -1241,18 +1241,23 @@ class ChunkCacheBuilder:
             next_chunk = status.pop_chunk_to_send()
             if next_chunk is not None:
                 # we can send a chunk from this shard
-                logger.debug(f"Sending chunk from {name}")
+                self.logger.info(f"Sending chunk from {name}")
                 self._current_round_robin.pop(0)
                 self._current_round_robin.append(name)
                 chunks_to_send.append(next_chunk)
                 continue
             else:
-                logger.debug(f"Shard {name} has no chunks to send and is not known to be finished")
+                chunks_waiting = [f"{n2} ({len(s2.current_buffer)})" for n2, s2 in self.shard_status.items()]
+                msg = (
+                    f"Shard {name} has no chunks to send and is not known to be finished. We have this many queued"
+                    f" chunks: {chunks_waiting}"
+                )
+                self.logger.info(msg)
                 # we can't send a chunk from this shard, so we can't send any additional chunks
                 break
 
         if len(chunks_to_send) > 0:
-            logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
+            logger.info(f"Sending {len(chunks_to_send)} chunks to broker")
             ray.get(self.broker_ref._append_chunks.remote(*chunks_to_send))
 
     def _finish(self):
