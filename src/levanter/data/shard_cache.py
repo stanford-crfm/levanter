@@ -1107,6 +1107,7 @@ class ChunkCacheBuilder:
             self._processor_actors = []
 
             for shard_name in source.shard_names:
+                self._current_round_robin.append(shard_name)
                 self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
@@ -1118,7 +1119,6 @@ class ChunkCacheBuilder:
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
-                self._current_round_robin.append(shard_name)
                 shard_groups[i % num_shard_groups].append(shard_name)
 
             for group_id, shard_group in enumerate(shard_groups):
@@ -1247,7 +1247,11 @@ class ChunkCacheBuilder:
                 chunks_to_send.append(next_chunk)
                 continue
             else:
-                chunks_waiting = [f"{n2} ({len(s2.current_buffer)})" for n2, s2 in self.shard_status.items()]
+                chunks_waiting = [
+                    f"{n2} ({len(s2.current_buffer)})"
+                    for n2, s2 in self.shard_status.items()
+                    if len(s2.current_buffer) > 0
+                ]
                 msg = (
                     f"Shard {name} has no chunks to send and is not known to be finished. We have this many queued"
                     f" chunks: {chunks_waiting}"
