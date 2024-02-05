@@ -460,6 +460,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
     processor_actor: ray.actor.ActorHandle  # BatchProcessorQueue
     batch_size: int
     num_rows_per_chunk: int
+    group_id: int
 
     def build(self) -> "PriorityWorkTaskGroup":
         return ShardGroupTaskGroup(self)
@@ -468,7 +469,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
 class ShardGroupTaskGroup(PriorityWorkTaskGroup):
     def __init__(self, spec: ShardGroupToBeProcessed):
         self.spec = spec
-        self.logger = pylogging.getLogger(f"shard_reader.{self.spec.name}")
+        self.logger = pylogging.getLogger(f"shard_reader.{spec.name}.{spec.group_id}")
 
         try:
             metadata: dict[str, ShardMetadata] = _initial_shard_metadatas(
@@ -565,7 +566,6 @@ class ShardReaderItem(PriorityWorkItem):
                         self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref)
                     )
                     chunk_batch_idx += 1
-                    # enqueue_to_backpressure(batch, batch_result_ref)
                     del batch
 
                 if total_chunk_rows >= self.spec.num_rows_per_chunk or exhausted_shard:
@@ -580,7 +580,7 @@ class ShardReaderItem(PriorityWorkItem):
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
 
-            logger.debug(f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}")
+            logger.info(f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}")
 
             return exhausted_shard, batch_result_ref
         except Exception as e:  # noqa
@@ -857,10 +857,10 @@ class _GroupShardWriterWorker:
     def current_metadata(self, shard_name: str):
         return self.shard_writers[shard_name].current_metadata()
 
-    async def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox):
+    def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox):
         # batch is a pa.RecordBatch ref box
         try:
-            batch = await batch.ref
+            batch = ray.get(batch.ref)
             return self.shard_writers[shard_name].chunk_batch_finished(chunk_id, batch_idx, batch)
         except Exception as e:
             print(f"Error while processing batch {batch_idx} of chunk {chunk_id} of shard {shard_name}", flush=True)
@@ -1129,6 +1129,7 @@ class ChunkCacheBuilder:
                     processor_actor=processor_actor,
                     batch_size=processor.batch_size,
                     num_rows_per_chunk=rows_per_chunk,
+                    group_id=group_id,
                 )
 
                 # we want global names so that different tasks can coordinate priorities
