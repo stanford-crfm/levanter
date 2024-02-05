@@ -587,7 +587,9 @@ class ShardReaderItem(PriorityWorkItem):
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
 
-            logger.info(f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}")
+            self.group.logger.info(
+                f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}"
+            )
 
             return exhausted_shard, batch_result_ref
         except Exception as e:  # noqa
@@ -778,11 +780,35 @@ class _ShardStatus:
         return self.expected_num_chunks is not None and self.num_chunks_sent >= self.expected_num_chunks
 
 
+class WaitTimeReportingThread(threading.Thread):
+    def __init__(self, report, interval=60):
+        super().__init__()
+        self.report = report
+        self.interval = interval
+        self.shutdown_event = threading.Event()
+
+    def run(self):
+        total_waited = 0
+        while not self.shutdown_event.is_set():
+            if total_waited > 0:
+                self.report(total_waited)
+            total_waited += self.interval
+            time.sleep(self.interval)
+
+    def shutdown(self):
+        self.shutdown_event.set()
+
+
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]) -> pa.RecordBatch:
+        logger.info(f"Processing batch {desc}")
         pylogging.basicConfig(level=pylogging.INFO)
         queue.task_running.remote()
+        timer_thread = WaitTimeReportingThread(
+            lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
+        )
+        timer_thread.start()
         try:
             result = processor(batch)
             del batch
@@ -790,6 +816,9 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
             raise e
+        finally:
+            timer_thread.shutdown()
+            timer_thread.join()
 
     return process_task
 
@@ -878,26 +907,30 @@ class _GroupShardWriterWorker:
                 f" {time_mid - time_in}"
             )
             # do a backoff loop until the batch is actually processed. log if it's been a while
-            timeout_interval = 5
+            timeout_interval = 10
             total_time_waited = 0
 
             while True:
                 try:
                     batch = await asyncio.wait_for(asyncio.shield(batch.ref), timeout_interval)
+                    break
+                except asyncio.TimeoutError:
                     # to keep to round numbers, we log how much we asked for rather than how much we got
                     total_time_waited += timeout_interval
                     timeout_interval = min(2 * timeout_interval, 60)
-                    break
-                except asyncio.TimeoutError:
                     logger.info(
-                        f"Waiting for batch {batch_idx} of chunk {chunk_id} of shard {shard_name} to be processed."
+                        f"Waiting for {shard_name}.{chunk_id}.{batch_idx} to be processed. "
                         f"Waited {total_time_waited} seconds."
                     )
 
-            logger.debug(
-                f"Received finished batch {batch_idx} of chunk {chunk_id} of shard {shard_name} in total"
-                f" {(time.time() - time_in):.2f} seconds."
-            )
+            if logger.isEnabledFor(pylogging.DEBUG):
+                logger.debug(
+                    f"Received finished {shard_name}.{chunk_id}.{batch_idx} in {(time.time() - time_in):.2f} seconds."
+                )
+            elif total_time_waited > 10:
+                logger.info(
+                    f"Waited {total_time_waited} seconds for {shard_name}.{chunk_id}.{batch_idx} to be processed."
+                )
             return self.shard_writers[shard_name].chunk_batch_finished(chunk_id, batch_idx, batch)
         except Exception as e:
             print(f"Error while processing batch {batch_idx} of chunk {chunk_id} of shard {shard_name}", flush=True)
