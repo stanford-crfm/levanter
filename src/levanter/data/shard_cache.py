@@ -802,8 +802,8 @@ class WaitTimeReportingThread(threading.Thread):
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]) -> pa.RecordBatch:
-        logger.info(f"Processing batch {desc}")
         pylogging.basicConfig(level=pylogging.INFO)
+        logger.info(f"Processing batch {desc}")
         queue.task_running.remote()
         timer_thread = WaitTimeReportingThread(
             lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
