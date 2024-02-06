@@ -19,6 +19,7 @@ def dot_product_attention(
     query: NamedArray,
     key: NamedArray,
     value: NamedArray,
+    qkv_bound: NamedArray,
     mask: Optional[Union["AttentionMask", NamedArray]] = None,
     bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
@@ -87,8 +88,9 @@ def dot_product_attention(
             from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, self_fused_attn
 
             # TODO: Double check that axis aligns
-            qkv = jnp.array([query.array, key.array, value.array])
+            qkv = qkv_bound.array
             scaling_factor = jax.lax.rsqrt(float(query.axis_size(Key)))
+            print(f"\n\nScaling factor: {scaling_factor}\n\n")
             is_training = not inference
 
             # TODO: bias type is probably also configurable
@@ -107,6 +109,16 @@ def dot_product_attention(
 
             # if mask:
             #     fused_attn_mask = mask.array
+
+            print("\n\n")
+            print(f"qkv type: {type(qkv)}")
+            print(f"bias type: {type(bias)}")
+            print(f"mask type: {type(mask)}")
+            print(f"seed type: {type(prng)}")
+            print(f"attn_bias_Type type: {type(attn_bias_type)}")
+            print(f"attn_mask_type type: {type(attn_mask_type)}")
+            print(f"scaling factor type: {type(scaling_factor)}")
+            print("\n\n")
 
             return self_fused_attn(
                 qkv=qkv,  # jnp.ndarray,
