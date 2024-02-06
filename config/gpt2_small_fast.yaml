@@ -20,9 +20,9 @@ trainer:
   per_device_parallelism: -1
 
   train_batch_size: 32
-  num_train_steps: 20000
+  num_train_steps: 2000000
   steps_per_eval: 50
 optimizer:
-  learning_rate: 1E-8
+  learning_rate: 5E-8
   weight_decay: 0.1
   warmup: 0.01
