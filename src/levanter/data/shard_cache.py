@@ -1073,6 +1073,7 @@ class _ChunkCollator:
         self.chunk_writers: dict[int, _ChunkWriter] = {}  # chunk index -> writer
         self.batch_counts: dict[int, int] = {}  # chunk index -> number of batches written
         self.expected_totals: dict[int, int] = {}  # chunk index -> expected num batches.
+        self.failed_chunks: dict[int, ExceptionInfo] = {}  # chunk index -> error
         self.chunk_partial_batches: dict[
             int, list[tuple[int, pa.RecordBatch]]
         ] = {}  # chunk index -> heapq of (batch index, batch)
@@ -1091,21 +1092,32 @@ class _ChunkCollator:
         return self._attempt_to_write_chunk_fragments(chunk_id)
 
     def chunk_failed(self, chunk_id, error: ExceptionInfo):
+        self.failed_chunks[chunk_id] = error
         if chunk_id in self.chunk_writers:
             self.chunk_writers[chunk_id].__exit__(*error.restore())
             del self.chunk_writers[chunk_id]
 
     def _attempt_to_write_chunk_fragments(self, chunk_id) -> Optional[ChunkMetadata]:
+        if chunk_id in self.failed_chunks:
+            logger.error(f"Chunk {chunk_id} of shard {self.shard_name} already failed, not writing more")
+            raise self.failed_chunks[chunk_id].restore()
 
         if chunk_id in self.chunk_partial_batches:
             chunk_batches = self.chunk_partial_batches[chunk_id]
 
-            while len(chunk_batches) > 0 and chunk_batches[0][0] == self.batch_counts[chunk_id]:
+            while len(chunk_batches) > 0:
+                batch_id, batch = chunk_batches[0]
+                assert (
+                    batch_id <= self.batch_counts[chunk_id]
+                ), f"Expected batch {self.batch_counts[chunk_id]} but got {batch_id}"
+                if batch_id != self.batch_counts[chunk_id]:
+                    break
+
                 # we can write this batch
                 batch_id, batch = heapq.heappop(chunk_batches)
 
                 if chunk_id not in self.chunk_writers:
-                    assert batch_id == 0
+                    assert batch_id == 0, f"Expected batch 0 but got {batch_id}"
                     chunk_name = os.path.join(self.shard_name, f"chunk-{chunk_id}")
                     writer = _ChunkWriter(self.cache_dir, chunk_name, batch.schema)
                     writer.__enter__()
