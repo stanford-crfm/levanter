@@ -188,7 +188,6 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             q,
             k,
             v,
-            qkv_bound=qkv_out,
             mask=mask,
             inference=self.inference,
             use_flash=self.config.use_flash_attention,

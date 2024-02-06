@@ -20,7 +20,6 @@ def dot_product_attention(
     query: NamedArray,
     key: NamedArray,
     value: NamedArray,
-    qkv_bound: NamedArray,
     mask: Optional[Union["AttentionMask", NamedArray]] = None,
     bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
@@ -88,8 +87,24 @@ def dot_product_attention(
         elif accelerator_type == "gpu":
             from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, self_fused_attn
 
-            # TODO: Double check that axis aligns
-            qkv = qkv_bound.array
+            # TransformerEngine looks for qkv shape:
+            # batch_shape, max_seqlen, nqkv, num_heads, head_dim
+            # where nqkv = 3
+            q_ = haliax.rearrange(query, ("batch", "position", "heads", "head_size")).array
+            q_ = jnp.expand_dims(q_, axis=2)
+
+            k_ = haliax.rearrange(key, ("batch", "position", "heads", "head_size")).array
+            k_ = jnp.expand_dims(k_, axis=2)
+
+            v_ = haliax.rearrange(value, ("batch", "position", "heads", "head_size")).array
+            v_ = jnp.expand_dims(v_, axis=2)
+
+            print(f"\nShape of q_ is now {q_.shape}\n")
+
+            qkv = jnp.stack((q_, k_, v_), axis=2)
+
+            print(f"\nQKV shape is now: {qkv.shape}")
+
             # scaling_factor = jax.lax.rsqrt(float(query.axis_size(Key)))
             scaling_factor = 1.0
             print(f"\n\nScaling factor: {scaling_factor}\n\n")
