@@ -139,21 +139,21 @@ def skip_if_checkpoint_not_accessible(path: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")
 
 
 def skip_if_hf_model_not_accessible(model_id: str):
     def try_load_hf(model_id):
         try:
-            from transformers import AutoModelForCausalLM
+            from transformers import AutoConfig
 
-            AutoModelForCausalLM.from_pretrained(model_id)
+            AutoConfig.from_pretrained(model_id)
         except Exception:
             return False
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")
 
 
 class IdentityProcessor(BatchProcessor[BatchEncoding]):
