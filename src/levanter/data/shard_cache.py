@@ -589,7 +589,7 @@ class ShardReaderItem(PriorityWorkItem):
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
 
-            self.group.logger.info(
+            self.group.logger.debug(
                 f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}"
             )
 
@@ -806,7 +806,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]) -> pa.RecordBatch:
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
-        logger.info(f"Processing batch {desc}")
+        logger.debug(f"Processing batch {desc}")
         queue.task_running.remote()
         # timer_thread = WaitTimeReportingThread(
         #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
@@ -913,7 +913,7 @@ class _GroupShardWriterWorker:
                 f" {time_mid - time_in}"
             )
             # do a backoff loop until the batch is actually processed. log if it's been a while
-            timeout_interval = 10
+            timeout_interval = 20
             total_time_waited = 0
 
             while True:
@@ -924,7 +924,7 @@ class _GroupShardWriterWorker:
                 except asyncio.TimeoutError:
                     # to keep to round numbers, we log how much we asked for rather than how much we got
                     total_time_waited += timeout_interval
-                    timeout_interval = min(2 * timeout_interval, 60)
+                    timeout_interval = min(2 * timeout_interval, 100)
                     logger.info(
                         f"Waiting for {shard_name}.{chunk_id}.{batch_idx} to be processed. "
                         f"Waited {total_time_waited} seconds."
@@ -934,7 +934,7 @@ class _GroupShardWriterWorker:
                 logger.debug(
                     f"Received finished {shard_name}.{chunk_id}.{batch_idx} in {(time.time() - time_in):.2f} seconds."
                 )
-            elif total_time_waited > 10:
+            elif total_time_waited > 40:
                 logger.info(
                     f"Waited {total_time_waited} seconds for {shard_name}.{chunk_id}.{batch_idx} to be processed."
                 )
