@@ -93,7 +93,12 @@ class ShardedDataset(Dataset[T_co]):
         source, processor = _construct_composite_batch_processor(self)
 
         cache = build_cache(
-            path, source, processor, rows_per_chunk=rows_per_chunk, await_finished=await_finished, monitors=monitors
+            path,
+            source,
+            processor,
+            rows_per_chunk=rows_per_chunk,
+            await_finished=await_finished,
+            monitors=monitors,
         )
         return DictCacheDataset(cache)
 
@@ -166,7 +171,7 @@ class WrappedHFDataset(ShardedDataset[dict]):
         dataset = self._load_dataset()
         if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
             # ex_iterable has a key that gets discarded typically
-            shard = map(lambda t: t[1], dataset._ex_iterable.shard_data_sources([int(shard_name)]))
+            shard = map(lambda t: t[1], dataset._ex_iterable.shard_data_sources(int(shard_name), dataset.n_shards))
         else:
             shard = dataset
 
