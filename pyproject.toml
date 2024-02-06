@@ -35,13 +35,13 @@ dependencies = [
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
     "datasets==2.16.1",
-    "gcsfs<2023.13.0",
+    "gcsfs<2024.3.0",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
-    "fsspec<2023.13.0",
+    "fsspec<2024.3.0",
     # TODO: minimize and report an issue to tensorstore
     # causes hangs when serializing to GCS
-    "tensorstore==0.1.45",
+    "tensorstore==0.1.53",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]",
