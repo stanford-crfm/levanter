@@ -91,13 +91,8 @@ def dot_product_attention(
             # batch_shape, max_seqlen, nqkv, num_heads, head_dim
             # where nqkv = 3
             q_ = haliax.rearrange(query, ("batch", "position", "heads", "head_size")).array
-            q_ = jnp.expand_dims(q_, axis=2)
-
             k_ = haliax.rearrange(key, ("batch", "key_position", "heads", "head_size")).array
-            k_ = jnp.expand_dims(k_, axis=2)
-
             v_ = haliax.rearrange(value, ("batch", "key_position", "heads", "head_size")).array
-            v_ = jnp.expand_dims(v_, axis=2)
 
             print(f"\nShape of q_ is now {q_.shape}\n")
 
