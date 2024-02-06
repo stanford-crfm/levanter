@@ -1,7 +1,8 @@
 from typing import Optional, Union, overload
 
 import equinox as eqx
-import jax
+
+# import jax
 import jax.numpy as jnp
 from jax.lib import xla_bridge
 from jaxtyping import PRNGKeyArray
@@ -89,7 +90,8 @@ def dot_product_attention(
 
             # TODO: Double check that axis aligns
             qkv = qkv_bound.array
-            scaling_factor = jax.lax.rsqrt(float(query.axis_size(Key)))
+            # scaling_factor = jax.lax.rsqrt(float(query.axis_size(Key)))
+            scaling_factor = 1.0
             print(f"\n\nScaling factor: {scaling_factor}\n\n")
             is_training = not inference
 
