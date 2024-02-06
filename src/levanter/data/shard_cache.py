@@ -816,7 +816,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
             result = processor(batch)
             del batch
             result = as_record_batch(result)
-            logger.info(f"Finished processing batch {desc}")
+            logger.debug(f"Finished processing batch {desc}")
             return result
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
@@ -1074,6 +1074,7 @@ class _ChunkCollator:
         self.chunk_writers: dict[int, _ChunkWriter] = {}  # chunk index -> writer
         self.batch_counts: dict[int, int] = {}  # chunk index -> number of batches written
         self.expected_totals: dict[int, int] = {}  # chunk index -> expected num batches.
+        self.failed_chunks: dict[int, ExceptionInfo] = {}  # chunk index -> error
         self.chunk_partial_batches: dict[
             int, list[tuple[int, pa.RecordBatch]]
         ] = {}  # chunk index -> heapq of (batch index, batch)
@@ -1092,21 +1093,29 @@ class _ChunkCollator:
         return self._attempt_to_write_chunk_fragments(chunk_id)
 
     def chunk_failed(self, chunk_id, error: ExceptionInfo):
+        self.failed_chunks[chunk_id] = error
         if chunk_id in self.chunk_writers:
             self.chunk_writers[chunk_id].__exit__(*error.restore())
             del self.chunk_writers[chunk_id]
 
     def _attempt_to_write_chunk_fragments(self, chunk_id) -> Optional[ChunkMetadata]:
+        if chunk_id in self.failed_chunks:
+            logger.error(f"Chunk {chunk_id} of shard {self.shard_name} already failed, not writing more")
+            raise self.failed_chunks[chunk_id].restore()
 
         if chunk_id in self.chunk_partial_batches:
             chunk_batches = self.chunk_partial_batches[chunk_id]
 
-            while len(chunk_batches) > 0 and chunk_batches[0][0] == self.batch_counts[chunk_id]:
+            while len(chunk_batches) > 0:
+                batch_id, batch = chunk_batches[0]
+                if batch_id != self.batch_counts[chunk_id]:
+                    break
+
                 # we can write this batch
                 batch_id, batch = heapq.heappop(chunk_batches)
 
                 if chunk_id not in self.chunk_writers:
-                    assert batch_id == 0
+                    assert batch_id == 0, f"Expected batch 0 but got {batch_id}"
                     chunk_name = os.path.join(self.shard_name, f"chunk-{chunk_id}")
                     writer = _ChunkWriter(self.cache_dir, chunk_name, batch.schema)
                     writer.__enter__()
@@ -1176,15 +1185,20 @@ class ChunkCacheBuilder:
                 self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
+            num_worker_groups = len(ray.nodes())
+            num_shard_groups = max(min(num_worker_groups, num_shards), 1)
 
-            def priority_fn(shard_idx, chunk_idx):
-                return chunk_idx * num_shards + shard_idx
-
-            num_shard_groups = max(min(len(ray.nodes()), num_shards), 1)
+            # if we have a bunch of caches to build with one shard, we don't want them all
+            # assigned to the same node, so we use an offset based on the hash of the name (for stability)
+            # in an attempt to spread them out
+            group_offset = int(hash(name) % num_worker_groups)
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
                 shard_groups[i % num_shard_groups].append(shard_name)
+
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
 
             for group_id, shard_group in enumerate(shard_groups):
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
@@ -1208,7 +1222,8 @@ class ChunkCacheBuilder:
                 )
 
                 # we want global names so that different tasks can coordinate priorities
-                priority_actor_name = f"priority_processor.{group_id}"
+                worker_to_assign = (group_id + group_offset) % num_worker_groups
+                priority_actor_name = f"priority_processor.{worker_to_assign}"
 
                 reader_actor = PriorityProcessorActor.options(  # type: ignore
                     name=priority_actor_name, get_if_exists=True
@@ -1630,7 +1645,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
                     self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
-                    next_time += current_timeout
+                    next_time = time.time()
                     current_timeout *= 2
                     current_timeout = min(current_timeout, 100)
                     continue

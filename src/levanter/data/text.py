@@ -328,6 +328,8 @@ class BatchTokenizer(BatchProcessor[str]):
         self,
         tokenizer: PreTrainedTokenizerBase,
         enforce_eos=True,
+        *,
+        batch_size=128,
         override_resources=None,
         _workaround_len=LONG_STRING_WORKAROUND,
     ):
@@ -343,6 +345,8 @@ class BatchTokenizer(BatchProcessor[str]):
             should_append_eos = input_ids[-1] != tokenizer.eos_token_id
         else:
             should_append_eos = False
+
+        self._batch_size = batch_size
 
         self._need_to_add_eos = should_append_eos
         self._workaround_len = _workaround_len
@@ -456,7 +460,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def batch_size(self) -> int:
-        return 512
+        return self._batch_size
 
 
 def concatenate_and_group_texts(
