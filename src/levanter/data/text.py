@@ -312,7 +312,7 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
-LONG_STRING_WORKAROUND = 50_000
+LONG_STRING_WORKAROUND = 100_000
 
 
 ws = regex.compile(r"\s")
