@@ -99,8 +99,8 @@ def dot_product_attention(
 
             # TODO: We have a mask type we can use to configure this
             attn_mask_type = AttnMaskType.CAUSAL_MASK
-            print(f"\nQuery Size: {query.size}\n")
-            batch_size, seq_len, hidden_dim = query.size
+            print(f"\nQuery Size: {query.shape}\n")
+            batch_size, seq_len, hidden_dim = query.shape
             mask = jnp.tril(jnp.ones())
             # fused_attn_mask = None
 
