@@ -1107,9 +1107,6 @@ class _ChunkCollator:
 
             while len(chunk_batches) > 0:
                 batch_id, batch = chunk_batches[0]
-                assert (
-                    batch_id <= self.batch_counts[chunk_id]
-                ), f"Expected batch {self.batch_counts[chunk_id]} but got {batch_id}"
                 if batch_id != self.batch_counts[chunk_id]:
                     break
 
