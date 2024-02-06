@@ -40,12 +40,12 @@ def test_local_batched_data_loading_model_axis_2():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
 
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(cache, mesh, Batch)
+        loader = ReplicatedBatchLoader(cache, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -60,12 +60,12 @@ def test_local_batched_data_loading_model_axis_1():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
 
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(cache, mesh, Batch)
+        loader = ReplicatedBatchLoader(cache, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -105,11 +105,11 @@ def test_structured_batches_model_axis_1():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -125,11 +125,11 @@ def test_structured_batches_model_axis_2():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -180,12 +180,12 @@ def test_structured_batches_model_axis_1_with_names():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -203,12 +203,12 @@ def test_structured_batches_model_axis_2_with_names():
         np.array(devices).reshape(-1, model_axis_size),
         (ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA}, mesh=mesh):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:
@@ -227,10 +227,10 @@ def test_structured_batches_model_axis_2_subsharded():
     )
     Height = Axis("Height", 16)
     Width = Axis("Width", 16)
-    with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
+    with haliax.resource_env({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}, mesh=mesh):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
-        loader = ReplicatedBatchLoader(dataset, mesh, Batch)
+        loader = ReplicatedBatchLoader(dataset, Batch)
 
         batches = list(itertools.islice(loader, 10))
         for batch in batches:

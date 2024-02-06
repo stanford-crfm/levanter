@@ -3,6 +3,7 @@ import functools
 import equinox
 import jax.numpy as jnp
 import jax.random as jrandom
+import pytest
 
 import haliax as hax
 import haliax.nn as hnn
@@ -55,6 +56,40 @@ def test_grad_attention():
     q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
     k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
     v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+
+    @equinox.filter_value_and_grad
+    def d_attn(qkv, fn):
+        q, k, v = qkv
+        x_out = fn(KPos, Key, q, k, v, mask=mask)
+        return (x_out * x_out).sum().scalar()
+
+    hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
+    fa_val, (fa_dq, fa_dk, fa_dv) = d_attn((q, k, v), functools.partial(flash_attention, QPos, inference=True))
+
+    assert jnp.allclose(hax_val, fa_val, atol=1e-4, rtol=1e-4)
+    assert hax_dq.axes == fa_dq.axes
+    assert hax_dk.axes == fa_dk.axes
+    assert hax_dv.axes == fa_dv.axes
+
+    assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_grad_group_query_attention(num_kv_heads):
+    Batch = hax.Axis("batch", 2)
+    KVHeads = hax.Axis("kv_heads", num_kv_heads)
+    QHeadsPerGroup = hax.Axis("q_heads_per_group", 4 // num_kv_heads)
+    Key = hax.Axis("Key", 8)
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+
+    mask = hax.nn.attention.causal_mask(QPos, KPos)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (Batch, KVHeads, QHeadsPerGroup, QPos, Key))
+    k = hax.random.normal(jrandom.PRNGKey(1), (Batch, KVHeads, KPos, Key))
+    v = hax.random.normal(jrandom.PRNGKey(2), (Batch, KVHeads, KPos, Key))
 
     @equinox.filter_value_and_grad
     def d_attn(qkv, fn):

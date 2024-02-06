@@ -198,6 +198,7 @@ def test_lora_load_in_peft():
 
 @skip_if_no_torch
 def test_lora_merged_load_in_hf():
+    jax.config.update("jax_traceback_filtering", "off")
     import torch
 
     converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
@@ -212,7 +213,7 @@ def test_lora_merged_load_in_hf():
 
     causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
 
-    with (tempfile.TemporaryDirectory() as tmpdir):
+    with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(model, f"{tmpdir}/model")
 
         lora_config = LoraConfig(r=8, target_modules=["c_attn"])

@@ -475,8 +475,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
             lev_model = eqx.filter_eval_shape(MptLmHeadModel.init, Vocab, lev_config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict)
 
-        if axis_mapping is not None:
-            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+        lev_model = haliax.shard(lev_model, axis_mapping)
 
         return lev_model
 

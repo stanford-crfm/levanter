@@ -13,11 +13,10 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 import tensorstore
-from jax.sharding import Mesh
 from tensorstore import TensorStore
 
 import haliax as hax
-from haliax.partitioning import ResourceMapping
+import haliax.tree_util as htu
 from haliax.util import is_named_array
 
 from levanter.utils import jax_utils
@@ -26,15 +25,17 @@ from levanter.utils import jax_utils
 logger = logging.getLogger(__name__)
 
 
+def _is_named_or_none(x):
+    return x is None or is_named_array(x)
+
+
 def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
-    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
+    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
+    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=_is_named_or_none)
 
     # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    # array_ser only supports saving sharded arrays, so we can't use its top-level function run_serialization.
-    # however we're inspired by its implementation, meaning we'll make a tree of futures and wait on them.
     async def _do_serialize():
-        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=is_named_array)
+        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
         return await asyncio.gather(*jtu.tree_leaves(futures))
 
     asyncio.run(_do_serialize())
@@ -86,9 +87,9 @@ async def load_array_from_tensorstore(spec):
     return await t.read("C")
 
 
-async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
+async def _deserialize_one_leaf(like, spec, env):
     if is_named_array(like):
-        return await _deserialize_named_array(like, spec, axis_mapping, mesh)
+        return await _deserialize_named_array(like, spec, env)
     elif isinstance(like, jax.Array):
         if not like.is_fully_addressable:
             return await array_ser.async_deserialize(like.sharding, spec, global_shape=like.shape, dtype=like.dtype)
@@ -105,22 +106,20 @@ async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
         raise TypeError(f"Can't deserialize {type(like)}")
 
 
-async def _deserialize_named_array(like, spec, axis_mapping, mesh):
+async def _deserialize_named_array(like, spec, env):
     # the main thing we're worried about is deserialized NamedArrays that are not yet arrays but are ShapedDtypeStructs.
     # These don't (currently) have sharding info, but we can infer it from the axes
     if isinstance(like.array, jax.ShapeDtypeStruct):
-        sharding = hax.partitioning.sharding_for_axis(like.axes, axis_mapping, mesh)
+        sharding = hax.partitioning.sharding_for_axis(like.axes, env)
         array = await array_ser.async_deserialize(sharding, spec, global_shape=like.array.shape, dtype=like.dtype)
         assert sharding.is_equivalent_to(array.sharding, len(like.array.shape))
         return hax.NamedArray(array, like.axes)
     else:
-        array = await _deserialize_one_leaf(like.array, spec, axis_mapping, mesh)
+        array = await _deserialize_one_leaf(like.array, spec, env)
         return hax.NamedArray(array, like.axes)
 
 
-def tree_deserialize_leaves_tensorstore(
-    checkpoint_dir, pytree, axis_mapping: Optional[ResourceMapping] = None, mesh: Optional[Mesh] = None
-):
+def tree_deserialize_leaves_tensorstore(checkpoint_dir, pytree, env: Optional[hax.ResourceEnv] = None):
     """
     Deserializes a PyTree of Arrays and NamedArrays from a Tensorstore checkpoint, returning a pytree with the same shape
     as the one provided. This method is capable of deserializing NamedArrays that are the result of an eval_shape call
@@ -135,10 +134,11 @@ def tree_deserialize_leaves_tensorstore(
     :return: a pytree with the same shape as the exemplar pytree, but with the arrays deserialized from the checkpoint
     """
     # TODO: support ShapeDtypeStructs that are not NamedArrays
+    env = env or hax.current_resource_env()
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
+    specs = htu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
 
-    deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
+    deser_partial = functools.partial(_deserialize_one_leaf, env=env)
 
     async def _do_deserialize():
         futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)

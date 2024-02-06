@@ -320,12 +320,8 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
         k_wte, k_wpe, k_out = jrandom.split(key, 3)
 
-        token_embeddings = hnn.Embedding.init(
-            Vocab, config.Embed, key=k_wte, initializer_range=config.initializer_range
-        )
-        position_embeddings = hnn.Embedding.init(
-            config.Pos, config.Embed, key=k_wpe, initializer_range=config.initializer_range / 2
-        )
+        token_embeddings = hnn.Embedding.init(Vocab, config.Embed, config.initializer_range, key=k_wte)
+        position_embeddings = hnn.Embedding.init(config.Pos, config.Embed, config.initializer_range / 2, key=k_wpe)
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 
         return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)

@@ -225,6 +225,7 @@ def inject_hyperparams(
     return wrapped_transform
 
 
+# Cribbed from optax._src.schedule, which recently deleted this function.
 def _convert_floats(x, dtype):
     """Convert float-like inputs to dtype, rest pass through."""
     if jax.dtypes.scalar_type_of(x) == float:

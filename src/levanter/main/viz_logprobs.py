@@ -44,23 +44,20 @@ def main(config: VizGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
+    validation_set = config.data.validation_set(Pos.size)
+    assert validation_set is not None
     eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
-        config.trainer.device_mesh,
-        EvalBatch,
+        CausalLmDataset(validation_set, Pos, KeyPos), EvalBatch, config.trainer.compute_env
     )
-
-    # some axes we use outside the model proper
-    Pos = config.model.Pos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+    with config.trainer.param_env:
         key = jax.random.PRNGKey(0)
 
         vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), compute_axis_mapping)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size))
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
@@ -81,12 +78,11 @@ def main(config: VizGpt2Config):
         with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-            ckpt = load_checkpoint(model, None, config.checkpoint_path)
+            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
-        assert ckpt is not None
-        model, _, _ = ckpt
+        assert model is not None
 
-        model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+        model = hax.shard(model)
 
         compute_and_visualize_log_probs(
             path=config.path,

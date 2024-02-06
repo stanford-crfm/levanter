@@ -228,6 +228,8 @@ class _GlobalLoggerContextManager(AbstractContextManager):
         self.old_tracker = _global_tracker
         _global_tracker = self.tracker
 
+        return self.tracker
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         global _global_tracker
         _global_tracker = self.old_tracker
