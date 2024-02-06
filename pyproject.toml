@@ -29,7 +29,7 @@ dependencies = [
     "equinox>=0.10.7",
     "jaxtyping>=0.2.20",
     "transformers>=4.22.0",
-    "optax",
+    "optax>=0.1.9",
     "wandb",
     "draccus>=0.7.1",
     "pyarrow>=11.0.0",

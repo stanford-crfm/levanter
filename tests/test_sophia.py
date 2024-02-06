@@ -16,7 +16,13 @@ def test_sophia_h():
     model = nn.Linear(4, 4, use_bias=False, key=key)
     data = np.load(f"{os.path.dirname(__file__)}/data/hero_data.npy").astype("float32")
     optimizer = levanter.optim.sophia.sophia_h(
-        lr=1, b1=0, b2=0.99, gamma=2, weight_decay=0.0, clip_threshold=1, key=key,
+        lr=1,
+        b1=0,
+        b2=0.99,
+        gamma=2,
+        weight_decay=0.0,
+        clip_threshold=1,
+        key=key,
         update_interval=1,
     )
     model = jax.tree_util.tree_map(lambda x: jnp.ones_like(x), model)

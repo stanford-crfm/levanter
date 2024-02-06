@@ -167,7 +167,7 @@ def estimate_mixture_weights(
             loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
             grad = proxy_loss_bwd(grad_loss)[0]
 
-        new_state = trainer._take_train_step(state, proxy, grad)
+        new_state = trainer._take_train_step(state, loss_fn, proxy, grad)
         new_state = new_state.update_alpha(alpha)
 
         # log metrics

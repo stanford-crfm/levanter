@@ -1,8 +1,7 @@
 import abc
 import functools
-import typing
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Optional, TypeVar, runtime_checkable
+from typing import Any, NamedTuple, Optional, TypeVar
 
 import equinox as eqx
 import jax
@@ -35,59 +34,92 @@ class ScaleBySophiaState(NamedTuple):
     hess_key: PRNGKey
 
 
-@runtime_checkable
-class SophiaGObjective(typing.Protocol):
-    """
-    Class for objective functions that can be used with Sophia-G
-
-    Sophia-G is a second order optimizer that uses the Gauss-Newton-Bartlett approximation to the Hessian
-    to compute the second order update. This requires the objective function be of the form loss(logits(x))
-    where logits(x) is the activation of the model for the given example x. This is the case for most models
-    that are trained with "typical" losses.
-    """
-
-    def logits(self, parameters: M, example: Ex, *args, **kwargs) -> Any:
-        """
-        Returns the logits/activations of the model for the given example,
-        or just sufficient statistics for the example for non-categorical models.
-        """
-        ...
-
-    def sample(self, logits, example: Ex, *, key: PRNGKey) -> Ex:
-        """
-        Samples a new example with the same shape as the original example, but with
-        the "labels" replaced with some sampled values
-        """
-        ...
-
-    def loss(self, logits, example: Ex):
-        """
-        Just computes the loss, e.g. cross entropy.
-
-        Should return the mean loss over the batch, not the sum.
-
-        TODO: should we reconsider this?
-        """
-        ...
-
-    def __call__(self, parameters: M, example: Ex, *args, **kwargs):
-        """
-        Just a convenience method for invoking the objective for "normal" training w/o sophia-g
-        """
-        logits = self.logits(parameters, example, *args, **kwargs)
-        return self.loss(logits, example)
-
-    def num_data_points(self, example: Ex) -> int:
-        """
-        Returns the number of data points in the example. This should take into account the loss mask
-        or any other masking that might be applied to the example.
-
-        By default, we just return 1, and you can just pull the term into the hyperparams of Sophia if you want.
-
-        Returns:
-               The number of data points in the example
-        """
-        return 1
+# @runtime_checkable
+# class SophiaGObjective(typing.Protocol):
+#     """
+#     Class for objective functions that can be used with Sophia-G
+#
+#     Sophia-G is a second order optimizer that uses the Gauss-Newton-Bartlett approximation to the Hessian
+#     to compute the second order update. This requires the objective function be of the form loss(logits(x))
+#     where logits(x) is the activation of the model for the given example x. This is the case for most models
+#     that are trained with "typical" losses.
+#     """
+#
+#     def logits(self, parameters: M, *args, **kwargs) -> Any:
+#         """
+#         Returns the logits/activations of the model for the given example,
+#         or just sufficient statistics for the example for non-categorical models.
+#         """
+#         ...
+#
+#     def sample(self, logits, *example, key: PRNGKey, **kwargs) -> Ex:
+#         """
+#         Samples a new example with the same shape as the original example, but with
+#         the "labels" replaced with some sampled values
+#         """
+#         ...
+#
+#     def loss(self, logits, *example: Ex, **kwargs) -> jnp.ndarray:
+#         """
+#         Just computes the loss, e.g. cross entropy.
+#
+#         Should return the mean loss over the batch, not the sum.
+#
+#         TODO: should we reconsider this?
+#         """
+#         ...
+#
+#     def __call__(self, parameters: M, *args, **kwargs) -> jnp.ndarray:
+#         """
+#         Just a convenience method for invoking the objective for "normal" training w/o sophia-g
+#         """
+#         logits = self.logits(parameters, *args, **kwargs)
+#         return self.loss(logits, *args, **kwargs)
+#
+#     def num_data_points(self, example: Ex) -> int:
+#         """
+#         Returns the number of data points in the example. This should take into account the loss mask
+#         or any other masking that might be applied to the example.
+#
+#         By default, we just return 1, and you can just pull the term into the hyperparams of Sophia if you want.
+#
+#         Returns:
+#                The number of data points in the example
+#         """
+#         return 1
+#
+#
+#     def apply_partial(self, *args, **kwargs) -> "SophiaGObjective":
+#         """
+#         Returns a new objective that is a partial application of the current objective, used for
+#         passing in the data points.
+#         """
+#
+#
+#
+# class PartialSophiaG(SophiaGObjective):
+#     def __init__(self, objective: SophiaGObjective, *args, **kwargs):
+#         self.objective = objective
+#         self.args = args
+#         self.kwargs = kwargs
+#
+#     def logits(self, parameters: M, *args, **kwargs) -> Any:
+#         return self.objective.logits(parameters, *self.args, *args, **self.kwargs, **kwargs)
+#
+#     def sample(self, logits, *example, key: PRNGKey, **kwargs) -> Ex:
+#         return self.objective.sample(logits, *self.args, *example, key=key, **self.kwargs, **kwargs)
+#
+#     def loss(self, logits, *example: Ex, **kwargs) -> jnp.ndarray:
+#         return self.objective.loss(logits, *self.args, *example, **self.kwargs, **kwargs)
+#
+#     def __call__(self, parameters: M, *args, **kwargs) -> jnp.ndarray:
+#         return self.objective(parameters, *self.args, *args, **self.kwargs, **kwargs)
+#
+#     def num_data_points(self, example: Ex) -> int:
+#         return self.objective.num_data_points(*self.args, example, **self.kwargs)
+#
+#    def apply_partial(self, *args, **kwargs) -> SophiaGObjective:
+#        return PartialSophiaG(self.objective, *self.args, *args, **self.kwargs, **kwargs)
 
 
 @dataclass
@@ -153,13 +185,14 @@ class BaseSophiaConfig(HessianOptConfig):
         )
 
 
-@OptimizerConfig.register_subclass("sophia-g")
-@dataclass
-class SophiaGConfig(BaseSophiaConfig):
-    gamma: float = GAMMA_SOPHIA_G
-
-    def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
-        return stochastic_diag_gauss_newton(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
+# @OptimizerConfig.register_subclass("sophia-g")
+# @dataclass
+# class SophiaGConfig(BaseSophiaConfig):
+#     gamma: float = GAMMA_SOPHIA_G
+#
+#     def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+#         return stochastic_diag_gauss_newton(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
+#
 
 
 @OptimizerConfig.register_subclass("sophia-h")
@@ -322,8 +355,9 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
 
-        state = ScaleBySophiaState(count=state.count + 1, hessian_count=state.hessian_count, mu=mu, h=h_hat,
-                                   hess_key=state.hess_key)
+        state = ScaleBySophiaState(
+            count=state.count + 1, hessian_count=state.hessian_count, mu=mu, h=h_hat, hess_key=state.hess_key
+        )
         state = update_hessian(state, params, obj_fn=obj_fn, **kwargs)
         return updates, state
 
@@ -354,7 +388,7 @@ def _sophia_gradient_transform(
 
 
 # use this for Sophia-G
-def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, *args, hess_key: PRNGKey, **kwargs):
+def stochastic_diag_gauss_newton(fn, model, *args, hess_key: PRNGKey, **kwargs):
     """
 
     Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
@@ -366,8 +400,9 @@ def stochastic_diag_gauss_newton(fn: SophiaGObjective, model, *args, hess_key: P
         hess_key: key for sampling
         *args, **kwargs: passed to fn's logits
     """
-    if not isinstance(fn, SophiaGObjective):
-        raise ValueError("objective must be a SophiaGObjective")
+    raise NotImplementedError("This is not implemented yet")
+    # if not isinstance(fn, SophiaGObjective):
+    #     raise ValueError("objective must be a SophiaGObjective")
 
     # Step 3
     logits, model_backward = eqx.filter_vjp(lambda model: fn.logits(model, *args, **kwargs), model)
