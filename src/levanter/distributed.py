@@ -250,8 +250,17 @@ def auto_ray_cluster(
                             logger.info(f"Successfully started ray worker and connected to {address}.")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
-    # Ray has retry logic, so we don't need to retry here :fingers-crossed:
-    ray.init(address=address, namespace=namespace, **kwargs)
+    # Ray has retry logic, but it doesn't seem to work super well, so we retry manually
+    for i in range(0, 5):
+        try:
+            ray.init(address=address, namespace=namespace, **kwargs)
+            break
+        except Exception as e:
+            if i == 4:
+                raise e
+            else:
+                logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
+                continue
     atexit.register(lambda: ray.shutdown())
     _already_initialized = True
 
