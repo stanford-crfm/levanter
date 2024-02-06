@@ -300,7 +300,7 @@ class _ShardMetadataWriter:
 
 # The difficulty is that we want parallelism and we want to control the order of chunks.
 # reading batches requires CPU and network. This means we should limit the number to roughly the number of nodes, maybe times 2.
-# We want to prioritize so that we read 1 chunks worth of batches from each shard before reading more from any shard.
+# We want to prioritize so that we read 1 chunks worth of batches from each shard before reading more from another shard.
 # We also want to prioritize reading earlier shards before later shards (within a chunk generation round).
 # Ray also seems to get upset about having too many processes, and we can't serialize the iterators over shards.
 
@@ -1449,7 +1449,9 @@ class ChunkCacheBroker:
         _serialize_json_and_commit(os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks))
 
         self._reader_promises = {}
-        self._builder_actor = None
+        # TODO: For some reason this crashes other actors with weird reference counting assertion errors.
+        # pretty sure it's a ray bug
+        # self._builder_actor = None
         self._finished_promise.set_result(None)
 
         # notify metrics subscribers
