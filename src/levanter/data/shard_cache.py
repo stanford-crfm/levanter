@@ -808,10 +808,10 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         logger.info(f"Processing batch {desc}")
         queue.task_running.remote()
-        timer_thread = WaitTimeReportingThread(
-            lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
-        )
-        timer_thread.start()
+        # timer_thread = WaitTimeReportingThread(
+        #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
+        # )
+        # timer_thread.start()
         try:
             result = processor(batch)
             del batch
@@ -822,8 +822,9 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
             logger.exception(f"Error while processing batch {desc}")
             raise e
         finally:
-            timer_thread.shutdown()
-            timer_thread.join()
+            # timer_thread.shutdown()
+            # timer_thread.join()
+            pass
 
     return process_task
 
