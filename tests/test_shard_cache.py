@@ -13,10 +13,12 @@ from levanter.utils.py_utils import logical_cpu_core_count
 
 
 def setup_module(module):
+    print("setting up")
     ray.init("local", num_cpus=2 * logical_cpu_core_count())  # 2x cpu count is faster on my m1
 
 
 def teardown_module(module):
+    print("shutting down")
     ray.shutdown()
 
 
@@ -175,9 +177,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         )
 
         # now block until the cache is done
-        print("at wait")
         cache.await_finished(timeout=10)
-        print("done waiting")
 
         # now check that the chunks are in the right order
         # TODO: this is a bit gross

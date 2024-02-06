@@ -49,6 +49,8 @@ DEFAULT_ROWS_PER_CHUNK = 8192
 DEFAULT_MAX_BYTES_PER_BATCH = 256 * 1024 * 1024  # 256 MB, this is pre-preprocessing python object size
 LEDGER_FILE_NAME = "cache_ledger.json"
 
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
 
 def build_cache(
     cache_dir: str,
@@ -363,7 +365,7 @@ class PriorityWorkItem(Protocol):
 @ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
 class PriorityProcessorActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self._queue: list[PriorityWorkItem] = []  # heapq
         self._queue_lock = threading.Lock()
         self._shutdown_event = threading.Event()
@@ -387,7 +389,7 @@ class PriorityProcessorActor:
             if self._current_item is not None and self._current_item.spec == group:
                 return False
 
-            logger.info(f"Group {group.name} is finished.")
+            logger.debug(f"Group {group.name} is finished.")
 
             return True
 
@@ -444,9 +446,9 @@ class PriorityProcessorActor:
                 if not item_is_finished:
                     heapq.heappush(self._queue, item)
 
-        logger.info("Shutting down PriorityProcessorActor. Waiting for backpressure to drain.")
+        logger.debug("Shutting down PriorityProcessorActor. Waiting for backpressure to drain.")
         drain_backpressure_to(0)
-        logger.info("Backpressure drained. Shutting down PriorityProcessorActor.")
+        logger.debug("Backpressure drained. Shutting down PriorityProcessorActor.")
 
 
 @dataclass
@@ -789,11 +791,12 @@ class WaitTimeReportingThread(threading.Thread):
 
     def run(self):
         total_waited = 0
-        while not self.shutdown_event.is_set():
+        while True:
+            if self.shutdown_event.wait(self.interval):
+                break
             if total_waited > 0:
                 self.report(total_waited)
             total_waited += self.interval
-            time.sleep(self.interval)
 
     def shutdown(self):
         self.shutdown_event.set()
@@ -802,7 +805,7 @@ class WaitTimeReportingThread(threading.Thread):
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]) -> pa.RecordBatch:
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         logger.info(f"Processing batch {desc}")
         queue.task_running.remote()
         timer_thread = WaitTimeReportingThread(
@@ -812,7 +815,9 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
         try:
             result = processor(batch)
             del batch
-            return as_record_batch(result)
+            result = as_record_batch(result)
+            logger.info(f"Finished processing batch {desc}")
+            return result
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
             raise e
@@ -888,7 +893,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 @ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 class _GroupShardWriterWorker:
     def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.cache_dir = cache_dir
         self.shard_names = shard_names
         self.shard_writers: dict[str, _ShardWriterWorker] = {
@@ -912,7 +917,8 @@ class _GroupShardWriterWorker:
 
             while True:
                 try:
-                    batch = await asyncio.wait_for(asyncio.shield(batch.ref), timeout_interval)
+                    # batch = await asyncio.wait_for(asyncio.shield(batch.ref), timeout_interval)
+                    batch = await batch.ref
                     break
                 except asyncio.TimeoutError:
                     # to keep to round numbers, we log how much we asked for rather than how much we got
@@ -961,7 +967,7 @@ class _ShardWriterWorker:  # type: ignore
         cache_dir: str,
         shard_name: str,
     ):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.parent_ref = parent_ref
         self.cache_dir = cache_dir
         self.shard_name = shard_name
@@ -1030,7 +1036,7 @@ class _ShardWriterWorker:  # type: ignore
         while len(self.uncommited_chunks) > 0 and self.uncommited_chunks[0][0] == self.metadata_writer.num_chunks:
             _, chunk = heapq.heappop(self.uncommited_chunks)
             chunk_number = self.metadata_writer.num_chunks
-            logger.info(f"Committing chunk {chunk.name} of shard {self.shard_name}. It is chunk {chunk_number}")
+            logger.debug(f"Committing chunk {chunk.name} of shard {self.shard_name}. It is chunk {chunk_number}")
             self.metadata_writer.commit_chunk(chunk)
             chunks_committed.append(chunk)
 
@@ -1144,7 +1150,7 @@ class ChunkCacheBuilder:
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
         self.shard_status: Dict[str, _ShardStatus] = dict()
@@ -1319,7 +1325,7 @@ class ChunkCacheBuilder:
                 break
 
         if len(chunks_to_send) > 0:
-            logger.info(f"Sending {len(chunks_to_send)} chunks to broker")
+            logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
             ray.get(self.broker_ref._append_chunks.remote(*chunks_to_send))
 
     def _finish(self):
@@ -1337,7 +1343,7 @@ class ChunkCacheBroker:
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
@@ -1403,9 +1409,9 @@ class ChunkCacheBroker:
         for chunk in chunks:
             self.chunks.append(chunk)
             chunk_idx = len(self.chunks) - 1
-            self.logger.info(f"Received chunk {chunk_idx}")
+            self.logger.debug(f"Received chunk {chunk_idx}")
             if chunk_idx in self._reader_promises:
-                self.logger.info(f"Resolving promise for chunk {chunk_idx}")
+                self.logger.debug(f"Resolving promise for chunk {chunk_idx}")
                 self._reader_promises[chunk_idx].set_result(chunk)
                 del self._reader_promises[chunk_idx]
 
@@ -1611,9 +1617,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             assert self._broker is not None
             time_in = time.time()
+            next_time = time.time()
             # we want to also log if we're waiting for a long time, so we do this in a loop
-            while timeout is None or time.time() - time_in < timeout:
-                next_time = time.time()
+            while timeout is None or next_time - time_in < timeout:
                 current_timeout = 20.0
                 if timeout is not None:
                     current_timeout = min(current_timeout, timeout - (next_time - time_in))
@@ -1621,8 +1627,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
                     self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
+                    next_time += current_timeout
                     current_timeout *= 2
-                    current_timeout = min(current_timeout, 80)
+                    current_timeout = min(current_timeout, 100)
                     continue
 
                 if chunk is None:
