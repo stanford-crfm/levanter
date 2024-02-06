@@ -329,7 +329,7 @@ class BatchTokenizer(BatchProcessor[str]):
         tokenizer: PreTrainedTokenizerBase,
         enforce_eos=True,
         *,
-        batch_size=512,
+        batch_size=128,
         override_resources=None,
         _workaround_len=LONG_STRING_WORKAROUND,
     ):
