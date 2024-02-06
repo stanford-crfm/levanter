@@ -436,7 +436,7 @@ class BatchTokenizer(BatchProcessor[str]):
                 return False
             # if there's a "Replace" normalizer, then we need to do the workaround
             # inexplicably there's no way to see inside a Sequence so we also have to assume it needs it
-            return any(isinstance(n, (normalizers.Replace, normalizers.Sequence)) for n in normalizer)
+            return isinstance(normalizer, (normalizers.Replace, normalizers.Sequence))
         else:
             return False
 
