@@ -195,6 +195,7 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
+        print("\n\nATTENTION OUTPUT: {attn_ouput}\n\n")
         attn_output = self.c_proj(attn_output, key=k_out)
 
         if self.config.upcast_attn:
