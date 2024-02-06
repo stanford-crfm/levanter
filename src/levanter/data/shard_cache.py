@@ -815,7 +815,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
             result = processor(batch)
             del batch
             result = as_record_batch(result)
-            logger.info(f"Finished processing batch {desc}")
+            logger.debug(f"Finished processing batch {desc}")
             return result
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
