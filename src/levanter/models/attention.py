@@ -92,21 +92,25 @@ def dot_product_attention(
             is_training = not inference
 
             # TODO: bias type is probably also configurable
-            attn_bias_type = AttnBiasType.NVTE_PRE_SCALE_BIAS
+            attn_bias_type = AttnBiasType.NO_BIAS
             fused_attn_bias = None
             if bias:
                 fused_attn_bias = bias.array
 
             # TODO: We have a mask type we can use to configure this
-            attn_mask_type = AttnMaskType.NVTE_CAUSAL_MASK
-            fused_attn_mask = None
-            if mask:
-                fused_attn_mask = mask.array
+            attn_mask_type = AttnMaskType.CAUSAL_MASK
+            print(f"\nQuery Size: {query.size()}\n")
+            batch_size, seq_len, hidden_dim = query.size()
+            mask = jnp.tril(jnp.ones())
+            # fused_attn_mask = None
+
+            # if mask:
+            #     fused_attn_mask = mask.array
 
             return self_fused_attn(
                 qkv=qkv,  # jnp.ndarray,
                 bias=fused_attn_bias,  # jnp.ndarray,
-                mask=fused_attn_mask,  # jnp.ndarray,
+                mask=mask,  # jnp.ndarray,
                 seed=prng,  # jnp.ndarray,
                 attn_bias_type=attn_bias_type,  # AttnBiasType,
                 attn_mask_type=attn_mask_type,  # AttnMaskType,
