@@ -1175,15 +1175,20 @@ class ChunkCacheBuilder:
                 self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
+            num_worker_groups = len(ray.nodes())
+            num_shard_groups = max(min(num_worker_groups, num_shards), 1)
 
-            def priority_fn(shard_idx, chunk_idx):
-                return chunk_idx * num_shards + shard_idx
-
-            num_shard_groups = max(min(len(ray.nodes()), num_shards), 1)
+            # if we have a bunch of caches to build with one shard, we don't want them all
+            # assigned to the same node, so we use an offset based on the hash of the name (for stability)
+            # in an attempt to spread them out
+            group_offset = int(hash(name) % num_worker_groups)
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
                 shard_groups[i % num_shard_groups].append(shard_name)
+
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
 
             for group_id, shard_group in enumerate(shard_groups):
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
@@ -1207,7 +1212,8 @@ class ChunkCacheBuilder:
                 )
 
                 # we want global names so that different tasks can coordinate priorities
-                priority_actor_name = f"priority_processor.{group_id}"
+                worker_to_assign = (group_id + group_offset) % num_worker_groups
+                priority_actor_name = f"priority_processor.{worker_to_assign}"
 
                 reader_actor = PriorityProcessorActor.options(  # type: ignore
                     name=priority_actor_name, get_if_exists=True
@@ -1629,7 +1635,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
                     self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
-                    next_time += current_timeout
+                    next_time = time.time()
                     current_timeout *= 2
                     current_timeout = min(current_timeout, 100)
                     continue
