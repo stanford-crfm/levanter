@@ -233,7 +233,7 @@ def test_can_get_chunk_before_finished():
         assert [list(x) for x in chunk] == [[i] * 10 for i in range(10)]
 
         with pytest.raises(TimeoutError):
-            cache.get_chunk(1, timeout=0.1)
+            cache.get_chunk(1, timeout=0.5)
 
         ray.get(blocker_to_wait_on_test.unblock.remote())
 

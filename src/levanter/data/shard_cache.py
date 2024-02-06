@@ -1618,7 +1618,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             assert self._broker is not None
             time_in = time.time()
-            next_time = time.time()
+            next_time = time_in
             # we want to also log if we're waiting for a long time, so we do this in a loop
             while timeout is None or next_time - time_in < timeout:
                 current_timeout = 20.0
