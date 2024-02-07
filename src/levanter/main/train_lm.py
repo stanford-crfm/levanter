@@ -17,7 +17,8 @@ from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_ca
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import AdamConfig, OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
 
 
@@ -29,7 +30,7 @@ class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
