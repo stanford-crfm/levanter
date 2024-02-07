@@ -281,7 +281,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # not into ff for now
                 # Operations if layer_idx equals 4
                 # sum over sequence length
-                return hax.sin(hax.sum(prev_x, axis='position')) + attn_output + ff_output
+                return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor
                 # as expected
