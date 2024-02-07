@@ -18,7 +18,8 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkp
 from levanter.data import Dataset
 from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle

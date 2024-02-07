@@ -25,7 +25,8 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
