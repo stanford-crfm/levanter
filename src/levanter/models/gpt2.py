@@ -274,15 +274,14 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
             ff_output = self.mlp(self.ln_2(x), key=k3)
             ff_output = self.resid_dropout(ff_output, key=k4)
 
-            jax.debug.print("\n \n axes len {} cont  ", len(x.axes), x.axes)
             # sine output on attention
             def true_fun(_):
                 # sin is function of attention outputs
                 # so we distil into features? ....
                 # not into ff for now
                 # Operations if layer_idx equals 4
-                # sum over 
-                return hax.sin(prev_x) + attn_output + ff_output
+                # sum over sequence length
+                return hax.sin(hax.sum(prev_x, axis='position')) + attn_output + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor
                 # as expected
