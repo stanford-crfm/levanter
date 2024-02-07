@@ -34,6 +34,9 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import WandbConfig, capture_time
+
+# import for backward compatibility
+from levanter.optim import OptimizerConfig  # noqa: F401
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
