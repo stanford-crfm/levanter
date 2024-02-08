@@ -284,7 +284,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 mode = None
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
-                else
+                else:
                     return x + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor

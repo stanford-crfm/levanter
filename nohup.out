@@ -2619,3 +2619,76 @@ wandb: 🚀 View run at https://wandb.ai/ahmedah/locked/runs/ihkc98gv
 
 Command killed by keyboard interrupt
 
+Using ssh batch size of 1. Attempting to SSH into 1 nodes with a total of 8 workers.
+SSH: Attempting to connect to worker 0...
+SSH: Attempting to connect to worker 1...
+SSH: Attempting to connect to worker 2...
+SSH: Attempting to connect to worker 3...
+SSH: Attempting to connect to worker 4...
+SSH: Attempting to connect to worker 5...
+SSH: Attempting to connect to worker 6...
+SSH: Attempting to connect to worker 7...
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+Traceback (most recent call last):
+  File "/home/ahmed/levanter/src/levanter/main/train_lm.py", line 18, in <module>
+    from levanter.models.gpt2 import Gpt2Config
+  File "/home/ahmed/levanter/src/levanter/models/gpt2.py", line 287
+    else
+        ^
+SyntaxError: expected ':'
+##### Command execution on worker 5 failed with exit status 1. Continuing.
+##### Command execution on worker 6 failed with exit status 1. Continuing.
+##### Command execution on worker 3 failed with exit status 1. Continuing.
+##### Command execution on worker 2 failed with exit status 1. Continuing.
+##### Command execution on worker 4 failed with exit status 1. Continuing.
+##### Command execution on worker 0 failed with exit status 1. Continuing.
+##### Command execution on worker 1 failed with exit status 1. Continuing.
+##### Command execution on worker 7 failed with exit status 1. Continuing.
