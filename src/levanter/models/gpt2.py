@@ -2,6 +2,8 @@ import dataclasses
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Dict, Optional, Type
+import levanter.tracker
+import levanter
 
 import equinox as eqx
 from jax import lax
@@ -294,7 +296,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 return x + ff_output
             
             # if layer is one of the last three (12 layers) add sine target
-            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 99), true_fun, false_fun, None)
+            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 12), true_fun, false_fun, None)
 
             # jax.lax.stopgradient
 
@@ -447,9 +449,11 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
+        
+
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        )
+        ), sine_output
         if key is None:
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
