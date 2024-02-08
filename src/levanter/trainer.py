@@ -59,6 +59,14 @@ DEFAULT_JAX_CONFIG = {
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 
+def jittable_wandb_log(data, *, step=None):
+    """uses jax effect callback to log to wandb from the host"""
+    if is_wandb_available():
+        jax.debug.callback(wandb.log, data, step=step)
+
+
+def is_wandb_available():
+    return wandb is not None and wandb.run is not None
 
 @dataclass
 class TrainerState(Generic[M]):
@@ -411,7 +419,7 @@ class Trainer:
             loss, aux, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
             if jax.lib.xla_bridge.get_backend().platform != "cpu":
-                levanter.tracker.jit_log_metrics(aux)
+                jittable_wandb_log(aux)
             # jax.debug.print("x: {}", grads)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
