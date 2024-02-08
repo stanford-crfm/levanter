@@ -284,6 +284,8 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 mode = None
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
+                elif mode == "mod":
+                    return hax.sin(0.1*hax.sum(x, axis='position')) + ff_output
                 else:
                     return x + ff_output
             def false_fun(_):
@@ -296,7 +298,8 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
             # jax.lax.stopgradient
 
-            x = x + ff_output
+            #x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
+            x = sin_target
             activation_diff = hax.square(x - sin_target)
             return x, activation_diff
    
