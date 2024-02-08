@@ -419,7 +419,7 @@ class Trainer:
             (loss, aux), grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
             if jax.lib.xla_bridge.get_backend().platform != "cpu":
-                jittable_wandb_log(aux)
+                jittable_wandb_log({'sin_loss' : aux})
             # jax.debug.print("x: {}", grads)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
