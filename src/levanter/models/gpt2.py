@@ -2,7 +2,6 @@ import dataclasses
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Dict, Optional, Type
-import levanter.tracker
 import levanter
 
 import equinox as eqx
