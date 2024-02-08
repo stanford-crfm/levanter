@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
-import levanter.tracker
+# import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
 from levanter.optim.util import hvp, tree_gaussian_like
 from levanter.utils.jax_utils import parameter_count, tree_filter_like
@@ -349,8 +349,8 @@ def _sophia_gradient_transform(
             stats["optim/unclipped_fraction"] = unclipped_count / parameter_count(updates)
 
         # this doesn't work well on CPU, so skip if cpu
-        if jax.lib.xla_bridge.get_backend().platform != "cpu":
-            levanter.tracker.jit_log_metrics(stats, step=state.count)
+        # if jax.lib.xla_bridge.get_backend().platform != "cpu":
+        #     levanter.tracker.jit_log_metrics(stats, step=state.count)
 
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)

@@ -51,9 +51,10 @@ def main(config: ConvertLmConfig):
         model: LmHeadModel = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
         trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
         # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-        trainable = load_checkpoint(trainable, config.checkpoint_path, subpath="model")
+        ckpt = load_checkpoint(trainable, None, config.checkpoint_path)
 
-        assert trainable is not None
+        assert ckpt is not None
+        trainable, _, _ = ckpt
         model = eqx.combine(trainable, non_trainable)
 
         if config.override_vocab_size:

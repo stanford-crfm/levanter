@@ -1,4 +1,3 @@
-import dataclasses
 import datetime
 import pathlib
 import tempfile
@@ -27,11 +26,10 @@ def _dummy_step_info(step):
     return StepInfo(
         state=TrainerState(
             # + 1 b/c step here is next step
-            _step=step + 1,
+            step=step + 1,
             model=None,
             opt_state=(),
             training_key=(),
-            is_trainable=True,
         ),
         loss=0.0,
         step_duration=0.0,
@@ -141,41 +139,42 @@ def test_checkpointer_mixed_policy():
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10, 15, 20, 30, 40, 49]  # 49 is last temporary checkpoint
 
 
-def _make_state(step, key):
-    model = MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
-    optim = optax.adam(1e-4)
-    opt_state = optim.init(arrays_only(model))
-
-    return TrainerState(step, model, opt_state, key, True)
-
-
 def test_checkpoint_simple():
     key0 = jax.random.PRNGKey(0)
     key1 = jax.random.PRNGKey(1)
 
-    initial_state = _make_state(10, key0)
-    rep_state = _make_state(2, key1)
+    def make_state(key):
+        model = MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
+        optim = optax.adam(1e-4)
+        opt_state = optim.init(arrays_only(model))
 
-    assert_trees_not_close(initial_state.model, rep_state.model)
+        return model, opt_state, key
+
+    initial_model, initial_opt_state, initial_key = make_state(key0)
+    rep_model, rep_state, rep_key = make_state(key1)
+
+    assert_trees_not_close(initial_model, rep_model)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         save_checkpoint(
-            initial_state,
-            step=initial_state.step,
+            initial_model,
+            (initial_opt_state, initial_key),
+            step=10,
             checkpoint_path=tmpdir,
         )
-        restored_state = load_checkpoint(
-            rep_state,
+        restored_model, (restored_optstate, rkey), step = load_checkpoint(
+            rep_model,
+            (rep_state, rep_key),
             checkpoint_path=tmpdir,
             discover_latest=False,
         )
 
         assert_trees_all_close(
-            jax.tree_util.tree_leaves(arrays_only(restored_state.model)),
-            jax.tree_util.tree_leaves(arrays_only(initial_state.model)),
+            jax.tree_util.tree_leaves(arrays_only(restored_model)),
+            jax.tree_util.tree_leaves(arrays_only(initial_model)),
         )
-        assert all(np.isclose(restored_state.training_key, initial_state.training_key))
-        assert restored_state.step == initial_state.step
+        assert all(np.isclose(rkey, initial_key))
+        assert step == 10
 
 
 def test_checkpoint_steps():
@@ -184,7 +183,13 @@ def test_checkpoint_steps():
 
     optim = optax.adam(1e-4)
 
-    initial_state = _make_state(10, key0)
+    def make_state(key):
+        model = MLP(in_size=2, out_size=1, width_size=2, depth=3, key=key)
+        opt_state = optim.init(arrays_only(model))
+
+        return model, opt_state, key
+
+    initial_model, initial_opt_state, initial_key = make_state(key0)
     data = jax.random.uniform(key0, (2, 2))
 
     @eqx.filter_grad
@@ -192,33 +197,41 @@ def test_checkpoint_steps():
         m = jax.vmap(model)
         return jnp.mean(jnp.square(m(data)))
 
-    state = initial_state
+    model, state = initial_model, initial_opt_state
     for i in range(3):
-        grad = loss_fn(state.model, data)
-        updates, new_state = optim.update(grad, state.opt_state)
-        model = eqx.apply_updates(state.model, updates)
-        state = dataclasses.replace(state, _step=state.step + 1, model=model, opt_state=new_state)
+        grad = loss_fn(model, data)
+        updates, state = optim.update(grad, state)
+        model = eqx.apply_updates(model, updates)
 
-    assert_trees_not_close(state, initial_state)
+    assert_trees_not_close(model, initial_model)
+    assert_trees_not_close(state, initial_opt_state)
 
-    rep_state = _make_state(42, key1)
+    rep_model, rep_state, rep_key = make_state(key1)
+    assert_trees_not_close(model, rep_model)
     assert_trees_not_close(state, rep_state)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        save_checkpoint(state, step=3, checkpoint_path=tmpdir)
-        restored_state = load_checkpoint(rep_state, checkpoint_path=tmpdir, discover_latest=False)
+        save_checkpoint(model, state, step=3, checkpoint_path=tmpdir)
+        restored_model, restored_optstate, step = load_checkpoint(
+            rep_model, rep_state, checkpoint_path=tmpdir, discover_latest=False
+        )
 
         assert_trees_all_close(
-            jax.tree_util.tree_leaves(arrays_only(restored_state)),
+            jax.tree_util.tree_leaves(arrays_only(restored_model)),
+            jax.tree_util.tree_leaves(arrays_only(model)),
+        )
+        assert_trees_all_close(
+            jax.tree_util.tree_leaves(arrays_only(restored_optstate)),
             jax.tree_util.tree_leaves(arrays_only(state)),
         )
+        assert step == 3
 
 
 def test_checkpoint_discovery():
     with tempfile.TemporaryDirectory() as tempdir:
-        save_checkpoint(dict(model=1, training_state=2), step=10, checkpoint_path=f"{tempdir}/step-10")
-        save_checkpoint(dict(model=3, training_state=4), step=20, checkpoint_path=f"{tempdir}/step-20")
-        save_checkpoint(dict(model=5, training_state=6), step=30, checkpoint_path=f"{tempdir}/step-30")
+        save_checkpoint(model=1, training_state=2, step=10, checkpoint_path=f"{tempdir}/step-10")
+        save_checkpoint(model=3, training_state=4, step=20, checkpoint_path=f"{tempdir}/step-20")
+        save_checkpoint(model=5, training_state=6, step=30, checkpoint_path=f"{tempdir}/step-30")
 
         latest = discover_latest_checkpoint(tempdir)
         assert latest == f"{tempdir}/step-30"

@@ -98,7 +98,7 @@ nav:
       - "Hardware-Agnostic-Training.md"
   - 'Developer Guide':
       - 'dev/Port-Models.md'
-      - 'dev/Trackers.md'
+#      - 'dev/Trackers.md'
   - 'FAQ' : 'faq.md'
   - Other:
       - 'Levanter-1.0-Release.md'

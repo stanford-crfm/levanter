@@ -16,6 +16,7 @@ import jax
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
+import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -29,8 +30,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
-import levanter.tracker
 
 from .. import logging
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
@@ -406,7 +405,7 @@ class PriorityProcessorActor:
             if self._processing_thread.is_alive():
                 self._processing_thread.join()
 
-    def _loop(self):
+    def _loop(self: "PriorityProcessorActor"):
         should_sleep = False
         backpressure_queue: list[ray.ObjectRef] = []
 
@@ -740,7 +739,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
+        wandb.log(to_log, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):

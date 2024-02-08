@@ -1,14 +1,12 @@
-data:
-  id: EleutherAI/pile
-  tokenizer: meta-llama/Llama-2-7b-hf
+data: !include data/pile_source_old.yaml
 model:
-  type: llama
+  type: mpt
 initialize_from_hf: true
 use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
-    tags: ["pile", "llama2"]
+    tags: ["pile", "mpt"]
 
   mp: p=f32,c=bfloat16
 
@@ -21,4 +19,4 @@ trainer:
   steps_per_eval: 500
 optimizer:
   learning_rate: 1.2e-4
-  weight_decay: 0.0
+  weight_decay: 0.1

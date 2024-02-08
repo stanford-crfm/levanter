@@ -36,11 +36,12 @@ class VizGpt2Config:
 
 
 def main(config: VizGpt2Config):
-    levanter.initialize(config)
+    config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
 
+    EvalBatch = Axis("batch", config.trainer.eval_batch_size)
+
     # some axes we use outside the model proper
-    EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
@@ -49,6 +50,10 @@ def main(config: VizGpt2Config):
         config.trainer.device_mesh,
         EvalBatch,
     )
+
+    # some axes we use outside the model proper
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -78,9 +83,10 @@ def main(config: VizGpt2Config):
         with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+            ckpt = load_checkpoint(model, None, config.checkpoint_path)
 
-        assert model is not None
+        assert ckpt is not None
+        model, _, _ = ckpt
 
         model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
