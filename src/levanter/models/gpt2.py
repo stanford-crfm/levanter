@@ -288,7 +288,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 return x + ff_output
             
             # if layer is one of the last three (12 layers) add sine target
-            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 9), true_fun, false_fun, None)
+            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 20), true_fun, false_fun, None)
 
             # jax.lax.stopgradient
 
