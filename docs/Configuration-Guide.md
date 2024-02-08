@@ -13,7 +13,7 @@ class TrainLmConfig:
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 ```
 
 Your training run will typically be associated with a single config file. For instance, you might have a file
@@ -238,7 +238,7 @@ If you're not using SLURM or TPUs, you can specify the cluster manually using th
 
 ## Optimizer
 
-[levanter.trainer.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
+[levanter.optim.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
 
 | Parameter       | Description                                                       | Default  |
 |-----------------|-------------------------------------------------------------------|----------|
@@ -288,7 +288,7 @@ We won't go into detail here. You can see the auto-generated docs below.
 
 ### Optimizer
 
-::: levanter.trainer.OptimizerConfig
+::: levanter.optim.OptimizerConfig
 
 ### LM Model
 
