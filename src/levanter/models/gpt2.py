@@ -449,7 +449,10 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
         
-
+        if key is None:
+            return cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         ), hax.mean(sine_output)
