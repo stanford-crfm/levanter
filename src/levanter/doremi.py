@@ -185,7 +185,7 @@ def estimate_mixture_weights(
                 "train/mean_proxy_loss": mean_proxy_loss,
                 **{f"alpha/{domain}": weight for domain, weight in alpha_dict.items()},
                 # just skip domains with no excess loss
-                **{f"train/{domain}/excess_loss": loss for domain, loss in per_domain_dict.items() if loss > 0},
+                **{f"train/{domain}/excess_loss": loss for domain, loss in per_domain_dict.items()},
             },
             step=state._step,
         )
