@@ -36,7 +36,8 @@ from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.grad_accum import microbatched
+
+# from levanter.grad_accum import microbatched
 from levanter.logging import WandbConfig, capture_time
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
@@ -59,14 +60,16 @@ DEFAULT_JAX_CONFIG = {
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 
+
 def jittable_wandb_log(data, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
     if is_wandb_available():
-        jax.debug.callback(wandb.log, data, step=step, commit=False)
+        jax.debug.callback(lambda data, step: wandb.log(data, step=step.item()), data, step)
 
 
 def is_wandb_available():
     return wandb is not None and wandb.run is not None
+
 
 @dataclass
 class TrainerState(Generic[M]):
@@ -350,9 +353,9 @@ class Trainer:
             self.add_eval_hook(eval_dataset)
         self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
+        # checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         # TODO add back in for model saving
-        #self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        # self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
@@ -416,11 +419,11 @@ class Trainer:
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
-            (loss, aux), grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
+            (loss, aux), grads = self._compute_gradients_microbatched(
+                split_loss_fn, trainable_model, batch, **batch_kwargs
+            )
 
-            if jax.lib.xla_bridge.get_backend().platform != "cpu":
-                jittable_wandb_log({'sin_loss' : aux})
-            # jax.debug.print("x: {}", grads)
+            jittable_wandb_log({"sin_loss": aux}, step=opt_state.count)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
