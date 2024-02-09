@@ -28,6 +28,7 @@ trainer:
   # this is deliberately very small for testing
   num_train_steps: 2000000
   steps_per_eval: 50
+  max_eval_batches: 1
 optimizer:
   learning_rate: 1E-7
   weight_decay: 0.1
