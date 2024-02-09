@@ -1,5 +1,7 @@
-data:
-  id: dlwh/wikitext_103_detokenized
+# data:
+#   id: dlwh/wikitext_103_detokenized
+
+data: lmsys/toxic-chat
 model:
   type: gpt2
   hidden_dim: 768
