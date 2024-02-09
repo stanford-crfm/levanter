@@ -409,7 +409,9 @@ class Trainer:
 
             loss, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+            partial_fn = functools.partial(split_loss_fn, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
