@@ -5,16 +5,30 @@ import logging as pylogging
 import os
 import sys
 import typing
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import equinox as eqx
 import jax
 import jmp
 import numpy as np
-import wandb
 from draccus import field
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
@@ -28,12 +42,16 @@ from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.types import Scalar
 
 import levanter.logging
+import levanter.tracker
+import levanter.tracker.wandb
+from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
-from levanter.logging import WandbConfig, capture_time
+from levanter.logging import capture_time
+from levanter.tracker import TrackerConfig
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
@@ -112,8 +130,10 @@ class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
     hooks: TrainerHooks
+    tracker: levanter.tracker.Tracker
     is_trainable_param: Optional[PyTree[FilterSpec]]
     _raw_loss_function: Callable
+    _cmanagers: List[typing.ContextManager] = []
 
     def __init__(
         self,
@@ -139,6 +159,8 @@ class Trainer:
         self._raw_loss_function = loss_fn
         self.optimizer = optimizer
         self.is_trainable_param = is_trainable
+
+        self._cmanagers = []
 
     @cached_property
     def loss_fn(self):
@@ -204,6 +226,34 @@ class Trainer:
     def EvalBatch(self):
         return self.config.EvalBatch
 
+    def __enter__(self):
+        if len(self._cmanagers) > 0:
+            raise RuntimeError("Trainer is already entered")
+
+        self._cmanagers = [
+            # levanter.current_tracker(self.tracker),
+            self.device_mesh,
+            hax.axis_mapping(self.parameter_axis_mapping),
+        ]
+
+        for cmanager in self._cmanagers:
+            cmanager.__enter__()
+
+        return self
+
+    def __exit__(self, *args):
+        problems = []
+        for cmanager in reversed(self._cmanagers):
+            try:
+                cmanager.__exit__(*args)
+            except Exception as e:
+                problems.append(e)
+
+        self._cmanagers = []
+
+        if len(problems) > 0:
+            raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
+
     def initial_state(
         self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
     ) -> TrainerState:
@@ -213,7 +263,6 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
-
         if model is not None and model_init is not None:
             raise ValueError("only one of model and model_init should be specified")
         elif model is None and model_init is None:
@@ -306,8 +355,7 @@ class Trainer:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
-            # TODO: refactor logging
-            wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
             info = self.train_step(state, example)
             state = info.state
@@ -316,7 +364,7 @@ class Trainer:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                wandb.log({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
 
             yield info
 
@@ -337,10 +385,9 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_to_wandb, every=1)
+        self.add_hook(callbacks.log_step_info, every=1)
         if eval_dataset is not None:
             self.add_eval_hook(eval_dataset)
-        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -409,7 +456,9 @@ class Trainer:
 
             loss, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
-            partial_fn = lambda model: split_loss_fn(model, *batch, **batch_kwargs)
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+
+            partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
             model = eqx.apply_updates(model, updates)
@@ -500,15 +549,26 @@ class Trainer:
             return None
 
 
+def _initialize_global_tracker(config, run_id):
+    if isinstance(config, Sequence):
+        tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
+    else:
+        tracker = config.init(run_id)
+
+    levanter.tracker.set_global_tracker(tracker)
+
+
 @dataclass
 class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
 
-    wandb: WandbConfig = field(default_factory=WandbConfig)
+    wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
     run_base_dir: Path = Path("runs/")
     id: Optional[str] = None  # run id. if None, will be set to a random string
+
+    tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
 
     # config related to partitioning
 
@@ -558,15 +618,6 @@ class TrainerConfig:
     shutdown_at_exit: Union[bool, float] = False
 
     @property
-    def run_name(self) -> str:
-        try:
-            import wandb
-
-            return wandb.run and (wandb.run.name or wandb.run.id) or "unnamed"
-        except ImportError:
-            return "unnamed"
-
-    @property
     def TrainBatch(self):
         return Axis("batch", self.train_batch_size)
 
@@ -578,7 +629,12 @@ class TrainerConfig:
     def microbatch_size(self):
         return self.per_device_parallelism * self.data_axis_size
 
-    def initialize(self, all_config):
+    def __post_init__(self):
+        if self.wandb is not None:
+            warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
+            self.tracker = self.wandb
+
+    def initialize(self):
         """Initializes jax, wandb, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
@@ -587,8 +643,8 @@ class TrainerConfig:
         self._validate_and_set_defaults()
 
         id = self._maybe_set_id()
-        levanter.logging.init_logger(f"{self.log_dir}/{id}.log")
-        self.wandb.init(id, all_config)
+        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        _initialize_global_tracker(self.tracker, id)
 
         self.ray.initialize()
 
@@ -668,7 +724,7 @@ class TrainerConfig:
             # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
             if "RUN_ID" in os.environ:
                 self.id = os.environ["RUN_ID"]
-            elif self.wandb.id is not None:
+            elif self.wandb is not None and self.wandb.id is not None:
                 self.id = self.wandb.id
             else:
                 # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
@@ -706,6 +762,22 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+
+class AllConfig(Protocol):
+    trainer: TrainerConfig
+
+
+def initialize(config: TrainerConfig | AllConfig):
+    """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
+    as hyperparameters and an artifact"""
+    if isinstance(config, TrainerConfig):
+        trainer_config = config
+    else:
+        trainer_config = config.trainer
+
+    trainer_config.initialize()
+    levanter.tracker.log_configuration(config)
 
 
 def _params_only(t):

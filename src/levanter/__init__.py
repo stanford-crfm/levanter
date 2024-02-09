@@ -7,3 +7,4 @@ import levanter.models as models
 import levanter.optim as optim
 import levanter.trainer as trainer
 import levanter.visualization as visualization
+from levanter.trainer import initialize

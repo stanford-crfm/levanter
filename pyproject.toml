@@ -31,7 +31,7 @@ dependencies = [
     "transformers>=4.22.0",
     "optax",
     "wandb",
-    "draccus>=0.6",
+    "draccus>=0.7.1",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
     "datasets==2.16.1",
