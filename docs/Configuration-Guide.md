@@ -213,11 +213,11 @@ the machines being used for training. This is useful for distributed
 preprocessing. You can disable this behavior using `auto_start_cluster: false`.
 
 
-| Parameter           | Description                                                                 | Default |
-|---------------------|-----------------------------------------------------------------------------|---------|
-| `address`           | The address of the Ray cluster to connect to.                                | `None`  |
-| `start_workers`     | Whether to start Ray workers. If `False`, you must start them yourself.      | `True`  |
-| `auto_start_cluster`| Whether to start a Ray cluster automatically.                                | `True`  |
+| Parameter            | Description                                                             | Default |
+|----------------------|-------------------------------------------------------------------------|---------|
+| `address`            | The address of the Ray cluster to connect to.                           | `None`  |
+| `start_workers`      | Whether to start Ray workers. If `False`, you must start them yourself. | `True`  |
+| `auto_start_cluster` | Whether to start a Ray cluster automatically.                           | `True`  |
 
 
 ## Distributed Config
@@ -227,12 +227,12 @@ If you're not using SLURM or TPUs, you can specify the cluster manually using th
 
 **Don't use this on TPU, and possibly not on SLURM either.**
 
-| Parameter           | Description                                                                 | Default                 |
-|---------------------|-----------------------------------------------------------------------------|-------------------------|
-| `coordinator_address`| The address of the coordinator. If `None`, we'll use the default address.   | `None`                  |
-| `num_processes`     | The number of processes in the cluster.                                     | `None`                  |
-| `process_id`        | The process id of this process.                                             | `None`                  |
-| `local_device_ids`  | The local device ids of this process.                                       | ${CUDA_VISIBLE_DEVICES} |
+| Parameter             | Description                                                               | Default                 |
+|-----------------------|---------------------------------------------------------------------------|-------------------------|
+| `coordinator_address` | The address of the coordinator. If `None`, we'll use the default address. | `None`                  |
+| `num_processes`       | The number of processes in the cluster.                                   | `None`                  |
+| `process_id`          | The process id of this process.                                           | `None`                  |
+| `local_device_ids`    | The local device ids of this process.                                     | ${CUDA_VISIBLE_DEVICES} |
 
 
 

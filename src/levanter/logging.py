@@ -50,6 +50,8 @@ def init_logger(path: Union[str, Path], level: int = pylogging.INFO) -> None:
     # use ISO 8601 format for timestamps, except no TZ, because who cares
     date_format = "%Y-%m-%dT%H:%M:%S"
 
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
     handlers: List[pylogging.Handler] = [pylogging.FileHandler(path, mode="a"), pylogging.StreamHandler()]
 
     # Create Root Logger w/ Base Formatting

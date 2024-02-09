@@ -34,9 +34,6 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import WandbConfig, capture_time
-
-# import for backward compatibility
-from levanter.optim import OptimizerConfig  # noqa: F401
 from levanter.types import FilterSpec
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
@@ -168,6 +165,10 @@ class Trainer:
     def mp(self) -> jmp.Policy:
         """Returns the mixed precision policy"""
         return self.config.mp
+
+    @property
+    def num_train_steps(self) -> int:
+        return self.config.num_train_steps
 
     @typing.overload
     def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
@@ -408,7 +409,9 @@ class Trainer:
 
             loss, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
+            partial_fn = lambda model: split_loss_fn(model, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
             model = eqx.apply_updates(model, updates)
 
             return loss, model, opt_state
@@ -577,21 +580,24 @@ class TrainerConfig:
 
     def initialize(self, all_config):
         """Initializes jax, wandb, logging, setting the run name/id in the process"""
+        self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
         pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
-        self._maybe_set_id()
-        self._initialize_logging()
-        self.ray.initialize()
-        self._initialize_jax_config()
         self._validate_and_set_defaults()
-        self.wandb.init(self.id, all_config)
+
+        id = self._maybe_set_id()
+        levanter.logging.init_logger(f"{self.log_dir}/{id}.log")
+        self.wandb.init(id, all_config)
+
+        self.ray.initialize()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
 
         if self.require_accelerator:
-            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+            if jax.default_backend() == "cpu":
+                raise RuntimeError("No accelerator found. Please run on a TPU or GPU.")
 
         if self.shutdown_at_exit is not False:
             if isinstance(self.shutdown_at_exit, bool):
@@ -650,10 +656,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -676,6 +678,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
