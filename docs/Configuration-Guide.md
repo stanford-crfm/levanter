@@ -13,7 +13,7 @@ class TrainLmConfig:
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 ```
 
 Your training run will typically be associated with a single config file. For instance, you might have a file

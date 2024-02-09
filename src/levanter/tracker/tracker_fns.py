@@ -50,7 +50,7 @@ def _no_throw_log_metrics(metrics: dict[str, Any], *, step: Optional[int], commi
     try:
         if _global_tracker is None:
             raise RuntimeError("No global tracker set")
-        _global_tracker.log(metrics, step=step)
+        _global_tracker.log(metrics, step=step, commit=False)
     except Exception:
         logger.exception("Error logging metrics")
 

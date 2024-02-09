@@ -18,8 +18,8 @@ def test_weight_decay_masking():
             nodes = []
 
             # apply on embedding
-            nodes.append(tree.embeddings.token_embeddings.array)
-            nodes.append(tree.embeddings.position_embeddings.array)
+            nodes.append(tree.embeddings.token_embeddings.weight.array)
+            nodes.append(tree.embeddings.position_embeddings.weight.array)
 
             # apply on attention
             nodes.append(tree.transformer.blocks.stacked.attn.c_attn.weight.array)
@@ -49,8 +49,8 @@ def test_weight_decay_masking():
             "attn.c_proj.weight",
             "mlp.c_fc.weight",
             "mlp.c_proj.weight",
-            "token_embeddings",
-            "position_embeddings",
+            "token_embeddings.weight",
+            "position_embeddings.weight",
         ]
     )
     regex_config = AdamConfig(

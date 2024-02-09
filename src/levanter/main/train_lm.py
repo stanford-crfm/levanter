@@ -49,8 +49,6 @@ class TrainLmConfig:
 
 
 def main(config: TrainLmConfig):
-    levanter.initialize(config)
-
     tokenizer = config.data.the_tokenizer
 
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
@@ -79,6 +77,7 @@ def main(config: TrainLmConfig):
     else:
         converter = None
 
+    levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
@@ -134,11 +133,7 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        levanter.tracker.log_summary(
-            {
-                "parameter_count": parameter_count(state.model),
-            }
-        )
+        levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
@@ -147,7 +142,6 @@ def main(config: TrainLmConfig):
             eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
             trainer.add_eval_hook(eval_dataset, name=name)
 
-        # Register hooks
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)

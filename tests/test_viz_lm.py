@@ -18,7 +18,11 @@ from levanter.utils.py_utils import logical_cpu_core_count
 
 def setup_module(module):
     ray_designated_cores = max(1, logical_cpu_core_count())
-    ray.init("local", num_cpus=ray_designated_cores)
+    try:
+        ray.init("local", num_cpus=ray_designated_cores)
+    except AssertionError:
+        # don't get upset if ray is already running
+        pass
 
 
 def teardown_module(module):

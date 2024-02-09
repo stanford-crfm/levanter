@@ -163,7 +163,6 @@ def test_checkpoint_simple():
             initial_state,
             step=initial_state.step,
             checkpoint_path=tmpdir,
-            exist_ok=True,
         )
         restored_state = load_checkpoint(
             rep_state,
@@ -206,7 +205,7 @@ def test_checkpoint_steps():
     assert_trees_not_close(state, rep_state)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        save_checkpoint(state, step=3, checkpoint_path=tmpdir, exist_ok=True)
+        save_checkpoint(state, step=3, checkpoint_path=tmpdir)
         restored_state = load_checkpoint(rep_state, checkpoint_path=tmpdir, discover_latest=False)
 
         assert_trees_all_close(

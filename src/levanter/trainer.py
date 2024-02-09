@@ -52,7 +52,6 @@ from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, Shar
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
-from levanter.optim import SecondOrderTransformation
 from levanter.tracker import TrackerConfig
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
@@ -193,6 +192,8 @@ class Trainer:
         if add_default_hooks:
             self._add_default_hooks()
 
+        self._cmanagers = []
+
     @cached_property
     def loss_fn(self):
         """
@@ -258,6 +259,7 @@ class Trainer:
         return self.config.EvalBatch
 
     def __enter__(self):
+
         this_managers = [
             levanter.current_tracker(self.tracker),
             self.device_mesh,
@@ -514,9 +516,9 @@ class Trainer:
             trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
             updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
 
-            # Sophia, e.g.
-            if isinstance(self.optimizer, SecondOrderTransformation):
-                opt_state = self.optimizer.update_hessian(opt_state, self.loss_fn, model, *batch, **batch_kwargs)
+            partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
+
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
             model = eqx.apply_updates(model, updates)
 
             return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
@@ -634,6 +636,10 @@ class TrainerConfig:
     @property
     def EvalBatch(self):
         return Axis("batch", self.eval_batch_size)
+
+    @property
+    def microbatch_size(self):
+        return self.per_device_parallelism * self.data_axis_size
 
     def __post_init__(self):
         if self.wandb is not None:
