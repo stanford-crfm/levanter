@@ -62,7 +62,7 @@ DEFAULT_JAX_CONFIG = {
 def jittable_wandb_log(data, *, step=None):
     """uses jax effect callback to log to wandb from the host"""
     if is_wandb_available():
-        jax.debug.callback(wandb.log, data, step=step, commit=False)
+        jax.debug.callback(wandb.log, data, step=step, commit=True)
 
 
 def is_wandb_available():
