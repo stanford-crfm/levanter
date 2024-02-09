@@ -140,6 +140,9 @@ dmypy.json
 # dataset cache files
 *.parquet
 ledger.json
+cache_ledger.json
+cache/*.json
+cache/*.json.bak
 
 /checkpoints
 *.jaxpr
