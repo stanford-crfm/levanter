@@ -585,7 +585,7 @@ class TrainerConfig:
         self._validate_and_set_defaults()
 
         id = self._maybe_set_id()
-        levanter.logging.init_logger(self.log_dir, f"{id}.log")
+        levanter.logging.init_logger(f"{self.log_dir}/{id}.log")
         self.wandb.init(id, all_config)
 
         self.ray.initialize()
@@ -654,10 +654,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -680,6 +676,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
