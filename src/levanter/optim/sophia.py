@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
-# import levanter.tracker
+import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
 from levanter.optim.util import hvp, tree_gaussian_like
 from levanter.utils.jax_utils import parameter_count, tree_filter_like
