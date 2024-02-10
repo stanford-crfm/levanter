@@ -20,3 +20,6 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
+  tracker:
+    type: tensorboard
+    logdir: tb_logs/

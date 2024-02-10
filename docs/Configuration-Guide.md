@@ -35,7 +35,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
 
@@ -179,12 +180,34 @@ The default step-based checkpoint policy is to save a checkpoint every 10,000 st
 
 
 
-## WandB
+## Trackers and Logging
 
-We mostly use wandb for logging, including using wandb for allocating the run id. We may change this.
 
-These all live in a nested object `wandb` inside `trainer`. Most of these are the same as the corresponding `wandb.init`
-parameters.
+We mostly use [W&B](https://wandb.ai/site) for tracking values and other metadata about a run. However, we also support
+Tensorboard and a few other trackers. You can also use multiple trackers at once, or even write your own.
+See  [Trackers](dev/Trackers.md) for more information.
+
+### W&B
+
+Wandb is the default tracker and is installed by default. To use it, you can configure it in your config file:
+
+```yaml
+trainer:
+    tracker:
+        type: wandb
+        project: my-project
+        entity: my-entity
+```
+
+Because wandb is the default, you can also just do:
+
+```yaml
+trainer:
+    tracker:
+      project: my-project
+      entity: my-entity
+```
+
 
 
 | Parameter      | Description                                    | Default                    |
@@ -205,6 +228,35 @@ of your main script.
 * `save_xla_dumps` is useful for debugging XLA compilation issues. It tends to dump a lot of stuff, so we don't save it by default.
 To use it, you must also set the right environment variables. Something like `XLA_FLAGS="--xla_dump_to=/tmp/output_folder/xla_dumps --xla_dump_hlo_pass_re=.*`.
 We will automatically parse out the env variable.
+
+### Tensorboard
+
+Tensorboard is also supported. To use it, you can configure it in your config file:
+
+```yaml
+trainer:
+    tracker:
+        type: tensorboard
+        logdir: logs
+```
+
+### Multiple Trackers
+
+In some cases, you may want to use multiple trackers at once.
+For example, you may want to use both W&B and Tensorboard.
+
+To do this, you can use the [levanter.tracker.tracker.CompositeTracker][] class, or, if using a config file, you
+can specify multiple trackers:
+
+```yaml
+trainer:
+  tracker:
+    - type: wandb
+      project: my-project
+      entity: my-entity
+    - type: tensorboard
+      logdir: logs
+```
 
 ## Ray Config
 
@@ -277,8 +329,26 @@ We won't go into detail here. You can see the auto-generated docs below.
 
 ::: levanter.checkpoint.Checkpointer
 
-### Wandb
-::: levanter.logging.WandbConfig
+### Trackers and Metrics
+
+See also [Trackers](dev/Trackers.md) for more information. Basic configuration is shown below.
+
+#### Single Tracker
+
+```yaml
+trainer:
+  tracker:
+    type: wandb
+    project: my-project
+    entity: my-entity
+```
+
+
+
+::: levanter.tracker.wandb.WandbConfig
+
+::: levanter.tracker.tensorboard.TensorboardConfig
+
 
 ### Distributed and Ray
 
