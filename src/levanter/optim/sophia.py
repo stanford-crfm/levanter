@@ -348,9 +348,7 @@ def _sophia_gradient_transform(
             updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
             stats["optim/unclipped_fraction"] = unclipped_count / parameter_count(updates)
 
-        # this doesn't work well on CPU, so skip if cpu
-        # if jax.lib.xla_bridge.get_backend().platform != "cpu":
-        #     levanter.tracker.jit_log_metrics(stats, step=state.count)
+        levanter.tracker.jit_log_metrics(stats, step=state.count)
 
         if mu_dtype is not None:
             mu = jax.tree_util.tree_map(lambda t: t.astype(mu_dtype), mu)
