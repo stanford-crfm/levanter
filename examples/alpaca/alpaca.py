@@ -249,7 +249,6 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        trainer.add_default_hooks()
         state = trainer.initial_state(training_key, model=model)
 
         if state.step != 0:
