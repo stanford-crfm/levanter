@@ -142,6 +142,7 @@ class Trainer:
         loss_fn: Callable,
         *,
         is_trainable: PyTree[FilterSpec] = True,
+        add_default_hooks: bool = True,
     ):
         """
 
@@ -161,6 +162,9 @@ class Trainer:
         self.is_trainable_param = is_trainable
 
         self._cmanagers = []
+
+        if add_default_hooks:
+            self._add_default_hooks()
 
     @cached_property
     def loss_fn(self):
@@ -381,13 +385,11 @@ class Trainer:
 
         return info
 
-    def add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
         self.add_hook(callbacks.log_step_info, every=1)
-        if eval_dataset is not None:
-            self.add_eval_hook(eval_dataset)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
