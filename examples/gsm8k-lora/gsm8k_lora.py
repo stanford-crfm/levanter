@@ -9,7 +9,6 @@ import jax
 import jax.random as jrandom
 import numpy as np
 import transformers
-import wandb
 
 import haliax as hax
 
@@ -127,7 +126,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -169,53 +168,59 @@ def train(config: TrainArgs):
         def compute_loss(model: LmHeadModel, example: LmExample, key=None):
             return model.compute_loss(example, key=key).scalar()
 
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
-
         # end major difference from Alpaca
 
-        trainer.add_default_hooks()
-        state = trainer.initial_state(training_key, model=model)
+        with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
+            state = trainer.initial_state(training_key, model=model)
 
-        # log some info about the model
-        all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+            # log some info about the model
+            all_param_count = parameter_count(state.model)
+            just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
-        logger.info(f"Total parameter count: {all_param_count}")
-        logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
-
-        # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
-        # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
-        # datasets. We use replicated here since the dataset is small.
-        loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
-        loader = non_caching_cycle(loader)
-
-        if state.step != 0:
-            logger.info(f"Resuming training from step {state.step}")
-            for i in range(state.step):
-                next(loader)  # type: ignore
-
-        # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
-        if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
-            trainer.add_hook(
-                save_peft_checkpoint_callback(
-                    full_save_path, config.lora, config.model_name_or_path, tokenizer, config.hf_upload
-                ),
-                every=config.hf_save_steps,
+            levanter.tracker.log_summary(
+                {
+                    "parameter_count": all_param_count,
+                    "trainable_parameter_count": just_lora_params,
+                    "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+                }
             )
 
-        # Save merged HF checkpoints if requested
-        if config.merged_hf_save_path is not None:
-            full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
-            trainer.add_hook(
-                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
-                every=config.hf_save_steps,
-            )
+            logger.info(f"Total parameter count: {all_param_count}")
+            logger.info(f"Trainable parameter count: {just_lora_params}")
+            logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
-        trainer.train(state, loader)
+            # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
+            # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
+            # datasets. We use replicated here since the dataset is small.
+            loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
+            loader = non_caching_cycle(loader)
+
+            trainer.add_default_hooks()
+
+            if state.step != 0:
+                logger.info(f"Resuming training from step {state.step}")
+                for i in range(state.step):
+                    next(loader)  # type: ignore
+
+            # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
+            if config.hf_save_path is not None:
+                full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+                trainer.add_hook(
+                    save_peft_checkpoint_callback(
+                        full_save_path, config.lora, config.model_name_or_path, tokenizer, config.hf_upload
+                    ),
+                    every=config.hf_save_steps,
+                )
+
+            # Save merged HF checkpoints if requested
+            if config.merged_hf_save_path is not None:
+                full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
+                trainer.add_hook(
+                    save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
+                    every=config.hf_save_steps,
+                )
+
+            trainer.train(state, loader)
 
 
 if __name__ == "__main__":

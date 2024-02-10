@@ -214,7 +214,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter" # TODO
     tags: ["gpt2"]
 
