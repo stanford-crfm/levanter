@@ -103,7 +103,6 @@ def train(config: TrainArgs):
         # end major difference from Alpaca
 
         with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
-            trainer.add_default_hooks()
             state = trainer.initial_state(training_key, model=model)
 
             # log some info about the model
