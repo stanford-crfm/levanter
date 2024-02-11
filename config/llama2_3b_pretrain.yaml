@@ -1,4 +1,4 @@
-data: !include data/rpv1_llama.yaml  # data/rpv1_debug.yaml
+data: !include data/rpv1_llama.yaml
 model:
   type: llama  # Llama2-3.4B
   seq_len: 4096
