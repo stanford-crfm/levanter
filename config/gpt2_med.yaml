@@ -1,7 +1,7 @@
 data:
-  # id: dlwh/wikitext_103_detokenized
   cache_dir: "gs://levanter-data/tokenized/pile-old/"
   tokenizer: "EleutherAI/gpt-neox-20b"
+
 model:
   type: gpt2
   hidden_dim: 1024
