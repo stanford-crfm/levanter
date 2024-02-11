@@ -282,7 +282,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # not into ff for now
                 # Operations if layer_idx equals 4
                 # sum over sequence length
-                mode = "integrated"
+                mode = "mod"
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
                 elif mode == "mod":
