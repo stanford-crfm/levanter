@@ -9,8 +9,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 
-initialize_from_hf: "gpt2-medium"
-use_hf_model_config: true
+# initialize_from_hf: "gpt2-medium"
+# use_hf_model_config: true
 
 trainer:
   wandb:
@@ -26,6 +26,6 @@ trainer:
   num_train_steps: 2000000
   steps_per_eval: 50
 optimizer:
-  learning_rate: 1E-6
+  learning_rate: 1E-5
   weight_decay: 0.1
   warmup: 0.01
