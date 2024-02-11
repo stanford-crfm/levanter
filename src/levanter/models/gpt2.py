@@ -286,7 +286,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
                 elif mode == "mod":
-                    return x + ff_output# hax.sin(0.1*hax.sum(x, axis='position')) + ff_output
+                    return hax.sin(0.1*x) + ff_output
                 else:
                     return x + ff_output
             def false_fun(_):
