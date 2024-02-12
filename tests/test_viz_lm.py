@@ -47,7 +47,7 @@ def test_viz_lm():
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            save_checkpoint(model, None, 0, f"{f}/ckpt")
+            save_checkpoint({"model": model}, 0, f"{f}/ckpt")
 
             config = viz_logprobs.VizGpt2Config(
                 data=data_config,

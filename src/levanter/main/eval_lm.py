@@ -85,14 +85,10 @@ def main(config: EvalLmConfig):
             with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-                ckpt = load_checkpoint(model, None, config.checkpoint_path)
-
-            assert ckpt is not None
-            model, _, _ = ckpt
+                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
-            # TODO: switch to throwing instead of returning None
             loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
 
             del model
