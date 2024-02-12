@@ -286,7 +286,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
                 elif mode == "mod":
-                    return prev_x + hax.sin(12.340293*attn_output) + ff_output
+                    return prev_x + hax.sin(attn_output) + ff_output
                 else:
                     return x + ff_output
             def false_fun(_):
@@ -295,7 +295,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 return x + ff_output
             
             # if layer is one of the last three (12 layers) add sine target
-            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 12), true_fun, false_fun, None)
+            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 0), true_fun, false_fun, None)
 
             # jax.lax.stopgradient
 
