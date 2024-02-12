@@ -182,7 +182,7 @@ def main(config: TrainLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(train_loader)
 
         ## OK, actually run training!

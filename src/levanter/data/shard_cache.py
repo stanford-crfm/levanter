@@ -1231,17 +1231,6 @@ class ChunkCacheBuilder:
 
                 ray.get(reader_actor.add_work_group.remote(work_item))
 
-                # reader = _alternating_shard_reader.remote(
-                #     name,
-                #     self_ref,
-                #     writer,
-                #     source,
-                #     shard_group,
-                #     priority_fn,
-                #     processor_actor,
-                #     processor.batch_size,
-                #     rows_per_chunk,
-                # )
                 self._shard_readers.append(reader_actor)
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):

@@ -143,7 +143,7 @@ def main(config: LoraLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(iter_data)
 
         ## OK, actually run training!
