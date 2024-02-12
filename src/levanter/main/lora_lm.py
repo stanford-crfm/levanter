@@ -114,7 +114,7 @@ def main(config: LoraLmConfig):
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
-        trainer.add_default_hooks(eval_dataset)
+        trainer.add_eval_hook(eval_dataset)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)

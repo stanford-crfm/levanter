@@ -138,8 +138,6 @@ def main(config: TrainLmConfig):
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
         # boilerplate hooks and such
-        trainer.add_default_hooks()
-
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 

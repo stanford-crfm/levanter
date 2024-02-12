@@ -8,4 +8,5 @@ import levanter.optim as optim
 import levanter.tracker as tracker
 import levanter.trainer as trainer
 import levanter.visualization as visualization
+from levanter.tracker import current_tracker
 from levanter.trainer import initialize
