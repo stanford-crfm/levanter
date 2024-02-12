@@ -93,7 +93,10 @@ def main(config: LoraLmConfig):
         state = trainer.initial_state(training_key, model=model)
 
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        # TODO: remove this once we put this in trainer itself
+        just_lora_params = parameter_count(
+            levanter.trainer._partition_trainable_params(state.model, lora_param_filter)
+        )
 
         levanter.tracker.log_summary(
             {
@@ -140,7 +143,7 @@ def main(config: LoraLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(iter_data)
 
         ## OK, actually run training!

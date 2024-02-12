@@ -34,7 +34,7 @@ def test_export_lm_to_hf():
         # in our trainer, we only export the trainable params
         trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
 
-        save_checkpoint(trainable, None, 0, f"{tmpdir}/ckpt")
+        save_checkpoint({"model": trainable}, 0, f"{tmpdir}/ckpt")
 
         try:
             config = export_lm_to_hf.ConvertLmConfig(
