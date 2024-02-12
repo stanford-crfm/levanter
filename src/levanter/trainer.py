@@ -493,13 +493,14 @@ class Trainer:
         """
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         with hax.axis_mapping(self.parameter_axis_mapping):
+            opt_state = state.opt_state
             train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
             trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
-
             partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
+            updates, opt_state = self.optimizer.update(
+                train_grads, opt_state, params=trainable_model, obj_fn=partial_fn
+            )
             model = eqx.apply_updates(model, updates)
 
             return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
