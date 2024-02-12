@@ -1579,10 +1579,14 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
             while True:
                 i = 0
+                logger.info(f"\n START EPOCH! \n")
+                logger.info(f"\n START EPOCH! \n")
                 for i in range(shard_offset, num_chunks, self._num_readers):
                     chunk = self._ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
+                logger.info(f"\n END EPOCH! \n")
+                logger.info(f"\n END EPOCH! \n")
                 if not loop:
                     break
 
