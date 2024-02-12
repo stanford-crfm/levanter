@@ -492,18 +492,21 @@ class Trainer:
         Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
         """
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
-        with hax.axis_mapping(self.parameter_axis_mapping):
-            opt_state = state.opt_state
-            train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
-            trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
+        opt_state = state.opt_state
+        train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
+        trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
 
-            updates, opt_state = self.optimizer.update(
-                train_grads, opt_state, params=trainable_model, obj_fn=partial_fn
-            )
-            model = eqx.apply_updates(model, updates)
+        # Sophia needs to be able to access the loss function in the optimizer
+        def obj_fun(model):
+            with hax.axis_mapping(self.compute_axis_mapping):
+                return self.loss_fn(model, *batch, **batch_kwargs)
 
-            return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
+        updates, opt_state = self.optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+        model = eqx.apply_updates(model, updates)
+        model = hax.shard(model, self.parameter_axis_mapping)
+        opt_state = hax.shard(opt_state, self.parameter_axis_mapping)
+
+        return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
