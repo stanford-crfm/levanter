@@ -39,7 +39,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.types import IntScalar, Scalar
+from haliax.types import Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -82,15 +82,15 @@ class TrainerState(eqx.Module, Generic[M]):
     It's designed to be extended by subclasses.
     """
 
-    _step: IntScalar = eqx.field(converter=lambda x: as_arrayish(x))
+    step: int = eqx.field(converter=lambda x: as_arrayish(x))
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
 
-    @cached_property
-    def step(self) -> int:
-        return int(self._step)
+    # @cached_property
+    # def step(self) -> int:
+    #     return int(self._step)
 
     @property
     def trainable_model(self) -> M:
@@ -112,11 +112,11 @@ class StepInfo(Generic[M]):
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
 
-    step = property(lambda self: self.state.step - 1)
+    step = property(lambda self: int(self.state.step) - 1)
     """
     The step that was just completed. If you want the next step, use `next_step`.
     """
-    next_step = property(lambda self: self.state.step)
+    next_step = property(lambda self: int(self.state.step))
 
 
 @dataclass
@@ -377,7 +377,7 @@ class Trainer:
         """
         iter_data = iter(train_loader)
 
-        while state.step < self.num_train_steps:
+        while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
@@ -482,7 +482,7 @@ class Trainer:
         model = hax.shard(model, self.parameter_axis_mapping)
         opt_state = hax.shard(opt_state, self.parameter_axis_mapping)
         new_state = dataclasses.replace(
-            state, training_key=new_key, _step=state._step + 1, model=model, opt_state=opt_state
+            state, training_key=new_key, step=state.step + 1, model=model, opt_state=opt_state
         )
 
         return loss, new_state
