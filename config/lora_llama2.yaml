@@ -1,4 +1,8 @@
-initialize_from_hf: meta-llama/Llama-2-7b-hf
+data:
+  # you should set a data.id or train_urls and validation_urls
+  # id: math-ai/AutoMathText
+  tokenizer: "meta-llama/Llama-2-70b-hf"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 trainer:
   mp: p=f32,c=bfloat16
   wandb:
