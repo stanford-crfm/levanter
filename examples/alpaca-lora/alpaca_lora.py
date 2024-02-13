@@ -114,40 +114,40 @@ def train(config: TrainArgs):
             }
         )
 
-    logger.info(f"Total parameter count: {all_param_count}")
-    logger.info(f"Trainable parameter count: {just_lora_params}")
-    logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Total parameter count: {all_param_count}")
+        logger.info(f"Trainable parameter count: {just_lora_params}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
 
-    # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
-    # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
-    # datasets. We use replicated here since the dataset is small.
-    loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
-    loader = non_caching_cycle(loader)
+        # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
+        # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
+        # datasets. We use replicated here since the dataset is small.
+        loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
+        loader = non_caching_cycle(loader)
 
-    if state.step != 0:
-        logger.info(f"Resuming training from step {state.step}")
-        for i in range(state.step):
-            next(loader)  # type: ignore
+        if state.step != 0:
+            logger.info(f"Resuming training from step {state.step}")
+            for i in range(state.step):
+                next(loader)  # type: ignore
 
-    # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
-    if config.hf_save_path is not None:
-        full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
-        trainer.add_hook(
-            save_peft_checkpoint_callback(
-                full_save_path, config.lora, config.model_name_or_path, tokenizer, config.hf_upload
-            ),
-            every=config.hf_save_steps,
-        )
+        # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights
+        if config.hf_save_path is not None:
+            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            trainer.add_hook(
+                save_peft_checkpoint_callback(
+                    full_save_path, config.lora, config.model_name_or_path, tokenizer, config.hf_upload
+                ),
+                every=config.hf_save_steps,
+            )
 
-    # Save merged HF checkpoints if requested
-    if config.merged_hf_save_path is not None:
-        full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
-        trainer.add_hook(
-            save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
-            every=config.hf_save_steps,
-        )
+        # Save merged HF checkpoints if requested
+        if config.merged_hf_save_path is not None:
+            full_save_path = os.path.join(config.merged_hf_save_path, trainer.run_id)
+            trainer.add_hook(
+                save_merged_hf_checkpoint_callback(full_save_path, converter, config.merged_hf_upload),
+                every=config.hf_save_steps,
+            )
 
-    trainer.train(state, loader)
+        trainer.train(state, loader)
 
 
 if __name__ == "__main__":

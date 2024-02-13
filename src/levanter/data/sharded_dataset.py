@@ -147,9 +147,10 @@ class WrappedHFDataset(ShardedDataset[dict]):
     kwargs are passed to load_dataset
     """
 
-    def __init__(self, id, *, split, **kwargs):
+    def __init__(self, id, *, split, streaming: bool = True, **kwargs):
         self.id = id
         self.split = split
+        self.streaming = streaming
         self.kwargs = kwargs
         self._shard_names = self._compute_shard_names()
 
@@ -184,7 +185,7 @@ class WrappedHFDataset(ShardedDataset[dict]):
     def _load_dataset(self):
         # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing
         # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
+        return datasets.load_dataset(self.id, split=self.split, streaming=self.streaming, **self.kwargs)
 
 
 class TextUrlDataset(ShardedDataset[str]):

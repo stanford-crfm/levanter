@@ -259,28 +259,29 @@ class Trainer:
         return self.config.EvalBatch
 
     def __enter__(self):
+        if len(self._cmanagers) > 0:
+            raise RuntimeError("Trainer is already entered")
 
-        this_managers = [
+        self._cmanagers = [
             levanter.current_tracker(self.tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
-        self._cmanagers.append(this_managers)
 
-        for cmanager in this_managers:
+        for cmanager in self._cmanagers:
             cmanager.__enter__()
 
         return self
 
     def __exit__(self, *args):
-        assert len(self._cmanagers) > 0, "Trainer.__exit__ called without corresponding Trainer.__enter__"
-        cur_managers = self._cmanagers.pop()
         problems = []
-        for cmanager in reversed(cur_managers):
+        for cmanager in reversed(self._cmanagers):
             try:
                 cmanager.__exit__(*args)
             except Exception as e:
                 problems.append(e)
+
+        self._cmanagers = []
 
         if len(problems) > 0:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
@@ -395,23 +396,23 @@ class Trainer:
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
-        with levanter.current_tracker(self.tracker):
-            while state.step < self.num_train_steps:
-                with capture_time() as loading_time:
-                    example = next(iter_data)
 
-                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
+        while state.step < self.num_train_steps:
+            with capture_time() as loading_time:
+                example = next(iter_data)
 
-                info = self.train_step(state, example)
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
-                if run_hooks:
-                    with capture_time() as hook_time:
-                        self.run_hooks(info)
+            info = self.train_step(state, example)
+            state = info.state
 
-                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
 
-                state = info.state
-                yield info
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+
+            yield info
 
     def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
@@ -488,21 +489,21 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(model, batch, **batch_kwargs, key=key)
+        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, batch, **batch_kwargs, key=key)
 
         new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
         new_state = dataclasses.replace(new_state, training_key=new_key)
 
         return loss, new_state
 
-    def _compute_gradients_microbatched(self, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
-        grad_fn = eqx.filter_value_and_grad(self.loss_fn, has_aux=False)
+    def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         grad_fn = microbatched(
             grad_fn,
             self.TrainBatch,
-            self.config.per_device_parallelism,
+            self.config.microbatch_size,
             self.parameter_axis_mapping,
-            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
         )
         return grad_fn(model, *batch, **batch_kwargs)
 
@@ -512,13 +513,14 @@ class Trainer:
         """
         # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
         with hax.axis_mapping(self.parameter_axis_mapping):
+            opt_state = state.opt_state
             train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
             trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            updates, opt_state = self.optimizer.update(train_grads, state.opt_state, params=trainable_model)
-
             partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model, obj_fn=partial_fn)
+            updates, opt_state = self.optimizer.update(
+                train_grads, opt_state, params=trainable_model, obj_fn=partial_fn
+            )
             model = eqx.apply_updates(model, updates)
 
             return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
@@ -787,7 +789,7 @@ class AllConfig(Protocol):
 
 def initialize(config: TrainerConfig | AllConfig):
     """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
-    as hyperparameters and as an artifact"""
+    as hyperparameters and an artifact"""
     if isinstance(config, TrainerConfig):
         trainer_config = config
     else:
@@ -795,6 +797,10 @@ def initialize(config: TrainerConfig | AllConfig):
 
     trainer_config.initialize()
     levanter.tracker.log_configuration(config)
+
+
+def _params_only(t):
+    return eqx.filter(t, is_inexact_arrayish)
 
 
 def _partition_trainable_params(model, filter):

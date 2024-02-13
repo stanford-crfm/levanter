@@ -6,6 +6,7 @@ import pytest
 
 import haliax as hax
 
+import levanter.tracker
 from levanter.callbacks import eval_loss_loop
 from levanter.data.dataset import ShardableDataset
 from levanter.data.mixture import MixtureDataset
@@ -136,15 +137,17 @@ def test_estimate_mixture_weights():
     assert l3_ref < l1_ref < l2_ref
 
     from levanter.doremi import estimate_mixture_weights
+    from levanter.tracker import NoopTracker
 
-    w = estimate_mixture_weights(
-        initial_proxy=init_model(),
-        ref=ref_model,
-        data_sources=datasets,
-        trainer_config=tiny_trainer_config,
-        key=next(keys),
-        loss_fn=compute_loss_fn,
-    )
+    with levanter.tracker.current_tracker(NoopTracker()):
+        w = estimate_mixture_weights(
+            initial_proxy=init_model(),
+            ref=ref_model,
+            data_sources=datasets,
+            trainer_config=tiny_trainer_config,
+            key=next(keys),
+            loss_fn=compute_loss_fn,
+        )
 
     w1 = w["d1"]
     w2 = w["d2"]

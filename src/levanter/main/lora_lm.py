@@ -92,6 +92,7 @@ def main(config: LoraLmConfig):
         state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         all_param_count = parameter_count(state.model)
+        # TODO: remove this once we put this in trainer itself
         just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
         levanter.tracker.log_summary(
@@ -118,6 +119,7 @@ def main(config: LoraLmConfig):
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
+        trainer.add_eval_hook(eval_dataset)
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
