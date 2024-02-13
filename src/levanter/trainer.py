@@ -358,7 +358,6 @@ class Trainer:
             return eqx.combine(partial_state, fresh_state)
 
         state = init_state(state, model_init, training_key, self.is_trainable_param)
-        print(state.step.sharding)
 
         return state
 
@@ -385,8 +384,6 @@ class Trainer:
             with capture_time() as loading_time:
                 example = next(iter_data)
 
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
-
             info = self.train_step(state, example)
             state = info.state
 
@@ -394,7 +391,9 @@ class Trainer:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
+
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
 
             yield info
 
