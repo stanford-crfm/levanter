@@ -39,7 +39,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.types import Scalar
+from haliax.types import IntScalar, Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -82,15 +82,18 @@ class TrainerState(eqx.Module, Generic[M]):
     It's designed to be extended by subclasses.
     """
 
-    step: int = eqx.field(converter=lambda x: as_arrayish(x))
+    step: IntScalar = eqx.field(converter=lambda x: as_arrayish(x))
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
 
-    # @cached_property
-    # def step(self) -> int:
-    #     return int(self._step)
+    @property
+    def int_step(self) -> int:
+        """
+        Returns the step as an int. On multinode, doing
+        """
+        return int(self.step)
 
     @property
     def trainable_model(self) -> M:

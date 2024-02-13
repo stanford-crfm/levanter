@@ -177,7 +177,7 @@ def main(config: TrainLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
-        if state.step > 0:
+        if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm

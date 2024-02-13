@@ -249,7 +249,7 @@ def train(config: TrainArgs):
 
         state = trainer.initial_state(training_key, model=model)
 
-        if state.step != 0:
+        if int(state.step) != 0:
             logger.info(f"Resuming training from step {state.step}")
             for i in range(state.step):
                 next(loader)  # type: ignore

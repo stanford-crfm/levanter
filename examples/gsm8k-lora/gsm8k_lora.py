@@ -195,7 +195,7 @@ def train(config: TrainArgs):
             loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
             loader = non_caching_cycle(loader)
 
-            if state.step != 0:
+            if int(state.step) != 0:
                 logger.info(f"Resuming training from step {state.step}")
                 for i in range(state.step):
                     next(loader)  # type: ignore
