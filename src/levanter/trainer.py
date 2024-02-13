@@ -355,6 +355,7 @@ class Trainer:
             return eqx.combine(partial_state, fresh_state)
 
         state = init_state(state, model_init, training_key, self.is_trainable_param)
+        print(state.step.sharding)
 
         return state
 
