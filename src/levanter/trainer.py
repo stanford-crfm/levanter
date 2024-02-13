@@ -151,7 +151,7 @@ class Trainer:
     optimizer: GradientTransformation
     hooks: TrainerHooks
     tracker: levanter.tracker.Tracker
-    is_trainable_param: Optional[PyTree[FilterSpec]]
+    is_trainable_param: PyTree[FilterSpec]
     _raw_loss_function: Callable
     _cmanagers: List[typing.ContextManager] = []
 
@@ -469,44 +469,29 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, batch, **batch_kwargs, key=key)
-
-        new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
-        new_state = dataclasses.replace(new_state, training_key=new_key)
-
-        return loss, new_state
-
-    def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
-        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
-        grad_fn = microbatched(
-            grad_fn,
-            self.TrainBatch,
-            self.config.microbatch_size,
-            self.parameter_axis_mapping,
-            self.compute_axis_mapping,
-        )
-        return grad_fn(model, *batch, **batch_kwargs)
-
-    def _take_train_step(self, state: S, model, grads, *batch, **batch_kwargs) -> S:
-        """
-        Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
-        """
-        # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
-        opt_state = state.opt_state
-        train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
-        trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
+        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(model):
             with hax.axis_mapping(self.compute_axis_mapping):
-                return self.loss_fn(model, *batch, **batch_kwargs)
+                return self.loss_fn(model, *batch, **batch_kwargs, key=key)
 
-        updates, opt_state = self.optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
-        model = eqx.apply_updates(model, updates)
+        model, opt_state = take_train_step(
+            self.optimizer, model, state.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable_param
+        )
         model = hax.shard(model, self.parameter_axis_mapping)
         opt_state = hax.shard(opt_state, self.parameter_axis_mapping)
+        new_state = dataclasses.replace(
+            state, training_key=new_key, _step=state._step + 1, model=model, opt_state=opt_state
+        )
 
-        return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
+        return loss, new_state
+
+    def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
+        mbs = self.config.microbatch_size
+        grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
+        return grad_fn(model, *batch, **batch_kwargs)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
@@ -514,6 +499,23 @@ class Trainer:
         opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
+
+
+def take_train_step(
+    optimizer,
+    model: M,
+    opt_state,
+    grads,
+    *,
+    obj_fun: Optional[Callable[[M], Scalar]] = None,
+    is_trainable: FilterSpec = True,
+) -> Tuple[M, OptState]:
+    train_grads = _partition_trainable_params(grads, is_trainable)[0]
+    trainable_model = _partition_trainable_params(model, is_trainable)[0]
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    model = eqx.apply_updates(model, updates)
+
+    return model, opt_state
 
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
