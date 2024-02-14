@@ -21,6 +21,7 @@ def test_gradient_checkpointing(num_blocks):
         num_layers=num_blocks,
         num_heads=8,
         gradient_checkpointing=False,
+        use_flash_attention=False,
     )
     config_checkpoint = dataclasses.replace(config, gradient_checkpointing=True)
     key = PRNGKey(0)
