@@ -18,7 +18,7 @@ from haliax.types import PrecisionLike
 from levanter.models.attention import AttentionMask, materialize_mask
 
 
-# TODO: Tune
+# TODO: tune
 BLOCK_SIZE = 128
 
 
