@@ -3,22 +3,26 @@ import tempfile
 import equinox as eqx
 import jax
 import numpy as np
+import optax
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
 
+from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import (
     LoraConfig,
     LoraLinear,
     lora_state_dict,
+    lora_trainable_params_filter,
     loraize,
     merge_lora_modules,
     save_merged_hf_model,
     save_peft_pretrained,
 )
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.trainer import StepInfo, TrainerState
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
@@ -240,3 +244,30 @@ def test_lora_merged_load_in_hf():
 
         assert np.allclose(lev_lora_out, hf_lora_out, atol=1e-4)
         assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)
+
+
+def test_lora_works_with_checkpointer():
+    with tempfile.TemporaryDirectory() as tempdir:
+        k0 = jax.random.PRNGKey(0)
+        k1 = jax.random.PRNGKey(1)
+
+        class Module(eqx.Module):
+            first: hnn.Linear
+            second: hnn.Linear
+
+            def __call__(self, x):
+                return self.second(self.first(x))
+
+        module = Module(first=hnn.Linear.init(In, Mid, key=k0), second=hnn.Linear.init(Mid, Out, key=k1))
+
+        loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+        lora_filter = lora_trainable_params_filter(loraized)
+
+        optimizer = optax.adam(1e-3)
+        opt_state = optimizer.init(eqx.filter(loraized, lora_filter))
+
+        trainer_state = TrainerState(0, loraized, opt_state, jax.random.PRNGKey(0), lora_filter)
+        info = StepInfo(trainer_state, 0.0, 0.0)
+
+        checkpointer = Checkpointer(tempdir, None, [])
+        checkpointer.save_checkpoint(info, "loraized")
