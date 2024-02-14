@@ -19,8 +19,7 @@ from haliax.types import PrecisionLike
 from levanter.models.attention import AttentionMask, materialize_mask
 
 
-# TODO: tune
-BLOCK_SIZE = 128
+BLOCK_SIZE = 1024
 
 
 @named_call
@@ -37,7 +36,7 @@ def flash_attention(
     dropout: float = 0.0,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
-    block_size: int = BLOCK_SIZE,
+    block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
 ):
@@ -57,6 +56,9 @@ def flash_attention(
     if dtype is not None:
         q = q.astype(dtype)
         k = k.astype(dtype)
+
+    if block_size is None:
+        block_size = BLOCK_SIZE
 
     # premultiply by 1/sqrt(d_k) for normal dot product attention
     q = q / math.sqrt(float(q.axis_size(Key)))
