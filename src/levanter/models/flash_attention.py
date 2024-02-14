@@ -60,9 +60,6 @@ def flash_attention(
     if block_size is None:
         block_size = BLOCK_SIZE
 
-    # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q / math.sqrt(float(q.axis_size(Key)))
-
     QPos = q.resolve_axis(QPos)
     KPos = k.resolve_axis(KPos)
 
@@ -72,6 +69,9 @@ def flash_attention(
         return simple_attention_with_dropout(
             QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
         )
+
+    # premultiply by 1/sqrt(d_k) for normal dot product attention
+    q = q / math.sqrt(float(q.axis_size(Key)))
 
     return _flash_attention(
         (q, k, v),
