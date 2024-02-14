@@ -30,8 +30,8 @@ def test_flash_attention_acausal():
 
 def test_flash_attention_causal_mask():
     Key = hax.Axis("Key", 8)
-    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
-    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 4)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 4)
 
     mask = AttentionMask.causal()
 
@@ -51,7 +51,7 @@ def test_grad_attention():
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    mask = hax.nn.attention.causal_mask(QPos, KPos)
+    mask = AttentionMask.causal()
 
     q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
     k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
@@ -60,7 +60,11 @@ def test_grad_attention():
     @equinox.filter_value_and_grad
     def d_attn(qkv, fn):
         q, k, v = qkv
-        x_out = fn(KPos, Key, q, k, v, mask=mask)
+        if fn is hnn.attention.dot_product_attention:
+            my_mask = mask.materialize(QPos, KPos)
+        else:
+            my_mask = mask
+        x_out = fn(KPos, Key, q, k, v, mask=my_mask)
         return (x_out * x_out).sum().scalar()
 
     hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
