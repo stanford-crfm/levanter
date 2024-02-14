@@ -14,7 +14,6 @@ trainer:
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
-  per_device_parallelism: 16
 optimizer:
   learning_rate: 3E-4
   weight_decay: 0.1
