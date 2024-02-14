@@ -54,5 +54,6 @@ def test_pass_different_length_seq_to_gpt2():
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
+        use_flash_attention=False,
     )
     check_model_works_with_seqlen(Gpt2LMHeadModel, config, 16)

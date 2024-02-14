@@ -23,6 +23,7 @@ def test_export_lm_to_hf():
         num_layers=2,
         num_heads=2,
         seq_len=32,
+        use_flash_attention=False,
         hidden_dim=32,
     )
 
@@ -44,6 +45,7 @@ def test_export_lm_to_hf():
                     num_layers=2,
                     num_heads=2,
                     seq_len=32,
+                    use_flash_attention=False,
                     hidden_dim=32,
                 ),
             )
