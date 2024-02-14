@@ -110,6 +110,5 @@ def test_pass_different_length_seq():
         d_model=16,
         n_layers=4,
         n_heads=2,
-        use_flash_attention=False,
     )
     check_model_works_with_seqlen(MptLmHeadModel, config, 16)

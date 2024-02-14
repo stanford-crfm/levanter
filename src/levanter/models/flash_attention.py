@@ -66,6 +66,13 @@ def flash_attention(
     QPos = q.resolve_axis(QPos)
     KPos = k.resolve_axis(KPos)
 
+    if QPos.size < block_size or KPos.size < block_size:
+        from levanter.models.attention import simple_attention_with_dropout
+
+        return simple_attention_with_dropout(
+            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+        )
+
     return _flash_attention(
         (q, k, v),
         QPos,
