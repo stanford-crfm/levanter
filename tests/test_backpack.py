@@ -131,5 +131,6 @@ def test_pass_different_length_seq():
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
+        use_flash_attention=False,
     )
     check_model_works_with_seqlen(BackpackLMHeadModel, config, 16)

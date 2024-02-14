@@ -38,6 +38,7 @@ def test_viz_lm():
         num_heads=2,
         hidden_dim=32,
         seq_len=32,
+        use_flash_attention=False,
     )
 
     with tempfile.TemporaryDirectory() as f:
