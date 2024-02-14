@@ -18,7 +18,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatase
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils.jax_utils import parameter_count
+from levanter.utils.jax_utils import parameter_count, flops_estimate
 
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ def main(config: TrainLmConfig):
                 next(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
+        estimate = trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
 
 
