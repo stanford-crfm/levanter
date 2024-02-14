@@ -35,6 +35,7 @@ def test_eval_lm():
         num_heads=2,
         seq_len=32,
         hidden_dim=32,
+        use_flash_attention=False,
     )
 
     with tempfile.TemporaryDirectory() as f:

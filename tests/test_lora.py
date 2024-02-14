@@ -21,6 +21,7 @@ from levanter.lora import (
     save_merged_hf_model,
     save_peft_pretrained,
 )
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer import StepInfo, TrainerState
 from levanter.utils.tree_utils import inference_mode
@@ -214,7 +215,7 @@ def test_lora_merged_load_in_hf():
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
 
-    causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     with (tempfile.TemporaryDirectory() as tmpdir):
         converter.save_pretrained(model, f"{tmpdir}/model")
