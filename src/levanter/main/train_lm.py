@@ -110,9 +110,9 @@ def main(config: TrainLmConfig):
     train_dataset = CausalLmDataset(
         config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
     )
+    alpha = 0.3
 
     def add_floats(x, y):
-        alpha = 0.3
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
             # linearly interpolate between the two models
             return x * (1 - alpha) + y * alpha
@@ -149,7 +149,7 @@ def main(config: TrainLmConfig):
                 model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
                 # what is the f here?
-                logger.info(f"Interpolating between the two models with alpha={add_floats.alpha}")
+                logger.info(f"Interpolating between the two models with alpha={alpha}")
                 merged_model = jax.tree_util.tree_map(add_floats, model, model_2)
                 state = dataclasses.replace(state, model=merged_model)
             else:
