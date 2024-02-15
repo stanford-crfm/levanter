@@ -17,7 +17,7 @@ trainer:
     project: "locked"
     tags: [ "openwebtext", "gpt2", "itest"]
 
-  mp: f32
+  mp: p=f32,c=bfloat16
   model_axis_size: 1
   per_device_parallelism: -1
 
