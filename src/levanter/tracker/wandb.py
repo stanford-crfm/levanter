@@ -190,7 +190,9 @@ class WandbConfig(TrackerConfig):
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
             # for some reason, wandb isn't populating the git commit, so we do it here
-            other_settings["git_commit"] = self._get_git_sha(code_dir)
+            sha = self._get_git_sha(code_dir)
+            if sha is not None:
+                other_settings["git_commit"] = sha
 
         return other_settings
 
@@ -208,7 +210,9 @@ class WandbConfig(TrackerConfig):
                 import subprocess
 
                 try:
-                    out = subprocess.run(["git", "--git-dir", f"{code_dir}/.git", "rev-parse", "HEAD"], check=True)
+                    out = subprocess.run(
+                        ["git", "--git-dir", f"{code_dir}/.git", "rev-parse", "HEAD"], check=True, capture_output=True
+                    )
                     git_sha = out.stdout.decode().strip()
                 except subprocess.CalledProcessError:
                     return None
