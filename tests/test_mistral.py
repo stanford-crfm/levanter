@@ -161,5 +161,6 @@ def test_pass_different_length_seq(num_kv_heads):
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
+        use_flash_attention=False,
     )
     check_model_works_with_seqlen(MistralLMHeadModel, config, 16)

@@ -1,0 +1,18 @@
+data:
+  # you should set a data.id or train_urls and validation_urls
+  # id: math-ai/AutoMathText
+  tokenizer: "meta-llama/Llama-2-70b-hf"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+trainer:
+  mp: p=f32,c=bfloat16
+  wandb:
+    project: "levanter-lora"
+    tags: ["lora", "llama2"]
+  num_train_steps: 5000  # tune to suit your needs
+  train_batch_size: 64
+
+  # if using model parallelism, this is useful:
+  tensor_parallel_axes: ["mlp", "heads"]
+optimizer:
+  learning_rate: 3e-4
+  weight_decay: 0.0

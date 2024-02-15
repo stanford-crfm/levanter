@@ -28,6 +28,7 @@ from typing import (
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -55,7 +56,7 @@ from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import as_arrayish, is_inexact_arrayish
+from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -70,16 +71,24 @@ DEFAULT_JAX_CONFIG = {
 }
 
 
+def _ensure_int_is_array(x):
+    # who tf decided that bools are ints
+    if isinstance(x, int) and not isinstance(x, bool):
+        return jnp.array(x)
+    else:
+        return x
+
+
 class TrainerState(eqx.Module, Generic[M]):
     """
     This is the state of the trainer. It contains the model, optimizer state, and random key.
-    It is an equinox Module becaues it is a PyTree that gets passed to the core `train_step` method
+    It is an equinox Module because it is a PyTree that gets passed to the core `train_step` method
     of the Trainer. This unfortunately means that `step` is an Array and not an int, hence the IntScalar.
 
     It's designed to be extended by subclasses.
     """
 
-    _step: IntScalar = eqx.field(converter=lambda x: as_arrayish(x))
+    _step: IntScalar = eqx.field(converter=_ensure_int_is_array)
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
