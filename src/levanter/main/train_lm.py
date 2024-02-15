@@ -140,13 +140,16 @@ def main(config: TrainLmConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state.model = None
+                logger.info(f"Loading first model from {converter.reference_checkpoint}")
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
+                logger.info(f"Loading second model from {converter.reference_checkpoint}")
                 model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
                 # what is the f here?
+                logger.info(f"Interpolating between the two models with alpha={add_floats.alpha}")
                 merged_model = jax.tree_util.tree_map(add_floats, model, model_2)
                 state = dataclasses.replace(state, model=merged_model)
             else:
