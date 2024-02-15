@@ -150,7 +150,7 @@ def main(config: TrainLmConfig):
 
                 # what is the f here?
                 logger.info(f"Interpolating between the two models with alpha={alpha}")
-                merged_model = jax.tree_util.tree_map(add_floats, model, model_2)
+                merged_model = named_jit(jax.tree_util.tree_map, add_floats)(model, model_2)
                 state = dataclasses.replace(state, model=model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
