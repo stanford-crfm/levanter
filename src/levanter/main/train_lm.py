@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
+import jax
 import wandb
 
 import haliax as hax
@@ -18,7 +19,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatase
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils.jax_utils import parameter_count, flops_estimate
+from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,14 @@ def main(config: TrainLmConfig):
         config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
     )
 
+    def add_floats(x, y):
+        alpha = 0.3
+        if is_inexact_arrayish(x) and is_inexact_arrayish(y):
+            # linearly interpolate between the two models
+            return x * (1 - alpha) + y * alpha
+        else:
+            return x
+
     with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
@@ -133,7 +142,13 @@ def main(config: TrainLmConfig):
                 state.model = None
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
-                state = dataclasses.replace(state, model=model)
+
+                model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
+
+                # what is the f here?
+                merged_model = jax.tree_util.tree_map(add_floats, model, model_2)
+                state = dataclasses.replace(state, model=merged_model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
