@@ -95,7 +95,10 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
+        if key is None:
+            return model.compute_loss(example, key=None).scalar()
+        x, y = model.compute_loss(example, key=key)
+        return x.scalar(), y.scalar()
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
