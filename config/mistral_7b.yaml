@@ -14,8 +14,9 @@ trainer:
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
-  num_train_steps: 2
-  steps_per_eval: 1
+  # only eval
+  num_train_steps: 0
+  steps_per_eval: 0
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
