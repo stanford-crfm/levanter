@@ -2,6 +2,7 @@ import dataclasses
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Dict, Optional, Type
+import levanter
 
 import equinox as eqx
 from jax import lax
@@ -281,18 +282,25 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # not into ff for now
                 # Operations if layer_idx equals 4
                 # sum over sequence length
-                return hax.sin(*hax.sum(prev_x, axis='position')) + attn_output + ff_output
+                mode = "integrated"
+                if mode == "integrated":
+                    return hax.sin(hax.sum(prev_x, axis='position')) + attn_output + ff_output
+                elif mode == "mod":
+                    return hax.sin(0.1*hax.sum(x, axis='position')) + ff_output
+                else:
+                    return x + ff_output
             def false_fun(_):
                 # Otherwise return the same tensor
                 # as expected
                 return x + ff_output
             
             # if layer is one of the last three (12 layers) add sine target
-            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 20), true_fun, false_fun, None)
+            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 12), true_fun, false_fun, None)
 
             # jax.lax.stopgradient
 
-            x = x + ff_output
+            #x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
+            x = x + ff_output# sin_target
             activation_diff = hax.square(x - sin_target)
             return x, activation_diff
    
@@ -440,6 +448,14 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
+        
+        if key is None:
+            return cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
+        return hax.mean(sine_output), cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        )
         if key is None:
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
