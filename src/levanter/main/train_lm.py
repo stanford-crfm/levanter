@@ -111,7 +111,7 @@ def main(config: TrainLmConfig):
     train_dataset = CausalLmDataset(
         config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
     )
-    alpha = 1.0
+    alpha = 0.9
 
     def add_floats(x, y):
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
@@ -144,6 +144,7 @@ def main(config: TrainLmConfig):
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state.model = None
                 logger.info(f"Loading first model from {converter.reference_checkpoint}")
+                logger.info(f"Loading first model from {config.model}")
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
