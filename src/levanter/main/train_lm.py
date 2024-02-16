@@ -116,7 +116,7 @@ def main(config: TrainLmConfig):
     def add_floats(x, y):
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
             # linearly interpolate between the two models
-            alpha = 0.5
+            alpha = 0.3
             minus_alpha = 1.0 - alpha
             return x * alpha + y * minus_alpha
         else:
