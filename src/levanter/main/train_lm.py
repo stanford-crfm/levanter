@@ -156,7 +156,7 @@ def main(config: TrainLmConfig):
                 model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
                 # what is the f here?
-                alpha = 0.5
+                alpha = 0.3
                 logger.info(f"Interpolating between the two models with alpha={alpha}")
                 merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
                 state = dataclasses.replace(state, model=merged_model)
