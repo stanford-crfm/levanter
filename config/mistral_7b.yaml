@@ -1,5 +1,6 @@
 data:
   id: dlwh/wikitext_103_detokenized
+  cache_dir: "gs://levanter-data/tokenized/wiki-mistral/"
   tokenizer: "mistralai/Mistral-7B-v0.1"
 model:
   type: mistral
