@@ -116,8 +116,8 @@ def main(config: TrainLmConfig):
     def add_floats(x, y):
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
             # linearly interpolate between the two models
-            alpha = 0.0
-            minus_alpha = 1 - alpha
+            #alpha = 0.0
+            minus_alpha = 1.0 - alpha
             return x * minus_alpha + y * alpha
         else:
             return x
@@ -148,13 +148,13 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 # logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                # model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                # model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
+                model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
                 # what is the f here?
                 logger.info(f"Interpolating between the two models with alpha={alpha}")
-                #merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
-                state = dataclasses.replace(state, model=model)#merged_model)
+                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
+                state = dataclasses.replace(state, model=merged_model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
