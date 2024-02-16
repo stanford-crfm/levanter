@@ -419,11 +419,11 @@ class Trainer:
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
-            (loss, aux), grads = self._compute_gradients_microbatched(
+            loss, grads = self._compute_gradients_microbatched(
                 split_loss_fn, trainable_model, batch, **batch_kwargs
             )
 
-            jittable_wandb_log({"sin_loss": aux}, step=opt_state.count)
+            #jittable_wandb_log({"sin_loss": aux}, step=opt_state.count)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)
@@ -433,7 +433,7 @@ class Trainer:
         return train_step
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
-        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=True)
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         # grad_fn = microbatched(
         #     grad_fn,
         #     self.TrainBatch,
