@@ -1,5 +1,5 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/pile-old/"
+  id: dlwh/wikitext_103_detokenized
   tokenizer: "mistralai/Mistral-7B-v0.1"
 model:
   type: mistral
