@@ -136,6 +136,8 @@ def main(config: TrainLmConfig):
         if state.step == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
+                logger.info('\n \n belo')
+                logger.info(config.initialize_from_hf)
                 # initialize from an hf pretrained model
                 logger.info(
                     "No training checkpoint found. Initializing model from HF checkpoint"
