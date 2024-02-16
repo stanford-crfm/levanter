@@ -282,9 +282,9 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # not into ff for now
                 # Operations if layer_idx equals 4
                 # sum over sequence length
-                mode = "mod"
+                mode = "integrated"
                 if mode == "integrated":
-                    return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
+                    return hax.sin(0.1*prev_x) + attn_output + ff_output
                 elif mode == "mod":
                     return prev_x + hax.sin(32*attn_output) + ff_output
                 else:
@@ -300,7 +300,8 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
             # jax.lax.stopgradient
 
             #x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
-            x = sin_target
+            #x = sin_target
+            x = x + ff_output
             activation_diff = hax.square(x - sin_target)
             return x, activation_diff
    
@@ -449,13 +450,13 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
         
-        if key is None:
-            return cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-            )
-        return cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        ), hax.mean(sine_output)
+        # if key is None:
+        #     return cross_entropy_loss(
+        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        #     )
+        # return cross_entropy_loss(
+        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        # ), hax.mean(sine_output)
         if key is None:
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
