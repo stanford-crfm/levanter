@@ -116,7 +116,9 @@ def main(config: TrainLmConfig):
     def add_floats(x, y):
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
             # linearly interpolate between the two models
-            return x * (1 - alpha) + y * alpha
+            alpha = 0.0
+            minus_alpha = 1 - alpha
+            return x * minus_alpha + y * alpha
         else:
             return x
 
@@ -145,9 +147,9 @@ def main(config: TrainLmConfig):
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
-                logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
+                # logger.info(f"Loading second model from {converter.reference_checkpoint}")
+                # model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                # model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
                 # what is the f here?
                 logger.info(f"Interpolating between the two models with alpha={alpha}")
