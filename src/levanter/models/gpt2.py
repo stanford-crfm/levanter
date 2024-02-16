@@ -300,7 +300,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
             # jax.lax.stopgradient
 
             #x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
-            x = sin_target
+            x = x + ff_output
             activation_diff = hax.square(x - sin_target)
             return x, activation_diff
    
@@ -382,7 +382,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         input_Pos = input_ids.resolve_axis("position")
         position_embeds = self.position_embeddings.embed(hax.arange(input_Pos))
         x = input_embeds + position_embeds
-        x = self.dropout(x, key=key)
+        #x = self.dropout(x, key=key)
 
         return x
 
