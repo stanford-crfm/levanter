@@ -87,8 +87,8 @@ def main(config: TrainLmConfig):
     # some axes we need
     Batch = config.trainer.TrainBatch
     EvalBatch = config.trainer.EvalBatch
-    Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
+    Pos = config.model.Pos.resize(1024)
+    KeyPos = config.model.KeyPos.resize(1024)
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
