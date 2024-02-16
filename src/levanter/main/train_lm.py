@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
-import jax
 import wandb
 
 import haliax as hax
@@ -19,7 +18,7 @@ from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatase
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
-from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish
+from levanter.utils.jax_utils import parameter_count
 
 
 logger = logging.getLogger(__name__)
@@ -87,8 +86,8 @@ def main(config: TrainLmConfig):
     # some axes we need
     Batch = config.trainer.TrainBatch
     EvalBatch = config.trainer.EvalBatch
-    Pos = config.model.Pos.resize(1024)
-    KeyPos = config.model.KeyPos.resize(1024)
+    Pos = config.model.Pos
+    KeyPos = config.model.KeyPos
 
     # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
     # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -96,11 +95,7 @@ def main(config: TrainLmConfig):
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=None).scalar()
-        if key is None:
-            return model.compute_loss(example, key=None).scalar()
-        x, y = model.compute_loss(example, key=key)
-        return x.scalar(), y.scalar()
+        return model.compute_loss(example, key=key).scalar()
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -111,16 +106,6 @@ def main(config: TrainLmConfig):
     train_dataset = CausalLmDataset(
         config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
     )
-    alpha = 0.9
-
-    def add_floats(x, y):
-        if is_inexact_arrayish(x) and is_inexact_arrayish(y):
-            # linearly interpolate between the two models
-            #alpha = 0.0
-            minus_alpha = 1.0 - alpha
-            return x * minus_alpha + y * alpha
-        else:
-            return x
 
     with trainer.device_mesh:
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -136,8 +121,6 @@ def main(config: TrainLmConfig):
         if state.step == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
-                logger.info('\n \n belo')
-                logger.info(config.initialize_from_hf)
                 # initialize from an hf pretrained model
                 logger.info(
                     "No training checkpoint found. Initializing model from HF checkpoint"
@@ -145,20 +128,8 @@ def main(config: TrainLmConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state.model = None
-                logger.info(f"Loading first model from {converter.reference_checkpoint}")
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
-
-                # mistral fine-tune
-                #converter = converter.replaced(reference_checkpoint='teknium/OpenHermes-2.5-Mistral-7B', tokenizer=tokenizer)
-                # logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                # logger.info(f"Loading second model from {config.model}")
-                # model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                # model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
-
-                # # what is the f here?
-                # logger.info(f"Interpolating between the two models with alpha={alpha}")
-                # merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
                 state = dataclasses.replace(state, model=model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
@@ -216,7 +187,7 @@ def main(config: TrainLmConfig):
                 next(train_loader)
 
         ## OK, actually run training!
-        estimate = trainer.train(state, train_loader)
+        trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
 
 
