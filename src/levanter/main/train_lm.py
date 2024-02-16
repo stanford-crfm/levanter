@@ -151,15 +151,15 @@ def main(config: TrainLmConfig):
 
                 # mistral fine-tune
                 #converter = converter.replaced(reference_checkpoint='teknium/OpenHermes-2.5-Mistral-7B', tokenizer=tokenizer)
-                logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                logger.info(f"Loading second model from {config.model}")
-                model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
+                # logger.info(f"Loading second model from {converter.reference_checkpoint}")
+                # logger.info(f"Loading second model from {config.model}")
+                # model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                # model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
-                # what is the f here?
-                logger.info(f"Interpolating between the two models with alpha={alpha}")
-                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
-                state = dataclasses.replace(state, model=merged_model)
+                # # what is the f here?
+                # logger.info(f"Interpolating between the two models with alpha={alpha}")
+                # merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
+                state = dataclasses.replace(state, model=model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
