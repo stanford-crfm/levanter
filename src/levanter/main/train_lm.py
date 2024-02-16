@@ -150,7 +150,7 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 # mistral fine-tune
-                #converter = converter.replaced(reference_checkpoint='teknium/OpenHermes-2.5-Mistral-7B', tokenizer=tokenizer)
+                converter = converter.replaced(reference_checkpoint='teknium/OpenHermes-2.5-Mistral-7B', tokenizer=tokenizer)
                 logger.info(f"Loading second model from {converter.reference_checkpoint}")
                 logger.info(f"Loading second model from {config.model}")
                 model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
