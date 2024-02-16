@@ -11,8 +11,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 
-# initialize_from_hf: "gpt2-medium"
-# use_hf_model_config: true
+initialize_from_hf: "gpt2-medium"
+use_hf_model_config: true
 
 trainer:
   wandb:
