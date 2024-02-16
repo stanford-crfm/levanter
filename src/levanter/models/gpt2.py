@@ -282,7 +282,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
                 # not into ff for now
                 # Operations if layer_idx equals 4
                 # sum over sequence length
-                mode = "mod"
+                mode = "integrated"
                 if mode == "integrated":
                     return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
                 elif mode == "mod":
@@ -453,9 +453,9 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
-        return cross_entropy_loss(
+        return hax.mean(sine_output), cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        ), hax.mean(sine_output)
+        )
         if key is None:
             return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
