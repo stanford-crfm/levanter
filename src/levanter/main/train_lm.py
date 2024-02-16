@@ -57,7 +57,6 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        logger.info('here \n' + config.model.default_hf_checkpoint_converter)
         converter = config.model.default_hf_checkpoint_converter
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
@@ -149,6 +148,7 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 logger.info(f"Loading second model from {converter.reference_checkpoint}")
+                logger.info(f"Loading second model from {config.model}")
                 model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
