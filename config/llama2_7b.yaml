@@ -1,28 +1,25 @@
 data:
-  train_urls:
-    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
-  validation_urls:
-    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
-  cache_dir: "gs://levanter-data/tokenized/openwebtext_llama/"
+  id: dlwh/wikitext_103_detokenized
+  cache_dir: "gs://levanter-data/tokenized/wiki-llama/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-# initialize_from_hf: "meta-llama/Llama-2-7b-hf"
-# use_hf_model_config: true
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
     tags: ["openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 256  # set for v4-64 TPU
-  num_train_steps: 1000
-  steps_per_eval: 50
+  train_batch_size: 128  # set for v4-64 TPU
+  num_train_steps: 2
+  steps_per_eval: 1
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 1.2E-5  # set low for fine-tuning
+  learning_rate: 0  # set low for fine-tuning
   weight_decay: 0.1
   min_lr_ratio: 0.1
