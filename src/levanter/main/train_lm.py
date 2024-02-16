@@ -111,14 +111,14 @@ def main(config: TrainLmConfig):
     train_dataset = CausalLmDataset(
         config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
     )
-    alpha = 0.9
+    alpha = 1.0
 
     def add_floats(x, y):
         if is_inexact_arrayish(x) and is_inexact_arrayish(y):
             # linearly interpolate between the two models
             #alpha = 0.0
             minus_alpha = 1.0 - alpha
-            return x * minus_alpha + y * alpha
+            return x * alpha + y * minus_alpha
         else:
             return x
 
