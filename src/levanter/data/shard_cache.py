@@ -1586,7 +1586,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     chunk = self._ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
-                os._exit(0)
+                #os._exit(0)
                 logger.info(f"\n END EPOCH! \n")
                 logger.info(f"\n END EPOCH! \n")
                 if not loop:
