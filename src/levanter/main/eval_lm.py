@@ -108,7 +108,7 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading first model from {config.model}")
             model_1 = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
 
-            converter = converter.replaced(reference_checkpoint='NousResearch/Llama-2-7b-chat-hf', tokenizer=tokenizer)
+            converter = converter.replaced(reference_checkpoint='huggyllama/llama-7b', tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(config.model)
