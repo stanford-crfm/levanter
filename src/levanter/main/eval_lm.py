@@ -7,10 +7,11 @@ import jax
 import jmp
 import numpy
 import tqdm
+import wandb
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import fsdp, round_axis_for_partitioning
+from haliax.partitioning import fsdp, round_axis_for_partitioning, named_jit
 
 import levanter
 from levanter import callbacks
@@ -23,6 +24,7 @@ from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
+from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish
 
 
 logger = logging.getLogger(__name__)
@@ -102,10 +104,28 @@ def main(config: EvalLmConfig):
             #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            model_from_hf_checkpoint = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
-            loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
+            logger.info(f"Loading first model from {converter.reference_checkpoint}")
+            logger.info(f"Loading first model from {config.model}")
+            model_1 = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
 
-            print("Loss from HF model: ", loss)
+            converter = converter.replaced(reference_checkpoint='NousResearch/Llama-2-7b-chat-hf', tokenizer=tokenizer)
+            logger.info(f"Loading second model from {converter.reference_checkpoint}")
+            logger.info(f"Loading second model from {config.model}")
+            model_2 = converter.load_pretrained(config.model)
+
+            for alpha in [0.0, 0.5, 1.0]:
+                def add_floats(x, y):
+                    if is_inexact_arrayish(x) and is_inexact_arrayish(y):
+                        # linearly interpolate between the two models
+                        minus_alpha = 1.0 - alpha
+                        return x * alpha + y * minus_alpha
+                    else:
+                        return x + y
+                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=False)(model_1, model_2)
+                loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
+
+                print(f"Loss from merged model (alpha={alpha}): ", loss)
+                wandb.log({"eval/loss": loss, "alpha": alpha})
 
             if config.compare_torch:
                 import torch
