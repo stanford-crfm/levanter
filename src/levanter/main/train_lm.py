@@ -149,7 +149,7 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 # mistral fine-tune
-                converter = converter.replaced(reference_checkpoint='huggyllama/llama-7b', tokenizer=tokenizer)
+                converter = converter.replaced(reference_checkpoint='openlm-research/open_llama_7b_v2', tokenizer=tokenizer)
                 logger.info(f"Loading second model from {converter.reference_checkpoint}")
                 logger.info(f"Loading second model from {config.model}")
                 model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
