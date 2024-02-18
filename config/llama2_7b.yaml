@@ -10,7 +10,7 @@ use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama"]
+    tags: ["openwebtext", "llama", "openllama"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
