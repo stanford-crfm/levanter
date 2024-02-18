@@ -163,6 +163,7 @@ def main(config: TrainLmConfig):
                 logger.info("No checkpoint found. Starting from scratch.")
 
         wandb.summary["parameter_count"] = parameter_count(state.model)
+        wandb.log({"alpha": alpha})
 
         # boilerplate hooks and such
         trainer.add_default_hooks()
