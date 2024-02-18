@@ -38,6 +38,7 @@ class EvalLmConfig:
 
     compare_torch: bool = False
     eval_on_train: bool = False
+    alpha: float = 0.5
 
 
 def main(config: EvalLmConfig):
