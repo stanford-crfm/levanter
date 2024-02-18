@@ -30,4 +30,4 @@ optimizer:
   warmup: 0.01
   min_lr_ratio: 0.1
 
-alpha: 0.0
+alpha: 0.1
