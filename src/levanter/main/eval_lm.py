@@ -121,7 +121,7 @@ def main(config: EvalLmConfig):
                         return x * alpha + y * minus_alpha
                     else:
                         return x + y
-                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=False)(model_1, model_2)
+                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model_1, model_2)
                 loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
 
                 print(f"Loss from merged model (alpha={alpha}): ", loss)
