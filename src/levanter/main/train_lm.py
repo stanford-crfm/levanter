@@ -149,7 +149,7 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 
-                converter = converter.replaced(reference_checkpoint='Norquinal/llama-2-7b-claude-chat-rp', tokenizer=tokenizer)
+                converter = converter.replaced(reference_checkpoint='huggyllama/llama-7b', tokenizer=tokenizer)
                 logger.info(f"Loading second model from {converter.reference_checkpoint}")
                 logger.info(f"Loading second model from {config.model}")
                 model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
