@@ -21,7 +21,7 @@ trainer:
   batch_axis: "batch"
 optimizer:
   learning_rate: 0  # set low for fine-tuning
-  weight_decay: 0.1
-  min_lr_ratio: 0.1
+  weight_decay: 0.0
+  min_lr_ratio: 0.0
 
 alpha: 0.0
