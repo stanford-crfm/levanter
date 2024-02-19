@@ -272,7 +272,7 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
 
         Token = x_flat.resolve_axis("token")
         result = hax.zeros((Token, self.config.Embed))
-        chunk_size = int(Token.size * self.config.chunk_size_multiplier)
+        chunk_size = int(Token.size * self.config.chunk_size_coef)
 
         def cond(carry):
             step = carry[0]
