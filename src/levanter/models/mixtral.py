@@ -70,6 +70,7 @@ class MixtralConfig(MistralConfig):
     num_experts_per_tok: int = 2
     num_local_experts: int = 8
     router_aux_loss_coef: float = 0.02
+    chunk_size_coef: float = num_experts_per_tok / num_local_experts  # perf
 
     # Attention-related config
     upcast_attn: bool = False
@@ -271,7 +272,7 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
 
         Token = x_flat.resolve_axis("token")
         result = hax.zeros((Token, self.config.Embed))
-        chunk_size = int(Token.size * (self.config.num_experts_per_tok / self.config.num_local_experts))
+        chunk_size = int(Token.size * self.config.chunk_size_multiplier)
 
         def cond(carry):
             step = carry[0]
