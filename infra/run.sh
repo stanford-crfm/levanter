@@ -6,7 +6,7 @@ HF_CACHE_DIR="/dev/shm/huggingface_cache"
 mkdir -p "$HF_CACHE_DIR"
 
 # Set the Hugging Face cache environment variable
-export TRANSFORMERS_CACHE="$HF_CACHE_DIR"
+export HF_HOME="$HF_CACHE_DIR"
 
 # figure out venv, first check if we wrote a path in infra/venv_path
 if [ ! -d "$VENV" ] && [ -f "$LEV_ROOT/infra/venv_path.txt" ]; then
