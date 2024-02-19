@@ -551,7 +551,15 @@ class LMDatasetSourceConfig:
 
     def get_shard_source(self, split) -> Optional[ShardedDataset[str]]:
         if self.id is not None:
-            ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+            try:
+                ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+            except ValueError as e:
+                # if the message starts with Bad split, then just return None
+                if str(e).startswith("Bad split"):
+                    logger.warning(f"Splits {split} not found for {self.id} {self.name}")
+                    return None
+                else:
+                    raise
 
             if len(ds.shard_names) == 0:
                 return None

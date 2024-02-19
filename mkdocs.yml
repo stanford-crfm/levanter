@@ -97,7 +97,8 @@ nav:
       - "tutorials/Fine-Tuning-Semantic-Parsing.md"
       - "Hardware-Agnostic-Training.md"
   - 'Developer Guide':
-      - 'Port-Models.md'
+      - 'dev/Port-Models.md'
+      - 'dev/Trackers.md'
   - 'FAQ' : 'faq.md'
   - Other:
       - 'Levanter-1.0-Release.md'

@@ -16,7 +16,6 @@ import jax
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
-import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -30,6 +29,8 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+
+import levanter.tracker
 
 from .. import logging
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
@@ -739,7 +740,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        wandb.log(to_log, commit=self.commit)
+        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):
@@ -1230,17 +1231,6 @@ class ChunkCacheBuilder:
 
                 ray.get(reader_actor.add_work_group.remote(work_item))
 
-                # reader = _alternating_shard_reader.remote(
-                #     name,
-                #     self_ref,
-                #     writer,
-                #     source,
-                #     shard_group,
-                #     priority_fn,
-                #     processor_actor,
-                #     processor.batch_size,
-                #     rows_per_chunk,
-                # )
                 self._shard_readers.append(reader_actor)
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):

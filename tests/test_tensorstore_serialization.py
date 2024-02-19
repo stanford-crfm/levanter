@@ -1,10 +1,12 @@
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 from chex import assert_trees_all_close
 
 import haliax as hax
@@ -127,3 +129,26 @@ def test_tensorstore_gpt2_mlp():
             jax.tree_util.tree_leaves(arrays_only(restored_model)),
             jax.tree_util.tree_leaves(arrays_only(initial_model)),
         )
+
+
+def test_tensorstore_ok_with_nones():
+    A = hax.Axis("A", 10)
+
+    class MyModule(eqx.Module):
+        a: Any
+        b: Any
+
+    m = MyModule(a=None, b=hax.zeros(A))
+    m2 = MyModule(a=None, b=hax.ones(A))
+
+    with TemporaryDirectory() as tmpdir:
+        tree_serialize_leaves_tensorstore(tmpdir, m)
+        m3 = tree_deserialize_leaves_tensorstore(tmpdir, m2)
+        assert m3.a is None
+        assert hax.all(m3.b == hax.zeros(A))
+
+    m3 = MyModule(a=hax.zeros(A), b=hax.ones(A))
+    with TemporaryDirectory() as tmpdir:
+        tree_serialize_leaves_tensorstore(tmpdir, m2)
+        with pytest.raises(ValueError):
+            tree_deserialize_leaves_tensorstore(tmpdir, m3)

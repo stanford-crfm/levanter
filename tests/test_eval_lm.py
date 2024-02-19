@@ -11,8 +11,9 @@ import levanter.main.eval_lm as eval_lm
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
-from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.tracker.wandb import WandbConfig
+from levanter.trainer import TrainerState
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -34,6 +35,7 @@ def test_eval_lm():
         num_heads=2,
         seq_len=32,
         hidden_dim=32,
+        use_flash_attention=False,
     )
 
     with tempfile.TemporaryDirectory() as f:
@@ -43,7 +45,9 @@ def test_eval_lm():
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            save_checkpoint(model, None, 0, f"{f}/ckpt")
+            state = TrainerState(0, model, model, jax.random.PRNGKey(0), True)
+
+            save_checkpoint(state, 0, f"{f}/ckpt")
 
             config = eval_lm.EvalLmConfig(
                 data=data_config,

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import jax.random as jrandom
-import wandb
 
 import haliax.random
 
@@ -47,6 +46,7 @@ class LoraLmConfig:
 
 
 def main(config: LoraLmConfig):
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     converter = HFCheckpointConverter.from_hf(config.initialize_from_hf, trust_remote_code=config.trust_remote_code)
@@ -55,7 +55,6 @@ def main(config: LoraLmConfig):
 
     converter = converter.replaced(tokenizer=tokenizer)
 
-    config.trainer.initialize(config)
     model_config = converter.default_config
 
     # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
@@ -94,22 +93,35 @@ def main(config: LoraLmConfig):
         state = trainer.initial_state(training_key, model=model)
 
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        # TODO: remove this once we put this in trainer itself
+        just_lora_params = parameter_count(state.trainable_model)
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
+        levanter.tracker.log_summary(
+            {
+                "parameter_count": all_param_count,
+                "trainable_parameter_count": just_lora_params,
+                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+            }
+        )
+
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
         # data loaders
-        eval_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)  # type: ignore
+        eval_datasets = config.data.validation_sets(Pos.size)
 
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
-        trainer.add_default_hooks(eval_dataset)
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        for name, eval_dataset in eval_datasets.items():
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            trainer.add_eval_hook(eval_dataset, name=name)
+
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
@@ -135,7 +147,7 @@ def main(config: LoraLmConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(iter_data)
 
         ## OK, actually run training!

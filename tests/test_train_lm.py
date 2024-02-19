@@ -8,7 +8,7 @@ import ray
 import levanter.main.train_lm as train_lm
 import tiny_test_corpus
 from levanter.distributed import RayConfig
-from levanter.logging import WandbConfig
+from levanter.tracker.wandb import WandbConfig
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -34,6 +34,7 @@ def test_train_lm():
                     num_heads=2,
                     seq_len=32,
                     hidden_dim=32,
+                    flash_attention_block_size=32,
                 ),
                 trainer=train_lm.TrainerConfig(
                     num_train_steps=2,

@@ -11,14 +11,18 @@ import levanter.main.viz_logprobs as viz_logprobs
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
-from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.tracker.wandb import WandbConfig
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
 def setup_module(module):
     ray_designated_cores = max(1, logical_cpu_core_count())
-    ray.init("local", num_cpus=ray_designated_cores)
+    try:
+        ray.init("local", num_cpus=ray_designated_cores)
+    except AssertionError:
+        # don't get upset if ray is already running
+        pass
 
 
 def teardown_module(module):
@@ -34,6 +38,7 @@ def test_viz_lm():
         num_heads=2,
         hidden_dim=32,
         seq_len=32,
+        use_flash_attention=False,
     )
 
     with tempfile.TemporaryDirectory() as f:
@@ -43,7 +48,7 @@ def test_viz_lm():
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            save_checkpoint(model, None, 0, f"{f}/ckpt")
+            save_checkpoint({"model": model}, 0, f"{f}/ckpt")
 
             config = viz_logprobs.VizGpt2Config(
                 data=data_config,

@@ -64,8 +64,8 @@ class Gpt2Config(HFCompatConfig):
 
     use_bias: bool = True
 
-    use_flash_attention: bool = False  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
-    flash_attention_block_size: int = 1024
+    use_flash_attention: bool = True  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    flash_attention_block_size: Optional[int] = None
 
     # Axes
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
