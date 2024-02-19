@@ -24,4 +24,4 @@ optimizer:
   weight_decay: 0.0
   min_lr_ratio: 0.0
 
-alpha: 0.9
+alpha: 0.7
