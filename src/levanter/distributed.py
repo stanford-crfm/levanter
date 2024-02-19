@@ -1,15 +1,17 @@
 import atexit
+import itertools
 import logging
 import os
 import re
-import subprocess
+import socket
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
 import jax
 import ray
-from jax._src import clusters
-from jax._src.clusters import SlurmCluster, TpuCluster
+from jax._src import clusters, distributed
+
+from levanter.utils.py_utils import logical_cpu_core_count
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ _LOCAL_PROCESS_ID = "SLURM_LOCALID"
 _NUM_NODES = "SLURM_STEP_NUM_NODES"
 _TASKS_PER_NODE = "SLURM_STEP_TASKS_PER_NODE"
 _VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
-_NODE_NAME = "SLURM_TOPOLOGY_ADDR"
+_NODE_NAME = "SLURMD_NODENAME"
 
 
 class LevanterSlurmCluster(clusters.SlurmCluster):
@@ -35,7 +37,7 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
     # TODO: upstream this
     """
 
-    # this is mostly copy paste, but it looks at a different env variable that is set when sbatch is set
+    # this is mostly copy paste, but it looks at range of different env variables that slurm sometimes sets
     @classmethod
     def get_coordinator_address(cls) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
@@ -68,22 +70,58 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
 
     @classmethod
     def get_local_device_ids_for_process(cls) -> Optional[List[int]]:
-        if _VISIBLE_DEVICES in os.environ:
-            all_visible_devices = [int(x) for x in os.environ[_VISIBLE_DEVICES].split(",")]
-        else:
-            all_visible_devices = list(range(jax.local_device_count()))
+        local_process_id = cls.get_local_process_id()
+
+        if local_process_id is None:
+            return None
+
+        if _VISIBLE_DEVICES not in os.environ:
+            # if we don't expose CUDA_VISIBLE_DEVICES, we use JAX's default behavior, which is assuming 1 per process.
+            # this happens typically if CUDA_VISIBLE_DEVICES isn't forwarded to the docker container
+            return None
+
+        local_process_count = cls._infer_local_process_count()
+
+        all_visible_devices = [int(x) for x in os.environ[_VISIBLE_DEVICES].split(",")]
+
+        if len(all_visible_devices) % local_process_count != 0:
+            raise ValueError(
+                f"Number of visible devices ({len(all_visible_devices)}) is not divisible by the number "
+                f"of local tasks ({local_process_count})"
+            )
+            return None
+
+        num_devices_per_local_process = len(all_visible_devices) // local_process_count
+
+        # select contiguous devices for this process
+        begin = local_process_id * num_devices_per_local_process
+        return all_visible_devices[begin : begin + num_devices_per_local_process]
+
+    @classmethod
+    def _infer_local_process_count(cls):
+        # Figure out which node we're on. This is also annoying because the node list
+        # is a comma separated list of nodes, but they collapse the list if there are multiple nodes
+        # with the same name e.g. node001,node002,node003,node004,node007 -> node[001-004,007]
+        #  slurm exposes a command to expand this list for us, but it's not always available
+        node_list = LevanterSlurmCluster._node_list()
+        if node_list is None:
+            raise ValueError(
+                "Could not find node list in environment variables. You must set coordinator_address manually."
+            )
+
+        node_list = _square_brace_expand(node_list)
+        local_node = os.environ[_NODE_NAME]
+        local_node_index = node_list.index(local_node)
 
         # We want to figure out how many tasks are running on this node
         # the only env variable that is reliably set here is SLURM_STEP_TASKS_PER_NODE
         # which is a comma separated list of the number of tasks per node, except they "helpfully"
         # collapse the list if there are multiple nodes with the same number of tasks e.g.
         # 1(x2),3,4(x3) -> 1,1,3,4,4,4
-        # Why they do this is beyond me. It seems like more trouble to be less helpful.
         # So we have to do some parsing to figure out how many tasks are on each node
         # and then figure out which node we are on
         # first replace the repeated values with the number of times they are repeated
         unrolled_tasks_per_node = []
-
         multi_match = re.compile(r"(\d+)\(x(\d+)\)")
         for x in os.environ[_TASKS_PER_NODE].split(","):
             match = multi_match.match(x)
@@ -92,43 +130,40 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
             else:
                 unrolled_tasks_per_node.append(int(x))
 
-        # now we can figure out which node we are on. This is also annoying because the node list
-        # is a comma separated list of nodes, but they collapse the list if there are multiple nodes
-        # with the same name e.g. node001,node002,node003,node004,node007 -> node[001-004,007]
-        # thankfully slurm exposes a command to expand this list for us
-        node_list = LevanterSlurmCluster._node_list()
-        if node_list is None:
-            raise ValueError(
-                "Could not find node list in environment variables. You must set coordinator_address manually."
-            )
-
-        node_list = (
-            subprocess.check_output(["scontrol", "show", "hostnames", node_list], input=b"")
-            .decode("utf-8")
-            .splitlines()
-        )
-
-        # finally, we can figure out which node we are on
-        local_node = os.environ[_NODE_NAME]
-        local_node_index = node_list.index(local_node)
         tasks_on_local_node = unrolled_tasks_per_node[local_node_index]
+        return tasks_on_local_node
 
-        local_process_id = cls.get_local_process_id()
 
-        if local_process_id is None:
-            return None
+def _square_brace_expand(node_list):
+    # Find all parts of the sequence including text and number ranges
+    parts = re.findall(r"(\[.*?\]|[^\[\]]+)", node_list)
 
-        if len(all_visible_devices) % tasks_on_local_node != 0:
-            raise ValueError(
-                f"Number of visible devices ({len(all_visible_devices)}) is not divisible by the number "
-                f"of local tasks ({tasks_on_local_node})"
+    # This function will generate numbers from a range or a single number string
+    def generate_numbers(number_string):
+        if "-" in number_string:  # it's a range
+            start, end = map(int, number_string.split("-"))
+            return [str(i).zfill(len(number_string.split("-")[0])) for i in range(start, end + 1)]
+        else:  # it's a single number
+            return [number_string]
+
+    # This function will process each part and return a list of strings or a list of lists of strings
+    # Process each part to create lists of possible variations
+    processed_parts = []
+    for part in parts:
+        if part.startswith("[") and part.endswith("]"):
+            # Extract the number sequences and expand each one
+            number_sequences = part.strip("[]").split(",")
+            processed_parts.append(
+                list(itertools.chain.from_iterable(generate_numbers(seq) for seq in number_sequences))
             )
+        else:
+            processed_parts.append([part])
 
-        num_devices_per_local_process = len(all_visible_devices) // tasks_on_local_node
+    # Compute the Cartesian product of all parts to generate all combinations
+    expanded_nodes = ["".join(combination) for combination in itertools.product(*processed_parts)]
 
-        # select contiguous devices for this process
-        begin = local_process_id * num_devices_per_local_process
-        return all_visible_devices[begin : begin + num_devices_per_local_process]
+    # Join the nodes with commas
+    return expanded_nodes
 
 
 def _choose_port(id):
@@ -140,7 +175,11 @@ _already_initialized = False
 
 
 def auto_ray_cluster(
-    address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
+    address: Optional[str] = None,
+    namespace: Optional[str] = "levanter",
+    start_workers: bool = True,
+    fail_if_cluster_already_initialized: bool = False,
+    **kwargs,
 ):
     """Initializes ray, automatically discovering the address if it is not provided.
     Currently supports slurm and TPU.
@@ -170,40 +209,73 @@ def auto_ray_cluster(
             address = os.getenv("RAY_ADDRESS")
             logger.info("Auto-discovered ray address using RAY_ADDRESS: %s", address)
         else:
-            cluster_types = [LevanterSlurmCluster, TpuCluster]
-            found = False
-            for cluster_type in cluster_types:
-                if cluster_type.is_env_present():
-                    found = True
-                    break
+            coord_address = getattr(distributed.global_state, "coordinator_address", None)
 
-            if not found:
-                logger.info("No auto-discovered ray address found. Using default ray.init()")
-                address = None
+            if coord_address is None:
+                logger.info("No auto-discovered ray address found. Using ray.init('local').")
+                address = "local"
             else:
-                logger.info(f"Auto-discovered ray address using {cluster_type.__name__}")
-
-                coord_address = cluster_type.get_coordinator_address()
+                logger.info(f"Auto-discovered ray address using JAX coordinator address: {coord_address}")
                 host, port = _munge_address_port(coord_address)
 
-                ray_port = _choose_port(port + 10234)
+                ray_port = _choose_port(port + 240)
                 address = f"{host}:{ray_port}"
 
-                if cluster_type.get_process_id() == 0:
-                    logger.info(f"Starting ray head on port {ray_port}. We are process 0.")
-                    os.system(f"ray start --head --port {ray_port}")
-                    # install an atexit handler to kill the head when we exit
-                    atexit.register(lambda: os.system("ray stop -g 10 --force"))
-                elif start_workers:
-                    logger.info(
-                        f"Starting ray worker and connecting to {address}."
-                        f" We are process {cluster_type.get_process_id()}."
-                    )
-                    os.system(f"ray start --address {address}")
+                # Explicitly setting the number of CPUs on ray init stops init errors
+                num_cpus = logical_cpu_core_count()
 
-    logger.info(f"ray.init(address='{address}', **{kwargs})")
-    # Ray has retry logic, so we don't need to retry here :fingers-crossed:
-    ray.init(address=address, namespace=namespace, **kwargs)
+                if _is_local_leader():
+                    # it used to be that if we were coordinator, we were also process 0
+                    # this is no longer the case, so instead we need to check if we are the coordinator
+                    # and if so, start the head
+                    if _is_this_machine(host):
+                        logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
+                        logger.info(f"Starting ray head with num_cpus set to {num_cpus}.")
+                        ret = os.system(
+                            f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
+                        )
+                        if ret != 0:
+                            if not fail_if_cluster_already_initialized:
+                                # see if we can connect to the head
+                                logger.warning(
+                                    f"Failed to start ray head with exit code {ret}. Checking if we can connect to"
+                                    " the head..."
+                                )
+                                ret = os.system("ray status")
+                                if ret != 0:
+                                    raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                                else:
+                                    logger.info(f"Ray head already running on port {ray_port}. Connecting to it.")
+                            else:
+                                raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray head on port {ray_port}.")
+
+                        # install an atexit handler to kill the head when we exit
+                        atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                    elif start_workers:
+                        logger.info(
+                            f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
+                        )
+                        logger.info(f"Starting ray worker with num_cpus set to {num_cpus}.")
+                        ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                        if ret != 0:
+                            raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray worker and connected to {address}.")
+
+    logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
+    # Ray has retry logic, but it doesn't seem to work super well, so we retry manually
+    for i in range(0, 5):
+        try:
+            ray.init(address=address, namespace=namespace, **kwargs)
+            break
+        except Exception as e:
+            if i == 4:
+                raise e
+            else:
+                logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
+                continue
     atexit.register(lambda: ray.shutdown())
     _already_initialized = True
 
@@ -226,7 +298,7 @@ class DistributedConfig:
 
         # jax will automatically detect slurm or tpu, so we check those too. This is a bit fragile
         # since it depends on the jax internals, but it's the best we can do
-        if SlurmCluster.is_env_present() or TpuCluster.is_env_present():
+        if any(env.is_env_present() for env in clusters.ClusterEnv._cluster_types):
             return True
 
         return False
@@ -245,8 +317,14 @@ class DistributedConfig:
 
             jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
             logger.info(
-                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} hosts"
-                f", coordinator_address={coordinator_address}, process_id={self.process_id}"
+                f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
+                f" coordinator_address={coordinator_address}, process_id={self.process_id}, my"
+                f" device_ids={device_ids}."
+            )
+        else:
+            logger.info(
+                "Not initializing jax.distributed because no distributed config "
+                "was provided, and no cluster was detected."
             )
 
 
@@ -259,3 +337,66 @@ class RayConfig:
     def initialize(self):
         if self.auto_start_cluster:
             auto_ray_cluster(address=self.address, start_workers=self.start_workers)
+
+
+def _is_this_machine(host):
+    """
+    Checks if the given host identifies this machine.
+    """
+    if host == "localhost" or host == "0.0.0.0":
+        return True
+
+    try:
+        # Get IP addresses of all interfaces
+        machine_ips = [addr[4][0] for addr in socket.getaddrinfo(socket.gethostname(), None)]
+
+        # Get the IP address of the host
+        host_ip = socket.gethostbyname(host)
+    except socket.gaierror:
+        # Host or interface could not be resolved
+        return False
+
+    # Check if the host IP matches any of the machine IPs
+    return any(host_ip == machine_ip for machine_ip in machine_ips)
+
+
+def _remove_if_possible(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _touch(file_path):
+    with open(file_path, "a"):
+        os.utime(file_path, None)
+
+
+def _is_local_leader():
+    import atexit
+
+    import filelock
+    from jax.experimental.multihost_utils import broadcast_one_to_all
+
+    if jax.process_count() == 1:
+        return True
+
+    import random
+
+    random_id = random.randint(0, 1000000)
+    random_id = broadcast_one_to_all(random_id)
+
+    lock = filelock.FileLock(f"/tmp/levanter_local_process_zero_lock.{random_id}")
+    action_performed_file = f"/tmp/levanter_local_process_zero_action_performed.{random_id}"
+
+    try:
+        with lock.acquire(timeout=0.1):
+            if not os.path.exists(action_performed_file):
+                _touch(action_performed_file)
+                return True  # Action needs to be performed
+            else:
+                return False  # Action already performed
+            atexit.register(_remove_if_possible, lock.lock_file)
+            atexit.register(_remove_if_possible, action_performed_file)
+    except filelock.Timeout:
+        return False

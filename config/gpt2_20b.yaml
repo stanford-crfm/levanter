@@ -13,14 +13,13 @@ model:
 task:
   fcm_prob: 0.15
 trainer:
-  wandb:
+  tracker:
     project: "levanter"
     tags: ["pile", "gpt2"]
 
   mp: p=f32,c=bfloat16
 
 
-  per_device_parallelism: 4
   per_device_eval_parallelism: 4
 
   train_batch_size: 1024

@@ -5,11 +5,11 @@ import fsspec
 from haliax.partitioning import ResourceAxis
 
 import levanter.config
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.trainer import TrainerConfig
 
 
 def test_main_wrapper_loads_from_fsspec():
-
     with fsspec.open("memory://test.yaml", "w") as f:
         f.write(
             """
@@ -49,3 +49,60 @@ def test_new_style_axis_mapping():
         "a2": ResourceAxis.MODEL,
         "batch": ResourceAxis.DATA,
     }
+
+
+def test_lm_dataset_config():
+    @dataclasses.dataclass
+    class Config:
+        data: LMDatasetConfig = dataclasses.field(default_factory=LMDatasetConfig)
+
+    yaml_config = """
+    data:
+        id: dlwh/wikitext_103_detokenized
+        cache_dir: "gs://levanter-data/tokenized/wikitext"
+    """
+    args = ["--config_path", _write_yaml_to_memory(yaml_config)]
+
+    @levanter.config.main(args=args)
+    def main(config: Config):
+        assert config.data.id == "dlwh/wikitext_103_detokenized"
+        assert config.data.cache_dir == "gs://levanter-data/tokenized/wikitext"
+
+    main()
+
+
+def test_lm_mixture_dataset_config():
+    @dataclasses.dataclass
+    class Config:
+        data: LMMixtureDatasetConfig = dataclasses.field(default_factory=LMMixtureDatasetConfig)
+
+    yaml_config = """
+    data:
+        configs:
+            owt:
+                train_urls:
+                    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+                validation_urls:
+                    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+            wikitext:
+                id: dlwh/wikitext_103_detokenized
+        train_weights:
+            owt: 0.6
+            wikitext: 0.4
+        tokenizer: gpt2
+        cache_dir: "gs://levanter-data/tokenized/mixture"
+    """
+    args = ["--config_path", _write_yaml_to_memory(yaml_config)]
+
+    @levanter.config.main(args=args)
+    def main(config: Config):
+        assert config.data is not None
+        # TODO: assert more things
+
+    main()
+
+
+def _write_yaml_to_memory(yaml: str, path: str = "memory://test.yaml"):
+    with fsspec.open(path, "w") as f:
+        f.write(yaml)
+    return path

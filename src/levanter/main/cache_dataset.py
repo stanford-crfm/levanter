@@ -1,40 +1,45 @@
+import logging
 import os
-from dataclasses import dataclass
-
-import wandb
+from dataclasses import dataclass, field
 
 import levanter
-from levanter.data.shard_cache import RichMetricsMonitor, WandbMetricsMonitor, cache_dataset
+from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor, build_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
-from levanter.logging import init_logger
+from levanter.logging import init_logging
+from levanter.tracker import NoopConfig, TrackerConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
-    pass
+    tracker: TrackerConfig = field(default_factory=NoopConfig)
 
 
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logger("cache_dataset.log")
+    init_logging(".", "cache_dataset.log")
     args.initialize()
 
     tokenizer = args.the_tokenizer
 
-    wandb.init(mode="offline")
-
-    for split in args.splits:
+    for split in ["train", "validation"]:
         print(f"Caching {split} to {args.cache_dir}.")
         # connect or start the actor
-        batch_tokenizer = BatchTokenizer(tokenizer)
+        batch_tokenizer = BatchTokenizer(tokenizer, enforce_eos=args.enforce_eos)
         split_cache_dir = os.path.join(args.cache_dir, split)
         source = args.get_shard_source(split)
 
-        monitors = [RichMetricsMonitor(source.num_shards), WandbMetricsMonitor("preprocess/" + split, commit=True)]
+        if source is None:
+            logger.warning(f"Skipping {split} because it is empty.")
+            continue
 
-        cache = cache_dataset(
+        monitors = [RichMetricsMonitor(source.num_shards), LoggingMetricsMonitor("preprocess/" + split, commit=True)]
+
+        cache = build_cache(
             cache_dir=split_cache_dir,
             input_shards=source,
             processor=batch_tokenizer,

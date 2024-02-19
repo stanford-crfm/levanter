@@ -3,14 +3,23 @@ from dataclasses import fields
 from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
 import equinox as eqx
-import jax.numpy as jnp
-import numpy
+import jax
+import numpy as np
+import safetensors.numpy
+from jax import numpy as jnp
+from jax.experimental.multihost_utils import sync_global_devices
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
+import haliax.partitioning
 from haliax import NamedArray
+from haliax._src.util import index_where
+from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
+
+from levanter.utils.jax_utils import leaf_key_paths
 
 
 StateDict = Dict[str, Any]
@@ -78,16 +87,25 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         # TODO: where's the best place to put this logic for NamedArrays
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
-        return NamedArray(jnp.array(state_dict[prefix]), axes=tree.axes)
-    elif tree is None:
-        if prefix is None:
-            return None
-        return state_dict.get(prefix, None)
-    else:
+
+        array = state_dict[prefix]
+        mesh = haliax.partitioning._get_mesh()
+        if mesh.devices.size > 1:  # this happens with the default mesh
+            pspec = haliax.partitioning.pspec_for_axis(tree.axes)
+            sharding = jax.sharding.NamedSharding(mesh, pspec)
+            array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])
+        else:
+            array = jnp.array(array)
+        return NamedArray(array, axes=tree.axes)
+    elif is_jax_array_like(tree):
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a state dict without a prefix")
         # TODO: add "strict" flag so we can return None in cases where it's just missing
         return jnp.array(state_dict[prefix])
+    else:
+        if prefix is None:
+            return tree
+        return state_dict.get(prefix, tree)
 
 
 def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix: Optional[str] = None) -> None:
@@ -106,12 +124,14 @@ def update_state_dict_with_jax_tree(tree: PyTree, state_dict: StateDict, prefix:
         # TODO: where's the best place to put this logic for NamedArrays
         assert prefix is not None
         state_dict[prefix] = tree.array
-    else:
+    elif is_jax_array_like(tree):
         if prefix is not None:
             if tree is not None:
                 state_dict[prefix] = tree  # type: ignore
         else:
             raise ValueError("Cannot update torch dict with a leaf value.")
+    else:
+        pass
 
 
 def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateDict:
@@ -155,65 +175,124 @@ def default_update_state_dict_with_eqx_module(
     return state_dict
 
 
-def flatten_linear_layer(prefix, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = layer.weight
-    bias = layer.bias
+def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in_dict: Optional[bool]) -> StateDict:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    flattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
+
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
+
+    :param prefix: prefix to apply to the keys in the state dict
+    :param tree:
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be left as-is.
+    This is the default in PyTorch, but not in Haliax.
+    """
 
     ret_dict: StateDict = {}
 
-    weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
-    if bias is not None:
-        bias = bias.flatten_axes(layer.Out, "__OUT__")
+    def _flatten_linear(layer, prefix):
+        if not isinstance(layer, hnn.Linear):
+            return layer
 
-    if out_dims_first_in_dict:
-        weight = weight.rearrange((..., "__OUT__", "__IN__"))
-    else:
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
+        weight = layer.weight
+        bias = layer.bias
 
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        if weight.array is not None:
+            weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+            if bias is not None:
+                bias = bias.flatten_axes(layer.Out, "__OUT__")
 
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
+            if out_dims_first_in_dict is True:
+                weight = weight.rearrange((..., "__OUT__", "__IN__"))
+            elif out_dims_first_in_dict is False:
+                weight = weight.rearrange((..., "__IN__", "__OUT__"))
+            else:
+                pass
 
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(tree, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True)
+    jax.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 
-def unflatten_linear_layer(prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: bool) -> StateDict:
-    # TODO: might be nicer to use vmap here
-    weight = statedict[apply_prefix(prefix, "weight")]
-    bias = statedict.get(apply_prefix(prefix, "bias"), None)
+def unflatten_linear_layers(
+    prefix, statedict: StateDict, layer: hnn.Linear, out_dims_first_in_dict: Optional[bool]
+) -> StateDict:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    unflattens the linear layers in a state dict into a 2d weight matrix and a 1d bias vector.
 
-    Out = ensure_tuple(layer.Out)
-    In = ensure_tuple(layer.In)
-    InOut = In + Out
-    extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+    **You should use out_dims_first_in_dict=True if you're using this to convert a PyTorch model to Haliax and the
+    PyTorch model uses Linear. If the PyTorch model uses Conv1d, use False.** None is probably not what you want,
+    except in very specific cases.
 
-    if out_dims_first_in_dict:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
-    else:
-        weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
-
-    if layer.out_first:
-        weight = weight.rearrange((..., "__OUT__", "__IN__"))
-    else:
-        weight = weight.rearrange((..., "__IN__", "__OUT__"))
-
-    # now unflatten
-    weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
-
-    if bias is not None:
-        bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
-        bias = bias.unflatten_axis("__OUT__", layer.Out)
-
-    # tree_structure = jax.tree_structure(layer)
-    # return jax.tree_unflatten(tree_structure, (weight, bias))
-
+    :param prefix: prefix to apply to the keys in the state dict
+    :param statedict: the state dict to source the flattened weights from
+    :param layer: the exemplar layer to use for unflattening
+    :param out_dims_first_in_dict: if True, the output dimensions will be the first axis in the flattened weight matrix.
+    If False, the input dimensions will be the first axis. If None, the weight's axes will be inferred from the linear
+    :return:
+    """
     ret_dict: StateDict = {}
-    ret_dict[apply_prefix(prefix, "weight")] = weight.array
-    if bias is not None:
-        ret_dict[apply_prefix(prefix, "bias")] = bias.array
 
+    def _unflatten_linear(layer, prefix):
+        nonlocal out_dims_first_in_dict
+
+        if not isinstance(layer, hnn.Linear):
+            return layer
+
+        weight = statedict[apply_prefix(prefix, "weight")]
+        bias = statedict.get(apply_prefix(prefix, "bias"), None)
+
+        Out = ensure_tuple(layer.Out)
+        In = ensure_tuple(layer.In)
+        InOut = In + Out
+        extra_dims = tuple(ax for ax in layer.weight.axes if ax not in InOut)
+
+        if out_dims_first_in_dict is None:
+            out_dims_first_in_dict = layer.out_first
+
+        if out_dims_first_in_dict:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
+        else:
+            weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
+
+        if layer.out_first:
+            weight = weight.rearrange((..., "__OUT__", "__IN__"))
+        else:
+            weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+        # now unflatten
+        weight = weight.unflatten_axis("__OUT__", layer.Out).unflatten_axis("__IN__", layer.In)
+
+        if bias is not None:
+            bias = hax.named(bias, hax.concat_axis_specs(extra_dims, ("__OUT__",)))
+            bias = bias.unflatten_axis("__OUT__", layer.Out)
+
+        # tree_structure = jax.tree_structure(layer)
+        # return jax.tree_unflatten(tree_structure, (weight, bias))
+
+        ret_dict[apply_prefix(prefix, "weight")] = weight.array
+        if bias is not None:
+            ret_dict[apply_prefix(prefix, "bias")] = bias.array
+
+        return ret_dict
+
+    tree_prefixes = leaf_key_paths(
+        layer, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True
+    )
+    jax.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 
@@ -233,7 +312,7 @@ def unstack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> S
     assert prefix is not None
 
     for k, v in state_dict.items():
-        if k.startswith(prefix):
+        if k.startswith(prefix) and v is not None:
             for i, v_i in enumerate(v):
                 new_dict[f"{prefix}{i}.{k[len(prefix):]}"] = v_i
         else:
@@ -274,6 +353,78 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
     # now we have to vectorize the tensors
     for k, tensors in tensors_to_vectorize.items():
-        vectorized_dict[cast(str, apply_prefix(prefix, k))] = numpy.stack(tensors, axis=0)
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = np.stack(tensors, axis=0)
 
     return vectorized_dict
+
+
+def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
+    """
+    Convert a model to a state dict by first creating desharded copies of all parameters that reside in CPU
+    memory.
+
+    This method is especially useful for saving models distributed across multiple hosts.
+    """
+
+    with jax.default_device(jax.local_devices(backend="cpu")[0]):
+
+        def get_to_cpu(arr):
+            if not is_jax_array_like(arr):
+                return arr
+            elif isinstance(arr, np.ndarray):
+                return arr
+            elif arr.is_fully_addressable:
+                r = np.array(arr)
+                return r
+            else:
+                # unfortunately, jax's allgather seems to replicate to every device rather than every host
+                # which doesn't work for ~7B parameter models on TPU (assuming we also have optimizer state)
+                # this approach limits us to <64B parameters, but that's good enough for now
+                # we're going to do something a bit fancy, where we shard the model into a (process, device) mesh,
+                # then look for some axis along which we can shard the array, and then we'll do an allgather
+                # via pjit. If we can't find one, we'll just fully replicate since it probably isn't that big.
+                # TODO: ensure that this mesh arranges devices correctly
+                # (jax seems to do this internally itself, so we should be fine?)
+                process_mesh = Mesh(np.array(jax.devices()).reshape((jax.process_count(), -1)), ("process", "device"))
+                # now we need to find an axis along which we can shard the array.
+                # for this, we need to find an axis s.t. size(axis) % local_devices == 0
+
+                try:
+                    axis_to_shard = index_where(
+                        lambda axis_size: axis_size % process_mesh.devices.size == 0, arr.shape
+                    )
+                except ValueError:
+                    return np.array(arr)
+
+                shardings = [None if i != axis_to_shard else "device" for i in range(len(arr.shape))]
+                sharding = NamedSharding(process_mesh, PartitionSpec(*shardings))
+                out = jax.jit(_identity_fn, out_shardings=sharding)(arr)
+                return np.array(out)
+
+        # need to make sure the model is on *this machine* and *this machine's CPU* before saving
+        model = jax.tree_util.tree_map(lambda arr: get_to_cpu(arr), model)
+        # TODO: it would be nice if safetensors supported an iterator or something so we could do the allgather one at a time
+        state_dict = model.to_state_dict(prefix=prefix)
+        return state_dict
+
+
+_GLOBAL_SAVE_COUNT = 0
+
+
+def save_state_dict(state_dict: StateDict, path):
+    """
+    Save a model's state dict to a file, bringing all tensors to the CPU first and then converting to numpy.
+    This will save using safetensors format
+    """
+    state_dict = {k: v for k, v in state_dict.items() if v is not None}
+    # now that we've moved the model to the CPU, we don't need to do this on all processes
+    if jax.process_index() == 0:
+        # the "pt" is a lie but it doesn't seem to actually matter and HF demands it
+        safetensors.numpy.save_file(state_dict, path, metadata={"format": "pt"})
+    global _GLOBAL_SAVE_COUNT
+    sync_global_devices(f"local {_GLOBAL_SAVE_COUNT}")
+    _GLOBAL_SAVE_COUNT += 1
+
+
+def _identity_fn(x):
+    return x

@@ -61,7 +61,7 @@ def test_sliding_window_attention_fancier():
         mask = causal_mask(Pos, KPos) & (diff < Window.size) & (diff >= 0)
 
         # check that the result is the same as non-blocked attention with the right mask
-        expected = hax.nn.attention.dot_product_attention(Pos, KPos, Head, query, keys, values, mask=mask)
+        expected = hax.nn.attention.dot_product_attention(KPos, Head, query, keys, values, mask=mask)
 
         expected = expected.rearrange((Pos, Head)).array
 

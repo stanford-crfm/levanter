@@ -539,7 +539,7 @@ learn differently from Transformers.
 ## A few other features
 
 * **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
-  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
+  though our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
@@ -549,7 +549,7 @@ learn differently from Transformers.
 
 To get started, first install the appropriate version of JAX for your system. See [JAX's installation instructions](https://github.com/google/jax/blob/main/README.md#installation) as it varies from platform to platform.
 
-If you're using a TPU, more complete documentation for setting that up is available [here](docs/Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](docs/Getting-Started-CUDA.md).
+If you're using a TPU, more complete documentation for setting that up is available [here](Getting-Started-TPU-VM.md). GPU support is still in-progress; documentation is available [here](Getting-Started-GPU.md).
 
 Next, clone the repository and install it with pip:
 
@@ -627,7 +627,7 @@ trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The la
 This is just the beginning for Levanter. In the future, look for:
 * more models on interesting problem domains,
 * scaled up versions of new architectures developed here at Stanford and elsewhere,
-* new training techniques, including the newly released [Sofia](https://arxiv.org/abs/2305.14342) optimizer,
+* new training techniques, including the newly released [Sophia](https://arxiv.org/abs/2305.14342) optimizer,
 * and larger models!
 
 Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will be

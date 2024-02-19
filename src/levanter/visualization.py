@@ -1,7 +1,11 @@
 import html
+from functools import partial
 from typing import List
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from jax.experimental import multihost_utils
 from matplotlib import cm
 
 
@@ -59,3 +63,38 @@ if __name__ == "__main__":
     tokens = [["Hello", "world", "!"], ["This", "is", "a", "test", "."]]
     log_probs = np.log(np.random.uniform(size=(2, 5)))
     visualize_log_probs(tokens, log_probs, "test.html")
+
+
+def compute_and_visualize_log_probs(path: str, model, tokenizer, log_prob_fn, test_data, max_docs=128):
+    log_probs = []
+    targets = []
+    for batch in test_data:
+        b_logprobs = log_prob_fn(model, batch)
+        log_probs.append(b_logprobs)
+        targets.append(batch)
+
+        # TODO: haliax-ify?
+        if len(targets) * b_logprobs.shape[0] >= max_docs:
+            break
+    log_probs = _concatenate(log_probs)
+    targets = _concatenate([t.tokens.array for t in targets])
+    # gather the log probs and targets
+    # TODO: is this still necessary?
+    (targets, log_probs) = multihost_utils.process_allgather((targets, log_probs), tiled=True)
+    log_probs = log_probs[:max_docs]
+    targets = targets[:max_docs]
+    targets = np.array(targets)
+    tokens = [_decode_tokens_pretty(tokenizer, t) for t in targets]
+    log_probs = np.array(log_probs)
+    visualize_log_probs(tokens, log_probs, path)
+
+
+@partial(jax.jit, out_shardings=None)
+def _concatenate(x):
+    return jnp.concatenate(x, axis=0)
+
+
+def _decode_tokens_pretty(tok, ids):
+    return [
+        tok.convert_tokens_to_string([x]) if x is not None else tok.unk_token for x in tok.convert_ids_to_tokens(ids)
+    ]

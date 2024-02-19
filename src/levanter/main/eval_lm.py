@@ -1,4 +1,3 @@
-import functools
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -11,18 +10,19 @@ import tqdm
 
 import haliax as hax
 from haliax import Axis
-from haliax.nn import cross_entropy_loss
-from haliax.partitioning import named_jit, round_axis_for_partitioning
+from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class EvalLmConfig:
 
 
 def main(config: EvalLmConfig):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
@@ -49,9 +49,13 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("train", Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
     else:
-        raw_dataset = CausalLmDataset(config.data.token_seq_dataset("validation", Pos.size), Pos, KeyPos)
+        validation_set = config.data.validation_set(Pos.size)
+        if validation_set is None:
+            raise ValueError("Can't eval on validation_set b/c there isn't one!")
+
+        raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
@@ -67,37 +71,24 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        @named_jit(axis_resources=parameter_axis_mapping)
-        def compute_loss(model: LmHeadModel, example: LmExample, key, inference):
-            with hax.axis_mapping(compute_axis_mapping):
-                model = mp.cast_to_compute(model)
-
-                pred_y = model(example.tokens, example.attn_mask, key=key, inference=inference)
-                pred_y = mp.cast_to_output(pred_y)
-
-                target_y = hax.nn.one_hot(example.targets, Vocab, dtype=pred_y.dtype)
-
-                per_ex_loss = cross_entropy_loss(pred_y, Vocab, target_y, where=example.loss_mask, reduction_axis=Pos)
-                return hax.mean(per_ex_loss).scalar()
-
-        compute_loss = functools.partial(compute_loss, inference=True, key=None)
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def compute_loss(model: LmHeadModel, example: LmExample):
+            model = inference_mode(model, True)
+            model = mp.cast_to_compute(model)
+            return model.compute_loss(example, key=None)
 
         total = config.trainer.max_eval_batches
 
         # initialize the model
         if config.checkpoint_path is not None:
             # initialize the model
-            with jax.default_device(jax.devices("cpu")[0]):
+            with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-                ckpt = load_checkpoint(model, None, config.checkpoint_path)
-
-            assert ckpt is not None
-            model, _, _ = ckpt
+                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
-            # TODO: switch to throwing instead of returning None
             loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
 
             del model
