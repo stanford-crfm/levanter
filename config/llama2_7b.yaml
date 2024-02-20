@@ -5,7 +5,7 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+initialize_from_hf: "huggyllama/llama-7b"
 use_hf_model_config: true
 trainer:
   wandb:
