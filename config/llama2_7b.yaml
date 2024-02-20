@@ -5,12 +5,12 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-initialize_from_hf: "huggyllama/llama-7b"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "huggy-llama2"]
+    tags: ["openwebtext", "llama", "llama2-huggyllama1"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
@@ -24,4 +24,4 @@ optimizer:
   weight_decay: 0.0
   min_lr_ratio: 0.0
 
-alpha: 0.9
+alpha: 1.0
