@@ -271,7 +271,7 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
         expert_mask = hax.nn.one_hot(selected_experts, Experts)  # [Token, TopExperts, Experts] one hot
 
         Token = x_flat.resolve_axis("token")
-        result = hax.zeros((Token, self.config.Embed))
+        result = hax.zeros((Token, self.config.Embed), dtype=x.dtype)
         chunk_size = int(Token.size * self.config.chunk_size_coef)
 
         def cond(carry):
@@ -338,7 +338,7 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
 class MixtralDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: MixtralConfig = eqx.static_field()
     self_attn: LlamaAttention
-    block_sparse_moe: MixtralMlp
+    block_sparse_moe: MixtralSparseMoeBlock
     input_layernorm: LlamaRMSNorm
     post_attention_layernorm: LlamaRMSNorm
 
