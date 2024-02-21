@@ -117,8 +117,8 @@ S = TypeVar("S", bound=TrainerState)
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 @dataclass
-class StepInfo(Generic[M]):
-    state: TrainerState[M]
+class StepInfo(Generic[S]):
+    state: S
     loss: float
     step_duration: float
 
@@ -371,7 +371,7 @@ class Trainer:
 
         return state
 
-    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
+    def train_step(self, state: S, *batch: X, **batch_kwargs) -> StepInfo[S]:
         """
         Performs a single training step.
         """
@@ -382,9 +382,7 @@ class Trainer:
 
         return StepInfo(new_state, loss, step_time())
 
-    def training_steps(
-        self, state: TrainerState[M], train_loader, run_hooks: bool = True
-    ) -> typing.Iterator[StepInfo]:
+    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
         """
@@ -407,7 +405,7 @@ class Trainer:
 
             yield info
 
-    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
         Performs training until the number of steps is reached.
         """
@@ -478,7 +476,7 @@ class Trainer:
     def _jit_train_step_fn(self):
         return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
 
-    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
+    def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
