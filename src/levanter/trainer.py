@@ -541,30 +541,6 @@ def init_optimizer_for_trainables(optimizer, model, is_trainable):
     opt_state = optimizer.init(trainable)
     return opt_state
 
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        if self.config.load_checkpoint is not False:
-            # TODO: don't remake the checkpointer every time
-            checkpointer = self.config.checkpointer.create(self.run_id)
-            load_checkpoint_path = self.config.load_checkpoint_path
-
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
-
-            if ckpt is None and self.config.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-
-            return ckpt
-        else:
-            return None
-
 
 def _initialize_global_tracker(config, run_id):
     if isinstance(config, Sequence):
