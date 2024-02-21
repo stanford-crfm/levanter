@@ -194,6 +194,8 @@ class Trainer:
         else:
             self.tracker = config.tracker.init(self.run_id)
 
+        self.is_trainable_param = is_trainable
+
         self._cmanagers = []
 
         if add_default_hooks:
