@@ -236,8 +236,7 @@ def saveable_state(state):
 
 def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     """
-    Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
-    will be saved even if a checkpoint already exists at the given path.
+    Save a checkpoint to a given path using TensorStore.
 
     If the path does not exist, it will be created.
 
@@ -245,6 +244,7 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
 
     This method is jax.Array-aware and will save shards in a way that can be restored
     """
+    step = int(step)
     checkpoint_path = str(checkpoint_path)
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
@@ -344,7 +344,7 @@ def load_checkpoint(
             # TODO: pretty sure this is right, but should verify
             step = metadata["step"]
             new_state = dataclasses.replace(
-                tree, _step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
             )
             return new_state
 
