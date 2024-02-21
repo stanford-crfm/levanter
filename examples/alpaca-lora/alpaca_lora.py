@@ -20,7 +20,7 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.lm_model import LmHeadModel
 from levanter.trainer import Trainer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -97,12 +97,9 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
         # end major difference from Alpaca
 
-        with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
+        with Trainer(config.trainer, optimizer, is_trainable=lora_param_filter) as trainer:
             state = trainer.initial_state(training_key, model=model)
 
             # log some info about the model
