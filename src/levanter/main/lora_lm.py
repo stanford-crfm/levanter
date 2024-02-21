@@ -139,7 +139,7 @@ def main(config: LoraLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
 
-        if state.step > 0:
+        if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
