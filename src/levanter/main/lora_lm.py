@@ -10,7 +10,7 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -83,13 +83,10 @@ def main(config: LoraLmConfig):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
         optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
+        # Our trainer is a wrapper around the optimizer function that handles checkpointing and fsdp
+        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
         state = trainer.initial_state(training_key, model=model)
 
         all_param_count = parameter_count(state.model)

@@ -148,10 +148,7 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
+        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
 ```
 
 ### 3. Serialize a PEFT-compatible checkpoint
