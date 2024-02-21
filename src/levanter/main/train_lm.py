@@ -37,6 +37,7 @@ class TrainLmConfig:
     """if provided, this will override the model config in the config. if true, use the default hf checkpoint for this model class"""
     use_hf_model_config: bool = False  # if true, replace the model config with the hf config from the checkpoint
 
+    second_model: Union[bool, str] = False
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
@@ -148,15 +149,17 @@ def main(config: TrainLmConfig):
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
-                
-                converter = converter.replaced(reference_checkpoint='TheTravellingEngineer/llama2-7b-chat-hf-dpo', tokenizer=tokenizer)
-                logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                logger.info(f"Loading second model from {config.model}")
-                model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
+                if config.second_model is not None:
+                    converter = converter.replaced(reference_checkpoint=config.second_model, tokenizer=tokenizer)
+                    logger.info(f"Loading second model from {converter.reference_checkpoint}")
+                    logger.info(f"Loading second model from {config.model}")
+                    model_2 = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                    model_2 = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model_2)
 
-                logger.info(f"Interpolating between the two models with alpha={alpha}")
-                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
+                    logger.info(f"Interpolating between the two models with alpha={alpha}")
+                    merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=True)(model, model_2)
+                else:
+                    merged_model = model
                 state = dataclasses.replace(state, model=merged_model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
