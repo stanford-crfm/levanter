@@ -11,7 +11,7 @@ second_model: "WizardLM/WizardMath-7B-V1.0"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-llama2dpo"]
+    tags: ["openwebtext", "llama", "llama2-wizardv1"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
