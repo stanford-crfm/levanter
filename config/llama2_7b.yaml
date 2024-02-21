@@ -25,4 +25,4 @@ optimizer:
   min_lr_ratio: 0.0
 
 
-alpha: 0.7
+alpha: 0.9
