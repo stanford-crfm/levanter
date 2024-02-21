@@ -552,19 +552,6 @@ def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
     saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
     return saveable_state
 
-
-def cast_params_by_trainability(model, mp, is_trainable):
-    """
-    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
-    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
-    """
-
-    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
-    trainable = mp.cast_to_param(trainable)
-    non_trainable = mp.cast_to_compute(non_trainable)
-    model = eqx.combine(trainable, non_trainable)
-    return model
-
     def trainable_params_only(self, model: M) -> M:
         """
         Filters out non-trainable parameters from the model. This is used internally to
@@ -881,3 +868,16 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x.scalar()
     else:
         return x
+
+
+def cast_params_by_trainability(model, mp, is_trainable):
+    """
+    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
+    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
+    """
+
+    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
+    trainable = mp.cast_to_param(trainable)
+    non_trainable = mp.cast_to_compute(non_trainable)
+    model = eqx.combine(trainable, non_trainable)
+    return model
