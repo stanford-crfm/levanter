@@ -258,6 +258,7 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
         k_experts = maybe_rng_split(key, self.config.num_local_experts)
 
         x_flat = hax.flatten_axes(x, old_axes=squash_axes, new_axis="token")  # [Batch, Pos, Embed] -> [Token, Embed]
+        x_flat = hax.auto_sharded(x_flat)
         router_logits = self.gate(x_flat, key=k_gate)  # [Token, Embed] -> [Token, Experts]
         routing_weights = hnn.softmax(router_logits, axis=Experts)  # [Token, Experts] distribution
         selected_weights, selected_experts = hax.top_k(
@@ -265,13 +266,13 @@ class MixtralSparseMoeBlock(eqx.Module, StateDictSerializationMixin):
             axis=Experts,
             k=self.config.num_experts_per_tok,
             new_axis=TopExperts,
-        )  # [Token, Experts] -> [Token, TopExperts]
+        )  # [Token, Experts] -> [Token, TopExperts] might not be FSDP-friendly
         selected_weights /= selected_weights.sum(axis=TopExperts)  # [Token, TopExperts] distribution
         # HF cast dtype to fp32 during softmax and cast it back in this line. not sure if we should do it...
         expert_mask = hax.nn.one_hot(selected_experts, Experts)  # [Token, TopExperts, Experts] one hot
 
         Token = x_flat.resolve_axis("token")
-        result = hax.zeros((Token, self.config.Embed), dtype=x.dtype)
+        result = hax.auto_sharded(hax.zeros((Token, self.config.Embed), dtype=x.dtype))
         chunk_size = int(Token.size * self.config.chunk_size_coef)
 
         def cond(carry):
