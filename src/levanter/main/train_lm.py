@@ -150,6 +150,7 @@ def main(config: TrainLmConfig):
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
 
                 if config.second_model is not None:
+                    logger.info(f"second model is {config.second_model}")
                     converter = converter.replaced(reference_checkpoint=config.second_model, tokenizer=tokenizer)
                     logger.info(f"Loading second model from {converter.reference_checkpoint}")
                     logger.info(f"Loading second model from {config.model}")
