@@ -216,7 +216,7 @@ class Checkpointer:
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = equinox.filter(info.state, info.state.is_trainable)
+        state = saveable_state(info.state)
         save_checkpoint(
             state,
             step=info.step,
@@ -225,6 +225,13 @@ class Checkpointer:
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
+
+
+def saveable_state(state):
+    to_keep = jax.tree_util.tree_map(lambda _: True, state)
+    to_keep = dataclasses.replace(to_keep, model=state.is_trainable)
+    state = equinox.filter(state, to_keep)
+    return state
 
 
 def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):

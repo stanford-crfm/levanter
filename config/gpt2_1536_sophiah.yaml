@@ -20,8 +20,6 @@ trainer:
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
-  per_device_parallelism: 2
-  per_device_eval_parallelism: 8
 optimizer:
   type: sophia-h
   learning_rate: 2E-4

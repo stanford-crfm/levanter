@@ -61,7 +61,7 @@ class MistralConfig(LlamaConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = False
+    use_flash_attention: bool = True
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True

@@ -1,6 +1,7 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
+import math
 from typing import Optional, Tuple
 
 import equinox
@@ -18,8 +19,7 @@ from haliax.types import PrecisionLike
 from levanter.models.attention import AttentionMask, materialize_mask
 
 
-# TODO: tune
-BLOCK_SIZE = 128
+BLOCK_SIZE = 1024
 
 
 @named_call
@@ -36,7 +36,7 @@ def flash_attention(
     dropout: float = 0.0,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
-    block_size: int = BLOCK_SIZE,
+    block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
 ):
@@ -57,11 +57,21 @@ def flash_attention(
         q = q.astype(dtype)
         k = k.astype(dtype)
 
-    # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q * jax.lax.rsqrt(float(q.axis_size(Key)))
+    if block_size is None:
+        block_size = BLOCK_SIZE
 
     QPos = q.resolve_axis(QPos)
     KPos = k.resolve_axis(KPos)
+
+    if QPos.size < block_size or KPos.size < block_size:
+        from levanter.models.attention import simple_attention_with_dropout
+
+        return simple_attention_with_dropout(
+            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+        )
+
+    # premultiply by 1/sqrt(d_k) for normal dot product attention
+    q = q / math.sqrt(float(q.axis_size(Key)))
 
     return _flash_attention(
         (q, k, v),
@@ -145,6 +155,8 @@ def _flash_attention_forward(
     ell = hax.zeros((*q_batch_axes, QPos))
     ell = hax.auto_sharded(ell)
 
+    is_causal = isinstance(mask, AttentionMask) and mask.is_causal
+
     @named_call
     def do_o_block(state):
         i, o, ell = state
@@ -187,8 +199,6 @@ def _flash_attention_forward(
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
-            # TODO: block causal
-
             if dropout > 0 and not inference:
                 attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
@@ -205,8 +215,10 @@ def _flash_attention_forward(
 
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
+        j_end = jnp.minimum(i + 1, Tc) if is_causal else Tc
+
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
-            lambda state: state[1] < Tc, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
+            lambda state: state[1] < j_end, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
         )
 
         # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
@@ -234,7 +246,7 @@ def _flash_attention_backward(
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.AxisSelector,
-    mask: Optional[hax.NamedArray] = None,
+    mask: Optional[AttentionMask | hax.NamedArray] = None,
     bias: Optional[hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
@@ -262,6 +274,8 @@ def _flash_attention_backward(
     dQ = (q * 0.0).astype(q.dtype)
     dK = (k * 0.0).astype(k.dtype)
     dV = (v * 0.0).astype(v.dtype)
+
+    is_causal = isinstance(mask, AttentionMask) and mask.is_causal
 
     @named_call
     def do_kv_block(state):
@@ -322,7 +336,10 @@ def _flash_attention_backward(
             return i + 1, j, dQ, dK_j, dV_j
 
         # dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
-        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(lambda state: state[0] < Tr, do_inner_block, (0, j, dQ, dK_j, dV_j))
+        i_start = j if is_causal else 0
+        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(
+            lambda state: state[0] < Tr, do_inner_block, (i_start, j, dQ, dK_j, dV_j)
+        )
 
         dK = dK.updated_slice({KPos: j * block_size}, dK_j)
         dV = dV.updated_slice({KPos: j * block_size}, dV_j)
