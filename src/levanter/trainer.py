@@ -528,8 +528,8 @@ def take_train_step(
     obj_fun: Optional[Callable[[M], Scalar]] = None,
     is_trainable: FilterSpec = True,
 ) -> Tuple[M, OptState]:
-    train_grads = _partition_trainable_params(grads, is_trainable)[0]
-    trainable_model = _partition_trainable_params(model, is_trainable)[0]
+    train_grads = trainables_only(grads, is_trainable)
+    trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
     model = eqx.apply_updates(model, updates)
 
@@ -537,49 +537,9 @@ def take_train_step(
 
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
-    trainable, _ = _partition_trainable_params(model, is_trainable)
+    trainable = trainables_only(model, is_trainable)
     opt_state = optimizer.init(trainable)
     return opt_state
-
-
-def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
-    """
-    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
-    You can override if you really need custom checkpointing logic. By default everything in the trainer state
-    is saved (except for non-trainable model parameters)
-    """
-    saveable_model = eqx.filter(trainer_state.model, is_trainable)
-    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
-    return saveable_state
-
-    def trainable_params_only(self, model: M) -> M:
-        """
-        Filters out non-trainable parameters from the model. This is used internally to
-        for the optimizer state and to compute gradients, but you can also use it to filter out
-        params for logging or something.
-        """
-        return self.partition_trainable_params(model)[0]
-
-    def partition_trainable_params(self, model):
-        """
-        Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
-        or something.
-
-        Returns:
-            trainable, non-trainable
-        """
-
-        def trainable_and_diffable(pred):
-            if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish(x)
-            elif pred is True:
-                return is_inexact_arrayish
-            else:
-                return pred
-
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
-        return eqx.partition(model, combined_mask)
 
     def maybe_load_checkpoint(
         self, model: M, training_state: S, *, axis_mapping=None, mesh=None
@@ -863,6 +823,15 @@ def _partition_trainable_params(model, filter):
     return eqx.partition(model, combined_mask)
 
 
+def trainables_only(model, filter):
+    """
+    Filters out non-trainable parameters from the model. This is used internally to
+    for the optimizer state and to compute gradients, but you can also use it to filter out
+    params for logging or something.
+    """
+    return _partition_trainable_params(model, filter)[0]
+
+
 def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
     if isinstance(x, hax.NamedArray):
         return x.scalar()
@@ -881,3 +850,14 @@ def cast_params_by_trainability(model, mp, is_trainable):
     non_trainable = mp.cast_to_compute(non_trainable)
     model = eqx.combine(trainable, non_trainable)
     return model
+
+
+def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
+    """
+    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
+    You can override if you really need custom checkpointing logic. By default everything in the trainer state
+    is saved (except for non-trainable model parameters)
+    """
+    saveable_model = eqx.filter(trainer_state.model, is_trainable)
+    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
+    return saveable_state
