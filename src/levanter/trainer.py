@@ -53,7 +53,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
-from levanter.types import FilterSpec
+from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
@@ -169,7 +169,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Callable,
+        loss_fn: Optional[ComputeLossFunction] = None,
         *,
         is_trainable: PyTree[FilterSpec] = True,
         add_default_hooks: bool = True,
@@ -187,8 +187,13 @@ class Trainer:
         """
         self.hooks = TrainerHooks()
         self.config = config
-        self._raw_loss_function = loss_fn
         self.optimizer = optimizer
+        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        if isinstance(config.tracker, Sequence):
+            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
+        else:
+            self.tracker = config.tracker.init(self.run_id)
+
         self.is_trainable_param = is_trainable
 
         self._cmanagers = []
@@ -265,7 +270,7 @@ class Trainer:
             raise RuntimeError("Trainer is already entered")
 
         self._cmanagers = [
-            # levanter.current_tracker(self.tracker),
+            levanter.current_tracker(self.tracker),
             self.device_mesh,
             hax.axis_mapping(self.parameter_axis_mapping),
         ]
@@ -339,6 +344,8 @@ class Trainer:
                     raise
                 else:
                     state = None
+        else:
+            state = None
 
         # if that fails, try to load just a model from a checkpoint for initialization
         if state is None and initial_model_path is not None:
