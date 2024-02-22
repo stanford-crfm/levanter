@@ -5,9 +5,9 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-initialize_from_hf: "WizardLM/WizardMath-7B-V1.0"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
-#second_model: "WizardLM/WizardMath-7B-V1.0"
+second_model: "WizardLM/WizardMath-7B-V1.0"
 trainer:
   wandb:
     project: "levanter"
@@ -26,4 +26,4 @@ optimizer:
   min_lr_ratio: 0.0
 
 
-alpha: 0.5
+alpha: 0.0
