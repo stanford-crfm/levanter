@@ -5,7 +5,7 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-initialize_from_hf: "google/gemma-7b"
+initialize_from_hf: "WizardLM/WizardMath-7B-V1.0"
 use_hf_model_config: true
 #second_model: "WizardLM/WizardMath-7B-V1.0"
 trainer:
