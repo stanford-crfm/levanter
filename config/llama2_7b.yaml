@@ -11,7 +11,7 @@ second_model: "EleutherAI/llemma_7b"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-wizardv1"]
+    tags: ["openwebtext", "llama", "llama2-llemma"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
@@ -26,4 +26,4 @@ optimizer:
   min_lr_ratio: 0.0
 
 
-alpha: 0.0
+alpha: 1.0
