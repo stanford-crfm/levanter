@@ -503,7 +503,7 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
-    def expanded_path(self, run_id):
+    def expanded_path(self, run_id) -> str:
         return os.path.expanduser(os.path.join(self.base_path, run_id))
 
     def create(self, run_id) -> Checkpointer:
