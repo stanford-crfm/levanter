@@ -7,11 +7,11 @@ model:
 # TODO: uncomment this once we resolve the resource exhaustion issue
 initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
-second_model: "EleutherAI/llemma_7b"
+second_model: "LLM360/Amber"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-llemma"]
+    tags: ["openwebtext", "llama", "llama2-amber"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
