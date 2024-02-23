@@ -106,6 +106,7 @@ def main(config: EvalLmConfig):
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
+            logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
 
             converter = converter.replaced(reference_checkpoint='LLM360/Amber', tokenizer=tokenizer)
