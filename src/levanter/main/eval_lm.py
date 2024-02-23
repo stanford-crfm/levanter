@@ -112,6 +112,7 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(config.model)
+            jax.debug.breakpoint()
 
             for alpha in [0.0, 0.5, 1.0]:
                 def add_floats(x, y):
