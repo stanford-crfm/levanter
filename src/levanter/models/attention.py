@@ -127,7 +127,7 @@ def dot_product_attention(
                     KPos = key.resolve_axis(KPos)
                     fused_attn_mask = mask.materialize(QPos, KPos)
 
-                    if fused_attn_mask:
+                    if fused_attn_mask is not None:
                         fused_attn_mask = fused_attn_mask.array
                     else:
                         raise ValueError(
