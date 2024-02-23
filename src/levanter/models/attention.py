@@ -145,7 +145,7 @@ def dot_product_attention(
             # Vanilla multi-head self-attention case
             # Head mismatch implies MultiQueryAttn or GroupQueryAttn
             # Seq len mismatch implies cross-attn
-            if query.shape[num_heads] == key.shape[num_heads] and query.shape[QPos] == key.shape[KPos]:
+            if query.shape[num_heads] == key.shape[num_heads] and query.axis_size(QPos) == key.axis_size(KPos):
                 assert (
                     q_.shape == k_.shape == v_.shape
                 ), "Q, K, and V projections must have the same dimensions for multi-head self-attention with flash"
