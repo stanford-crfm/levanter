@@ -122,19 +122,25 @@ def dot_product_attention(
             elif type(mask) is AttentionMask:
                 if mask.causal():
                     attn_mask_type = AttnMaskType.CAUSAL_MASK
+
+                    QPos = query.resolve_axis(QPos)
+                    KPos = key.resolve_axis(KPos)
                     fused_attn_mask = mask.materialize(QPos, KPos)
 
                     if fused_attn_mask:
                         fused_attn_mask = fused_attn_mask.array
                     else:
-                        raise ValueError("Materialized array should never be none.")
+                        raise ValueError(
+                            "If AttentionMask is causal, the materialized array should never be None. Something is"
+                            " wrong."
+                        )
                 else:
                     raise NotImplementedError(
                         "Non-Causal masks are not implemented for flash attention. Please pass an AttentionMask object"
                     )
             else:
                 attn_mask_type = AttnMaskType.NO_MASK
-                fused_attn_mask = jnp.ones((batch_size, query.shape[QPos], key.shape[KPos]))
+                fused_attn_mask = jnp.ones((batch_size, query.axis_size(QPos), key.axis_size(KPos)))
 
             # Vanilla multi-head self-attention case
             # Head mismatch implies MultiQueryAttn or GroupQueryAttn
