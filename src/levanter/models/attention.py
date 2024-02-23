@@ -129,6 +129,7 @@ def dot_product_attention(
 
                     if fused_attn_mask is not None:
                         fused_attn_mask = fused_attn_mask.array
+                        fused_attn_mask = jnp.dstack([fused_attn_mask] * batch_size)
                     else:
                         raise ValueError(
                             "If AttentionMask is causal, the materialized array should never be None. Something is"
