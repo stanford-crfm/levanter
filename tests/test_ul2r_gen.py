@@ -109,7 +109,6 @@ def test_ul2r_prefix_attention():
 
     example = Ul2Example(task_token=1000, inputs=inputs, outputs=outputs).to_decoder_only(1001, SeqLen, KSeqLen)
     attn_mask = example.attn_mask
-
     # testing here that we can't attend to the inputs from the outputs
     keys = np.zeros((L, D), dtype=np.float32)
     keys[input_length + 1, 1] = 100.0  # really want to attend to this
@@ -121,8 +120,7 @@ def test_ul2r_prefix_attention():
     query = hax.named(query, (SeqLen, Head))
     keys = hax.named(keys, (KSeqLen, Head))
     values = hax.named(values, (KSeqLen, Head))
-
-    result = hax.nn.attention.dot_product_attention(SeqLen, KSeqLen, Head, query, keys, values, mask=attn_mask)
+    result = hax.nn.attention.dot_product_attention(KSeqLen, Head, query, keys, values, mask=attn_mask)
     result = result.rearrange((SeqLen, Head)).array
     # the values for the outputs should all close to 300
     assert jnp.allclose(result[input_length + 1 :, 1], 300)

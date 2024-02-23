@@ -18,7 +18,7 @@ from transformers import PreTrainedTokenizerBase
 import haliax as hax
 
 from levanter.data.dataset import Dataset, ShardableDataset
-from levanter.data.text import LmExample
+from levanter.models.lm_model import LmExample
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.jax_utils import use_cpu_device
 
@@ -83,7 +83,6 @@ def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
 @functools.partial(jax.jit, static_argnums=(0, 1))
 def _create_prefix_lm_example(QPos, KPos, tokens, unpadded_length, num_inputs, pad_token_id):
     # shift back by one since we're predicting the next token
-    targets = hax.roll(tokens, -1, QPos)
     attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
     # don't compute loss on:
     # 1) task token
@@ -94,7 +93,7 @@ def _create_prefix_lm_example(QPos, KPos, tokens, unpadded_length, num_inputs, p
     # 4) padding
     if pad_token_id is not None:
         loss_mask = loss_mask & (tokens != pad_token_id)
-    return LmExample(tokens, targets, attention_mask, loss_mask)
+    return LmExample(tokens, loss_mask, attention_mask)
 
 
 S_TASK_TOKEN = "[S2S]"
@@ -289,9 +288,8 @@ class Ul2rDataset(ShardableDataset[LmExample]):
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
         return LmExample(
             tokens=NamedShapeSpec((self.Pos,), jnp.int32),  # type: ignore
-            targets=NamedShapeSpec((self.Pos,), jnp.int32),  # type: ignore
-            attn_mask=NamedShapeSpec((self.Pos, self.KPos), jnp.bool_),  # type: ignore
             loss_mask=NamedShapeSpec((self.Pos,), jnp.bool_),  # type: ignore
+            attn_mask=NamedShapeSpec((self.Pos, self.KPos), jnp.bool_),  # type: ignore
         )
 
     def shard(self, shard_id: int, num_shards: int) -> "Ul2rDataset":
