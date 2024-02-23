@@ -340,7 +340,7 @@ class Trainer:
         trainer_state_shape = eqx.filter_eval_shape(
             init_state_and_model, model_init, training_key, self.is_trainable_param
         )
-        saveable_train_state = _make_saveable_trainer_state(trainer_state_shape, self.is_trainable_param)
+        saveable_train_state = _saveable_training_mask(TrainerState, self.is_trainable_param)
 
         if do_load_checkpoint is not False:
             if do_load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
@@ -833,12 +833,21 @@ def cast_params_by_trainability(model, mp, is_trainable):
     return model
 
 
-def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
+def _saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterSpec = True) -> FilterSpec:
     """
-    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
-    You can override if you really need custom checkpointing logic. By default, everything in the trainer state
-    is saved (except for non-trainable model parameters)
+    Returns a mask representing the saveable portion of a trainer state. This is used to filter out non-trainable
+    parameters for checkpointing and for logging.
+
+    This method works with both instances of a trainer state and the type of a trainer state. If you pass in a type,
+    it must be a dataclass that won't validate its constructor arguments (or at least not throw an error if you pass
+    in all True for all fields).
     """
-    trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable)
+    # when we have a Type, we want to instantiate it with all True for all args (regardless of the actual types)
+    # have to do dataclass magic to instantiate the class with all True
+    if isinstance(trainer_state, type):
+        fields = dataclasses.fields(trainer_state)
+        trainer_state = trainer_state(*[True] * len(fields))
+    else:
+        trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
+    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)
     return saveable_state
