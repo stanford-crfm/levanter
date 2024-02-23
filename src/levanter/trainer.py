@@ -46,7 +46,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint
+from levanter.checkpoint import CheckpointerConfig, load_checkpoint, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
@@ -54,7 +54,7 @@ from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
-from levanter.utils import cloud_utils
+from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
@@ -157,6 +157,17 @@ class TrainerHooks:
             return decorator
         else:
             return decorator(fn)
+
+
+def _unify_model_and_model_init(model, model_init):
+    if model is not None and model_init is not None:
+        raise ValueError("only one of model and model_init should be specified")
+    elif model is None and model_init is None:
+        raise ValueError("one of model and model_init must be specified")
+    if model is not None:
+        # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
+        model_init = jax.tree_util.Partial(lambda m: m, model)
+    return model_init
 
 
 class Trainer:
@@ -304,14 +315,7 @@ class Trainer:
         Returns:
             model, opt_state, key, resume_step
         """
-        if model is not None and model_init is not None:
-            raise ValueError("only one of model and model_init should be specified")
-        elif model is None and model_init is None:
-            raise ValueError("one of model and model_init must be specified")
-
-        if model is not None:
-            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
-            model_init = jax.tree_util.Partial(lambda m: m, model)
+        model_init = _unify_model_and_model_init(model, model_init)
 
         del model
         assert model_init is not None
@@ -336,44 +340,45 @@ class Trainer:
         trainer_state_shape = eqx.filter_eval_shape(
             init_state_and_model, model_init, training_key, self.is_trainable_param
         )
-        saveable_state_shape = _make_saveable_trainer_state(trainer_state_shape, self.is_trainable_param)
+        saveable_train_state = _make_saveable_trainer_state(trainer_state_shape, self.is_trainable_param)
 
         if do_load_checkpoint is not False:
-            try:
-                state = load_checkpoint(saveable_state_shape, checkpoint_path, axis_mapping=axis_mapping, mesh=mesh)
-            except FileNotFoundError:
-                if do_load_checkpoint:
-                    raise
-                else:
-                    state = None
-        else:
-            state = None
-
-        # if that fails, try to load just a model from a checkpoint for initialization
-        if state is None and initial_model_path is not None:
-            logger.info(f"Initializing from {initial_model_path}")
-            # todo: we are potentially holding two models in memory at once here, if we pass in a model
-            # instead of a model_init and we use initialize_from. We could avoid this by deleting
-            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
-            loaded_model = load_checkpoint(
-                saveable_state_shape.model,
-                initial_model_path,
+            if do_load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
+                raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
+            state = load_checkpoint_or_initialize(
+                init_state_and_model,
+                checkpoint_path,
                 axis_mapping=axis_mapping,
                 mesh=mesh,
-                subpath="model",
-            )
+                is_checkpointed=saveable_train_state,
+            )(model_init, training_key, self.is_trainable_param)
+        else:
+            # if that fails, try to load just a model from a checkpoint for initialization
+            if initial_model_path is not None:
+                logger.info(f"Initializing from {initial_model_path}")
+                # todo: we are potentially holding two models in memory at once here, if we pass in a model
+                # instead of a model_init and we use initialize_from. We could avoid this by deleting
+                # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
+                # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
+                loaded_model = load_checkpoint(
+                    saveable_train_state.model,
+                    initial_model_path,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                    subpath="model",
+                )
 
-            # we don't necessarily load the full model, so we need to combine it with the model init
-            model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
+                # we don't necessarily load the full model, so we need to combine it with the model init
+                model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
 
-        # now we initialize a fresh trainer state, possibly just to finish any missing fields
-        @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
-        def init_state(partial_state, model_init, training_key, is_trainable):
-            model = model_init()
-            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
-            return eqx.combine(partial_state, fresh_state)
+            # now we initialize a fresh trainer state, possibly just to finish any missing fields
+            @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
+            def init_state(model_init, training_key, is_trainable):
+                model = model_init()
+                fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
+                return fresh_state
 
-        state = init_state(state, model_init, training_key, self.is_trainable_param)
+            state = init_state(model_init, training_key, self.is_trainable_param)
 
         return state
 
@@ -831,9 +836,9 @@ def cast_params_by_trainability(model, mp, is_trainable):
 def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
     """
     Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
-    You can override if you really need custom checkpointing logic. By default everything in the trainer state
+    You can override if you really need custom checkpointing logic. By default, everything in the trainer state
     is saved (except for non-trainable model parameters)
     """
-    saveable_model = eqx.filter(trainer_state.model, is_trainable)
-    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
+    trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
+    saveable_state = dataclasses.replace(trainer_state, model=is_trainable)
     return saveable_state
