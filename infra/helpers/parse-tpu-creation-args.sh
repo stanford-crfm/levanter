@@ -11,6 +11,7 @@
 # autodelete (default: true)
 # setup script (default: infra/helpers/setup-tpu-vm.sh)
 # subnetwork (default: default)
+# use_alpha (default: false)
 
 
 # set defaults
@@ -21,6 +22,7 @@ PREEMPTIBLE=false
 AUTODELETE=true
 SETUP_SCRIPT="$SCRIPT_DIR/helpers/setup-tpu-vm.sh"
 SUBNETWORK="default"
+USE_ALPHA=false
 
 if [ -z "$GIT_BRANCH" ]; then
     GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -79,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       SUBNETWORK="$2"
       shift # past argument
       shift # past value
+      ;;
+    --use_alpha)
+      USE_ALPHA="true"
+      shift # past argument
       ;;
     *)    # unknown option, assume it's the vm name
       # error out if we already set a name
