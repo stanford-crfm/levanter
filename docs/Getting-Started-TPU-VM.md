@@ -45,13 +45,15 @@ the venv on each worker, and it will clone the repo to `~/levanter/`.
 **For Public Users**:
 
 ```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible]
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> -n <subnetwork> [--preemptible] [--use-alpha]
 ```
 
 Defaults are:
 - `zone`: `us-east1-d`
 - `type`: `v3-32`
+- `subnetwork`: `default` (set to custom VPC subnet, useful for tpuv4 configs)
 - `preemptible`: `false`
+- `use-alpha`: `false` (mark `true` for tpuv4s in alpha zones like `us-central2`)
 
 **Notes**:
 
