@@ -1,6 +1,6 @@
 data:
   id: dlwh/wikitext_103_detokenized
-  cache_dir: "gs://levanter-data/tokenized/wiki-llama/"
+  cache_dir: "gs://levanter-data/tokenized/wiki-llama2/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
