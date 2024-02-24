@@ -159,7 +159,7 @@ class TrainerHooks:
             return decorator(fn)
 
 
-def _unify_model_and_model_init(model, model_init):
+def _unify_model_and_model_init(model: Optional[M], model_init: Optional[Callable[[], M]]) -> Callable[[], M]:
     if model is not None and model_init is not None:
         raise ValueError("only one of model and model_init should be specified")
     elif model is None and model_init is None:
@@ -326,59 +326,44 @@ class Trainer:
             checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
         do_load_checkpoint = self.config.load_checkpoint
-        axis_mapping = self.parameter_axis_mapping
-        mesh = self.device_mesh
-        initial_model_path = self.config.initialize_from
-
         # we don't save the full trainer state, so we need to filter out the non-trainable parameters
+        if do_load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
+        elif do_load_checkpoint is None:
+            do_load_checkpoint = fsspec_utils.exists(checkpoint_path)
+
+        if do_load_checkpoint is False and self.config.initialize_from is not None:
+            # we're not going to load a checkpoint, so see if we can initialize from a model
+            logger.info(f"Initializing from {self.config.initialize_from}")
+            # todo: we are potentially holding two models in memory at once here, if we pass in a model
+            # instead of a model_init and we use initialize_from. We could avoid this by deleting
+            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
+            # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
+            loaded_model = load_checkpoint_or_initialize(
+                model_init,
+                self.config.initialize_from,
+                axis_mapping=(self.parameter_axis_mapping),
+                mesh=(self.device_mesh),
+                subpath="model",
+                do_load=True,
+            )()
+            model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
 
         def init_state_and_model(model_init, training_key, is_trainable):
             model = model_init()
             state = self._initialize_state_from_scratch(model, training_key, is_trainable)
             return state
 
-        trainer_state_shape = eqx.filter_eval_shape(
-            init_state_and_model, model_init, training_key, self.is_trainable_param
-        )
         saveable_train_state = _saveable_training_mask(TrainerState, self.is_trainable_param)
 
-        if do_load_checkpoint is not False:
-            if do_load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
-                raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
-            state = load_checkpoint_or_initialize(
-                init_state_and_model,
-                checkpoint_path,
-                axis_mapping=axis_mapping,
-                mesh=mesh,
-                is_checkpointed=saveable_train_state,
-            )(model_init, training_key, self.is_trainable_param)
-        else:
-            # if that fails, try to load just a model from a checkpoint for initialization
-            if initial_model_path is not None:
-                logger.info(f"Initializing from {initial_model_path}")
-                # todo: we are potentially holding two models in memory at once here, if we pass in a model
-                # instead of a model_init and we use initialize_from. We could avoid this by deleting
-                # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
-                # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
-                loaded_model = load_checkpoint(
-                    saveable_train_state.model,
-                    initial_model_path,
-                    axis_mapping=axis_mapping,
-                    mesh=mesh,
-                    subpath="model",
-                )
-
-                # we don't necessarily load the full model, so we need to combine it with the model init
-                model_init = jax.tree_util.Partial(lambda m, f: eqx.combine(m, f()), loaded_model, model_init)
-
-            # now we initialize a fresh trainer state, possibly just to finish any missing fields
-            @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
-            def init_state(model_init, training_key, is_trainable):
-                model = model_init()
-                fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
-                return fresh_state
-
-            state = init_state(model_init, training_key, self.is_trainable_param)
+        state = load_checkpoint_or_initialize(
+            init_state_and_model,
+            checkpoint_path,
+            axis_mapping=(self.parameter_axis_mapping),
+            mesh=(self.device_mesh),
+            is_checkpointed=saveable_train_state,
+            do_load=do_load_checkpoint,
+        )(model_init, training_key, self.is_trainable_param)
 
         return state
 

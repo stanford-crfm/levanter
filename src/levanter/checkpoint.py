@@ -366,6 +366,7 @@ def load_checkpoint_or_initialize(
     is_checkpointed: FilterSpec = True,
     donate_args: FilterSpec = True,
     donate_kwargs: FilterSpec = True,
+    do_load: Optional[bool] = None,
 ) -> Callable[Sig, M]:
     """
     Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
@@ -375,8 +376,11 @@ def load_checkpoint_or_initialize(
 
     This function supports "partial" checkpoint loading, where only a subset of the parameters of the
     state is loaded from the checkpoint. This is useful for initializing just some parameters.
+    (Note that you have to declare which parameters you are expecting to load via is_checkpointed.
+     Things can't just be missing from the checkpoint.)
 
-    init_fn will be called inside eval_shape and inside jit, so it should be a pure function.
+    init_fn will be called inside eval_shape and inside jit, so it should be a pure function. In particular,
+    it should not do any I/O.
 
     This function is commonly used for initializing training state from a possibly non-existent checkpoint, but it can be used
     for initializing any state from a checkpoint.
@@ -393,13 +397,26 @@ def load_checkpoint_or_initialize(
         is_checkpointed: a FilterSpec that specifies which parameters are checkpointed
         donate_args: a FilterSpec that specifies which arguments to donate to init_fn if we need to initialize
         donate_kwargs: a FilterSpec that specifies which kwargs to donate to init_fn if we need to initialize
+        do_load: if True, always load the checkpoint. If False, always initialize. If None, load if the checkpoint exists, otherwise initialize
 
     Returns:
-        A function that takes the same arguments as init_fn, but loads the checkpoint if it exists
+        A function that takes the same arguments as init_fn, but loads the checkpoint if it exists and returns the
+        loaded state.
+
     """
 
-    # cases to consider:
-    @functools.wraps(init_fn)
+    # some state might not be initialized, so we need to initialize it
+    # JAX will be smart and only do the compute for things we actually need
+    @haliax.named_jit(
+        axis_resources=axis_mapping,
+        out_axis_resources=axis_mapping,
+        donate_args=donate_args,
+        donate_kwargs=donate_kwargs,
+    )
+    def init_and_merge(state, *args, **kwargs):
+        init_state = init_fn(*args, **kwargs)
+        return equinox.combine(state, init_state)
+
     def load_or_init(*args, **kwargs):
         # we need to call init_fn to get the shape, dtype, and structure of the state
         # we'll use this to deserialize the checkpoint
@@ -408,32 +425,24 @@ def load_checkpoint_or_initialize(
         # we need to filter the state to get the parameters we want to load
         # we'll use this to deserialize the checkpoint
         filtered_state_shape = equinox.filter(state_shape, is_checkpointed)
+        # strip out all the shape stuff, leaving only the dtype and structure
+        loaded_state = equinox.filter(state_shape, lambda _: False)
 
-        # now we can load the checkpoint
-        try:
-            loaded_state = load_checkpoint(
-                filtered_state_shape,
-                checkpoint_path,
-                subpath=subpath,
-                discover_latest=discover_latest,
-                axis_mapping=axis_mapping,
-                mesh=mesh,
-            )
-        except FileNotFoundError:
-            # strip out all the shape stuff, leaving only the dtype and structure
-            loaded_state = equinox.filter(state_shape, lambda _: False)
-
-        # some state might not be initialized, so we need to initialize it
-        # JAX will be smart and only do the compute for things we actually need
-        @haliax.named_jit(
-            axis_resources=axis_mapping,
-            out_axis_resources=axis_mapping,
-            donate_args=donate_args,
-            donate_kwargs=donate_kwargs,
-        )
-        def init_and_merge(state, *args, **kwargs):
-            init_state = init_fn(*args, **kwargs)
-            return equinox.combine(state, init_state)
+        if do_load is not False:
+            # now we can load the checkpoint
+            try:
+                loaded_state = load_checkpoint(
+                    filtered_state_shape,
+                    checkpoint_path,
+                    subpath=subpath,
+                    discover_latest=discover_latest,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                )
+            except FileNotFoundError:
+                if do_load is True:
+                    raise
+                logger.info(f"Checkpoint not found at {checkpoint_path}. Initializing from scratch.")
 
         state = init_and_merge(loaded_state, *args, **kwargs)
 
