@@ -112,7 +112,7 @@ def main(config: EvalLmConfig):
             if False:
                 merged_model = model_1
             else:
-                converter = converter.replaced(reference_checkpoint='LLM360/Amber', tokenizer=tokenizer)
+                converter = converter.replaced(reference_checkpoint='EleutherAI/llemma_7b', tokenizer=tokenizer)
                 logger.info(f"Loading second model from {converter.reference_checkpoint}")
                 logger.info(f"Loading second model from {config.model}")
                 model_2 = converter.load_pretrained(model_config)
