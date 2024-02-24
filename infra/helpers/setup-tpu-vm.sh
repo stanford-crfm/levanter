@@ -111,3 +111,20 @@ git checkout $BRANCH
 # install levanter
 
 pip install -e .
+
+# install go land 1.22 in home directory
+
+cd ~
+
+wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+
+sudo tar -C /usr/local/ -xzf go1.22.0.linux-amd64.tar.gz 
+
+export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
+echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | sudo tee /etc/apt/sources.list.d/gcsfuse.list
+
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc
+
+sudo apt-get update
+sleep 5
+sudo apt-get install gcsfuse
