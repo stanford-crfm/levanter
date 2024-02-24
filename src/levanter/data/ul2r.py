@@ -114,27 +114,27 @@ class DenoisingConfig(draccus.ChoiceRegistry):
     @staticmethod
     def ul2_configs(
         r_task_token: str = R_TASK_TOKEN, x_task_token: str = X_TASK_TOKEN, s_task_token=S_TASK_TOKEN
-    ) -> List["DenoisingConfig"]:
-        return [
-            RDenoisingConfig(r_task_token, 0.15, 3.0),
-            RDenoisingConfig(r_task_token, 0.15, 8.0),
-            XDenoisingConfig(x_task_token, 0.5, 3.0),
-            XDenoisingConfig(x_task_token, 0.5, 8.0),
-            XDenoisingConfig(x_task_token, 0.15, 64.0),
-            XDenoisingConfig(x_task_token, 0.5, 64.0),
-            PrefixLmConfig(s_task_token),
-        ]
+    ) -> Dict[str, "DenoisingConfig"]:
+        return {
+            "r1": RDenoisingConfig(r_task_token, 0.15, 3.0),
+            "r2": RDenoisingConfig(r_task_token, 0.15, 8.0),
+            "x1": XDenoisingConfig(x_task_token, 0.5, 3.0),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 8.0),
+            "x3": XDenoisingConfig(x_task_token, 0.15, 64.0),
+            "x4": XDenoisingConfig(x_task_token, 0.5, 64.0),
+            "s": PrefixLmConfig(s_task_token),
+        }
 
     @staticmethod
     def ul2r_configs(
         r_task_token: Optional[str] = "[NLU]", x_task_token: Optional[str] = "[NLG]", s_task_token=S_TASK_TOKEN
-    ) -> List["DenoisingConfig"]:
-        return [
-            RDenoisingConfig(r_task_token, 0.15, 3.0),
-            XDenoisingConfig(x_task_token, 0.15, 32.0),
-            XDenoisingConfig(x_task_token, 0.5, 3.0),
-            PrefixLmConfig(s_task_token),
-        ]
+    ) -> Dict[str, "DenoisingConfig"]:
+        return {
+            "r": RDenoisingConfig(r_task_token, 0.15, 3.0),
+            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0),
+            "s": PrefixLmConfig(s_task_token),
+        }
 
 
 @dataclass(frozen=True)
@@ -211,8 +211,9 @@ class CausalLmConfig(DenoisingConfig):
 
 @dataclass(frozen=True)
 class Ul2rConfig:
-    task_configs: Dict[str, DenoisingConfig]
-    task_probs: Optional[Dict[str, float]] = None
+    task_configs: Dict[str, DenoisingConfig] | None = None
+    shortcut: str | None = None
+    task_probs: Dict[str, float] | None = None
 
     @property
     def task_configs_list(self):
@@ -225,6 +226,14 @@ class Ul2rConfig:
         return [self.task_probs[task] for task in self.task_configs]
 
     def __post_init__(self):
+        if self.shortcut == "ul2":
+            self.task_configs = DenoisingConfig.ul2_configs
+        elif self.shortcut == "ul2r":
+            self.task_configs = DenoisingConfig.ul2r_configs
+
+        if self.task_configs is None:
+            raise ValueError("if task_configs is not provided, shortcut must be either 'ul2' or 'ul2r'.")
+
         if self.task_probs is not None:
             if self.task_probs.keys() != self.task_configs.keys():
                 raise ValueError("task_probs keys must match task_configs keys")

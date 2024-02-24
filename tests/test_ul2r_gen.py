@@ -25,7 +25,7 @@ def test_ul2_generator_seed_works():
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
         [f"<mask_{i}>" for i in range(500)],
-        DenoisingConfig.ul2r_configs(),
+        list(DenoisingConfig.ul2r_configs().values()),
         task_weights=None,
     )
 
@@ -47,7 +47,7 @@ def test_ul2_generator_can_handle_too_few_sentinels():
     ul2_generator = Ul2InstanceGenerator(
         tokenizer,
         [f"<mask_{i}>" for i in range(2)],
-        DenoisingConfig.ul2r_configs(),
+        list(DenoisingConfig.ul2r_configs().values()),
         task_weights=None,
     )
 
