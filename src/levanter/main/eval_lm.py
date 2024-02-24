@@ -109,44 +109,37 @@ def main(config: EvalLmConfig):
             logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
             alpha = 1.0
-            if False:
-                merged_model = model_1
-            else:
-                converter = converter.replaced(reference_checkpoint='EleutherAI/llemma_7b', tokenizer=tokenizer)
-                logger.info(f"Loading second model from {converter.reference_checkpoint}")
-                logger.info(f"Loading second model from {config.model}")
-                model_2 = converter.load_pretrained(model_config)
-                import numpy as np
+            converter = converter.replaced(reference_checkpoint='EleutherAI/llemma_7b', tokenizer=tokenizer)
+            logger.info(f"Loading second model from {converter.reference_checkpoint}")
+            logger.info(f"Loading second model from {config.model}")
+            model_2 = converter.load_pretrained(model_config)
 
 # Generate alphas from 0 to 1 with a step of 0.05
-                alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
+            alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 
-                for alpha in alphas:
-                    print(f"alpha: {alpha}")
-                    
-                    def add_floats(x, y):
-                        if is_inexact_arrayish(x) and is_inexact_arrayish(y):
-                            # Linearly interpolate between the two models
-                            minus_alpha = 1.0 - alpha
-                            return x * alpha + y * minus_alpha
-                        else:
-                            return x + y
+            for alpha in alphas:
+                print(f"alpha: {alpha}")
+                
+                def add_floats(x, y):
+                    if is_inexact_arrayish(x) and is_inexact_arrayish(y):
+                        # Linearly interpolate between the two models
+                        minus_alpha = 1.0 - alpha
+                        return x * alpha + y * minus_alpha
+                    else:
+                        return x + y
 
-                    logger.info(f"model_1: {model_1.config}")
-                    logger.info(f"model_2: {model_2.config}")
+                # Use the rounded alpha for merging models
+                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=False)(model_1, model_2)
 
-                    # Use the rounded alpha for merging models
-                    merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map(add_floats, m1, m2), donate_args=False)(model_1, model_2)
+                # Evaluate the loss for the merged model
+                loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
 
-                    # Evaluate the loss for the merged model
-                    loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
+                # Log the rounded alpha and loss to W&B
+                wandb.log({"eval/loss": loss, "alpha": alpha})
 
-                    # Log the rounded alpha and loss to W&B
-                    wandb.log({"eval/loss": loss, "alpha": alpha})
-
-                    print(f"Loss from merged model (alpha={alpha}): ", loss)
-                    del merged_model
-            
+                print(f"Loss from merged model (alpha={alpha}): ", loss)
+                del merged_model
+        
 
             
             
