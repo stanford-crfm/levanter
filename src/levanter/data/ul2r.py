@@ -220,9 +220,9 @@ class Ul2rConfig:
         if self.task_configs is not None:
             task_configs = self.task_configs
         if self.shortcut == "ul2":
-            task_configs = DenoisingConfig.ul2_configs
+            task_configs = DenoisingConfig.ul2_configs()
         elif self.shortcut == "ul2r":
-            task_configs = DenoisingConfig.ul2r_configs
+            task_configs = DenoisingConfig.ul2r_configs()
         else:
             raise ValueError("Either task_configs or shortcut should be specified.")
 
