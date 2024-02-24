@@ -116,46 +116,27 @@ pip install -e .
 
 cd ~
 
-# wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
-
-# sudo tar -C /usr/local/ -xzf go1.22.0.linux-amd64.tar.gz 
-
-# export PATH=$PATH:/usr/local/go/bin
-# export GOPATH=$HOME/go
-# export GOBIN=$GOPATH/bin
-# source ~/.bashrc
-
-
-# export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
-# echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | sudo tee /etc/apt/sources.list.d/gcsfuse.list
-
-# curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc
-
-# sudo apt-get update
-
-# sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys C0BA5CE6DC6315A3
-
-# sudo apt-get update
-
-# sleep 5
-
-# clean
-# Set up Go environment
 wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
-sudo tar -C /usr/local/ -xzf go1.22.0.linux-amd64.tar.gz
-rm go1.22.0.linux-amd64.tar.gz  # Clean up the downloaded archive
 
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-echo 'export GOPATH=$HOME/go' >> ~/.bashrc
-echo 'export GOBIN=$GOPATH/bin' >> ~/.bashrc
+sudo tar -C /usr/local/ -xzf go1.22.0.linux-amd64.tar.gz 
+
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=$HOME/go
+export GOBIN=$GOPATH/bin
 source ~/.bashrc
 
-# Set up GCSFUSE repository and key
-export GCSFUSE_REPO=gcsfuse-$(lsb_release -c -s)
+
+export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
 echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | sudo tee /etc/apt/sources.list.d/gcsfuse.list
+
 curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc
 
-# Update and install GCSFUSE
 sudo apt-get update
-sudo apt-get install -y gcsfuse
 
+sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys C0BA5CE6DC6315A3
+
+sudo apt-get update
+
+sleep 5
+
+# clean
