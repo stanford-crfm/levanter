@@ -139,4 +139,16 @@ sudo apt-get update
 
 sleep 5
 
+sudo apt-get install -y gcsfuse
+
+mkdir /home/ahmed/scr/
+
+gcsfuse tracem /home/ahmed/scr
+
+cd /home/ahmed/scr
+
+df -h .
+
+export HF_HOME="/home/ahmed/scr/hf"
 # clean
+
