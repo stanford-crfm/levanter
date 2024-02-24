@@ -211,13 +211,22 @@ class CausalLmConfig(DenoisingConfig):
 
 @dataclass(frozen=True)
 class Ul2rConfig:
-    task_configs: Dict[str, DenoisingConfig] | None = None
     shortcut: str | None = None
+    task_configs: Dict[str, DenoisingConfig] | None = None
     task_probs: Dict[str, float] | None = None
 
     @property
     def task_configs_list(self):
-        return list(self.task_configs.values())
+        if self.task_configs is not None:
+            task_configs = self.task_configs
+        if self.shortcut == "ul2":
+            task_configs = DenoisingConfig.ul2_configs
+        elif self.shortcut == "ul2r":
+            task_configs = DenoisingConfig.ul2r_configs
+        else:
+            raise ValueError("Either task_configs or shortcut should be specified.")
+
+        return list(task_configs.values())
 
     @property
     def task_weights_list(self):
@@ -226,12 +235,7 @@ class Ul2rConfig:
         return [self.task_probs[task] for task in self.task_configs]
 
     def __post_init__(self):
-        if self.shortcut == "ul2":
-            self.task_configs = DenoisingConfig.ul2_configs
-        elif self.shortcut == "ul2r":
-            self.task_configs = DenoisingConfig.ul2r_configs
-
-        if self.task_configs is None:
+        if self.task_configs is None and self.shortcut != "ul2" and self.shortcut != "ul2r":
             raise ValueError("if task_configs is not provided, shortcut must be either 'ul2' or 'ul2r'.")
 
         if self.task_probs is not None:
