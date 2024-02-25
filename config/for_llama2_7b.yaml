@@ -6,11 +6,12 @@ model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "meta-llama/Llama-2-7b-hf"
+second_hf_checkpoint: "NousResearch/Nous-Hermes-llama-2-7b"
 
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-lemma-full"]
+    tags: ["openwebtext", "llama", "llama2-hermes-full"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU

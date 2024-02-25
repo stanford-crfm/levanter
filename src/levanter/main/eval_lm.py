@@ -37,6 +37,7 @@ class EvalLmConfig:
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
     model: LmConfig = Gpt2Config()
+    second_hf_checkpoint: Optional[RepoRef] = None
 
     compare_torch: bool = False
     eval_on_train: bool = False
@@ -109,7 +110,7 @@ def main(config: EvalLmConfig):
             logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
             alpha = 1.0
-            converter = converter.replaced(reference_checkpoint='EleutherAI/llemma_7b', tokenizer=tokenizer)
+            converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(model_config)
