@@ -289,11 +289,11 @@ class Ul2rDataset(ShardableDataset[LmExample]):
     def __iter__(self) -> Iterator[LmExample]:
         key = self.initial_key
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+        key = jax.device_put(key, sharding)
 
         # to cpu
         with use_cpu_device():
 
-            @functools.partial(eqx.filter_jit, out_shardings=sharding)
             def _create_lm_example(tokens, key):
                 this_key, key = jax.random.split(key)
                 ul2example = self.generator.sample(tokens, this_key)
