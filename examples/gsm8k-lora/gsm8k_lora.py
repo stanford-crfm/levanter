@@ -165,12 +165,9 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
         # end major difference from Alpaca
 
-        with Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter) as trainer:
+        with Trainer(config.trainer, optimizer, is_trainable=lora_param_filter) as trainer:
             state = trainer.initial_state(training_key, model=model)
 
             # log some info about the model
@@ -195,7 +192,7 @@ def train(config: TrainArgs):
             loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
             loader = non_caching_cycle(loader)
 
-            if state.step != 0:
+            if int(state.step) != 0:
                 logger.info(f"Resuming training from step {state.step}")
                 for i in range(state.step):
                     next(loader)  # type: ignore
