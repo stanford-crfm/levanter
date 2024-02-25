@@ -210,7 +210,6 @@ class Trainer:
         Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
         """
 
-        @named_jit(axis_resources=self.compute_axis_mapping)
         @functools.wraps(self._raw_loss_function)
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
@@ -492,7 +491,8 @@ class Trainer:
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(model):
             with hax.axis_mapping(self.compute_axis_mapping):
-                return self.loss_fn(model, *batch, **batch_kwargs, key=key)
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key)
 
         model, opt_state = take_train_step(
             self.optimizer, model, state.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable_param
