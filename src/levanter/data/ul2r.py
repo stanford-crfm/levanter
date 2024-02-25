@@ -288,14 +288,21 @@ class Ul2rDataset(ShardableDataset[LmExample]):
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.initial_key
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
         # to cpu
-        key = jax.device_put(key, jax.devices("cpu")[0])
-        for example in self.base_dataset:
-            with use_cpu_device():
-                key, subkey = jax.random.split(key)
-                ul2example = self.generator.sample(example, subkey)
+        with use_cpu_device():
+
+            @functools.partial(eqx.filter_jit, out_shardings=sharding)
+            def _create_lm_example(tokens, key):
+                this_key, key = jax.random.split(key)
+                ul2example = self.generator.sample(tokens, this_key)
                 decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
-            yield decoder_only
+                return decoder_only
+
+            for tokens in self.base_dataset:
+                example = _create_lm_example(tokens, key)
+                yield example
 
     @property
     def item_shape(self) -> PyTree[Union[ShapeSpec, NamedShapeSpec]]:
