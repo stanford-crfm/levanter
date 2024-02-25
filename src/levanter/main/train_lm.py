@@ -156,7 +156,8 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
-                state.model = None
+                # state.model = None
+                del state.model
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
