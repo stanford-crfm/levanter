@@ -145,7 +145,11 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+        state = trainer.initial_state(
+            training_key,
+            model_init=lambda: config.model.build(Vocab, key=model_key),
+            set_model=bool(config.initialize_from_hf),
+        )
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
@@ -157,7 +161,6 @@ def main(config: TrainLmConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 # state.model = None
-                del state.model
                 model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)

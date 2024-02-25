@@ -296,7 +296,11 @@ class Trainer:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
 
     def initial_state(
-        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
+        self,
+        training_key: PRNGKeyArray,
+        model: Optional[M] = None,
+        model_init: Optional[Callable[[], M]] = None,
+        set_model: bool = True,
     ) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
@@ -373,7 +377,8 @@ class Trainer:
             fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
             return eqx.combine(partial_state, fresh_state)
 
-        state = init_state(state, model_init, training_key, self.is_trainable_param)
+        if set_model:
+            state = init_state(state, model_init, training_key, self.is_trainable_param)
 
         return state
 
