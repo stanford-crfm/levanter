@@ -62,3 +62,5 @@ Probably ray is still running and Levanter didn't clean up the ray cluster (or a
 If the former, you can kill the ray cluster with `ray stop`. If the latter, there's not much you can do about it.
 [Ray doesn't work super well when multiple users are running Ray on the same machine.](https://github.com/ray-project/ray/issues/20634)
 Try docker?
+
+Another reason could be the ports are not open in your VM. If using GCP, check the firewall settings of your VPC and expose port `61964` (used by ray).

@@ -27,7 +27,7 @@ def _dummy_step_info(step):
     return StepInfo(
         state=TrainerState(
             # + 1 b/c step here is next step
-            _step=step + 1,
+            step=step + 1,
             model=None,
             opt_state=(),
             training_key=(),
@@ -197,7 +197,7 @@ def test_checkpoint_steps():
         grad = loss_fn(state.model, data)
         updates, new_state = optim.update(grad, state.opt_state)
         model = eqx.apply_updates(state.model, updates)
-        state = dataclasses.replace(state, _step=state.step + 1, model=model, opt_state=new_state)
+        state = dataclasses.replace(state, step=state.step + 1, model=model, opt_state=new_state)
 
     assert_trees_not_close(state, initial_state)
 
