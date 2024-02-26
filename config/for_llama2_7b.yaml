@@ -9,6 +9,7 @@ hf_checkpoint: "meta-llama/Llama-2-7b-hf"
 second_hf_checkpoint: "yahma/llama-7b-hf"
 
 trainer:
+  seed: 1
   wandb:
     project: "levanter"
     tags: ["openwebtext", "llama", "llama2-yahma-full"]
