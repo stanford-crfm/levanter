@@ -6,12 +6,12 @@ model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "meta-llama/Llama-2-7b-hf"
-second_hf_checkpoint: "Salesforce/xgen-7b-4k-base"
+second_hf_checkpoint: "microsoft/Orca-2-7b"
 
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-sfxgen-full"]
+    tags: ["openwebtext", "llama", "llama2-orca-full"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
