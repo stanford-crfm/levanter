@@ -1,6 +1,5 @@
 import atexit
 import copy
-import dataclasses
 import functools
 import logging as pylogging
 import os
@@ -52,7 +51,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
-from levanter.trainer_state import TrainerState, saveable_training_mask, take_train_step
+from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.tree_utils import inference_mode
@@ -315,7 +314,10 @@ class Trainer:
             state = TrainerState.init(self.optimizer, model, self.mp, key=training_key, is_trainable=is_trainable)
             return state
 
-        saveable_train_state = saveable_training_mask(TrainerState, self.is_trainable_param)
+        trainer_state_shape = eqx.filter_eval_shape(
+            init_state_and_model, model_init, training_key, self.is_trainable_param
+        )
+        saveable_train_state = saveable_training_mask(trainer_state_shape, self.is_trainable_param)
 
         state = load_checkpoint_or_initialize(
             init_state_and_model,
@@ -445,15 +447,8 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key)
 
-        model, opt_state = take_train_step(
-            self.optimizer, model, state.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable_param
-        )
-        model = hax.shard(model, self.parameter_axis_mapping)
-        opt_state = hax.shard(opt_state, self.parameter_axis_mapping)
-        new_state = dataclasses.replace(
-            state, training_key=new_key, step=state.step + 1, model=model, opt_state=opt_state
-        )
-
+        new_state = state.take_step(grads, obj_fun=obj_fun)
+        new_state = hax.shard(new_state, self.parameter_axis_mapping)
         return loss, new_state
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:

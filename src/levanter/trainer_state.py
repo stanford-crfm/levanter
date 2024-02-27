@@ -16,6 +16,7 @@ from levanter.utils.jax_utils import is_inexact_arrayish
 
 
 M = TypeVar("M", bound=PyTree)
+S = TypeVar("S")
 
 
 if TYPE_CHECKING:
@@ -24,16 +25,12 @@ else:
     DataclassInstance = typing.Any
 
 
-class TrainerStateLike(typing.Protocol[M], DataclassInstance):
-    model: M
-    step: IntScalar
-
-    @property
-    def int_step(self) -> int:
-        raise NotImplementedError
-
-
-S = TypeVar("S", bound=TrainerStateLike)
+def _ensure_int_is_array(x):
+    # who tf decided that bools are ints
+    if isinstance(x, int) and not isinstance(x, bool):
+        return jnp.array(x)
+    else:
+        return x
 
 
 class TrainerState(eqx.Module, Generic[M]):
@@ -150,22 +147,13 @@ def cast_params_by_trainability(model, mp, is_trainable):
     return model
 
 
-def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterTree = True) -> FilterTree:
+def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = True) -> FilterTree:
     """
     Returns a mask representing the saveable portion of a trainer state. This is used to filter out non-trainable
     parameters for checkpointing and for logging.
-
-    This method works with both instances of a trainer state and the type of a trainer state. If you pass in a type,
-    it must be a dataclass that won't validate its constructor arguments (or at least not throw an error if you pass
-    in all True for all fields).
     """
-    # when we have a Type, we want to instantiate it with all True for all args (regardless of the actual types)
-    # have to do dataclass magic to instantiate the class with all True
-    if isinstance(trainer_state, type):
-        fields = dataclasses.fields(trainer_state)
-        trainer_state = trainer_state(*[True] * len(fields))
-    else:
-        trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
+
+    trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
     saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
     return saveable_state  # type: ignore
 
@@ -185,11 +173,3 @@ def take_train_step(
     model = eqx.apply_updates(model, updates)
 
     return model, opt_state
-
-
-def _ensure_int_is_array(x):
-    # who tf decided that bools are ints
-    if isinstance(x, int) and not isinstance(x, bool):
-        return jnp.array(x)
-    else:
-        return x
