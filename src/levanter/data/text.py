@@ -24,7 +24,7 @@ from tokenizers import normalizers
 import haliax as hax
 from haliax import Axis
 
-from levanter.data.mixture import MixtureDataset
+from levanter.data.mixture import MixtureDataset, StopStrategy
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -757,6 +757,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
+    stop_strategy: str = field(default=StopStrategy.FIRST_STOP_STRATEGY)
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -773,7 +774,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> ShardableDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
-        return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
+        return MixtureDataset(datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy)
 
     def training_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
