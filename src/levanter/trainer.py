@@ -28,7 +28,6 @@ from typing import (
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -40,7 +39,7 @@ from optax import GradientTransformation, OptState
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.types import IntScalar, Scalar
+from haliax.types import Scalar
 
 import levanter.logging
 import levanter.tracker
@@ -53,64 +52,22 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
+from levanter.trainer_state import M, TrainerState, cast_params_by_trainability, init_optimizer_for_trainables, \
+    saveable_training_mask, trainables_only
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils, fsspec_utils
-from levanter.utils.jax_utils import is_inexact_arrayish
 from levanter.utils.tree_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
-M = TypeVar("M", bound=PyTree)
+S = TypeVar("S", bound=TrainerState)
 
 DEFAULT_JAX_CONFIG = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
-
-
-def _ensure_int_is_array(x):
-    # who tf decided that bools are ints
-    if isinstance(x, int) and not isinstance(x, bool):
-        return jnp.array(x)
-    else:
-        return x
-
-
-# A note on the semantics of "step" vs "next_step":
-# The "step" of a TrainerState is the state after `step` steps have been taken.
-# A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
-
-
-class TrainerState(eqx.Module, Generic[M]):
-    """
-    This is the state of the trainer. It contains the model, optimizer state, and random key.
-    It is an equinox Module because it is a PyTree that gets passed to the core `train_step` method
-    of the Trainer. This unfortunately means that `step` is an Array and not an int, hence the IntScalar.
-
-    It's designed to be extended by subclasses.
-    """
-
-    step: IntScalar = eqx.field(converter=_ensure_int_is_array)
-    model: M
-    opt_state: OptState
-    training_key: PRNGKeyArray
-    is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
-
-    @property
-    def int_step(self) -> int:
-        """
-        Returns the step as an int. On multinode, doing
-        """
-        return int(self.step)
-
-    @property
-    def trainable_model(self) -> M:
-        return eqx.filter(self.model, self.is_trainable)
-
-
-S = TypeVar("S", bound=TrainerState)
 
 
 # A note on the semantics of "step" vs "next_step":
@@ -529,12 +486,6 @@ def take_train_step(
     return model, opt_state
 
 
-def init_optimizer_for_trainables(optimizer, model, is_trainable):
-    trainable = trainables_only(model, is_trainable)
-    opt_state = optimizer.init(trainable)
-    return opt_state
-
-
 def _initialize_global_tracker(config, run_id):
     if isinstance(config, Sequence):
         tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
@@ -766,41 +717,6 @@ def initialize(config: TrainerConfig | AllConfig):
     levanter.tracker.log_configuration(config)
 
 
-def _params_only(t):
-    return eqx.filter(t, is_inexact_arrayish)
-
-
-def _partition_trainable_params(model, filter):
-    """
-    Partitions the model into trainable and non-trainable parameters. This is used internally
-    for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
-    or something.
-
-    Returns:
-        trainable, non-trainable
-    """
-
-    def trainable_and_diffable(pred):
-        if callable(pred):
-            return lambda x: pred(x) and is_inexact_arrayish(x)
-        elif pred is True:
-            return is_inexact_arrayish
-        else:
-            return pred
-
-    combined_mask = jax.tree_util.tree_map(trainable_and_diffable, filter)
-    return eqx.partition(model, combined_mask)
-
-
-def trainables_only(model, filter):
-    """
-    Filters out non-trainable parameters from the model. This is used internally to
-    for the optimizer state and to compute gradients, but you can also use it to filter out
-    params for logging or something.
-    """
-    return _partition_trainable_params(model, filter)[0]
-
-
 def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
     if isinstance(x, hax.NamedArray):
         return x.scalar()
@@ -808,34 +724,3 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x
 
 
-def cast_params_by_trainability(model, mp, is_trainable):
-    """
-    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
-    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
-    """
-
-    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
-    trainable = mp.cast_to_param(trainable)
-    non_trainable = mp.cast_to_compute(non_trainable)
-    model = eqx.combine(trainable, non_trainable)
-    return model
-
-
-def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterSpec = True) -> FilterSpec:
-    """
-    Returns a mask representing the saveable portion of a trainer state. This is used to filter out non-trainable
-    parameters for checkpointing and for logging.
-
-    This method works with both instances of a trainer state and the type of a trainer state. If you pass in a type,
-    it must be a dataclass that won't validate its constructor arguments (or at least not throw an error if you pass
-    in all True for all fields).
-    """
-    # when we have a Type, we want to instantiate it with all True for all args (regardless of the actual types)
-    # have to do dataclass magic to instantiate the class with all True
-    if isinstance(trainer_state, type):
-        fields = dataclasses.fields(trainer_state)
-        trainer_state = trainer_state(*[True] * len(fields))
-    else:
-        trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
-    return saveable_state

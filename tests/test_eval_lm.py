@@ -13,7 +13,7 @@ from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer import TrainerState
+from levanter.trainer_state import TrainerState
 from levanter.utils.py_utils import logical_cpu_core_count
 
 

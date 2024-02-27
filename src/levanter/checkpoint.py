@@ -323,7 +323,7 @@ def load_checkpoint(
         tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
         return tree
     except:  # noqa
-        from levanter.trainer import TrainerState
+        from levanter.trainer_state import TrainerState
 
         if not isinstance(tree, TrainerState):
             raise

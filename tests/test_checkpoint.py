@@ -25,7 +25,8 @@ from levanter.checkpoint import (
     load_metadata,
     save_checkpoint,
 )
-from levanter.trainer import StepInfo, TrainerState
+from levanter.trainer import StepInfo
+from levanter.trainer_state import TrainerState
 from test_utils import MLP, arrays_only, assert_trees_not_close
 
 
