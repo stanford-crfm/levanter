@@ -88,15 +88,18 @@ class TrainerState(eqx.Module, Generic[M]):
     It's designed to be extended by subclasses.
     """
 
-    _step: IntScalar = eqx.field(converter=_ensure_int_is_array)
+    step: IntScalar = eqx.field(converter=_ensure_int_is_array)
     model: M
     opt_state: OptState
     training_key: PRNGKeyArray
     is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
 
-    @cached_property
-    def step(self) -> int:
-        return int(self._step)
+    @property
+    def int_step(self) -> int:
+        """
+        Returns the step as an int. On multinode, doing
+        """
+        return int(self.step)
 
     @property
     def trainable_model(self) -> M:
@@ -110,19 +113,19 @@ S = TypeVar("S", bound=TrainerState)
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
 @dataclass
-class StepInfo(Generic[M]):
-    state: TrainerState[M]
+class StepInfo(Generic[S]):
+    state: S
     loss: float
     step_duration: float
 
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
 
-    step = property(lambda self: self.state.step - 1)
+    step = property(lambda self: int(self.state.step) - 1)
     """
     The step that was just completed. If you want the next step, use `next_step`.
     """
-    next_step = property(lambda self: self.state.step)
+    next_step = property(lambda self: int(self.state.step))
 
 
 @dataclass
@@ -168,6 +171,7 @@ class Trainer:
     optimizer: GradientTransformation
     hooks: TrainerHooks
     tracker: levanter.tracker.Tracker
+    is_trainable_param: PyTree[FilterSpec]
     _raw_loss_function: Callable
     _cmanagers: List[typing.ContextManager] = []
 
@@ -196,6 +200,12 @@ class Trainer:
         else:
             self.tracker = config.tracker.init(self.run_id)
 
+        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        if isinstance(config.tracker, Sequence):
+            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
+        else:
+            self.tracker = config.tracker.init(self.run_id)
+
         self._cmanagers = []
 
         if add_default_hooks:
@@ -209,7 +219,6 @@ class Trainer:
         Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
         """
 
-        @named_jit(axis_resources=self.compute_axis_mapping)
         @functools.wraps(self._raw_loss_function)
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
@@ -358,6 +367,8 @@ class Trainer:
                     raise
                 else:
                     state = None
+        else:
+            state = None
 
         # if that fails, try to load just a model from a checkpoint for initialization
         if state is None and initial_model_path is not None:
@@ -387,7 +398,7 @@ class Trainer:
 
         return state
 
-    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
+    def train_step(self, state: S, *batch: X, **batch_kwargs) -> StepInfo[S]:
         """
         Performs a single training step.
         """
@@ -398,19 +409,15 @@ class Trainer:
 
         return StepInfo(new_state, loss, step_time())
 
-    def training_steps(
-        self, state: TrainerState[M], train_loader, run_hooks: bool = True
-    ) -> typing.Iterator[StepInfo[M]]:
+    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
 
-        while state.step < self.num_train_steps:
+        while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=state.step)
 
             info = self.train_step(state, example)
             state = info.state
@@ -419,11 +426,13 @@ class Trainer:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
+
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
 
             yield info
 
-    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
         """
         Performs training until the number of steps is reached.
         """
@@ -494,45 +503,34 @@ class Trainer:
     def _jit_train_step_fn(self):
         return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
 
-    def _train_step(self, state: TrainerState, *batch, **batch_kwargs) -> tuple[Scalar, TrainerState]:
+    def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, batch, **batch_kwargs, key=key)
+        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
-        new_state = self._take_train_step(state, model, grads, *batch, **batch_kwargs, key=key)
-        new_state = dataclasses.replace(new_state, training_key=new_key)
+        # Sophia needs to be able to access the loss function in the optimizer
+        def obj_fun(model):
+            with hax.axis_mapping(self.compute_axis_mapping):
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key)
+
+        model, opt_state = take_train_step(
+            self.optimizer, model, state.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable_param
+        )
+        model = hax.shard(model, self.parameter_axis_mapping)
+        opt_state = hax.shard(opt_state, self.parameter_axis_mapping)
+        new_state = dataclasses.replace(
+            state, training_key=new_key, step=state.step + 1, model=model, opt_state=opt_state
+        )
 
         return loss, new_state
 
-    def _compute_gradients_microbatched(self, loss_fn, model: M, batch, **batch_kwargs) -> tuple[Scalar, M]:
+    def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
-        grad_fn = microbatched(
-            grad_fn,
-            self.TrainBatch,
-            self.config.microbatch_size,
-            self.parameter_axis_mapping,
-            self.compute_axis_mapping,
-        )
+        mbs = self.config.microbatch_size
+        grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
         return grad_fn(model, *batch, **batch_kwargs)
-
-    def _take_train_step(self, state: S, model, grads, *batch, **batch_kwargs) -> S:
-        """
-        Takes a training step. This is a separate method so that it can be overridden or used in a subclass.
-        """
-        # only train on the trainable parameters. We're leaning on JAX to do dead code elimination for us
-        with hax.axis_mapping(self.parameter_axis_mapping):
-            opt_state = state.opt_state
-            train_grads = _partition_trainable_params(grads, state.is_trainable)[0]
-            trainable_model = _partition_trainable_params(model, state.is_trainable)[0]
-            partial_fn = lambda model: self.loss_fn(model, *batch, **batch_kwargs)
-
-            updates, opt_state = self.optimizer.update(
-                train_grads, opt_state, params=trainable_model, obj_fn=partial_fn
-            )
-            model = eqx.apply_updates(model, updates)
-
-            return dataclasses.replace(state, _step=state._step + 1, model=model, opt_state=opt_state)
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
@@ -542,34 +540,27 @@ class Trainer:
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
 
+def take_train_step(
+    optimizer,
+    model: M,
+    opt_state,
+    grads,
+    *,
+    obj_fun: Optional[Callable[[M], Scalar]] = None,
+    is_trainable: FilterSpec = True,
+) -> Tuple[M, OptState]:
+    train_grads = trainables_only(grads, is_trainable)
+    trainable_model = trainables_only(model, is_trainable)
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    model = eqx.apply_updates(model, updates)
+
+    return model, opt_state
+
+
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
-    trainable, _ = _partition_trainable_params(model, is_trainable)
+    trainable = trainables_only(model, is_trainable)
     opt_state = optimizer.init(trainable)
     return opt_state
-
-
-def cast_params_by_trainability(model, mp, is_trainable):
-    """
-    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
-    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
-    """
-
-    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
-    trainable = mp.cast_to_param(trainable)
-    non_trainable = mp.cast_to_compute(non_trainable)
-    model = eqx.combine(trainable, non_trainable)
-    return model
-
-
-def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
-    """
-    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
-    You can override if you really need custom checkpointing logic. By default everything in the trainer state
-    is saved (except for non-trainable model parameters)
-    """
-    saveable_model = eqx.filter(trainer_state.model, is_trainable)
-    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
-    return saveable_state
 
 
 def _initialize_global_tracker(config, run_id):
@@ -834,8 +825,41 @@ def _partition_trainable_params(model, filter):
     return eqx.partition(model, combined_mask)
 
 
+def trainables_only(model, filter):
+    """
+    Filters out non-trainable parameters from the model. This is used internally to
+    for the optimizer state and to compute gradients, but you can also use it to filter out
+    params for logging or something.
+    """
+    return _partition_trainable_params(model, filter)[0]
+
+
 def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
     if isinstance(x, hax.NamedArray):
         return x.scalar()
     else:
         return x
+
+
+def cast_params_by_trainability(model, mp, is_trainable):
+    """
+    Casts the parameters of a model to the appropriate precision based on the is_trainable filter spec.
+    Trainable parameters are cast to param precision, non-trainable parameters are cast to compute precision.
+    """
+
+    trainable, non_trainable = _partition_trainable_params(model, is_trainable)
+    trainable = mp.cast_to_param(trainable)
+    non_trainable = mp.cast_to_compute(non_trainable)
+    model = eqx.combine(trainable, non_trainable)
+    return model
+
+
+def _make_saveable_trainer_state(trainer_state: S, is_trainable) -> S:
+    """
+    Returns the shape of the trainer state that we save to a checkpoint. This is used to load a checkpoint.
+    You can override if you really need custom checkpointing logic. By default everything in the trainer state
+    is saved (except for non-trainable model parameters)
+    """
+    saveable_model = eqx.filter(trainer_state.model, is_trainable)
+    saveable_state = dataclasses.replace(trainer_state, model=saveable_model)
+    return saveable_state
