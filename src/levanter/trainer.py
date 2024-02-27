@@ -34,7 +34,7 @@ from draccus import field
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
-from optax import GradientTransformation, OptState
+from optax import GradientTransformation
 
 import haliax as hax
 from haliax import Axis
@@ -52,8 +52,7 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.logging import capture_time
 from levanter.tracker import TrackerConfig
-from levanter.trainer_state import M, TrainerState, cast_params_by_trainability, init_optimizer_for_trainables, \
-    saveable_training_mask, trainables_only
+from levanter.trainer_state import TrainerState, saveable_training_mask, take_train_step
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.tree_utils import inference_mode
@@ -61,6 +60,7 @@ from levanter.utils.tree_utils import inference_mode
 
 logger = pylogging.getLogger(__name__)
 
+M = TypeVar("M")  # Model
 X = TypeVar("X")  # Input
 S = TypeVar("S", bound=TrainerState)
 
@@ -302,8 +302,8 @@ class Trainer:
             loaded_model = load_checkpoint_or_initialize(
                 model_init,
                 self.config.initialize_from,
-                axis_mapping=(self.parameter_axis_mapping),
-                mesh=(self.device_mesh),
+                axis_mapping=self.parameter_axis_mapping,
+                mesh=self.device_mesh,
                 subpath="model",
                 do_load=True,
             )()
@@ -311,7 +311,8 @@ class Trainer:
 
         def init_state_and_model(model_init, training_key, is_trainable):
             model = model_init()
-            state = self._initialize_state_from_scratch(model, training_key, is_trainable)
+            # only force trainable params to param precision. Other params are cast to compute precision
+            state = TrainerState.init(self.optimizer, model, self.mp, key=training_key, is_trainable=is_trainable)
             return state
 
         saveable_train_state = saveable_training_mask(TrainerState, self.is_trainable_param)
@@ -361,7 +362,7 @@ class Trainer:
 
             yield info
 
-    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[S]:
         """
         Performs training until the number of steps is reached.
         """
@@ -460,30 +461,6 @@ class Trainer:
         mbs = self.config.microbatch_size
         grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
         return grad_fn(model, *batch, **batch_kwargs)
-
-    def _initialize_state_from_scratch(self, model, training_key, is_trainable):
-        # only force trainable params to param precision. Other params are cast to compute precision
-        model = cast_params_by_trainability(model, self.mp, is_trainable)
-        opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
-
-        return TrainerState(0, model, opt_state, training_key, is_trainable)
-
-
-def take_train_step(
-    optimizer,
-    model: M,
-    opt_state,
-    grads,
-    *,
-    obj_fun: Optional[Callable[[M], Scalar]] = None,
-    is_trainable: FilterSpec = True,
-) -> Tuple[M, OptState]:
-    train_grads = trainables_only(grads, is_trainable)
-    trainable_model = trainables_only(model, is_trainable)
-    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
-    model = eqx.apply_updates(model, updates)
-
-    return model, opt_state
 
 
 def _initialize_global_tracker(config, run_id):
@@ -722,5 +699,3 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x.scalar()
     else:
         return x
-
-

@@ -1,30 +1,39 @@
 import dataclasses
 import typing
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, Optional, Tuple, TypeVar
 
 import equinox as eqx
 import jax
+import jmp
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
-from optax import OptState
+from optax import GradientTransformation, OptState
 
-from haliax.types import IntScalar
-from levanter.types import FilterSpec
+from haliax.types import IntScalar, Scalar
+
+from levanter.types import FilterTree
 from levanter.utils.jax_utils import is_inexact_arrayish
+
 
 M = TypeVar("M", bound=PyTree)
 
-class TrainerStateLike(typing.Protocol[M]):
 
-S = TypeVar("S", bound=eqx.Module)
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance  # type: ignore
+else:
+    DataclassInstance = typing.Any
 
 
-def _ensure_int_is_array(x):
-    # who tf decided that bools are ints
-    if isinstance(x, int) and not isinstance(x, bool):
-        return jnp.array(x)
-    else:
-        return x
+class TrainerStateLike(typing.Protocol[M], DataclassInstance):
+    model: M
+    step: IntScalar
+
+    @property
+    def int_step(self) -> int:
+        raise NotImplementedError
+
+
+S = TypeVar("S", bound=TrainerStateLike)
 
 
 class TrainerState(eqx.Module, Generic[M]):
@@ -37,11 +46,16 @@ class TrainerState(eqx.Module, Generic[M]):
     that doesn't inherit from this class.
     """
 
+    # I might be reinventing Flax.
+
     step: IntScalar = eqx.field(converter=_ensure_int_is_array)
     model: M
+    optimizer: GradientTransformation = eqx.field(static=True)
     opt_state: OptState
     training_key: PRNGKeyArray
-    is_trainable: PyTree[FilterSpec]  # = eqx.field(static=True)
+
+    is_trainable: FilterTree = eqx.field(static=True)
+    mp: jmp.Policy = eqx.field(static=True)
 
     @property
     def int_step(self) -> int:
@@ -54,8 +68,35 @@ class TrainerState(eqx.Module, Generic[M]):
     def trainable_model(self) -> M:
         return eqx.filter(self.model, self.is_trainable)
 
+    @classmethod
+    def init(
+        cls,
+        optimizer: GradientTransformation,
+        model: M,
+        mp: Optional[jmp.Policy] = None,
+        *,
+        key: PRNGKeyArray,
+        is_trainable: FilterTree = True,
+    ) -> "TrainerState[M]":
+        if mp is not None:
+            model = cast_params_by_trainability(model, mp, is_trainable)
+        else:
+            mp = jmp.get_policy("f32")
+
+        opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
+        return cls(0, model, optimizer, opt_state, key, is_trainable, mp)
+
+    def take_step(self, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> "TrainerState[M]":
+        model, opt_state = take_train_step(
+            self.optimizer, self.model, self.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable
+        )
+        return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
+
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
+    """
+    Initializes the optimizer state for the trainable parameters of the model.
+    """
     trainable = trainables_only(model, is_trainable)
     opt_state = optimizer.init(trainable)
     return opt_state
@@ -109,7 +150,7 @@ def cast_params_by_trainability(model, mp, is_trainable):
     return model
 
 
-def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterSpec = True) -> FilterSpec:
+def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterTree = True) -> FilterTree:
     """
     Returns a mask representing the saveable portion of a trainer state. This is used to filter out non-trainable
     parameters for checkpointing and for logging.
@@ -126,4 +167,29 @@ def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param
     else:
         trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
     saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
-    return saveable_state
+    return saveable_state  # type: ignore
+
+
+def take_train_step(
+    optimizer,
+    model: M,
+    opt_state,
+    grads,
+    *,
+    obj_fun: Optional[Callable[[M], Scalar]] = None,
+    is_trainable: FilterTree = True,
+) -> Tuple[M, OptState]:
+    train_grads = trainables_only(grads, is_trainable)
+    trainable_model = trainables_only(model, is_trainable)
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    model = eqx.apply_updates(model, updates)
+
+    return model, opt_state
+
+
+def _ensure_int_is_array(x):
+    # who tf decided that bools are ints
+    if isinstance(x, int) and not isinstance(x, bool):
+        return jnp.array(x)
+    else:
+        return x
