@@ -2,10 +2,10 @@ data: !include data/rpv1_llama.yaml
 model:
   type: llama  # Llama2-3.4B
   seq_len: 4096
-  hidden_dim: 3200
+  hidden_dim: 4096
   intermediate_dim: 8640
   num_layers: 26
-  num_heads: 25
+  num_heads: 32
   use_flash_attention: True
   flash_attention_block_size: 2048
 trainer:
