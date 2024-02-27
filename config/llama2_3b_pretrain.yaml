@@ -5,7 +5,7 @@ model:
   hidden_dim: 3200
   intermediate_dim: 8640
   num_layers: 26
-  num_heads: 32
+  num_heads: 25
   use_flash_attention: True
   flash_attention_block_size: 2048
 trainer:
