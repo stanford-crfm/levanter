@@ -46,7 +46,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint, load_checkpoint_or_initialize
+from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
@@ -160,13 +160,16 @@ class TrainerHooks:
 
 
 def _unify_model_and_model_init(model: Optional[M], model_init: Optional[Callable[[], M]]) -> Callable[[], M]:
-    if model is not None and model_init is not None:
-        raise ValueError("only one of model and model_init should be specified")
-    elif model is None and model_init is None:
-        raise ValueError("one of model and model_init must be specified")
     if model is not None:
-        # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
-        model_init = jax.tree_util.Partial(lambda m: m, model)
+        if model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+
+        if model is not None:
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
+            model_init = jax.tree_util.Partial(lambda m: m, model)
+    elif model_init is None:
+        raise ValueError("one of model and model_init must be specified")
+
     return model_init
 
 
@@ -325,14 +328,14 @@ class Trainer:
         if checkpoint_path is None:
             checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-        do_load_checkpoint = self.config.load_checkpoint
+        load_checkpoint = self.config.load_checkpoint
         # we don't save the full trainer state, so we need to filter out the non-trainable parameters
-        if do_load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
+        if load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
-        elif do_load_checkpoint is None:
-            do_load_checkpoint = fsspec_utils.exists(checkpoint_path)
+        elif load_checkpoint is None:
+            load_checkpoint = fsspec_utils.exists(checkpoint_path)
 
-        if do_load_checkpoint is False and self.config.initialize_from is not None:
+        if load_checkpoint is False and self.config.initialize_from is not None:
             # we're not going to load a checkpoint, so see if we can initialize from a model
             logger.info(f"Initializing from {self.config.initialize_from}")
             # todo: we are potentially holding two models in memory at once here, if we pass in a model
@@ -354,15 +357,15 @@ class Trainer:
             state = self._initialize_state_from_scratch(model, training_key, is_trainable)
             return state
 
-        saveable_train_state = _saveable_training_mask(TrainerState, self.is_trainable_param)
+        saveable_train_state = saveable_training_mask(TrainerState, self.is_trainable_param)
 
         state = load_checkpoint_or_initialize(
             init_state_and_model,
             checkpoint_path,
-            axis_mapping=(self.parameter_axis_mapping),
-            mesh=(self.device_mesh),
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
             is_checkpointed=saveable_train_state,
-            do_load=do_load_checkpoint,
+            do_load=load_checkpoint,
         )(model_init, training_key, self.is_trainable_param)
 
         return state
@@ -818,7 +821,7 @@ def cast_params_by_trainability(model, mp, is_trainable):
     return model
 
 
-def _saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterSpec = True) -> FilterSpec:
+def saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_param: FilterSpec = True) -> FilterSpec:
     """
     Returns a mask representing the saveable portion of a trainer state. This is used to filter out non-trainable
     parameters for checkpointing and for logging.
@@ -834,5 +837,5 @@ def _saveable_training_mask(trainer_state: S | typing.Type[S], is_trainable_para
         trainer_state = trainer_state(*[True] * len(fields))
     else:
         trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)
+    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
     return saveable_state
