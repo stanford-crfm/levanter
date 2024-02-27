@@ -148,7 +148,7 @@ def main(config: TrainLmConfig):
         state = trainer.initial_state(
             training_key,
             model_init=lambda: config.model.build(Vocab, key=model_key),
-            set_model=bool(config.initialize_from_hf),
+            set_model=not bool(config.initialize_from_hf),
         )
 
         if int(state.step) == 0:
