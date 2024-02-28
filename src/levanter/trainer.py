@@ -373,12 +373,11 @@ class Trainer:
         # now we initialize a fresh trainer state, possibly just to finish any missing fields
         @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
         def init_state(partial_state, model_init, training_key, is_trainable):
-            model = model_init()
-            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
+            model = model_init() if set_model else None
+            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable, set_model=set_model)
             return eqx.combine(partial_state, fresh_state)
 
-        if set_model:
-            state = init_state(state, model_init, training_key, self.is_trainable_param)
+        state = init_state(state, model_init, training_key, self.is_trainable_param)
 
         return state
 
@@ -516,10 +515,14 @@ class Trainer:
         grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
         return grad_fn(model, *batch, **batch_kwargs)
 
-    def _initialize_state_from_scratch(self, model, training_key, is_trainable):
+    def _initialize_state_from_scratch(self, model, training_key, is_trainable, set_model=True):
         # only force trainable params to param precision. Other params are cast to compute precision
-        model = cast_params_by_trainability(model, self.mp, is_trainable)
-        opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
+        if set_model:
+            model = cast_params_by_trainability(model, self.mp, is_trainable)
+            opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
+        else:
+            model = None
+            opt_state = None
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
