@@ -511,9 +511,8 @@ class Trainer:
         grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
         return grad_fn(model, *batch, **batch_kwargs)
 
-    def _initialize_state_from_scratch(self, model, training_key, is_trainable, set_model=True):
+    def _initialize_state_from_scratch(self, model, training_key, is_trainable):
         # only force trainable params to param precision. Other params are cast to compute precision
-
         model = cast_params_by_trainability(model, self.mp, is_trainable)
         opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
 
