@@ -23,7 +23,8 @@ from levanter.lora import (
 )
 from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.trainer import StepInfo, TrainerState
+from levanter.trainer import StepInfo
+from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
