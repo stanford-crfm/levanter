@@ -36,9 +36,11 @@ def _dummy_step_info(step):
             # + 1 b/c step here is next step
             step=step + 1,
             model=None,
-            opt_state=(),
-            training_key=(),
+            optimizer=None,  # type: ignore
+            opt_state=None,
+            training_key=jax.random.PRNGKey(0),
             is_trainable=True,
+            mp=None,
         ),
         loss=0.0,
         step_duration=0.0,
@@ -153,7 +155,7 @@ def _make_state(step, key):
     optim = optax.adam(1e-4)
     opt_state = optim.init(arrays_only(model))
 
-    return TrainerState(step, model, opt_state, key, True)
+    return TrainerState(step, model, optim, opt_state, key, is_trainable=True, mp=None)
 
 
 def test_checkpoint_simple():

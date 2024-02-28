@@ -363,7 +363,7 @@ def load_checkpoint_or_initialize(
     mesh: Optional[jax.sharding.Mesh] = None,
     is_checkpointed: FilterSpec = True,
     donate_args: FilterSpec = True,
-    donate_kwargs: FilterSpec = True,
+    donate_kwargs: Optional[FilterSpec] = None,
     do_load: Optional[bool] = None,
 ) -> Callable[Sig, M]:
     """

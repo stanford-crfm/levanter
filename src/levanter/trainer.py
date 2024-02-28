@@ -325,16 +325,14 @@ class Trainer:
             )()
             model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
 
-        def init_state_and_model(model_init, training_key, is_trainable):
+        def init_state_and_model(model_init, training_key):
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
-            state = TrainerState.init(self.optimizer, model, self.mp, key=training_key, is_trainable=is_trainable)
+            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp)
             return state
 
-        trainer_state_shape = eqx.filter_eval_shape(
-            init_state_and_model, model_init, training_key, self.is_trainable_param
-        )
-        saveable_train_state = saveable_training_mask(trainer_state_shape, self.is_trainable_param)
+        trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
+        saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
 
         state = load_checkpoint_or_initialize(
             init_state_and_model,
@@ -343,7 +341,7 @@ class Trainer:
             mesh=self.device_mesh,
             is_checkpointed=saveable_train_state,
             do_load=load_checkpoint,
-        )(model_init, training_key, is_trainable)
+        )(model_init, training_key)
 
         return state
 
