@@ -70,10 +70,11 @@ class TrainerState(eqx.Module, Generic[M]):
         cls,
         optimizer: GradientTransformation,
         model: M,
-        mp: Optional[jmp.Policy] = None,
-        *,
+        *args,
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
+        mp: Optional[jmp.Policy] = None,
+        **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
             model = cast_params_by_trainability(model, mp, is_trainable)
@@ -81,11 +82,17 @@ class TrainerState(eqx.Module, Generic[M]):
             mp = jmp.get_policy("f32")
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
-        return cls(0, model, optimizer, opt_state, key, is_trainable, mp)
+        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
 
-    def take_step(self, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> "TrainerState[M]":
+    def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> S:
+        assert isinstance(self, TrainerState)  # make mypy happy
         model, opt_state = take_train_step(
-            self.optimizer, self.model, self.opt_state, grads, obj_fun=obj_fun, is_trainable=self.is_trainable
+            self.optimizer,
+            self.model,
+            self.opt_state,
+            grads,
+            obj_fun=obj_fun,
+            is_trainable=self.is_trainable,
         )
         return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
 
