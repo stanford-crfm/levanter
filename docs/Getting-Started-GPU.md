@@ -85,7 +85,7 @@ Here are some examples of running a job.
 ### Running a job locally
 
 ```bash
-python -m levanter.main.train_lm --config gpt2_small
+python -m levanter.main.train_lm --config config/gpt2_small
 ```
 
 ### Running a job on Slurm
@@ -118,7 +118,7 @@ export PATH=$(echo $PATH | sed 's|:/usr/local/cuda/bin||')
 ## Activate your virtual environment
 source levanter/bin/activate
 
-srun python -m levanter.main.train_lm --config gpt2_small_fast --trainer.per_device_parallelism -1
+srun python -m levanter.main.train_lm --config config/gpt2_small_fast --trainer.per_device_parallelism -1
 ```
 
 Then run the job with `sbatch`:
@@ -147,7 +147,7 @@ export PATH=$(echo $PATH | sed 's|:/usr/local/cuda/bin||')
 ## Activate your virtual environment
 source levanter/bin/activate
 
-srun --nodes=2 python -m levanter.main.train_lm --config gpt2_small --trainer.per_device_parallelism -1
+srun --nodes=2 python -m levanter.main.train_lm --config config/gpt2_small --trainer.per_device_parallelism -1
 ```
 
 Then run the job with `sbatch`:
