@@ -297,9 +297,7 @@ class Trainer:
         assert model_init is not None
 
         # first try to load a full trainer state checkpoint
-        checkpoint_path = self.config.load_checkpoint_path
-        if checkpoint_path is None:
-            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+        checkpoint_path = self.checkpoint_path
 
         load_checkpoint = self.config.load_checkpoint
         # we don't save the full trainer state, so we need to filter out the non-trainable parameters
@@ -344,6 +342,13 @@ class Trainer:
         )(model_init, training_key)
 
         return state
+
+    @property
+    def checkpoint_path(self) -> str:
+        checkpoint_path = self.config.load_checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+        return checkpoint_path
 
     def train_step(self, state: S, *batch: X, **batch_kwargs) -> StepInfo[S]:
         """

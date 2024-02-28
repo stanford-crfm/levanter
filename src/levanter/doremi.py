@@ -1,6 +1,6 @@
 import dataclasses
 import logging
-from typing import Callable, Iterator, Optional, Tuple, TypeVar
+from typing import Iterator, Optional, Tuple, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -13,6 +13,7 @@ from haliax.types import IntScalar
 
 import levanter.tracker
 from levanter.callbacks import eval_loss_loop
+from levanter.checkpoint import load_checkpoint_or_initialize
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.logging import capture_time
@@ -33,22 +34,8 @@ class DoremiState(TrainerState):
     average_alpha: hax.NamedArray
 
     def update_alpha(self, alpha):
-        average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self._step + 1)
+        average_alpha = self.average_alpha + (alpha - self.average_alpha) / (self.step + 1)
         return dataclasses.replace(self, alpha=alpha, average_alpha=average_alpha)
-
-
-class DoReMiTrainer(Trainer):
-    # we just use the DoReMi trainer for state management
-
-    def __init__(self, trainer: TrainerConfig, optimizer: optax.GradientTransformation, initial_alpha: hax.NamedArray):
-        super().__init__(trainer, optimizer)
-        self.initial_alpha = initial_alpha
-
-    # TODO: I'd like to not need to override trainer for this
-    def _initialize_state_from_scratch(self, model: Callable[[], M], training_key, is_trainable):
-        base_state = super()._initialize_state_from_scratch(model, training_key, is_trainable)
-
-        return DoremiState(**base_state.__dict__, alpha=self.initial_alpha, average_alpha=self.initial_alpha)
 
 
 @dataclasses.dataclass
@@ -102,11 +89,10 @@ def estimate_mixture_weights(
     domain_to_index = {domain: index for index, domain in enumerate(domain_indices)}
 
     # Initialize domain weights.
-    # TODO: should we initialize to the ref or to uniform?
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    trainer = DoReMiTrainer(trainer_config, optimizer, initial_alpha)
+    trainer = Trainer(trainer_config, optimizer)
     with trainer:
         ref = _prepare_ref_model(ref, trainer_config)
 
@@ -166,7 +152,7 @@ def estimate_mixture_weights(
             loss, grad_loss = eqx.filter_value_and_grad(_domain_weighted_loss)(excess_losses, Domain, domains, alpha)
             grad = proxy_loss_bwd(grad_loss)[0]
 
-        new_state = trainer._take_train_step(state, proxy, grad)
+        new_state = state.take_step(grad)
         new_state = new_state.update_alpha(alpha)
 
         # log metrics
@@ -176,6 +162,10 @@ def estimate_mixture_weights(
         alpha_distance = hax.sum(hax.abs(new_state.average_alpha - state.average_alpha))
         alpha_dict = _decode_domain_array(Domain, new_state.average_alpha, domain_to_index)
         per_domain_dict = _decode_domain_array(Domain, per_domain_losses, domain_to_index)
+
+        # log 0.0 as NaN so we can filter it out in the UI
+        # need to use where b/c we're in jit
+        per_domain_dict = {k: jnp.where(v == 0.0, jnp.nan, v) for k, v in per_domain_dict.items()}
 
         levanter.tracker.jit_log_metrics(
             {
@@ -187,7 +177,7 @@ def estimate_mixture_weights(
                 # just skip domains with no excess loss
                 **{f"train/{domain}/excess_loss": loss for domain, loss in per_domain_dict.items()},
             },
-            step=state._step,
+            step=state.step,
         )
 
         return loss, alpha_distance, new_state
@@ -195,7 +185,21 @@ def estimate_mixture_weights(
     # we're not actually going to use the trainer for very much but it holds hooks and sets up contexts
     with trainer:
         tagged_mixture = domain_tagged_mixture(data_sources, sampling_weights, domain_to_index, key=data_key)
-        state: DoremiState = trainer.initial_state(training_key, model=initial_proxy)
+        state = load_checkpoint_or_initialize(
+            DoremiState.init,
+            trainer.checkpoint_path,
+            axis_mapping=trainer.parameter_axis_mapping,
+            mesh=trainer.device_mesh,
+            donate_kwargs=None,
+        )(
+            trainer.optimizer,
+            initial_proxy,
+            key=training_key,
+            is_trainable=True,
+            mp=trainer.mp,
+            alpha=initial_alpha,
+            average_alpha=initial_alpha,
+        )
         del initial_proxy
         train_loader = iter(trainer.sharded_loader(tagged_mixture, trainer.TrainBatch))
 
