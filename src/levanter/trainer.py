@@ -296,11 +296,7 @@ class Trainer:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
 
     def initial_state(
-        self,
-        training_key: PRNGKeyArray,
-        model: Optional[M] = None,
-        model_init: Optional[Callable[[], M]] = None,
-        set_model: bool = True,
+        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
     ) -> TrainerState:
         """
         Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
@@ -373,8 +369,8 @@ class Trainer:
         # now we initialize a fresh trainer state, possibly just to finish any missing fields
         @named_jit(axis_resources=axis_mapping, donate_args=(True, True, True, False))
         def init_state(partial_state, model_init, training_key, is_trainable):
-            model = model_init() if set_model else None
-            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable, set_model=set_model)
+            model = model_init()
+            fresh_state = self._initialize_state_from_scratch(model, training_key, is_trainable)
             return eqx.combine(partial_state, fresh_state)
 
         state = init_state(state, model_init, training_key, self.is_trainable_param)
@@ -517,12 +513,9 @@ class Trainer:
 
     def _initialize_state_from_scratch(self, model, training_key, is_trainable, set_model=True):
         # only force trainable params to param precision. Other params are cast to compute precision
-        if set_model:
-            model = cast_params_by_trainability(model, self.mp, is_trainable)
-            opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
-        else:
-            model = None
-            opt_state = None
+
+        model = cast_params_by_trainability(model, self.mp, is_trainable)
+        opt_state = init_optimizer_for_trainables(self.optimizer, model, is_trainable)
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
