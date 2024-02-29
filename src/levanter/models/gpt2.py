@@ -235,7 +235,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(config: Gpt2Config, *, key) -> "Gpt2Block":
-        k_attn, k_cross, k_mlp = jrandom.split(key, 3)
+        k_attn, k_mlp = jrandom.split(key, 2)
 
         ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         attn = Gpt2Attention.init(config, key=k_attn)
