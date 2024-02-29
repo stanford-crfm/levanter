@@ -323,6 +323,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             jax.random.fold_in(self.initial_key, shard_id),
             self.tokenizer,
             self.generator.task_configs,
+            self.generator.task_weights,
         )
 
 
