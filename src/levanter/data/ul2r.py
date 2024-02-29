@@ -300,10 +300,10 @@ class Ul2rDataset(ShardableDataset[LmExample]):
                 this_key, key = jax.random.split(key)
                 ul2example = self.generator.sample(tokens, this_key)
                 decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
-                return decoder_only
+                return decoder_only, key
 
             for tokens in self.base_dataset:
-                example = _create_lm_example(tokens, key)
+                example, key = _create_lm_example(tokens, key)
                 yield example
 
     @property
