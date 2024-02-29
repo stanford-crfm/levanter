@@ -4,7 +4,7 @@ model:
   seq_len: 4096
   hidden_dim: 2048
   intermediate_dim: 8192
-  num_layers: 28
+  num_layers: 32
   num_heads: 16
   num_kv_heads: 8
   use_flash_attention: True
@@ -16,7 +16,7 @@ trainer:
 
   mp: p=f32,c=bfloat16
   train_batch_size: 1024
-  per_device_parallelism: 8
+  per_device_parallelism: 16
   per_device_eval_parallelism: 16 # set a larger batch size for eval
   num_train_steps: 250000  # 3,000,000,000,000 / 4096 / 1024
   steps_per_eval: 1000
