@@ -232,6 +232,8 @@ class Ul2rConfig:
     def task_weights_list(self):
         if self.task_probs is None:
             return None
+        elif self.shortcut == "ul2r":
+            return [0.25, 0.125, 0.125, 0.5]
         return [self.task_probs[task] for task in self.task_configs]
 
     def __post_init__(self):
@@ -278,10 +280,10 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         self.KPos = KPos
         self.initial_key = key
 
-        # for the standard x-denoiser (r=0.5,msl=3), we produce (seqlen/msl/2) masked spans per example
-        # So, for seqlen 2048, we produce ~341 masked spans per example
-        # 4096, we'd produce ~682 masked spans per example
-        sentinel_tokens = [f"<sentinel_{k}>" for k in range(1000)]
+        # use the last 100 subwords as sentinel tokens
+        # vocab_size = len(tokenizer.get_vocab())
+        # sentinel_tokens = [tokenizer.decode(vocab_size - k) for k in range(1,101)]
+        sentinel_tokens = [f"<sentinel_{k}>" for k in range(100)]
 
         self.generator = Ul2InstanceGenerator(tokenizer, sentinel_tokens, task_configs, task_probs)
         self.tokenizer = tokenizer

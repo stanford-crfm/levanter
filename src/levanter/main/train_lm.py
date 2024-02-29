@@ -173,7 +173,15 @@ def main(config: TrainLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            # eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            eval_dataset = config.task.build(
+                eval_dataset,
+                Pos,
+                KeyPos,
+                tokenizer,
+                data_key,
+                config.data.ignore_token_id,
+            )
             trainer.add_eval_hook(eval_dataset, name=name)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
