@@ -15,7 +15,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -49,8 +49,6 @@ class TrainLmConfig:
 
 
 def main(config: TrainLmConfig):
-    levanter.initialize(config)
-
     tokenizer = config.data.the_tokenizer
 
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
@@ -79,17 +77,14 @@ def main(config: TrainLmConfig):
     else:
         converter = None
 
+    levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
-    # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
+    with Trainer(config.trainer, optimizer) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -133,7 +128,7 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        if state.step == 0:
+        if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
@@ -149,11 +144,7 @@ def main(config: TrainLmConfig):
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        levanter.tracker.log_summary(
-            {
-                "parameter_count": parameter_count(state.model),
-            }
-        )
+        levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
@@ -162,13 +153,14 @@ def main(config: TrainLmConfig):
             eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
             trainer.add_eval_hook(eval_dataset, name=name)
 
+
         # visualize log probs
         @named_jit(
             in_axis_resources=parameter_axis_mapping,
             axis_resources=compute_axis_mapping,
             out_axis_resources=compute_axis_mapping,
         )
-        def compute_log_probs(model, example: LmExample):
+        def compute_log_probs(model, example):
             model = trainer.mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
@@ -185,7 +177,7 @@ def main(config: TrainLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
-        if state.step > 0:
+        if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm

@@ -7,7 +7,7 @@ from jax.sharding import Mesh
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.grad_accum import accumulate_gradients_sharded
+from levanter.grad_accum import microbatched
 
 
 class Mlp(eqx.Module):
@@ -56,9 +56,9 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
     @hax.partitioning.named_jit(axis_resources=axis_mapping)
     def jit_grad_accum(mlp, x):
-        acc_v, acc_g = accumulate_gradients_sharded(
-            loss_fn, Batch, per_device_parallelism=parallelism, parameter_axis_mapping=axis_mapping
-        )(
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
+        grad_fn = microbatched(grad_fn, Batch, parallelism, axis_mapping, axis_mapping)
+        acc_v, acc_g = grad_fn(
             mlp,
             x,
         )

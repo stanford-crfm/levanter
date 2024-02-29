@@ -57,10 +57,7 @@ def dot_product_attention(
         raise ValueError("QPos and KPos must be different")
 
     if use_flash:
-        from levanter.models.flash_attention import BLOCK_SIZE, flash_attention
-
-        if flash_block_size is None:
-            flash_block_size = BLOCK_SIZE
+        from levanter.models.flash_attention import flash_attention
 
         return flash_attention(
             QPos,
@@ -79,14 +76,35 @@ def dot_product_attention(
             precision=precision,
         )
     else:
-        QPos = query.resolve_axis(QPos)
-        KPos = key.resolve_axis(KPos)
-        m = materialize_mask(mask, QPos, KPos)
-        weights = haliax.nn.attention.dot_product_attention_weights(
-            Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
+        return simple_attention_with_dropout(
+            QPos, KPos, Key, query, key, value, mask, bias, inference, dropout, attention_dtype, precision, prng=prng
         )
-        weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-        return haliax.dot(KPos, weights, value)
+
+
+def simple_attention_with_dropout(
+    QPos: Axis,
+    KPos: Axis,
+    Key: Axis,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    inference: bool = False,
+    dropout: float = 0.0,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+):
+    QPos = query.resolve_axis(QPos)
+    KPos = key.resolve_axis(KPos)
+    m = materialize_mask(mask, QPos, KPos)
+    weights = haliax.nn.attention.dot_product_attention_weights(
+        Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
+    )
+    weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+    return haliax.dot(KPos, weights, value)
 
 
 class AttentionMask(eqx.Module):

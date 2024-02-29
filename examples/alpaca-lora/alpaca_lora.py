@@ -21,7 +21,7 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.lm_model import LmHeadModel
 from levanter.trainer import Trainer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -80,12 +80,9 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
     # end major difference from Alpaca
 
-    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -127,9 +124,9 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        if state.step != 0:
-            logger.info(f"Resuming training from step {state.step}")
-            for i in range(state.step):
+        if int(state.step) != 0:
+            logger.info(f"Resuming training from step {int(state.step)}")
+            for i in range(int(state.step)):
                 next(loader)  # type: ignore
 
         # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights

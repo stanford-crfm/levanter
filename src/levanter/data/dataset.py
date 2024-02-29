@@ -24,6 +24,17 @@ class ShardableDataset(Dataset[T], ABC):
         raise NotImplementedError
 
 
+class InMemoryDataset(ShardableDataset[T]):
+    def __init__(self, items: List[T]):
+        self.items = items
+
+    def __iter__(self) -> Iterator[T]:
+        return iter(self.items)
+
+    def shard(self, shard_id: int, num_shards: int) -> "InMemoryDataset[T]":
+        return InMemoryDataset(self.items[shard_id::num_shards])
+
+
 class ShuffleDataset(ShardableDataset[T]):
     def __init__(self, dataset: Dataset[T], key: PRNGKey, buffer_size: int):
         self.dataset = dataset

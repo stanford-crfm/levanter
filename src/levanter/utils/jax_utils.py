@@ -1,5 +1,6 @@
 import contextlib
 import json
+import warnings
 from dataclasses import fields
 from typing import Any, Callable, Optional, TypeVar
 
@@ -160,7 +161,9 @@ def join_key(prefix, k):
     return f"{prefix}.{k}" if prefix else k
 
 
-def key_iterator(key: PRNGKeyArray):
+def key_iterator(key: PRNGKeyArray | int):
+    if isinstance(key, int):
+        key = jax.random.PRNGKey(key)
     while True:
         key, subkey = jax.random.split(key)
         yield subkey
@@ -177,3 +180,28 @@ def is_inexact_arrayish(x):
         return jnp.issubdtype(x.dtype, jnp.inexact)
     else:
         return False
+
+
+def tree_filter_like(template: X, tree: X) -> X:
+    """
+    Filters a tree to only include the leaves that are not None in the template.
+
+    This is useful for filtering out nontrainable parameters from a tree.
+    """
+
+    def match_like(templ_leaf, tree_leaf):
+        if templ_leaf is None:
+            return None
+        else:
+            if tree_leaf is None:
+                warnings.warn(f"Template has a non-None value where tree is None. Template value: {templ_leaf}")
+            return tree_leaf
+
+    return jax.tree_util.tree_map(match_like, template, tree, is_leaf=lambda x: x is None)
+
+
+def as_arrayish(x):
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return x
+    else:
+        return jnp.asarray(x)

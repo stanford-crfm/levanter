@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import equinox as eqx
 import jax.random as jrandom
 
 import haliax.random
@@ -11,7 +10,7 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LmExample
+from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -70,10 +69,7 @@ def main(config: LoraLmConfig):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    def compute_loss(model, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
-    with Trainer(config.trainer, optimizer, compute_loss) as trainer:
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -95,7 +91,8 @@ def main(config: LoraLmConfig):
         state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
+        # TODO: remove this once we put this in trainer itself
+        just_lora_params = parameter_count(state.trainable_model)
 
         levanter.tracker.log_summary(
             {
@@ -107,7 +104,7 @@ def main(config: LoraLmConfig):
 
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
         # data loaders
         if len(eval_datasets) == 0:
@@ -121,6 +118,13 @@ def main(config: LoraLmConfig):
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        for name, eval_dataset in eval_datasets.items():
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            trainer.add_eval_hook(eval_dataset, name=name)
+
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
             full_save_path = os.path.join(config.peft_save_path, trainer.run_id)
@@ -141,7 +145,7 @@ def main(config: LoraLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         iter_data = non_caching_cycle(train_loader)
 
-        if state.step > 0:
+        if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm

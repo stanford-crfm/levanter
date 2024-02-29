@@ -2,7 +2,6 @@ from typing import Dict, Iterator, Mapping, TypeVar
 
 import jax.random
 import numpy as np
-from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
 from haliax.util import StringHolderEnum
@@ -48,7 +47,7 @@ class MixtureDataset(ShardableDataset[T]):
         self.stop_strategy = stop_strategy
 
         if not isinstance(key, int):
-            key = jax.random.randint(PRNGKey(key)[0], (), 0, 2**31).item()
+            key = jax.random.randint(key, (), 0, 2**20).item()
 
         self.key = key
 
@@ -63,7 +62,7 @@ class MixtureDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded datasets"""
         sharded = {name: dset.shard(shard_id, num_shards) for name, dset in self.datasets.items()}
-        return MixtureDataset(sharded, self.weights)
+        return MixtureDataset(datasets=sharded, weights=self.weights, stop_strategy=self.stop_strategy)
 
     def __iter__(self) -> Iterator[np.ndarray]:
         iterators = {name: iter(dataset) for name, dataset in self.datasets.items()}

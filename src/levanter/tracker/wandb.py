@@ -51,6 +51,9 @@ class WandbTracker(Tracker):
         self.run.config.update(_convert_values_to_loggable(hparams), allow_val_change=True)
 
     def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
+        if step is None and not commit:
+            step = self.run.step
+
         self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
 
     def log_summary(self, metrics: typing.Mapping[str, Any]):
@@ -212,10 +215,33 @@ class WandbConfig(TrackerConfig):
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
             # for some reason, wandb isn't populating the git commit, so we do it here
-            try:
-                repo = Repo(code_dir)
-                other_settings["git_commit"] = repo.head.commit.hexsha
-            except (NoSuchPathError, InvalidGitRepositoryError):
-                logger.warning(f"Could not find git repo at {code_dir}")
-                pass
+            sha = self._get_git_sha(code_dir)
+            if sha is not None:
+                other_settings["git_commit"] = sha
+
         return other_settings
+
+    def _get_git_sha(self, code_dir) -> Optional[str]:
+        try:
+            repo = Repo(code_dir)
+            git_sha = repo.head.commit.hexsha
+        except (NoSuchPathError, InvalidGitRepositoryError):
+            logger.warning(f"Could not find git repo at {code_dir}")
+            return None
+        except ValueError as e:
+            if "SHA is empty" in str(e):
+                # we have another workaround, which is to use the git command line
+                # git --git-dir={code_dir}/.git rev-parse HEAD
+                import subprocess
+
+                try:
+                    out = subprocess.run(
+                        ["git", "--git-dir", f"{code_dir}/.git", "rev-parse", "HEAD"], check=True, capture_output=True
+                    )
+                    git_sha = out.stdout.decode().strip()
+                except subprocess.CalledProcessError:
+                    return None
+            else:
+                raise e
+
+        return git_sha
