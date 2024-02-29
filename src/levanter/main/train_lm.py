@@ -45,6 +45,8 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
+    update_hessian_steps: int = 10
+
 
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
@@ -76,7 +78,6 @@ def main(config: TrainLmConfig):
         converter = None
 
     levanter.initialize(config)
-
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Using the trainer as a context manager does 3 things:
@@ -133,7 +134,6 @@ def main(config: TrainLmConfig):
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
-        # boilerplate hooks and such
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
