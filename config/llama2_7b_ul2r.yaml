@@ -7,7 +7,7 @@ data:
   tokenizer: "meta-llama/Llama-2-7b-hf"
 model:
   type: llama
-  seq_leen: 4096
+  seq_len: 4096
   flash_attention_block_size: 2048
 # TODO: uncomment this once we resolve the resource exhaustion issue
 # initialize_from_hf: "meta-llama/Llama-2-7b-hf"
