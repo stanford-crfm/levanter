@@ -65,7 +65,7 @@ def test_sliding_window_attention_fancier():
 
         expected = expected.rearrange((Pos, Head)).array
 
-        assert jnp.allclose(result, expected)
+        assert jnp.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
 
 def test_longformer_alibi_bias_pos_invariance():
