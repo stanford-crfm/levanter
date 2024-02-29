@@ -17,6 +17,7 @@ from jax.sharding import Mesh
 from tensorstore import TensorStore
 
 import haliax as hax
+import haliax.tree_util as htu
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
@@ -26,15 +27,17 @@ from levanter.utils import jax_utils
 logger = logging.getLogger(__name__)
 
 
+def _is_named_or_none(x):
+    return x is None or is_named_array(x)
+
+
 def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
-    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
+    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
+    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=_is_named_or_none)
 
     # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    # array_ser only supports saving sharded arrays, so we can't use its top-level function run_serialization.
-    # however we're inspired by its implementation, meaning we'll make a tree of futures and wait on them.
     async def _do_serialize():
-        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=is_named_array)
+        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
         return await asyncio.gather(*jtu.tree_leaves(futures))
 
     asyncio.run(_do_serialize())
@@ -136,7 +139,7 @@ def tree_deserialize_leaves_tensorstore(
     """
     # TODO: support ShapeDtypeStructs that are not NamedArrays
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=is_named_array)
+    specs = htu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
 
     deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
 

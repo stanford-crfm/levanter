@@ -40,6 +40,7 @@ from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.types import Scalar
 
+import levanter.checkpoint
 import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
@@ -144,19 +145,15 @@ class Trainer:
         optimizer: GradientTransformation,
         loss_fn: Optional[ComputeLossFunction] = None,
         *,
-        is_trainable: PyTree[FilterSpec] = True,
         add_default_hooks: bool = True,
     ):
         """
 
         Args:
             config:  the trainer config
-            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
+            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.optim.OptimizerConfig][]
             loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
                 scalar loss. It should be jit-able and should not have any side effects.
-            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
-                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
-                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
         """
         self.hooks = TrainerHooks()
         self.config = config
@@ -167,12 +164,18 @@ class Trainer:
         else:
             self.tracker = config.tracker.init(self.run_id)
 
-        self.is_trainable_param = is_trainable
+        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        if isinstance(config.tracker, Sequence):
+            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
+        else:
+            self.tracker = config.tracker.init(self.run_id)
 
         self._cmanagers = []
 
         if add_default_hooks:
             self._add_default_hooks()
+
+        self._cmanagers = []
 
     @cached_property
     def loss_fn(self):
@@ -266,13 +269,27 @@ class Trainer:
             raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
 
     def initial_state(
-        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
-    ) -> TrainerState:
+        self,
+        training_key: PRNGKeyArray,
+        model: Optional[M] = None,
+        model_init: Optional[Callable[[], M]] = None,
+        *,
+        is_trainable: PyTree[FilterSpec] = True,
+    ) -> TrainerState[M]:
         """
-        Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+        Either loads a checkpoint or initializes a fresh trainer state. This is the recommended way to initialize
+        a trainer state.
+
+        This method is smart enough to handle subclasses of TrainerState. If you want to extend TrainerState, you
+        can override _initialize_state_from_scratch
+
+        Args
+            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
+                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
+                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
 
         Returns:
-            model, opt_state, key, resume_step
+            TrainerState: the initial state,
         """
         model_init = _unify_model_and_model_init(model, model_init)
 
@@ -280,9 +297,7 @@ class Trainer:
         assert model_init is not None
 
         # first try to load a full trainer state checkpoint
-        checkpoint_path = self.config.load_checkpoint_path
-        if checkpoint_path is None:
-            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+        checkpoint_path = self.checkpoint_path
 
         load_checkpoint = self.config.load_checkpoint
         # we don't save the full trainer state, so we need to filter out the non-trainable parameters
@@ -311,13 +326,11 @@ class Trainer:
         def init_state_and_model(model_init, training_key):
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
-            state = TrainerState.init(
-                self.optimizer, model, key=training_key, is_trainable=self.is_trainable_param, mp=self.mp
-            )
+            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp)
             return state
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
-        saveable_train_state = saveable_training_mask(trainer_state_shape, self.is_trainable_param)
+        saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
 
         state = load_checkpoint_or_initialize(
             init_state_and_model,
@@ -329,6 +342,13 @@ class Trainer:
         )(model_init, training_key)
 
         return state
+
+    @property
+    def checkpoint_path(self) -> str:
+        checkpoint_path = self.config.load_checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+        return checkpoint_path
 
     def train_step(self, state: S, *batch: X, **batch_kwargs) -> StepInfo[S]:
         """
@@ -544,7 +564,7 @@ class TrainerConfig:
             self.tracker = self.wandb
 
     def initialize(self):
-        """Initializes jax, wandb, logging, setting the run name/id in the process"""
+        """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
         pylogging.basicConfig(level=pylogging.INFO)
@@ -659,8 +679,13 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
+        assert self.train_batch_size != -1 or self.per_device_parallelism != -1
+
         if self.per_device_parallelism == -1:
             self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+
+        if self.train_batch_size == -1:
+            self.train_batch_size = self.per_device_parallelism * self.data_axis_size
 
         # validate size of per_device_parallelism
         if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:

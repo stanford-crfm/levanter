@@ -211,7 +211,6 @@ class Checkpointer:
             cp_path = os.path.join(plain_path, checkpoint)
             logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
             fs.rm(cp_path, recursive=True)
-        # don't let this take down a run
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint", exc_info=True)
 
@@ -535,3 +534,6 @@ class CheckpointerConfig:
                     interval["until"] is None or interval["until"] > prev_interval["until"]
                 ), "Checkpoint intervals must be monotonic"
             prev_interval = interval
+
+
+# TODO: add partial checkpoint loading

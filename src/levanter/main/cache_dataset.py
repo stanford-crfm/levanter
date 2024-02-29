@@ -46,6 +46,7 @@ def main(args: RayCachedLMDatasetConfig):
             rows_per_chunk=args.rows_per_chunk,
             await_finished=False,
             monitors=monitors,
+            batch_size=128,
         )
 
         cache.await_finished()
