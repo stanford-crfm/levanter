@@ -233,8 +233,10 @@ class Ul2rConfig:
         if self.task_probs is None:
             return None
         elif self.shortcut == "ul2r":
-            return [0.25, 0.125, 0.125, 0.5]
-        return [self.task_probs[task] for task in self.task_configs]
+            task_probs = {"r": 0.25, "x1": 0.125, "x2": 0.125, "s": 0.5}
+            return [task_probs[task] for task in self.task_configs]
+        else:
+            return [self.task_probs[task] for task in self.task_configs]
 
     def __post_init__(self):
         if self.task_configs is None and self.shortcut != "ul2" and self.shortcut != "ul2r":
