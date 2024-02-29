@@ -6,12 +6,11 @@ model:
   num_heads: 8
   num_layers: 4
 trainer:
-  wandb:
+  tracker:
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
 
   mp: p=f32,c=bfloat16
   num_train_steps: 100
   per_device_eval_parallelism: 1
-  per_device_parallelism: 4
   train_batch_size: 32
