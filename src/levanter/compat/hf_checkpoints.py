@@ -654,7 +654,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 upload_to_hf = self.reference_checkpoint
             if not isinstance(upload_to_hf, bool):
                 assert isinstance(upload_to_hf, (str, RepoRef))
-                upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
+                try:
+                    upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
+                except Exception as e:
+                    warnings.warn("upload_to_hub errors")
+                    warnings.warn(str(e))
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
