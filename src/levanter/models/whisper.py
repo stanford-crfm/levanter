@@ -50,6 +50,8 @@ class WhisperConfig(HFCompatConfig):
     decoder_attention_heads: int = 6
     decoder_ffn_dim: int = 1536
     d_model: int = 384
+
+    max_source_positions: int = 1500
     max_length: int = 448
 
     activation_function: str = "gelu"
@@ -62,7 +64,7 @@ class WhisperConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = True
+    use_flash_attention: bool = False
     flash_attention_block_size: Optional[int] = None
 
     @property
@@ -76,18 +78,15 @@ class WhisperConfig(HFCompatConfig):
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.max_length))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
+    SourcePos = property(lambda self: Axis(name="position", size=self.max_source_positions))
     Vocab = property(lambda self: Axis(name="vocab_size", size=self.vocab_size))
     Embed = property(lambda self: Axis(name="embed_dim", size=self.d_model))
     Mlp = property(lambda self: Axis(name="mlp_dim", size=self.d_model * 4))
-    EncoderHeads = property(lambda self: Axis(name="n_encoder_heads", size=self.encoder_attention_heads))
-    EncoderHeadSize = property(
-        lambda self: Axis(name="encoder_head_dim", size=self.d_model // self.encoder_attention_heads)
-    )
+    EncoderHeads = property(lambda self: Axis(name="heads", size=self.encoder_attention_heads))
+    EncoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.encoder_attention_heads))
     EncoderLayers = property(lambda self: Axis(name="encoder_layers", size=self.encoder_layers))
-    DecoderHeads = property(lambda self: Axis(name="n_decoder_heads", size=self.decoder_attention_heads))
-    DecoderHeadSize = property(
-        lambda self: Axis(name="decoder_head_dim", size=self.d_model // self.decoder_attention_heads)
-    )
+    DecoderHeads = property(lambda self: Axis(name="heads", size=self.decoder_attention_heads))
+    DecoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.decoder_attention_heads))
     DecoderLayers = property(lambda self: Axis(name="decoder_layers", size=self.decoder_layers))
     Mels = property(lambda self: Axis(name="n_mels", size=self.num_mel_bins))
 
@@ -105,6 +104,7 @@ class WhisperConfig(HFCompatConfig):
             decoder_ffn_dim=self.decoder_ffn_dim,
             encoder_ffn_dim=self.encoder_ffn_dim,
             activation_function=self.activation_function,
+            max_source_positions=self.max_source_positions,
             d_model=self.d_model,
         )
 
@@ -120,6 +120,7 @@ class WhisperConfig(HFCompatConfig):
             decoder_ffn_dim=hf_config.decoder_ffn_dim,
             encoder_ffn_dim=hf_config.encoder_ffn_dim,
             activation_function=hf_config.activation_function,
+            max_source_positions=hf_config.max_source_positions,
             d_model=hf_config.d_model,
         )
 
@@ -131,7 +132,7 @@ class WhisperMlp(eqx.Module):
 
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "WhisperMlp":
-        k_fc, k_proj = jrandom.split(key, 2)
+        k_fc, k_proj = haliax.jax_utils.maybe_rng_split(key, 2)
         c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
         c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
@@ -161,11 +162,11 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Heads: Axis, HeadSize: Axis, config: WhisperConfig, *, key) -> "WhisperAttention":
-        Kv = Axis("kv", size=3)
+        Kv = Axis("kv", size=2)
         use_bias = config.use_bias
         Embed = config.Embed
 
-        k_c, k_proj = jrandom.split(key, 2)
+        k_c, k_proj = haliax.jax_utils.maybe_rng_split(key, 2)
         q_lin = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_c, use_bias=use_bias)
         kv_lin = hnn.Linear.init(In=Embed, Out=(Kv, Heads, HeadSize), key=k_c, use_bias=use_bias)
         c_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_proj, use_bias=use_bias)
@@ -173,8 +174,10 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
         return WhisperAttention(config, q_lin, kv_lin, c_proj, inference=False)
 
     @named_call
-    def __call__(self, x: NamedArray, xa: Optional[NamedArray], mask: Optional[AttentionMask | NamedArray], *, key):
-        k_kv, k_q, k_out = hax.jax_utils.maybe_rng_split(key, 3)
+    def __call__(
+        self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask | NamedArray] = None, *, key
+    ):
+        k_kv, k_q, k_out, k_drop = hax.jax_utils.maybe_rng_split(key, 4)
         q = self.q_lin(x, key=k_q).rearrange((..., "heads", "position", "head_size"))
         kv_in = x if xa is None else xa
         kv_out = self.kv_lin(kv_in, key=k_kv).rearrange((..., "kv", "heads", "position", "head_size"))
@@ -218,7 +221,7 @@ class WhisperBlock(eqx.Module):
 
     @staticmethod
     def init(Heads: Axis, HeadSize: Axis, config: WhisperConfig, has_cross: bool = True, *, key) -> "WhisperBlock":
-        k_attn, k_cross, k_mlp = jrandom.split(key, 3)
+        k_attn, k_cross, k_mlp = haliax.jax_utils.maybe_rng_split(key, 3)
 
         attn_ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         attn = WhisperAttention.init(Heads, HeadSize, config, key=k_attn)
@@ -238,25 +241,27 @@ class WhisperBlock(eqx.Module):
         return WhisperBlock(attn, attn_ln, cross_attn, cross_attn_ln, mlp, mlp_ln)
 
     @named_call
-    def __call__(self, x: NamedArray, xa: Optional[NamedArray], mask: Optional[AttentionMask | NamedArray], *, key):
+    def __call__(
+        self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask | NamedArray] = None, *, key
+    ):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        attn_output = self.attn(self.ln_1(x), mask=mask, key=k1)
+        attn_output = self.attn(self.attn_ln(x), mask=mask, key=k1)
         x = x + attn_output
 
         if self.cross_attn:
             cross_attn_output = self.cross_attn(self.cross_attn_ln(x), xa, key=k2)
             x = x + cross_attn_output
 
-        ff_output = self.mlp(self.ln_2(x), key=k3)
+        ff_output = self.mlp(self.mlp_ln(x), key=k3)
         x = x + ff_output
 
         return x
 
 
 class WhisperTransformer(eqx.Module):
-    config: WhisperConfig = eqx.static_field()
     blocks: Stacked[WhisperBlock]
+    Layers: Axis
     ln_f: hnn.LayerNorm
 
     @staticmethod
@@ -271,14 +276,19 @@ class WhisperTransformer(eqx.Module):
         )
         ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
-        return WhisperTransformer(config, blocks, ln_f)
+        return WhisperTransformer(blocks, Layers, ln_f)
 
     @named_call
     def __call__(
-        self, x: NamedArray, xa: Optional[NamedArray], attn_mask: Optional[AttentionMask | NamedArray], *, key=None
+        self,
+        x: NamedArray,
+        xa: Optional[NamedArray] = None,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
     ) -> NamedArray:
-        keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.blocks.fold(x, xa, attn_mask, hax.arange(self.config.Layers), key=keys)
+        keys = hax.jax_utils.maybe_rng_split(key, self.Layers) if key is not None else None
+        x = self.blocks.fold(x, xa, attn_mask, key=keys)
         x = self.ln_f(x)
 
         return x
@@ -289,27 +299,27 @@ class WhisperSinusoidEmbedding(eqx.Module, StateDictSerializationMixin):
     pos_emb: NamedArray
 
     @classmethod
-    def init(cls, Channels: Axis, Pos: Axis, base: int = 10000):
+    def init(cls, Channels: Axis, SourcePos: Axis, base: int = 10000):
         # this must be compile-time b/c we want to store them in a static field
         with jax.ensure_compile_time_eval():
-            pos_emb = cls._get_pos_emb(Pos=Pos, Channels=Channels, base=base)
+            pos_emb = cls._get_pos_emb(SourcePos=SourcePos, Channels=Channels, base=base)
 
-        return WhisperSinusoidEmbedding(Pos, pos_emb)
+        return WhisperSinusoidEmbedding(SourcePos, pos_emb)
 
     @staticmethod
-    def _get_pos_emb(Channels: Axis, Pos: Axis, base: int) -> NamedArray:
+    def _get_pos_emb(Channels: Axis, SourcePos: Axis, base: int) -> NamedArray:
         log_timescale_increment = (hax.log(base) / (Channels.size // 2 - 1)).item()
         ChannelHalfSize = Channels.resize(Channels.size // 2)
         inv_timescales = hax.exp(-log_timescale_increment * hax.arange(ChannelHalfSize))
 
-        position_ids: NamedArray = hax.arange(Pos)
+        position_ids: NamedArray = hax.arange(SourcePos)
 
-        freqs = position_ids * inv_timescales.broadcast_axis(Pos)
+        freqs = position_ids * inv_timescales.broadcast_axis(SourcePos)
         emb = hax.concatenate(Channels, (hax.sin(freqs), hax.cos(freqs)))
         return emb
 
     def __call__(self, seq_len: int) -> NamedArray:
-        return jax.lax.stop_gradient((self.pos_emb[self.Pos, :seq_len],))
+        return jax.lax.stop_gradient(self.pos_emb[self.Pos, :seq_len])
 
     # TODO: maybe add a "persistent" option to eqx.field that we use for state dict serialization
     # if we do that, consider moving the key remapping stuff there too?
@@ -342,17 +352,16 @@ class WhisperEncoder(eqx.Module):
 
     @classmethod
     def init(cls, config: WhisperConfig, *, key) -> "WhisperEncoder":
-        k_conv1, k_conv2, k_t = jrandom.split(key, 3)
-        In = hax.Axis("In", config.Mels.size)
-        Out = hax.Axis("Out", config.Embed.size)
-        conv1 = hnn.Conv.init(config.Mels, In, Out, kernel_size=3, padding=1, key=k_conv1)
-        In = hax.Axis("In", config.Mels.size)
-        Out = hax.Axis("Out", config.Embed.size)
-        conv2 = hnn.Conv.init(config.Mels, In, Out, kernel_size=3, stride=2, padding=1, key=k_conv2)
+        k_conv1, k_conv2, k_t = haliax.jax_utils.maybe_rng_split(key, 3)
+
+        Len = hax.Axis("position", size=config.SourcePos.size * 2)
+        Mid = hax.Axis("mid", config.Embed.size)
+        conv1 = hnn.Conv.init(Len, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
+        conv2 = hnn.Conv.init(Len, Mid, config.Embed, kernel_size=3, stride=2, padding=1, key=k_conv2)
         if isinstance(config.activation_function, str):
             activation_fn = ACT2FN[config.activation_function]
         act = activation_fn  # type: ignore
-        pos_emb = WhisperSinusoidEmbedding.init(config.Pos, config.Embed)
+        pos_emb = WhisperSinusoidEmbedding.init(config.SourcePos, config.Embed)
         transformer = WhisperTransformer.init(
             config.EncoderLayers, config.EncoderHeads, config.EncoderHeadSize, config, has_cross=False, key=k_t
         )
@@ -360,10 +369,10 @@ class WhisperEncoder(eqx.Module):
         return WhisperEncoder(conv1, conv2, act, pos_emb, transformer)
 
     def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
-        k_conv1, k_conv2, k_transformer = jrandom.split(key, 3)
+        k_conv1, k_conv2, k_transformer = haliax.jax_utils.maybe_rng_split(key, 3)
         x = self.act(self.conv1(spec, key=k_conv1))
         x = self.act(self.conv2(x, key=k_conv2))
-        x = x.rearrange((..., "PLACEHOLDER", "PLACEHOLDER"))
+        x = x.rearrange((..., "position", "embed_dim"))
 
         x = x + self.pos_emb(x.axis_size("position"))
         x = self.transformer(x, key=k_transformer)
@@ -383,7 +392,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: WhisperConfig, *, key) -> "WhisperEmbeddings":
-        k_wte, k_wpe, k_out = jrandom.split(key, 3)
+        k_wte, k_wpe, k_out = haliax.jax_utils.maybe_rng_split(key, 3)
 
         token_embeddings = hnn.Embedding.init(
             Vocab, config.Embed, key=k_wte, initializer_range=config.initializer_range
@@ -404,7 +413,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings.weight)
+        return hax.dot("embed_dim", x, self.token_embeddings.weight)
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)
@@ -429,7 +438,7 @@ class WhisperDecoder(eqx.Module):
 
     @classmethod
     def init(cls, config: WhisperConfig, *, key) -> "WhisperDecoder":
-        k_t, k_embeddings = jrandom.split(key, 2)
+        k_t, k_embeddings = haliax.jax_utils.maybe_rng_split(key, 2)
         transformer = WhisperTransformer.init(
             config.DecoderLayers, config.DecoderHeads, config.DecoderHeadSize, config, has_cross=True, key=k_t
         )
@@ -468,7 +477,7 @@ class WhisperModel(eqx.Module):
 
     @classmethod
     def init(cls, config: WhisperConfig, *, key) -> "WhisperModel":
-        k_t, k_embeddings = jrandom.split(key, 2)
+        k_t, k_embeddings = haliax.jax_utils.maybe_rng_split(key, 2)
         encoder = WhisperEncoder.init(config, key=k_embeddings)
         decoder = WhisperDecoder.init(config, key=k_t)
 
@@ -483,8 +492,8 @@ class WhisperModel(eqx.Module):
         key=None,
     ) -> NamedArray:
         k_encoder, k_decoder = haliax.jax_utils.maybe_rng_split(key, 2)
-        audio_features = self.encoder(mel, key=k_encoder)
-        lm_logits = self.decoder(attn_mask, audio_features, key=k_decoder)
+        audio_features = self.audio_encoder(mel, key=k_encoder)
+        lm_logits = self.text_decoder(input_ids, audio_features, key=k_decoder)
 
         return lm_logits
 
