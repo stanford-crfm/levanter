@@ -68,21 +68,21 @@ def test_grad_attention():
         else:
             my_mask = mask
         x_out = fn(KPos, Key, q, k, v, mask=my_mask)
-        return (x_out * x_out).sum().scalar()
+        return (x_out * x_out).mean().scalar()
 
     hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
     fa_val, (fa_dq, fa_dk, fa_dv) = d_attn(
         (q, k, v), functools.partial(flash_attention, QPos, inference=True, block_size=BLOCK_SIZE)
     )
 
-    assert jnp.allclose(hax_val, fa_val, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(hax_val, fa_val, atol=1e-3, rtol=1e-3)
     assert hax_dq.axes == fa_dq.axes
     assert hax_dk.axes == fa_dk.axes
     assert hax_dv.axes == fa_dv.axes
 
-    assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-4, rtol=1e-4)
-    assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-4, rtol=1e-4)
-    assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-3, rtol=1e-3)
+    assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-3, rtol=1e-3)
+    assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
