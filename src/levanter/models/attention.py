@@ -94,11 +94,11 @@ def dot_product_attention(
                 key.resolve_axis("heads")
                 num_q_heads = "heads"
                 num_kv_heads = "heads"
-                same_qkv_output_shape = (batch_dim, QPos, num_q_heads, Key)
+                # output_shape = (batch_dim, QPos, num_q_heads, Key)
             except ValueError:
                 num_q_heads = "q_heads_per_group"
                 num_kv_heads = "kv_heads"
-                diff_qkv_output_shape = (batch_dim, QPos, num_kv_heads, num_q_heads, Key)
+                # output_shape = (batch_dim, QPos, num_kv_heads, num_q_heads, Key)
 
             # TransformerEngine self_fused_attn looks for qkv shape:
             # batch_shape, max_seqlen, nqkv, num_heads, head_dim; where nqkv = 3
@@ -172,8 +172,6 @@ def dot_product_attention(
                     is_training=is_training,  # bool,
                 )
 
-                attn_output = haliax.named(attn_output, same_qkv_output_shape)
-
             # Cross-Attn, GQA, or MQA Case
             else:
                 assert (
@@ -196,7 +194,10 @@ def dot_product_attention(
                     is_training=is_training,
                 )
 
-                attn_output = haliax.named(attn_output, diff_qkv_output_shape)
+            if num_q_heads == "heads":
+                attn_output = haliax.named(attn_output, (batch_dim, QPos, num_q_heads, Key))
+            else:
+                attn_output = haliax.named(attn_output, (batch_dim, QPos, num_kv_heads, num_q_heads, Key))
 
             return attn_output
 
