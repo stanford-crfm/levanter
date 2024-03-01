@@ -1,12 +1,11 @@
 import dataclasses
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Dict, Optional, Sequence, Type
+from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
@@ -16,16 +15,8 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
-from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    stack_state_dict,
-    unflatten_linear_layers,
-    unstack_state_dict,
-)
+from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
+from levanter.compat.torch_serialization import StateDict, StateDictSerializationMixin
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
@@ -35,7 +26,6 @@ from levanter.utils.py_utils import cached_classproperty
 silence_transformer_nag()
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 from transformers import WhisperConfig as HfWhisperConfig  # noqa: E402
-from transformers import WhisperFeatureExtractor  # noqa: E402
 
 
 @LmConfig.register_subclass("whisper")
@@ -55,7 +45,6 @@ class WhisperConfig(HFCompatConfig):
     max_length: int = 448
 
     activation_function: str = "gelu"
-    layer_norm_epsilon: float = 1e-5
     layer_norm_epsilon: float = 1e-5
     use_bias: bool = True
 
@@ -94,7 +83,7 @@ class WhisperConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
-        return HfConfig(
+        return HfWhisperConfig(
             vocab_size=self.vocab_size,
             num_mel_bins=self.num_mel_bins,
             encoder_layers=self.encoder_layers,
@@ -249,7 +238,7 @@ class WhisperBlock(eqx.Module):
         attn_output = self.attn(self.attn_ln(x), mask=mask, key=k1)
         x = x + attn_output
 
-        if self.cross_attn:
+        if self.cross_attn and self.cross_attn_ln:
             cross_attn_output = self.cross_attn(self.cross_attn_ln(x), xa, key=k2)
             x = x + cross_attn_output
 
@@ -391,7 +380,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
     position_embeddings: hnn.Embedding
 
     @staticmethod
-    def init(Vocab: Axis, config: WhisperConfig, *, key) -> "WhisperEmbeddings":
+    def init(Vocab: Axis, config: WhisperConfig, *, key) -> "WhisperDecoderEmbeddings":
         k_wte, k_wpe, k_out = haliax.jax_utils.maybe_rng_split(key, 3)
 
         token_embeddings = hnn.Embedding.init(
