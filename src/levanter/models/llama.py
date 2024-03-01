@@ -220,50 +220,6 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class LlamaRotaryEmbedding(eqx.Module, StateDictSerializationMixin):
-    Pos: Axis = eqx.field(static=True)
-    cos_cached: NamedArray
-    sin_cached: NamedArray
-
-    def __init__(self, HeadSize: Axis, Pos: Axis, base: int = 10000):
-        self.Pos = Pos
-        # this must be compile-time b/c we want to store them in a static field
-        with jax.ensure_compile_time_eval():
-            self.cos_cached, self.sin_cached = self._get_cos_sin_cache(Pos=Pos, HeadSize=HeadSize, base=base)
-
-    @staticmethod
-    def _get_cos_sin_cache(HeadSize: hax.Axis, Pos: hax.Axis, base: float) -> Tuple[NamedArray, NamedArray]:
-        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
-
-        position_ids: NamedArray = hax.arange(Pos)
-
-        freqs = position_ids * inv_freq.broadcast_axis(Pos)
-        # This is different from the paper but aligns with HF implementation:
-        # It uses a different permutation in order to obtain the same calculation
-        emb = hax.concatenate(HeadSize, (freqs, freqs))
-        cos_cached = hax.cos(emb)
-        sin_cached = hax.sin(emb)
-        # This is different from the paper but aligns with HF implementation:
-        return cos_cached, sin_cached
-
-    def __call__(self, seq_len: int) -> Tuple[NamedArray, NamedArray]:
-        return jax.lax.stop_gradient(
-            (
-                self.cos_cached[self.Pos, :seq_len],
-                self.sin_cached[self.Pos, :seq_len],
-            )
-        )
-
-    # TODO: maybe add a "persistent" option to eqx.field that we use for state dict serialization
-    # if we do that, consider moving the key remapping stuff there too?
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        return self
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        return state_dict
-
-
 class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     q_proj: hnn.Linear  # projection from Embed to query
@@ -290,14 +246,12 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
-        rotary_emb = LlamaRotaryEmbedding(self.config.HeadSize, self.config.Pos)
         # reorder heads and position for better training throughput
         q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = rotary_emb(seq_len=x.axis_size("position"))
-
+        cos, sin = llama_rotary_pos_emb(self.config.HeadSize, x.axis_size("position"))
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         k = k.rename({"position": "key_position"})
@@ -597,3 +551,20 @@ def _apply_rotary_pos_emb(
     q_embed = q * cos + _rotate_half(q) * sin
     k_embed = k * cos + _rotate_half(k) * sin
     return q_embed, k_embed
+
+
+def llama_rotary_pos_emb(HeadSize: Axis, Pos: Axis, base: int = 10000) -> Tuple[NamedArray, NamedArray]:
+    with jax.ensure_compile_time_eval():
+        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
+        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
+
+        position_ids: NamedArray = hax.arange(Pos)
+
+        freqs = position_ids * inv_freq.broadcast_axis(Pos)
+        # This is different from the paper but aligns with HF implementation:
+        # It uses a different permutation in order to obtain the same calculation
+        emb = hax.concatenate(HeadSize, (freqs, freqs))
+        cos = hax.cos(emb)
+        sin = hax.sin(emb)
+        # This is different from the paper but aligns with HF implementation:
+        return cos, sin

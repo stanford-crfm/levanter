@@ -9,16 +9,10 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.llama import (
-    LlamaAttention,
-    LlamaConfig,
-    LlamaDecoderLayer,
-    LlamaLMHeadModel,
-    LlamaRMSNorm,
-    LlamaRotaryEmbedding,
-)
+from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
+from levanter.models.llama import llama_rotary_pos_emb
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -65,8 +59,7 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_rope = LlamaRotaryEmbedding(HeadSize=HeadSize, Pos=Pos)
-    levanter_output = levanter_rope(seq_len=seq_len)
+    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
     hf_output = hf_rope(x_torch, seq_len=seq_len)
 
