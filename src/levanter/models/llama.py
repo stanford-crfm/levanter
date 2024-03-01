@@ -270,7 +270,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
     k_proj: hnn.Linear  # projection from Embed to key
     v_proj: hnn.Linear  # projection from Embed to value
     o_proj: hnn.Linear  # projection from Heads to output
-    rotary_emb: LlamaRotaryEmbedding  # rotary embedding
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaAttention":
@@ -285,25 +284,22 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
-        rotary_emb = LlamaRotaryEmbedding(config.HeadSize, config.Pos)
-        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj, rotary_emb)
+        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
+        rotary_emb = LlamaRotaryEmbedding(self.config.HeadSize, self.config.Pos)
         # reorder heads and position for better training throughput
         q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = self.rotary_emb(seq_len=x.axis_size("position"))
+        cos, sin = rotary_emb(seq_len=x.axis_size("position"))
 
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        if self.config.upcast_attn:
-            q = q.astype(jnp.float32)
-            k = k.astype(jnp.float32)
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
