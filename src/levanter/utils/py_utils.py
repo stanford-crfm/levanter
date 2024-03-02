@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
@@ -142,3 +143,25 @@ def cached_classproperty(func: Callable[..., PropReturn]) -> PropReturn:
 
 
 cached_classproperty.__doc__ = _CachedClassProperty.__doc__
+
+
+def actual_sizeof(obj):
+    """similar to sys.getsizeof, but recurses into dicts and lists and other objects"""
+    seen = set()
+    size = 0
+    objects = [obj]
+    while objects:
+        need_to_see = []
+        for obj in objects:
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            size += sys.getsizeof(obj)
+            if isinstance(obj, dict):
+                need_to_see.extend(obj.values())
+            elif hasattr(obj, "__dict__"):
+                need_to_see.extend(obj.__dict__.values())
+            elif isinstance(obj, (list, tuple, set, frozenset)):
+                need_to_see.extend(obj)
+        objects = need_to_see
+    return size

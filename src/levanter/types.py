@@ -1,5 +1,7 @@
 from typing import Any, Callable, Optional, Protocol, Tuple, TypeVar, Union
 
+from jaxtyping import PyTree
+
 import haliax as hax
 from haliax.types import Scalar
 
@@ -25,6 +27,8 @@ A filter specification. Typically used on a pytree to filter out certain subtree
 treated as-is, while callables are called on each element of the pytree. If the callable returns True, the element
 is kept, otherwise it is filtered out.
 """
+
+FilterTree = FilterSpec | PyTree[FilterSpec]
 
 
 class ComputeLossFunction(Protocol[M_con, X]):

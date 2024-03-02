@@ -3,7 +3,6 @@ import tempfile
 
 import jax
 import pytest
-from ray.util.client import ray
 
 import haliax
 
@@ -13,20 +12,6 @@ from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.tracker.wandb import WandbConfig
-from levanter.utils.py_utils import logical_cpu_core_count
-
-
-def setup_module(module):
-    ray_designated_cores = max(1, logical_cpu_core_count())
-    try:
-        ray.init("local", num_cpus=ray_designated_cores)
-    except AssertionError:
-        # don't get upset if ray is already running
-        pass
-
-
-def teardown_module(module):
-    ray.shutdown()
 
 
 @pytest.mark.entry
@@ -43,7 +28,7 @@ def test_viz_lm():
 
     with tempfile.TemporaryDirectory() as f:
         try:
-            data_config = tiny_test_corpus.tiny_corpus_config(f)
+            data_config, _ = tiny_test_corpus.construct_small_data_cache(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))

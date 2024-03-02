@@ -113,7 +113,7 @@ def microbatched(
 
             with jax.named_scope("accum"):
                 acc = eqx.apply_updates(acc, this_r)
-                acc = hax.shard(acc, accum_axis_mapping)
+                acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
 
             return acc
 

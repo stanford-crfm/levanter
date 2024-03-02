@@ -3,7 +3,6 @@ import tempfile
 
 import jax
 import pytest
-import ray
 
 import haliax
 
@@ -13,17 +12,7 @@ from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer import TrainerState
-from levanter.utils.py_utils import logical_cpu_core_count
-
-
-def setup_module(module):
-    ray_designated_cores = max(1, logical_cpu_core_count())
-    ray.init("local", num_cpus=ray_designated_cores)
-
-
-def teardown_module(module):
-    ray.shutdown()
+from levanter.trainer_state import TrainerState
 
 
 @pytest.mark.entry
@@ -40,12 +29,12 @@ def test_eval_lm():
 
     with tempfile.TemporaryDirectory() as f:
         try:
-            data_config = tiny_test_corpus.tiny_corpus_config(f)
+            data_config, _ = tiny_test_corpus.construct_small_data_cache(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            state = TrainerState(0, model, model, jax.random.PRNGKey(0), True)
+            state = TrainerState(0, model, model, jax.random.PRNGKey(0), True, None, None)
 
             save_checkpoint(state, 0, f"{f}/ckpt")
 

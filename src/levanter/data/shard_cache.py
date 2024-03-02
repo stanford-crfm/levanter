@@ -164,7 +164,7 @@ class SerialCacheWriter(AbstractContextManager):
         self._current_chunk_writer: Optional[_ChunkWriter] = None
         self._is_closed = False
 
-    def __enter__(self):
+    def __enter__(self) -> "SerialCacheWriter":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):

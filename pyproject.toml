@@ -25,7 +25,7 @@ dependencies = [
     # jax = {version = ">=0.4.10,<0.5.0"}
 #    "haliax>=1.3,<2.0",
 #     Haliax changes in step with levanter, so we'll just use the git version except for releases.
-    "haliax @ git+https://github.com/stanford-crfm/haliax.git",
+    "haliax @ git+https://github.com/stanford-crfm/haliax.git@dev",
     "equinox>=0.10.7",
     "jaxtyping>=0.2.20",
     "transformers>=4.22.0",
@@ -41,7 +41,7 @@ dependencies = [
     "fsspec<2024.3.0",
     # TODO: minimize and report an issue to tensorstore
     # causes hangs when serializing to GCS
-    "tensorstore==0.1.53",
+    "tensorstore==0.1.54",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]",

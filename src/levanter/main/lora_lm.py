@@ -67,9 +67,20 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
-    with config.trainer.device_mesh:
+    optimizer = config.optimizer.build(config.trainer.num_train_steps)
+
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+        eval_datasets = config.data.validation_sets(Pos.size)
+
+        # data loaders
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
@@ -83,11 +94,7 @@ def main(config: LoraLmConfig):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        optimizer = config.optimizer.build(config.trainer.num_train_steps)
-
-        # Our trainer is a wrapper around the optimizer function that handles checkpointing and fsdp
-        trainer = Trainer(config.trainer, optimizer, is_trainable=lora_param_filter)
-        state = trainer.initial_state(training_key, model=model)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         all_param_count = parameter_count(state.model)
         # TODO: remove this once we put this in trainer itself
@@ -105,11 +112,9 @@ def main(config: LoraLmConfig):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
-        # data loaders
-        eval_datasets = config.data.validation_sets(Pos.size)
-
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
+        for name, eval_dataset in eval_datasets.items():
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            trainer.add_eval_hook(eval_dataset, name=name)
 
         # boilerplate hooks and such
         if len(eval_datasets) == 0:

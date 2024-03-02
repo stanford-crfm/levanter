@@ -1,3 +1,4 @@
+import os.path
 import tempfile
 
 import equinox as eqx
@@ -23,7 +24,8 @@ from levanter.lora import (
 )
 from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.trainer import StepInfo, TrainerState
+from levanter.trainer import StepInfo
+from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
@@ -265,10 +267,15 @@ def test_lora_works_with_checkpointer():
         lora_filter = lora_trainable_params_filter(loraized)
 
         optimizer = optax.adam(1e-3)
-        opt_state = optimizer.init(eqx.filter(loraized, lora_filter))
 
-        trainer_state = TrainerState(0, loraized, opt_state, jax.random.PRNGKey(0), lora_filter)
+        trainer_state = TrainerState.init(optimizer, loraized, key=k0, is_trainable=lora_filter)
         info = StepInfo(trainer_state, 0.0, 0.0)
 
         checkpointer = Checkpointer(tempdir, None, [])
         checkpointer.save_checkpoint(info, "loraized")
+
+        # check on disk that we didn't serialize the non-loraized parameters
+        if os.path.exists(f"{tempdir}/loraized/model/first/wrapped"):
+            assert False
+
+        assert os.path.exists(f"{tempdir}/loraized/model/first/lora/lora_A")
