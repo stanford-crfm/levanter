@@ -283,9 +283,9 @@ class Ul2rDataset(ShardableDataset[LmExample]):
         self.initial_key = key
 
         # reuse the last 1000 subwords as sentinel tokens
-        vocab_size = len(tokenizer.get_vocab())
-        sentinel_tokens = [tokenizer.decode(vocab_size - k) for k in range(1, 1001)]
-        # sentinel_tokens = [f"<sentinel_{k}>" for k in range(1000)]
+        # vocab_size = len(tokenizer.get_vocab())
+        # sentinel_tokens = [tokenizer.decode(vocab_size - k) for k in range(1, 1001)]
+        sentinel_tokens = [f"<sentinel_{k}>" for k in range(1000)]
 
         self.generator = Ul2InstanceGenerator(tokenizer, sentinel_tokens, task_configs, task_probs)
         self.tokenizer = tokenizer
@@ -346,7 +346,7 @@ class Ul2InstanceGenerator:
         else:
             self.task_weights = None
 
-        # self.tokenizer.add_tokens(sentinel_tokens, special_tokens=True)
+        self.tokenizer.add_tokens(sentinel_tokens, special_tokens=True)
         task_tokens = list(set([config.task_token for config in task_configs if config.task_token is not None]))
         self.tokenizer.add_tokens(task_tokens, special_tokens=True)
 
