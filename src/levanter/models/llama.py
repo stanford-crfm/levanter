@@ -251,7 +251,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = llama_rotary_pos_emb(self.config.HeadSize, x.axis_size("position"))
+        cos, sin = llama_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         k = k.rename({"position": "key_position"})
