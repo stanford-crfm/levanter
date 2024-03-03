@@ -149,7 +149,7 @@ class MaskDenoisingConfig(DenoisingConfig):
         noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
-        targets = targets[targets < 32000] = 31999
+        targets[targets < 32000] = 31999
         return Ul2Example(inputs, targets, task_token_id)
 
 
@@ -180,7 +180,7 @@ class PrefixLmConfig(DenoisingConfig):
         np_rng = np.random.default_rng(np.array(key))
         pivot = int(np_rng.integers(1, len(tokens) + 1))
         outputs = np.array(tokens[-pivot:])
-        outputs = outputs[outputs < 32000] = 31999
+        outputs[outputs < 32000] = 31999
         return Ul2Example(np.array(tokens[:-pivot]), outputs, task_token_id)
 
 
