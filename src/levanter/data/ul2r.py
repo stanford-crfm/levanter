@@ -179,9 +179,7 @@ class PrefixLmConfig(DenoisingConfig):
         # choose a random length
         np_rng = np.random.default_rng(np.array(key))
         pivot = int(np_rng.integers(1, len(tokens) + 1))
-        outputs = np.array(tokens[-pivot:])
-        outputs[outputs < 32000] = 31999
-        return Ul2Example(np.array(tokens[:-pivot]), outputs, task_token_id)
+        return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), task_token_id)
 
 
 # these aren't in the UL2(R) papers but they're nice to have
@@ -234,7 +232,7 @@ class Ul2rConfig:
     @property
     def task_weights_list(self):
         if self.shortcut == "ul2r":
-            return [0.25, 0.125, 0.125, 0.0]
+            return [0.1, 0.0, 0.0, 0.9]
         elif self.task_probs is None:
             return None
         else:

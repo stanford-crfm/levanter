@@ -185,6 +185,7 @@ def main(config: TrainLmConfig):
                     data_key,
                     config.data.ignore_token_id,
                 )
+                eval_dataset_ul2r.generator.task_weights[3] = 0.0
                 trainer.add_eval_hook(eval_dataset_ul2r, name=name + "_ul2r")
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
