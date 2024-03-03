@@ -301,6 +301,7 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             def _create_lm_example(tokens, key):
                 this_key, key = jax.random.split(key)
                 ul2example = self.generator.sample(tokens, this_key)
+                ul2example.outputs = ul2example.outputs[ul2example.outputs < 32000] = 31999
                 decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
                 return decoder_only, key
 
