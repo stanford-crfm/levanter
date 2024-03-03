@@ -234,7 +234,7 @@ class Ul2rConfig:
     @property
     def task_weights_list(self):
         if self.shortcut == "ul2r":
-            return [0.25, 0.125, 0.125, 0.5]
+            return [0.25, 0.125, 0.125, 0.0]
         elif self.task_probs is None:
             return None
         else:
