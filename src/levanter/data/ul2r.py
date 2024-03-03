@@ -149,7 +149,7 @@ class MaskDenoisingConfig(DenoisingConfig):
         noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
-
+        targets = targets[targets < 32000] = 31999
         return Ul2Example(inputs, targets, task_token_id)
 
 
@@ -179,7 +179,9 @@ class PrefixLmConfig(DenoisingConfig):
         # choose a random length
         np_rng = np.random.default_rng(np.array(key))
         pivot = int(np_rng.integers(1, len(tokens) + 1))
-        return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), task_token_id)
+        outputs = np.array(tokens[-pivot:])
+        outputs = outputs[outputs < 32000] = 31999
+        return Ul2Example(np.array(tokens[:-pivot]), outputs, task_token_id)
 
 
 # these aren't in the UL2(R) papers but they're nice to have
@@ -301,7 +303,6 @@ class Ul2rDataset(ShardableDataset[LmExample]):
             def _create_lm_example(tokens, key):
                 this_key, key = jax.random.split(key)
                 ul2example = self.generator.sample(tokens, this_key)
-                ul2example.outputs = ul2example.outputs[ul2example.outputs < 32000] = 31999
                 decoder_only = convert_to_decoder_only(ul2example, self.tokenizer.pad_token_id, self.Pos, self.KPos)
                 return decoder_only, key
 
