@@ -2,6 +2,7 @@
 # See https://arxiv.org/pdf/2210.11399v2.pdf
 import dataclasses
 import functools
+import logging
 import warnings
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Union
@@ -21,6 +22,9 @@ from levanter.data.dataset import Dataset, ShardableDataset
 from levanter.models.lm_model import LmExample
 from levanter.shapes import NamedShapeSpec, ShapeSpec
 from levanter.utils.jax_utils import use_cpu_device
+
+
+logger = logging.getLogger(__name__)
 
 
 class Ul2Example(eqx.Module):
@@ -239,7 +243,8 @@ class Ul2rConfig:
     @property
     def task_weights_list(self):
         if self.shortcut == "ul2r":
-            return [0.1, 0.0, 0.0, 0.9]
+            task_probs = {"r": 0.1, "x1": 0.0, "x2": 0.0, "s": 0.9}
+            return list(task_probs.values())
         elif self.task_probs is None:
             return None
         else:
@@ -261,14 +266,18 @@ class Ul2rConfig:
         tokenizer: PreTrainedTokenizerBase,
         key: PRNGKey,
     ):
+        task_configs = self.task_configs_list
+        task_weights = self.task_weights_list
+        logger.info(f"Building UL2 Datasest with configs {task_configs} and weights {task_weights}")
+
         return Ul2rDataset(
             base_dataset,
             Pos,
             KPos,
             key,
             tokenizer,
-            self.task_configs_list,
-            self.task_weights_list,
+            task_configs,
+            task_weights,
         )
 
 
