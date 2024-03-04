@@ -160,7 +160,6 @@ class MaskDenoisingConfig(DenoisingConfig):
         noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
-        targets[targets < 32000] = 31999
         return Ul2Example(inputs, targets, task_token_id)
 
 
@@ -248,7 +247,7 @@ class Ul2rConfig:
     @property
     def task_weights_list(self):
         if self.shortcut == "ul2r":
-            task_probs = {"r": 0.1, "x1": 0.0, "x2": 0.0, "s": 0.9}
+            task_probs = {"r": 0.25, "x1": 0.125, "x2": 0.125, "s": 0.5}
             return list(task_probs.values())
         elif self.task_probs is None:
             return None
