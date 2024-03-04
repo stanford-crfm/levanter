@@ -16,7 +16,7 @@ from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.compat.torch_serialization import StateDict, StateDictSerializationMixin
+from levanter.compat.torch_serialization import StateDictSerializationMixin
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
@@ -283,61 +283,13 @@ class WhisperTransformer(eqx.Module):
         return x
 
 
-class WhisperSinusoidEmbedding(eqx.Module, StateDictSerializationMixin):
-    Pos: Axis = eqx.field(static=True)
-    pos_emb: NamedArray
-
-    @classmethod
-    def init(cls, Channels: Axis, SourcePos: Axis, base: int = 10000):
-        # this must be compile-time b/c we want to store them in a static field
-        with jax.ensure_compile_time_eval():
-            pos_emb = cls._get_pos_emb(SourcePos=SourcePos, Channels=Channels, base=base)
-
-        return WhisperSinusoidEmbedding(SourcePos, pos_emb)
-
-    @staticmethod
-    def _get_pos_emb(Channels: Axis, SourcePos: Axis, base: int) -> NamedArray:
-        log_timescale_increment = (hax.log(base) / (Channels.size // 2 - 1)).item()
-        ChannelHalfSize = Channels.resize(Channels.size // 2)
-        inv_timescales = hax.exp(-log_timescale_increment * hax.arange(ChannelHalfSize))
-
-        position_ids: NamedArray = hax.arange(SourcePos)
-
-        freqs = position_ids * inv_timescales.broadcast_axis(SourcePos)
-        emb = hax.concatenate(Channels, (hax.sin(freqs), hax.cos(freqs)))
-        return emb
-
-    def __call__(self, seq_len: int) -> NamedArray:
-        return jax.lax.stop_gradient(self.pos_emb[self.Pos, :seq_len])
-
-    # TODO: maybe add a "persistent" option to eqx.field that we use for state dict serialization
-    # if we do that, consider moving the key remapping stuff there too?
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        return self
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        return state_dict
-
-
 class WhisperEncoder(eqx.Module):
+    config: WhisperConfig = eqx.static_field()
     conv1: hnn.Conv
     conv2: hnn.Conv
     act: Callable = eqx.static_field()
-    pos_emb: WhisperSinusoidEmbedding
 
     transformer: WhisperTransformer
-
-    @property
-    def config(self):
-        return self.transformer.config
-
-    @property
-    def Vocab(self) -> Axis:
-        return self.embeddings.Vocab
-
-    @property
-    def Pos(self) -> Axis:
-        return self.config.Pos
 
     @classmethod
     def init(cls, config: WhisperConfig, *, key) -> "WhisperEncoder":
@@ -350,20 +302,21 @@ class WhisperEncoder(eqx.Module):
         if isinstance(config.activation_function, str):
             activation_fn = ACT2FN[config.activation_function]
         act = activation_fn  # type: ignore
-        pos_emb = WhisperSinusoidEmbedding.init(config.SourcePos, config.Embed)
         transformer = WhisperTransformer.init(
             config.EncoderLayers, config.EncoderHeads, config.EncoderHeadSize, config, has_cross=False, key=k_t
         )
 
-        return WhisperEncoder(conv1, conv2, act, pos_emb, transformer)
+        return WhisperEncoder(config, conv1, conv2, act, transformer)
 
     def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
         k_conv1, k_conv2, k_transformer = haliax.jax_utils.maybe_rng_split(key, 3)
         x = self.act(self.conv1(spec, key=k_conv1))
         x = self.act(self.conv2(x, key=k_conv2))
-        x = x.rearrange((..., "position", "embed_dim"))
 
-        x = x + self.pos_emb(x.axis_size("position"))
+        seq_len = x.axis_size("position")
+        pos_emb = whisper_sinusoids(self.config.Embed, self.config.SourcePos)[self.config.SourcePos, :seq_len]
+        x = x + pos_emb
+
         x = self.transformer(x, key=k_transformer)
         return x
 
@@ -485,6 +438,19 @@ class WhisperModel(eqx.Module):
         lm_logits = self.text_decoder(input_ids, audio_features, key=k_decoder)
 
         return lm_logits
+
+
+def whisper_sinusoids(Channels: Axis, SourcePos: Axis, base: int = 10000) -> NamedArray:
+    with jax.ensure_compile_time_eval():
+        log_timescale_increment = (hax.log(base) / (Channels.size // 2 - 1)).item()
+        ChannelHalfSize = Channels.resize(Channels.size // 2)
+        inv_timescales = hax.exp(-log_timescale_increment * hax.arange(ChannelHalfSize))
+
+        position_ids: NamedArray = hax.arange(SourcePos)
+
+        freqs = position_ids * inv_timescales.broadcast_axis(SourcePos)
+        emb = hax.concatenate(Channels, (hax.sin(freqs), hax.cos(freqs)))
+        return emb
 
 
 ACT2FN: Dict[str, Callable] = {
