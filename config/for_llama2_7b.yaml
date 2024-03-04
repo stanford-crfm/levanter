@@ -11,7 +11,7 @@ second_hf_checkpoint: "152334H/miqu-1-70b-sf"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-orca-full"]
+    tags: ["openwebtext", "llama", "mistral-medium"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128  # set for v4-64 TPU
