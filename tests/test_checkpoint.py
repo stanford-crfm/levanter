@@ -9,7 +9,7 @@ import jax
 import jax.tree_util as jtu
 import numpy as np
 import optax
-from chex import assert_trees_all_close
+from chex import assert_trees_all_equal
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 
@@ -179,7 +179,7 @@ def test_checkpoint_simple():
             discover_latest=False,
         )
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(restored_state.model)),
             jax.tree_util.tree_leaves(arrays_only(initial_state.model)),
         )
@@ -217,7 +217,7 @@ def test_checkpoint_steps():
         save_checkpoint(state, step=3, checkpoint_path=tmpdir)
         restored_state = load_checkpoint(rep_state, checkpoint_path=tmpdir, discover_latest=False)
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(restored_state)),
             jax.tree_util.tree_leaves(arrays_only(state)),
         )
@@ -245,8 +245,8 @@ def test_load_from_checkpoint_or_initialize():
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)
 
-    model0 = init_fn(k0)
-    model1 = init_fn(k1)
+    model0 = jax.jit(init_fn)(k0)
+    model1 = jax.jit(init_fn)(k1)
 
     is_checkpointed = jtu.tree_map(lambda _: False, model0)
     is_checkpointed = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
@@ -260,7 +260,7 @@ def test_load_from_checkpoint_or_initialize():
 
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model0, is_checkpointed))),
         )
@@ -275,7 +275,7 @@ def test_load_from_checkpoint_or_initialize():
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed, inverse=True))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed1, inverse=True))),
         )
@@ -304,7 +304,7 @@ def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
 
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
         # should be the same as model1
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )
