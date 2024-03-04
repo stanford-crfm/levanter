@@ -407,7 +407,7 @@ def load_checkpoint_or_initialize(
     # JAX will be smart and only do the compute for things we actually need
     @haliax.named_jit(
         axis_resources=axis_mapping,
-        out_axis_resources=axis_mapping,
+        # out_axis_resources=axis_mapping,
         donate_args=donate_args,
         donate_kwargs=donate_kwargs,
     )

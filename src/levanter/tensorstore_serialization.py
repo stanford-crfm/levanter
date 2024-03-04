@@ -32,15 +32,43 @@ def _is_named_or_none(x):
 
 
 def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
+    manager = array_ser.GlobalAsyncCheckpointManager()
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=_is_named_or_none)
 
-    # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    async def _do_serialize():
-        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
-        return await asyncio.gather(*jtu.tree_leaves(futures))
+    def path_from_key_path(key_path):
+        return os.path.join(checkpoint_dir, *key_path.split("."))
 
-    asyncio.run(_do_serialize())
+    paths = jtu.tree_map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
+    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
+    leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
+
+    # ok, not all of these are arrays, but we'll deal with that in the async function
+    def _ensure_is_array(x):
+        if isinstance(x, (int, float, bool, complex)):
+            return jnp.array(x)
+        else:
+            return x
+
+    arrays = [_ensure_is_array(x) for x in leaves]
+
+    # filter out the None leaves and paths (must be zip)
+    arrays, paths = zip(*[(a, p) for a, p in zip(arrays, paths) if a is not None])
+
+    arrays = list(arrays)
+    paths = list(paths)
+
+    manager.serialize_with_paths(
+        arrays, paths, on_commit_callback=lambda: logger.info("Committed checkpoint to Tensorstore")
+    )
+    manager.wait_until_finished()
+
+    # # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
+    # async def _do_serialize():
+    #     futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
+    #     return await asyncio.gather(*jtu.tree_leaves(futures))
+    #
+    # asyncio.run(_do_serialize())
+    #
 
 
 def _tensorstore_spec_for(checkpoint_dir, key_path: str):
