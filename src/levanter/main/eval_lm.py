@@ -114,7 +114,7 @@ def main(config: EvalLmConfig):
             logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_init_type)
 
-            multihost_broadcast_sync('syncing!')
+            multihost_broadcast_sync('syncing!', is_source=True, timeout=2.0)
             alpha = 1.0
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
