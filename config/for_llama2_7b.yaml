@@ -5,8 +5,8 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-hf_checkpoint: "meta-llama/Llama-2-7b-hf"
-second_hf_checkpoint: "microsoft/Orca-2-7b"
+hf_checkpoint: "meta-llama/Llama-2-70b-hf"
+second_hf_checkpoint: "meta-llama/LLama-2-70b-hf"
 
 trainer:
   wandb:

@@ -150,5 +150,7 @@ cd /home/ahmed/scr
 df -h .
 
 export HF_HOME="/home/ahmed/scr/hf"
+
+pip install torch
 # clean
 
