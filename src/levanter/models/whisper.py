@@ -238,9 +238,11 @@ class WhisperBlock(eqx.Module):
         attn_output = self.attn(self.attn_ln(x), mask=mask, key=k1)
         x = x + attn_output
 
-        if self.cross_attn and self.cross_attn_ln:
-            cross_attn_output = self.cross_attn(self.cross_attn_ln(x), xa, key=k2)
-            x = x + cross_attn_output
+        if self.cross_attn:
+            xs = x
+            if self.cross_attn_ln:
+                xs = self.cross_attn_ln(xs)
+            x = x + self.cross_attn(xs, xa, key=k2)
 
         ff_output = self.mlp(self.mlp_ln(x), key=k3)
         x = x + ff_output
