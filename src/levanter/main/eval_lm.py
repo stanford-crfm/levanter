@@ -101,23 +101,25 @@ def main(config: EvalLmConfig):
 
         if config.hf_checkpoint is not None:
             # load the huggingface model
-            model_config = LlamaLMHeadModel
+            model_config = config.model
             #if not hasattr(model_config, "hf_checkpoint_converter"):
             #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             
+
+            model_init_type = LlamaLMHeadModel
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
             logger.info(f"model config {model_config}")
-            model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
+            model_1 = converter.load_pretrained(model_init_type)
 
             multihost_broadcast_sync('syncing!')
             alpha = 1.0
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
-            model_2 = converter.load_pretrained(model_config)
+            model_2 = converter.load_pretrained(model_init_type)
 
 # Generate alphas from 0 to 1 with a step of 0.05
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
