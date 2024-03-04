@@ -57,6 +57,8 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
     arrays = list(arrays)
     paths = list(paths)
 
+    print(f"arrays: {list(zip(arrays, paths))}", flush=True)
+
     manager.serialize_with_paths(
         arrays, paths, on_commit_callback=lambda: logger.info("Committed checkpoint to Tensorstore")
     )
