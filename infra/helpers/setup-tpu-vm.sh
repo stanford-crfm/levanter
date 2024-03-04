@@ -95,6 +95,8 @@ pip install -U wheel
 #retry pip install -U "jax[tpu]==0.4.5" libtpu-nightly==0.1.dev20230216 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 retry pip install -U "jax[tpu]==0.4.21" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
+pip install -u torch
+
 # clone levanter
 git clone $REPO levanter
 
@@ -151,6 +153,5 @@ df -h .
 
 export HF_HOME="/home/ahmed/scr/hf"
 
-pip install torch
 # clean
 
