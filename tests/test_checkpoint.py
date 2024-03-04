@@ -1,6 +1,7 @@
 import dataclasses
 import datetime
 import pathlib
+import sys
 import tempfile
 from datetime import timedelta
 
@@ -260,6 +261,12 @@ def test_load_from_checkpoint_or_initialize():
         loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
 
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
+
+        print(jax.tree_util.tree_leaves(loaded), file=sys.stderr)
+        print("M1", file=sys.stderr)
+        print(jax.tree_util.tree_leaves(model1), file=sys.stderr)
+        print("M0", file=sys.stderr)
+        print(jax.tree_util.tree_leaves(model0), file=sys.stderr)
 
         assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
