@@ -88,6 +88,26 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
     return obj
 
 
+def wait_at_barrier(name: str, timeout: float = 200.0):
+    """
+    Uses jax's unpublished distributed api to wait at a barrier
+
+    NB: the barrier names must be globally unique, so you should use a unique name for each barrier
+    """
+    import jax._src.distributed as distributed
+    from jaxlib.xla_extension import DistributedRuntimeClient
+
+    if jax.process_count() == 1:
+        return
+
+    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+
+    if client is None:
+        raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
+
+    client.wait_at_barrier(name, timeout_in_ms=int(timeout * 1000.0))
+
+
 # from https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple
 # python is a disgusting language
 def _isnamedtupleinstance(x):

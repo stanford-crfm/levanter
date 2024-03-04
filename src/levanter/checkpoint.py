@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
-from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
@@ -23,6 +23,7 @@ from haliax.jax_utils import is_in_jit
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
+from levanter.utils.jax_utils import wait_at_barrier
 
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,8 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     logger.info(f"Saved checkpoint for step {step}")
 
     # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    sync_global_devices(checkpoint_path)
+    # sync_global_devices(checkpoint_path)
+    wait_at_barrier(f"checkpoint_{step}_saved")
 
     return checkpoint_path
 
