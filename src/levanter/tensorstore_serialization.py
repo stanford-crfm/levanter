@@ -42,6 +42,7 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
     paths = jtu.tree_map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
     paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
     leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
+    assert len(leaves) == len(paths)
 
     # ok, not all of these are arrays, but we'll deal with that in the async function
     def _ensure_is_array(x):
