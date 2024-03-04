@@ -255,6 +255,10 @@ def test_load_from_checkpoint_or_initialize():
     with jax.sharding.Mesh(jax.devices(), ("devices",)), tempfile.TemporaryDirectory() as tmpdir:
         filtered = eqx.filter(model0, is_checkpointed)
         save_checkpoint(filtered, step=0, checkpoint_path=tmpdir)
+        # TODO: checking to see if it doesn't actually wait
+        import time
+
+        time.sleep(10)
 
         loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
 
