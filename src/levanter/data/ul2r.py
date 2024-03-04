@@ -145,6 +145,13 @@ class MaskDenoisingConfig(DenoisingConfig):
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build a mask denoiser example from a list of tokens"""
+        # Slicing.
+        # new_length = sliced_length + 2 * num_spans = sliced_length * (1 + 2r / mu) should be at most length (4096)
+        length = 4096  # TODO: change to actual model seqlen
+        max_length = int(round(length * self.mean_span_length / (self.mean_span_length + 2 * self.mask_prob)))
+        if tokens.shape[0] > max_length:
+            tokens = tokens[:max_length]
+
         # Masking.
         noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
