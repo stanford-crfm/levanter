@@ -187,6 +187,11 @@ class PrefixLmConfig(DenoisingConfig):
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
+        # Slicing.
+        max_length = 4096 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        if tokens.shape[0] > max_length:
+            tokens = tokens[:max_length]
+
         # choose a random length
         np_rng = np.random.default_rng(np.array(key))
         pivot = int(np_rng.integers(1, len(tokens) + 1))
