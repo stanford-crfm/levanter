@@ -24,7 +24,7 @@ from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
-from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish
+from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish, multihost_broadcast_sync
 
 
 logger = logging.getLogger(__name__)
@@ -105,10 +105,13 @@ def main(config: EvalLmConfig):
             #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
+            
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
             logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
+
+            multihost_broadcast_sync('syncing!')
             alpha = 1.0
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
