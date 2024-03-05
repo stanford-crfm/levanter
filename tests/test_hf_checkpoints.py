@@ -98,7 +98,7 @@ def test_save_sharded_checkpoints():
 
     nano_config = Gpt2Config(
         hidden_dim=64,
-        num_heads=2,
+        num_heads=1,
         num_layers=2,
         resid_pdrop=0.0,
     )
