@@ -150,19 +150,28 @@ def dot_product_attention(
                 num_kv_heads_dim = "heads"
                 same_num_qkv_heads = True
 
-            except ValueError:
-                q_heads_per_group = query.resolve_axis("q_heads_per_group")
-                num_kv_heads_dim = "kv_heads"
-                num_q_heads = q_heads_per_group.size * key.resolve_axis(num_kv_heads_dim).size
-                num_q_heads_dim = Axis("heads", num_q_heads)
-                same_num_qkv_heads = False
+                # TransformerEngine self_fused_attn looks for qkv shape:
+                # batch_shape, max_seqlen, nqkv, num_heads, head_dim; where nqkv = 3
+                q_ = haliax.rearrange(query, (batch_dim, QPos, num_q_heads_dim, Key)).array
+                k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
+                v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
 
-            # TransformerEngine self_fused_attn looks for qkv shape:
-            # batch_shape, max_seqlen, nqkv, num_heads, head_dim; where nqkv = 3
-            # If GQA, or MQA Case, num heads for the query is kv_heads * q_heads_per_group
-            q_ = haliax.rearrange(query, (batch_dim, QPos, num_q_heads_dim, Key)).array
-            k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
-            v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
+            except ValueError:
+                same_num_qkv_heads = False
+                q_heads_per_group = "q_heads_per_group"
+                num_kv_heads_dim = "kv_heads"
+                # num_q_heads = query.resolve_axis(q_heads_per_group).size * key.resolve_axis(num_kv_heads_dim).size
+                # num_q_heads_dim = Axis("heads", num_q_heads)
+
+                # If GQA, or MQA Case, num heads for the query is kv_heads * q_heads_per_group
+                # TODO: @David, I'm sure there is a better way to do this. What's the best way in Haliax?
+                q_reshape_einop = (
+                    f"{batch_dim} {num_kv_heads_dim} {q_heads_per_group} {QPos.name} {Key.name} ->"
+                    f" {batch_dim} {QPos.name} ({num_kv_heads_dim} {q_heads_per_group}) {Key.name}"
+                )
+                q_ = haliax.rearrange(query, q_reshape_einop).array
+                k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
+                v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
 
             # Vanilla multi-head self-attention case
             # Head mismatch implies MultiQueryAttn or GroupQueryAttn
