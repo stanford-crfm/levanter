@@ -87,8 +87,8 @@ def pack_inputs_and_outputs(example, max_seq_len, pad_token_id):
 @functools.partial(jax.jit, static_argnums=(0, 1))
 def _create_prefix_lm_example(QPos, KPos, tokens, unpadded_length, num_inputs, pad_token_id):
     # shift back by one since we're predicting the next token
-    # attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
-    attention_mask = hax.nn.attention.causal_mask(QPos, KPos)
+    attention_mask = hax.nn.attention.prefix_lm_mask(QPos, KPos, num_inputs)
+    # attention_mask = hax.nn.attention.causal_mask(QPos, KPos)
     # don't compute loss on:
     # 1) task token
     # 2) inputs (except last token of inputs)
