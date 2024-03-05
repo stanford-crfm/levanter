@@ -503,7 +503,10 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
 class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
     encoder: WhisperEncoder
     decoder: WhisperDecoder
-    config: WhisperConfig
+
+    @property
+    def config(self):
+        return self.encoder.config
 
     @property
     def Vocab(self) -> Axis:
@@ -515,7 +518,7 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         encoder = WhisperEncoder.init(config, key=k_embeddings)
         decoder = WhisperDecoder.init(config, key=k_t)
 
-        return WhisperModel(encoder, decoder, config)
+        return WhisperModel(encoder, decoder)
 
     def __call__(
         self,
