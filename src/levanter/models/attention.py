@@ -167,8 +167,8 @@ def dot_product_attention(
                 # TODO: @David, I'm sure there is a better way to do this. What's the best way in Haliax?
                 print(f"Key value is {Key}")
                 q_reshape_einop = (
-                    f"{batch_dim} {num_kv_heads_dim} {q_heads_per_group} {QPos} {Key.name} ->"
-                    f" {batch_dim} {QPos} ({num_kv_heads_dim} {q_heads_per_group}) {Key.name}"
+                    f"{batch_dim} {num_kv_heads_dim} {q_heads_per_group} {QPos} {Key} ->"
+                    f" {batch_dim} {QPos} ({num_kv_heads_dim} {q_heads_per_group}) {Key}"
                 )
                 print(f"q_reshape_einop: {q_reshape_einop}")
                 q_ = haliax.rearrange(query, q_reshape_einop).array
