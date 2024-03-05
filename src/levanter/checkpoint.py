@@ -271,7 +271,7 @@ def save_checkpoint(
         if commit_callback is not None:
             commit_callback()
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback())
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback)
 
     return checkpoint_path
 
