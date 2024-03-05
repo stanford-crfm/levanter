@@ -102,7 +102,8 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
-        self._manager = GlobalAsyncCheckpointManager()
+        # The default of 5 minutes is too short even for modestly sized models for some reason
+        self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
 
     def load_checkpoint(
         self,
