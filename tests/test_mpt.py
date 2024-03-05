@@ -64,7 +64,7 @@ def test_mpt_nano_compare(attn_impl):
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
-    causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
+    causal_mask = haliax.AttentionMask.causal()
     lev_out = lev_model(hax_input, causal_mask).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)

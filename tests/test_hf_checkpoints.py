@@ -8,6 +8,7 @@ from jax.random import PRNGKey
 import haliax
 
 from levanter.compat.hf_checkpoints import _convert_to_jnp
+from levanter.models.attention import AttentionMask
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.utils.tree_utils import inference_mode
@@ -63,7 +64,7 @@ def test_save_backpack_model_with_code():
         assert loaded_model.Vocab == lev_model.Vocab
 
         input = haliax.random.randint(PRNGKey(0), lev_model.config.Pos, 0, lev_model.Vocab.size)
-        causal_mask = haliax.nn.attention.causal_mask(lev_model.config.Pos, lev_model.config.KeyPos)
+        causal_mask = AttentionMask.causal()
         np.testing.assert_equal(
             np.array(lev_model(input, causal_mask, key=None).array),
             np.array(loaded_model(input, causal_mask, key=None).array),
@@ -118,7 +119,7 @@ def test_save_sharded_checkpoints():
         assert loaded_model.Vocab == nano_model.Vocab
 
         input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
-        causal_mask = haliax.nn.attention.causal_mask(nano_model.config.Pos, nano_model.config.KeyPos)
+        causal_mask = AttentionMask.causal()
         np.testing.assert_equal(
             np.array(nano_model(input, causal_mask, key=None).array),
             np.array(loaded_model(input, causal_mask, key=None).array),

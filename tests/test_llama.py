@@ -9,6 +9,7 @@ from jax import random
 
 import haliax as hax
 
+from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
@@ -143,7 +144,8 @@ def test_llama_attention(use_flash, num_kv_heads):
     x, mask = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
 
     # the torch mask is really a bias, so we need to invert it and make it a big negative number
     mask_torch = (mask_torch == 0).float() * -1e9
@@ -200,7 +202,8 @@ def test_llama_decoder_layer(num_kv_heads):
     x, mask = _get_random_inputs(llama_config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(llama_config.Pos, llama_config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
     mask_torch = (mask_torch == 0).float() * -1e9
 
     out = llama_decoder_layer(x, mask)
@@ -218,7 +221,7 @@ def test_llama_lm_head_model(num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+    mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
     out = llama_model(input_ids, mask)
@@ -233,7 +236,7 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+    mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
@@ -264,7 +267,7 @@ def test_llama_roundtrip(num_kv_heads):
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    attn_mask = AttentionMask.causal()
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
     torch.random.manual_seed(0)
@@ -326,7 +329,7 @@ def _get_random_inputs(config: LlamaConfig):
     Pos = config.Pos
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
-    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    mask = AttentionMask.causal()
     return x, mask
 
 
