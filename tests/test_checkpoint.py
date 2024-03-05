@@ -145,12 +145,13 @@ def test_checkpointer_mixed_policy():
             advance_time(tick)
             checkpointer.on_step(_dummy_step_info(step))
             # we need this to stop a race condition
-            checkpointer.wait_until_finished()
 
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10]
 
         advance_time(tick - 1)
         checkpointer.on_step(_dummy_step_info(11))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10]
 
         for step in range(12, 50):
@@ -158,6 +159,7 @@ def test_checkpointer_mixed_policy():
             advance_time(tick)
 
         # ensure we saved the right checkpoints
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10, 15, 20, 30, 40, 49]  # 49 is last temporary checkpoint
 
 
