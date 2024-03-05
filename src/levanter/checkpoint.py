@@ -22,6 +22,7 @@ import haliax.partitioning
 from haliax.jax_utils import is_in_jit
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+from levanter.trainer_state import saveable_training_mask
 from levanter.types import FilterSpec
 
 
@@ -217,7 +218,7 @@ class Checkpointer:
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = saveable_state(info.state)
+        state = saveable_training_mask(info.state)
         save_checkpoint(
             state,
             step=info.step,
@@ -226,13 +227,6 @@ class Checkpointer:
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
-
-
-def saveable_state(state):
-    to_keep = jax.tree_util.tree_map(lambda _: True, state)
-    to_keep = dataclasses.replace(to_keep, model=state.is_trainable)
-    state = equinox.filter(state, to_keep)
-    return state
 
 
 def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
