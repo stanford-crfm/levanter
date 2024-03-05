@@ -462,6 +462,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         """
         from contextlib import nullcontext
 
+        jax.debug.breakpoint()
+
         if axis_mapping is None:
             axis_mapping_cm = nullcontext()
         else:
