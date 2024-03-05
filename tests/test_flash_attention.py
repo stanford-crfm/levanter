@@ -100,7 +100,7 @@ def test_grad_group_query_attention(num_kv_heads):
     def d_attn(qkv, fn):
         q, k, v = qkv
         x_out = fn(QPos, KPos, Key, q, k, v, mask=mask)
-        return (x_out * x_out).sum().scalar()
+        return (x_out * x_out).mean().scalar()
 
     hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), simple_attention_with_dropout)
     fa_val, (fa_dq, fa_dk, fa_dv) = d_attn(
