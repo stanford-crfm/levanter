@@ -165,10 +165,12 @@ def dot_product_attention(
 
                 # If GQA, or MQA Case, num heads for the query is kv_heads * q_heads_per_group
                 # TODO: @David, I'm sure there is a better way to do this. What's the best way in Haliax?
+                print(f"Key value is {Key}")
                 q_reshape_einop = (
-                    f"{batch_dim} {num_kv_heads_dim} {q_heads_per_group} {QPos.name} {Key.name} ->"
-                    f" {batch_dim} {QPos.name} ({num_kv_heads_dim} {q_heads_per_group}) {Key.name}"
+                    f"{batch_dim} {num_kv_heads_dim} {q_heads_per_group} {QPos} {Key.name} ->"
+                    f" {batch_dim} {QPos} ({num_kv_heads_dim} {q_heads_per_group}) {Key.name}"
                 )
+                print(f"q_reshape_einop: {q_reshape_einop}")
                 q_ = haliax.rearrange(query, q_reshape_einop).array
                 k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
                 v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
