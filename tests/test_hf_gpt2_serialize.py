@@ -15,6 +15,7 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.optim import AdamConfig
@@ -60,7 +61,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    attn_mask = AttentionMask.causal()
 
     def compute(input):
         return hax.nn.softmax(model(input, key=None, attn_mask=attn_mask), axis=model.Vocab)
@@ -115,7 +116,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         return model(input_ids, labels=input_ids)[0]
 
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
-    causal_mask = hax.nn.attention.causal_mask(model.config.Pos, model.config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, attn_mask=causal_mask)

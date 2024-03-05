@@ -168,7 +168,7 @@ def test_lora_load_in_peft():
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
 
-    causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         from peft import PeftConfig, PeftModel

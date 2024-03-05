@@ -7,6 +7,7 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis
 
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs
 
@@ -33,7 +34,7 @@ def test_gradient_checkpointing(num_blocks):
 
     input_ids = hax.arange(config.Pos, dtype=jnp.int32)
 
-    causal_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     a1 = model(input_ids, key=key, attn_mask=causal_mask)
     a2 = model_checkpoint(input_ids, key=key, attn_mask=causal_mask)

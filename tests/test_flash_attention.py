@@ -8,7 +8,7 @@ import pytest
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionMask, simple_attention_with_dropout
 from levanter.models.flash_attention import flash_attention
 
 
@@ -63,16 +63,12 @@ def test_grad_attention():
     @equinox.filter_value_and_grad
     def d_attn(qkv, fn):
         q, k, v = qkv
-        if fn is hnn.attention.dot_product_attention:
-            my_mask = mask.materialize(QPos, KPos)
-        else:
-            my_mask = mask
-        x_out = fn(KPos, Key, q, k, v, mask=my_mask)
-        return (x_out * x_out).mean().scalar()
+        x_out = fn(QPos, KPos, Key, q, k, v, mask=mask)
+        return (x_out * x_out).sum().scalar()
 
-    hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
+    hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), simple_attention_with_dropout)
     fa_val, (fa_dq, fa_dk, fa_dv) = d_attn(
-        (q, k, v), functools.partial(flash_attention, QPos, inference=True, block_size=BLOCK_SIZE)
+        (q, k, v), functools.partial(flash_attention, inference=True, block_size=BLOCK_SIZE)
     )
 
     assert jnp.allclose(hax_val, fa_val, atol=1e-3, rtol=1e-3)
@@ -94,7 +90,7 @@ def test_grad_group_query_attention(num_kv_heads):
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    mask = hax.nn.attention.causal_mask(QPos, KPos)
+    mask = AttentionMask.causal()
 
     q = hax.random.normal(jrandom.PRNGKey(0), (Batch, KVHeads, QHeadsPerGroup, QPos, Key))
     k = hax.random.normal(jrandom.PRNGKey(1), (Batch, KVHeads, KPos, Key))
@@ -103,12 +99,12 @@ def test_grad_group_query_attention(num_kv_heads):
     @equinox.filter_value_and_grad
     def d_attn(qkv, fn):
         q, k, v = qkv
-        x_out = fn(KPos, Key, q, k, v, mask=mask)
-        return (x_out * x_out).mean().scalar()
+        x_out = fn(QPos, KPos, Key, q, k, v, mask=mask)
+        return (x_out * x_out).sum().scalar()
 
-    hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), hnn.attention.dot_product_attention)
+    hax_val, (hax_dq, hax_dk, hax_dv) = d_attn((q, k, v), simple_attention_with_dropout)
     fa_val, (fa_dq, fa_dk, fa_dv) = d_attn(
-        (q, k, v), functools.partial(flash_attention, QPos, inference=True, block_size=BLOCK_SIZE)
+        (q, k, v), functools.partial(flash_attention, inference=True, block_size=BLOCK_SIZE, mask=mask)
     )
 
     assert jnp.allclose(hax_val, fa_val, atol=1e-3, rtol=1e-3)
