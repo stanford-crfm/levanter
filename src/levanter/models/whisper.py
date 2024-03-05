@@ -70,7 +70,7 @@ class WhisperConfig(HFCompatConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "openai/whisper-base")
+        return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.max_length))
