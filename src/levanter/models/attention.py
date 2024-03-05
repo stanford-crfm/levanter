@@ -159,7 +159,9 @@ def dot_product_attention(
             # batch_shape, max_seqlen, nqkv, num_heads, head_dim; where nqkv = 3
             # If GQA, or MQA Case, num heads for the query is kv_heads * q_heads_per_group
             q_ = haliax.rearrange(query, (batch_dim, QPos, ..., Key)).array
+            print(f"q_ shape is {q_.shape}")
             k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
+            print(f"k_ shape is {k_} shape")
             v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
 
             # Vanilla multi-head self-attention case
