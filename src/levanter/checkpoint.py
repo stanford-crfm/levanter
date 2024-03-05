@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
+from jax.experimental.array_serialization.serialization import GlobalAsyncCheckpointManager
 from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
 from jaxtyping import PyTree
 
@@ -100,6 +101,8 @@ class Checkpointer:
                 continue
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
+
+        self._manager = GlobalAsyncCheckpointManager()
 
     def load_checkpoint(
         self,
@@ -222,13 +225,16 @@ class Checkpointer:
             state,
             step=info.step,
             checkpoint_path=path,
+            manager=self._manager,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
         logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
-def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
+def save_checkpoint(
+    tree: M, step: int, checkpoint_path: PathLike, manager: Optional[GlobalAsyncCheckpointManager] = None
+):
     """
     Save a checkpoint to a given path using TensorStore.
 
@@ -246,7 +252,7 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree)
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager)
     save_metadata(checkpoint_path, fs, step)
 
     logger.info(f"Saved checkpoint for step {step}")

@@ -31,8 +31,12 @@ def _is_named_or_none(x):
     return x is None or is_named_array(x)
 
 
-def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
-    manager = array_ser.GlobalAsyncCheckpointManager()
+def tree_serialize_leaves_tensorstore(
+    checkpoint_dir, pytree, manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None
+):
+    if manager is None:
+        manager = array_ser.GlobalAsyncCheckpointManager()
+
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
 
     def path_from_key_path(key_path):
