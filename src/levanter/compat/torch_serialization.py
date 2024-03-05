@@ -152,7 +152,7 @@ def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: 
         # TODO: might want to add a flag that allows missing keys?
         new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
         # Do not try to update parameters that are never defined
-        if not value and not new:
+        if value is not None and new is not None:
             continue
         names.append(field.name)
         values.append(new)
