@@ -139,4 +139,6 @@ def test_fa_dropout_does_something():
     with_o = fa_with_dropout(QPos, KPos, Key, q, k, v, mask=mask)
 
     assert with_o.axes == without_o.axes
-    assert not jnp.any(jnp.isclose(with_o.array, without_o.array, atol=1e-3, rtol=1e-3))
+    mean = jnp.mean(jnp.isclose(with_o.array, without_o.array, atol=1e-3, rtol=1e-3))
+    print(mean)
+    assert not mean
