@@ -41,7 +41,8 @@ dependencies = [
     "fsspec<2024.3.0",
     # TODO: minimize and report an issue to tensorstore
     # causes hangs when serializing to GCS
-    "tensorstore==0.1.54",
+#    "tensorstore==0.1.54",
+    "tensorstore==0.1.45",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]",
