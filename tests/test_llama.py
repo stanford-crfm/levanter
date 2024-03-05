@@ -9,16 +9,11 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.llama import (
-    LlamaAttention,
-    LlamaConfig,
-    LlamaDecoderLayer,
-    LlamaLMHeadModel,
-    LlamaRMSNorm,
-    LlamaRotaryEmbedding,
-)
+from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
+from levanter.models.llama import llama_rotary_pos_emb
+from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
@@ -64,8 +59,7 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_rope = LlamaRotaryEmbedding(HeadSize=HeadSize, Pos=Pos)
-    levanter_output = levanter_rope(seq_len=seq_len)
+    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
     hf_output = hf_rope(x_torch, seq_len=seq_len)
 
@@ -160,6 +154,12 @@ def test_llama_attention(use_flash, num_kv_heads):
     assert np.isclose(
         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
     ).all(), f"{hf_out[0]} != {out}"
+
+
+def test_llama_param_counts_dont_change_with_seqlen():
+    model = LlamaLMHeadModel.init(hax.Axis("v", 2048), _get_llama_config(seq_len=128), key=random.PRNGKey(0))
+    model2 = LlamaLMHeadModel.init(hax.Axis("v", 2048), _get_llama_config(seq_len=256), key=random.PRNGKey(0))
+    assert parameter_count(model) == parameter_count(model2)
 
 
 @skip_if_no_torch
@@ -304,13 +304,13 @@ def test_llama_roundtrip(num_kv_heads):
         assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
-def _get_llama_config(use_flash=False, num_kv_heads=4) -> LlamaConfig:
+def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
     }
     return LlamaConfig(
-        seq_len=128,
+        seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
