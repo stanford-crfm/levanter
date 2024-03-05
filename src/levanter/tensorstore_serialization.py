@@ -4,7 +4,6 @@ import asyncio
 import functools
 import logging
 import os
-import sys
 from functools import partial
 from typing import Optional
 
@@ -58,8 +57,6 @@ def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
 
     arrays = list(arrays)
     paths = list(paths)
-
-    print(f"arrays: {list(zip(arrays, paths))}", flush=True, file=sys.stderr)
 
     manager.serialize_with_paths(
         arrays, paths, on_commit_callback=lambda: logger.info("Committed checkpoint to Tensorstore")

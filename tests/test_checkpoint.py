@@ -291,60 +291,6 @@ def test_load_from_checkpoint_or_initialize():
         )
 
 
-def test_load_from_checkpoint_minimize():
-    In = Axis("in", 2)
-    Out = Axis("out", 1)
-
-    def init_fn(key):
-        # return haliax.nn.MLP.init(In, Out, 2, 1, key=key)
-        return haliax.nn.Linear.init(In, Out, key=key)
-
-    k0 = jax.random.PRNGKey(0)
-    k1 = jax.random.PRNGKey(1)
-
-    model0 = jax.jit(init_fn)(k0)
-    model1 = jax.jit(init_fn)(k1)
-
-    is_checkpointed = jtu.tree_map(lambda _: False, model0)
-    is_checkpointed = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
-    is_checkpointed1 = jtu.tree_map(lambda _: False, model1)
-    is_checkpointed1 = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed1, replace=True)
-
-    with jax.sharding.Mesh(jax.devices(), ("devices",)), tempfile.TemporaryDirectory() as tmpdir:
-        filtered = eqx.filter(model0, is_checkpointed)
-        save_checkpoint(filtered, step=0, checkpoint_path=tmpdir)
-
-        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
-
-        assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
-
-        print(jax.tree_util.tree_leaves(loaded), file=sys.stderr)
-        print("M1", file=sys.stderr)
-        print(jax.tree_util.tree_leaves(model1), file=sys.stderr)
-        print("M0", file=sys.stderr)
-        print(jax.tree_util.tree_leaves(model0), file=sys.stderr)
-
-        assert_trees_all_equal(
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(model0, is_checkpointed))),
-        )
-
-        assert_trees_not_close(
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed, inverse=True))),
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(model0, is_checkpointed, inverse=True))),
-        )
-
-        assert_trees_not_close(
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
-        )
-
-        assert_trees_all_equal(
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed, inverse=True))),
-            jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed1, inverse=True))),
-        )
-
-
 def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
     In = Axis("in", 2)
     Out = Axis("out", 1)
