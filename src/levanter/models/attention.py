@@ -153,7 +153,7 @@ def dot_product_attention(
             except ValueError:
                 q_heads_per_group = query.resolve_axis("q_heads_per_group")
                 num_kv_heads_dim = "kv_heads"
-                num_q_heads = q_heads_per_group * key.resolve_axis(num_kv_heads_dim)
+                num_q_heads = q_heads_per_group.size * key.resolve_axis(num_kv_heads_dim).size
                 num_q_heads_dim = Axis("heads", num_q_heads)
                 same_num_qkv_heads = False
 
