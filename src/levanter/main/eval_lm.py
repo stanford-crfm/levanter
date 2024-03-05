@@ -149,8 +149,8 @@ def main(config: EvalLmConfig):
                 print(f"Loss from merged model (alpha={alpha}): ", loss)
                 del merged_model
 
-            print('done!')
-            import os; os._exit(0)
+                print('done!')
+                import os; os._exit(0)
         
 
             

@@ -384,6 +384,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             except HFValidationError:
                 pass
 
+        jax.debug.breakpoint()
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
             state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
         elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
