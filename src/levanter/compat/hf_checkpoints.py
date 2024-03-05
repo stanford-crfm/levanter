@@ -421,6 +421,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         shard_files = list(set(index["weight_map"].values()))
         final_state_dict = {}
 
+        # right now we do safe tensors thing
+        # where we load into memory then update some dict
         if "safetensors" in index_file:
             import safetensors
 
@@ -439,8 +441,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 # Download the shard if not found locally
                 shard_path = hf_hub_download(id, shard_file, revision=rev)
 
-            state_dict = loader(shard_path)
-            final_state_dict.update(state_dict)
+            with safetensors.safe_open(shard_path, framework="np", device="cpu") as f:
+                for key in f.keys():
+                    final_state_dict[key] = f.get_tensor(key)
+            #state_dict = loader(shard_path)
+            #final_state_dict.update(state_dict)
 
             del state_dict
 
