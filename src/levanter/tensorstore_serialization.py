@@ -5,7 +5,7 @@ import functools
 import logging
 import os
 from functools import partial
-from typing import Optional
+from typing import Callable, Optional
 
 import jax
 import jax.experimental.array_serialization.serialization as array_ser
@@ -32,7 +32,11 @@ def _is_named_or_none(x):
 
 
 def tree_serialize_leaves_tensorstore(
-    checkpoint_dir, pytree, manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None
+    checkpoint_dir,
+    pytree,
+    manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable] = None,
 ):
     if manager is None:
         manager = array_ser.GlobalAsyncCheckpointManager()
@@ -65,20 +69,13 @@ def tree_serialize_leaves_tensorstore(
     arrays = list(arrays)
     paths = list(paths)
 
-    manager.serialize_with_paths(
-        arrays, paths, on_commit_callback=lambda: logger.info("Committed checkpoint to Tensorstore")
-    )
+    if commit_callback is None:
+        commit_callback = lambda: logger.info("Committed checkpoint to Tensorstore")  # noqa
+
+    manager.serialize_with_paths(arrays, paths, on_commit_callback=commit_callback)
 
     if manager_was_none:
         manager.wait_until_finished()
-
-    # # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    # async def _do_serialize():
-    #     futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
-    #     return await asyncio.gather(*jtu.tree_leaves(futures))
-    #
-    # asyncio.run(_do_serialize())
-    #
 
 
 def _tensorstore_spec_for(checkpoint_dir, key_path: str):

@@ -184,15 +184,19 @@ class Checkpointer:
             last_checkpoint = self._last_temporary_checkpoint
             destination = f"step-{step}"
 
-            self.save_checkpoint(info, destination)
+            def callback():
+                if last_checkpoint is not None:
+                    self._rm_checkpoint(last_checkpoint)
+
+                logger.info(f"Saved checkpoint at step {step} to {destination}")
+
+            self.save_checkpoint(info, destination, commit_callback=callback)
 
             if not save_permanent_ckpt:
                 self._last_temporary_checkpoint = destination
             else:
                 self._last_temporary_checkpoint = None
 
-            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
-            # so that we can delete it properly if we recover
             if last_checkpoint is not None:
                 self._rm_checkpoint(last_checkpoint)
 
@@ -217,7 +221,7 @@ class Checkpointer:
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint", exc_info=True)
 
-    def save_checkpoint(self, info, destination: str):
+    def save_checkpoint(self, info, destination: str, commit_callback: Optional[Callable[[], None]] = None):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
         state = info.state.saveable_state
@@ -226,14 +230,19 @@ class Checkpointer:
             step=info.step,
             checkpoint_path=path,
             manager=self._manager,
+            commit_callback=commit_callback,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
-        logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
 def save_checkpoint(
-    tree: M, step: int, checkpoint_path: PathLike, manager: Optional[GlobalAsyncCheckpointManager] = None
+    tree: M,
+    step: int,
+    checkpoint_path: PathLike,
+    manager: Optional[GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable[[], None]] = None,
 ):
     """
     Save a checkpoint to a given path using TensorStore.
@@ -252,7 +261,7 @@ def save_checkpoint(
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager)
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=commit_callback)
     save_metadata(checkpoint_path, fs, step)
 
     logger.info(f"Saved checkpoint for step {step}")
