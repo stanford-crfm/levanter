@@ -172,7 +172,6 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
     config: WhisperConfig = eqx.static_field()
 
     q_proj: hnn.Linear  # input projection from [embed] -> [q, heads, head_dim]
-    # Unlike other attention blocks in Levanter, splits query to support cross-attn
     k_proj: hnn.Linear  # input projection from [embed] -> [k, heads, head_dim]
     v_proj: hnn.Linear  # input projection from [embed] -> [v, heads, head_dim]
 
@@ -317,7 +316,7 @@ class WhisperLayer(
 class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
     layers: Stacked[WhisperLayer]
     Layer: Axis
-    ln_f: hnn.LayerNorm
+    layer_norm: hnn.LayerNorm
 
     @staticmethod
     def init(Layer: Axis, Heads: Axis, HeadSize: Axis, config: WhisperConfig, has_cross: bool, *, key):
@@ -329,9 +328,9 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
             has_cross=has_cross,
             key=shaped_rng_split(key, Layer.size),
         )
-        ln_f = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        layer_norm = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
-        return WhisperTransformer(layers, Layer, ln_f)
+        return WhisperTransformer(layers, Layer, layer_norm)
 
     @named_call
     def __call__(
@@ -344,7 +343,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
     ) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.Layer) if key is not None else None
         x = self.layers.fold(x, xa, attn_mask, key=keys)
-        x = self.ln_f(x)
+        x = self.layer_norm(x)
 
         return x
 
@@ -361,9 +360,6 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         state_dict.update(stacked_dict)
 
         return state_dict
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"ln_f": "layer_norm"}
 
 
 class WhisperEncoder(eqx.Module, StateDictSerializationMixin):

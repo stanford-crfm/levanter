@@ -129,7 +129,7 @@ class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixi
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHfSerializationMixin":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "ModelWithHfSerializationMixin":
         pass
 
 
