@@ -68,6 +68,8 @@ def test_checkpointer_changing_policy():
         for step in range(1, 50):
             checkpointer.on_step(_dummy_step_info(step))
 
+        checkpointer.wait_until_finished()
+
         # ensure we saved the right checkpoints
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10, 15, 20, 30, 40]
 
@@ -87,13 +89,16 @@ def test_checkpointer_temporal_policy():
         checkpointer.on_step(_dummy_step_info(0))
         advance_time(tick)
         checkpointer.on_step(_dummy_step_info(1))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
 
         advance_time(tick - 1)
         checkpointer.on_step(_dummy_step_info(2))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
         advance_time(1)
         checkpointer.on_step(_dummy_step_info(3))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [3]
 
 
@@ -121,16 +126,19 @@ def test_checkpointer_mixed_policy():
         checkpointer.on_step(_dummy_step_info(0))
         advance_time(tick)
         checkpointer.on_step(_dummy_step_info(1))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
 
         advance_time(tick - 1)
         # time hasn't advanced enough, so we wouldn't save a checkpoint, but we do because of the interval
         checkpointer.on_step(_dummy_step_info(2))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2]
 
         advance_time(1)
         # time has advanced enough now from last temporal save, but we don't save a checkpoint because we just saved one
         checkpointer.on_step(_dummy_step_info(3))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2]
 
         for step in range(4, 11):
