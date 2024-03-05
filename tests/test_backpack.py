@@ -10,6 +10,7 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 
+from levanter.models.attention import AttentionMask
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
@@ -30,7 +31,7 @@ def test_backpack_predict():
     model = mp.cast_to_param(model)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    attn_mask = AttentionMask.causal()
 
     def compute(input):
         return hax.nn.softmax(

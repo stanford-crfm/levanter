@@ -243,7 +243,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
         # reorder heads and position for better training throughput
@@ -364,7 +364,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
@@ -396,7 +396,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.layers.fold(x, mask=attn_mask, key=keys)
         x = self.norm(x)
