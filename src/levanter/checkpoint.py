@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
 from jax.experimental.array_serialization.serialization import GlobalAsyncCheckpointManager
-from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
@@ -189,8 +189,6 @@ class Checkpointer:
                 if last_checkpoint is not None:
                     self._rm_checkpoint(last_checkpoint)
 
-                logger.info(f"Saved checkpoint at step {step} to {destination}")
-
             self.save_checkpoint(info, destination, commit_callback=callback)
 
             if not save_permanent_ckpt:
@@ -226,6 +224,7 @@ class Checkpointer:
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
         state = info.state.saveable_state
+
         save_checkpoint(
             state,
             step=info.step,
@@ -262,13 +261,14 @@ def save_checkpoint(
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=commit_callback)
-    save_metadata(checkpoint_path, fs, step)
+    def my_callback():
+        save_metadata(checkpoint_path, fs, step)
+        logger.info(f"Saved checkpoint to {checkpoint_path} for step {step}")
 
-    logger.info(f"Saved checkpoint for step {step}")
+        if commit_callback is not None:
+            commit_callback()
 
-    # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    sync_global_devices(checkpoint_path)
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback())
 
     return checkpoint_path
 
