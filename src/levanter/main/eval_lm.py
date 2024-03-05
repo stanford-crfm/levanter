@@ -137,7 +137,7 @@ def main(config: EvalLmConfig):
                         return x + y
 
                 # Use the rounded alpha for merging models
-                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False)(model_1, model_2)
+                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=True)(model_1, model_2)
 
                 # Use the rounded alpha for merging models
                 # Evaluate the loss for the merged model
@@ -148,6 +148,9 @@ def main(config: EvalLmConfig):
 
                 print(f"Loss from merged model (alpha={alpha}): ", loss)
                 del merged_model
+
+            print('done!')
+            import os; os._exit(0)
         
 
             
