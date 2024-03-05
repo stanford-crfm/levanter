@@ -91,6 +91,8 @@ def dot_product_attention(
                 num_kv_heads_dim = "heads"
 
             except ValueError:
+                from levanter.models.flash_attention import flash_attention
+
                 # Using MQA / GQA, calling jax flash attention for now
                 # TODO: Figure out re-shaping of query and key/value dims for
                 # GQA so TransformerEngine cross_fused_attn can be called instead
