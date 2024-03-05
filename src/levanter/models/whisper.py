@@ -78,10 +78,11 @@ class WhisperConfig(HFCompatConfig):
     SourcePos = property(lambda self: Axis(name="position", size=self.max_source_positions))
     Vocab = property(lambda self: Axis(name="vocab_size", size=self.vocab_size))
     Embed = property(lambda self: Axis(name="embed_dim", size=self.d_model))
-    Mlp = property(lambda self: Axis(name="mlp_dim", size=self.d_model * 4))
+    EncoderMlp = property(lambda self: Axis(name="mlp_dim", size=self.encoder_ffn_dim))
     EncoderHeads = property(lambda self: Axis(name="heads", size=self.encoder_attention_heads))
     EncoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.encoder_attention_heads))
     EncoderLayer = property(lambda self: Axis(name="encoder_layers", size=self.encoder_layers))
+    DecoderMlp = property(lambda self: Axis(name="mlp_dim", size=self.decoder_ffn_dim))
     DecoderHeads = property(lambda self: Axis(name="heads", size=self.decoder_attention_heads))
     DecoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.decoder_attention_heads))
     DecoderLayer = property(lambda self: Axis(name="decoder_layers", size=self.decoder_layers))
@@ -264,7 +265,9 @@ class WhisperLayer(
     mlp_ln: hnn.LayerNorm
 
     @staticmethod
-    def init(Heads: Axis, HeadSize: Axis, config: WhisperConfig, has_cross: bool = True, *, key) -> "WhisperLayer":
+    def init(
+        Heads: Axis, HeadSize: Axis, Mlp: Axis, config: WhisperConfig, has_cross: bool = True, *, key
+    ) -> "WhisperLayer":
         k_attn, k_cross, k_mlp = haliax.jax_utils.maybe_rng_split(key, 3)
 
         attn_ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
@@ -277,9 +280,7 @@ class WhisperLayer(
             encoder_attn_ln = None
             encoder_attn = None
 
-        mlp = WhisperMlp.init(
-            config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias
-        )
+        mlp = WhisperMlp.init(config.Embed, Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
         mlp_ln = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
 
         return WhisperLayer(self_attn, attn_ln, encoder_attn, encoder_attn_ln, mlp, mlp_ln)
@@ -319,11 +320,12 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
     layer_norm: hnn.LayerNorm
 
     @staticmethod
-    def init(Layer: Axis, Heads: Axis, HeadSize: Axis, config: WhisperConfig, has_cross: bool, *, key):
+    def init(Layer: Axis, Heads: Axis, HeadSize: Axis, Mlp: Axis, config: WhisperConfig, has_cross: bool, *, key):
         # vectorize the blocks
         layers = Stacked.init(Layer, WhisperLayer, gradient_checkpointing=config.gradient_checkpointing)(
             Heads,
             HeadSize,
+            Mlp,
             config,
             has_cross=has_cross,
             key=shaped_rng_split(key, Layer.size),
@@ -382,7 +384,13 @@ class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
             activation_fn = ACT2FN[config.activation_function]
         act = activation_fn  # type: ignore
         transformer = WhisperTransformer.init(
-            config.EncoderLayer, config.EncoderHeads, config.EncoderHeadSize, config, has_cross=False, key=k_t
+            config.EncoderLayer,
+            config.EncoderHeads,
+            config.EncoderHeadSize,
+            config.EncoderMlp,
+            config,
+            has_cross=False,
+            key=k_t,
         )
 
         return WhisperEncoder(config, conv1, conv2, act, transformer)
@@ -467,7 +475,13 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
     def init(cls, config: WhisperConfig, *, key) -> "WhisperDecoder":
         k_t, k_embeddings = haliax.jax_utils.maybe_rng_split(key, 2)
         transformer = WhisperTransformer.init(
-            config.DecoderLayer, config.DecoderHeads, config.DecoderHeadSize, config, has_cross=True, key=k_t
+            config.DecoderLayer,
+            config.DecoderHeads,
+            config.DecoderHeadSize,
+            config.DecoderMlp,
+            config,
+            has_cross=True,
+            key=k_t,
         )
         embeddings = WhisperDecoderEmbeddings.init(config.Vocab, config, key=k_embeddings)
 
