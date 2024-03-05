@@ -111,9 +111,6 @@ def main(config: EvalLmConfig):
             model_init_type = LlamaLMHeadModel
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
-            logger.info(f"model config {model_config}")
-            import ipdb; ipdb.set_trace()
-            ipdb.set_trace()
             model_1 = converter.load_pretrained(model_init_type)
 
             #multihost_broadcast_sync('syncing!', is_source=True, timeout=2.0)

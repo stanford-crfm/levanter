@@ -409,6 +409,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def _load_shards(self, id: str, index_file: str, rev: Optional[str]) -> dict:
         """Load model from sharded files based on the provided index."""
+        import ipdb; ipdb.set_trace()
         index_path = os.path.join(id, index_file)
         if not os.path.exists(index_path):
             # Download the index file if not found locally
