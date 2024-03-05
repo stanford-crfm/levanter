@@ -146,22 +146,22 @@ def dot_product_attention(
             try:
                 query.resolve_axis("heads")
                 key.resolve_axis("heads")
+                num_q_heads_dim = "heads"
                 num_kv_heads_dim = "heads"
                 same_num_qkv_heads = True
 
             except ValueError:
+                q_heads_per_group = query.resolve_axis("q_heads_per_group")
                 num_kv_heads_dim = "kv_heads"
+                num_q_heads = q_heads_per_group * key.resolve_axis(num_kv_heads_dim)
+                num_q_heads_dim = Axis("heads", num_q_heads)
                 same_num_qkv_heads = False
-
-            num_q_heads_dim = "heads"
 
             # TransformerEngine self_fused_attn looks for qkv shape:
             # batch_shape, max_seqlen, nqkv, num_heads, head_dim; where nqkv = 3
             # If GQA, or MQA Case, num heads for the query is kv_heads * q_heads_per_group
-            q_ = haliax.rearrange(query, (batch_dim, QPos, ..., Key)).array
-            print(f"q_ shape is {q_.shape}")
+            q_ = haliax.rearrange(query, (batch_dim, QPos, num_q_heads_dim, Key)).array
             k_ = haliax.rearrange(key, (batch_dim, KPos, num_kv_heads_dim, Key)).array
-            print(f"k_ shape is {k_} shape")
             v_ = haliax.rearrange(value, (batch_dim, KPos, num_kv_heads_dim, Key)).array
 
             # Vanilla multi-head self-attention case
@@ -193,6 +193,9 @@ def dot_product_attention(
 
                 q = q_
                 kv = jnp.stack((k_, v_), axis=2)
+
+                print(f"q shape is {q.shape}")
+                print(f"kv shape is {kv.shape}")
 
                 attn_output = cross_fused_attn(
                     q=q,
