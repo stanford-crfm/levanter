@@ -36,6 +36,9 @@ def tree_serialize_leaves_tensorstore(
 ):
     if manager is None:
         manager = array_ser.GlobalAsyncCheckpointManager()
+        manager_was_none = True
+    else:
+        manager_was_none = False
 
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
 
@@ -65,7 +68,9 @@ def tree_serialize_leaves_tensorstore(
     manager.serialize_with_paths(
         arrays, paths, on_commit_callback=lambda: logger.info("Committed checkpoint to Tensorstore")
     )
-    manager.wait_until_finished()
+
+    if manager_was_none:
+        manager.wait_until_finished()
 
     # # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
     # async def _do_serialize():
