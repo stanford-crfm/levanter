@@ -13,9 +13,9 @@ from levanter.models.whisper import WhisperConfig, WhisperModel
 def test_basic_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-small")
     conf = WhisperConfig.from_hf_config(c)
-    model = WhisperModel.init(conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     processor = WhisperProcessor.from_pretrained("openai/whisper-small")
+    model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
+    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
