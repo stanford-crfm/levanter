@@ -23,7 +23,7 @@ def test_train_lm():
                     num_heads=2,
                     seq_len=32,
                     hidden_dim=32,
-                    flash_attention_block_size=32,
+                    use_flash_attention=False,
                 ),
                 trainer=train_lm.TrainerConfig(
                     num_train_steps=2,
