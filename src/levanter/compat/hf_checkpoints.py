@@ -447,8 +447,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
             #state_dict = loader(shard_path)
             #final_state_dict.update(state_dict)
 
-            del state_dict
-
         return final_state_dict
 
     def load_pretrained(
