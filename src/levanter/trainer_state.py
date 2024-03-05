@@ -65,6 +65,10 @@ class TrainerState(eqx.Module, Generic[M]):
     def trainable_model(self) -> M:
         return trainables_only(self.model, self.is_trainable)
 
+    @property
+    def saveable_state(self) -> FilterTree:
+        return eqx.filter(self, saveable_training_mask(self, self.is_trainable))
+
     @classmethod
     def init(
         cls,

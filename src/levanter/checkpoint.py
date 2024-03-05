@@ -22,7 +22,6 @@ import haliax.partitioning
 from haliax.jax_utils import is_in_jit
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
-from levanter.trainer_state import saveable_training_mask
 from levanter.types import FilterSpec
 
 
@@ -218,7 +217,7 @@ class Checkpointer:
     def save_checkpoint(self, info, destination: str):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = saveable_training_mask(info.state)
+        state = info.state.saveable_state
         save_checkpoint(
             state,
             step=info.step,
@@ -401,7 +400,7 @@ def load_checkpoint_or_initialize(
     # JAX will be smart and only do the compute for things we actually need
     @haliax.named_jit(
         axis_resources=axis_mapping,
-        # out_axis_resources=axis_mapping,
+        out_axis_resources=axis_mapping,
         donate_args=donate_args,
         donate_kwargs=donate_kwargs,
     )
