@@ -193,9 +193,7 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
         return WhisperAttention(config, q_proj, k_proj, v_proj, out_proj, inference=False)
 
     @named_call
-    def __call__(
-        self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask | NamedArray] = None, *, key
-    ):
+    def __call__(self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask] = None, *, key):
         k_k, k_v, k_q, k_out, k_drop = hax.jax_utils.maybe_rng_split(key, 5)
         q = self.q_proj(x, key=k_q).rearrange((..., "heads", "position", "head_size"))
         kv_in = x if xa is None else xa
@@ -286,9 +284,7 @@ class WhisperLayer(
         return WhisperLayer(self_attn, attn_ln, encoder_attn, encoder_attn_ln, mlp, mlp_ln)
 
     @named_call
-    def __call__(
-        self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask | NamedArray] = None, *, key
-    ):
+    def __call__(self, x: NamedArray, xa: Optional[NamedArray] = None, mask: Optional[AttentionMask] = None, *, key):
         k1, k2, k3 = haliax.jax_utils.maybe_rng_split(key, 3)
 
         attn_output = self.self_attn(self.attn_ln(x), mask=mask, key=k1)
@@ -339,7 +335,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         self,
         x: NamedArray,
         xa: Optional[NamedArray] = None,
-        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        attn_mask: Optional[AttentionMask] = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -491,14 +487,13 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
         self,
         input_ids: NamedArray,
         audio_embeds: NamedArray,
-        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        attn_mask: Optional[AttentionMask] = None,
         *,
         key=None,
     ) -> NamedArray:
-        Pos = input_ids.resolve_axis("position")
-        causal_mask = hax.nn.attention.causal_mask(Pos, Pos.alias("key_position"))
-        if attn_mask:
-            causal_mask = causal_mask * attn_mask
+        causal_mask = AttentionMask.causal()
+        if attn_mask is not None:
+            causal_mask = causal_mask & attn_mask
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
         x = self.transformer(x, audio_embeds, causal_mask, key=k_transformer)
@@ -542,6 +537,8 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         *,
         key=None,
     ) -> NamedArray:
+        if attn_mask is not None and not isinstance(attn_mask, AttentionMask):
+            attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_decoder = haliax.jax_utils.maybe_rng_split(key, 2)
         audio_features = self.encoder(mel, key=k_encoder)
         lm_logits = self.decoder(input_ids, audio_features, key=k_decoder)

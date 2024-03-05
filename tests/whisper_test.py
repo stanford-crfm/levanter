@@ -14,6 +14,7 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.compat.hf_checkpoints import RepoRef
+from levanter.models.attention import AttentionMask
 from levanter.models.whisper import WhisperConfig, WhisperModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
@@ -41,6 +42,54 @@ def test_basic_forward_whisper():
         ),
     )
     model(na, inp)
+
+
+def test_mask_forward_whisper():
+    c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
+    conf = WhisperConfig.from_hf_config(c)
+    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
+    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    audio_sample = ds[3]
+    speech_data = audio_sample["audio"]["array"]
+    inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
+
+    na = hax.NamedArray(
+        inputs["input_features"],
+        axes=(Axis(name="batch", size=1), conf.Mels, Axis(name="position", size=3000)),
+    )
+    inp = hax.NamedArray(
+        jnp.array([processor.get_decoder_prompt_ids()])[:, :, 1],
+        axes=(
+            Axis("batch", size=1),
+            Axis("position", size=1),
+        ),
+    )
+    model(na, inp, attn_mask=AttentionMask.causal())
+
+
+def test_namedarray_mask_forward_whisper():
+    c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
+    conf = WhisperConfig.from_hf_config(c)
+    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
+    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    audio_sample = ds[3]
+    speech_data = audio_sample["audio"]["array"]
+    inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
+
+    na = hax.NamedArray(
+        inputs["input_features"],
+        axes=(Axis(name="batch", size=1), conf.Mels, Axis(name="position", size=3000)),
+    )
+    inp = hax.NamedArray(
+        jnp.array([processor.get_decoder_prompt_ids()])[:, :, 1],
+        axes=(
+            Axis("batch", size=1),
+            Axis("position", size=1),
+        ),
+    )
+    model(na, inp, attn_mask=AttentionMask.causal().explicit_mask)
 
 
 @skip_if_no_torch
