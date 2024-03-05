@@ -207,6 +207,9 @@ class Checkpointer:
             return None
         return current_policy.every
 
+    def wait_until_finished(self):
+        self._manager.wait_until_finished()
+
     def _rm_checkpoint(self, checkpoint):
         if jax.process_index() != 0:
             return

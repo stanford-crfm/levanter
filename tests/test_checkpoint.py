@@ -136,6 +136,8 @@ def test_checkpointer_mixed_policy():
         for step in range(4, 11):
             advance_time(tick)
             checkpointer.on_step(_dummy_step_info(step))
+            # we need this to stop a race condition
+            checkpointer.wait_until_finished()
 
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10]
 
@@ -258,11 +260,16 @@ def test_load_from_checkpoint_or_initialize():
         filtered = eqx.filter(model0, is_checkpointed)
         save_checkpoint(filtered, step=0, checkpoint_path=tmpdir)
 
-        # loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
-        loaded = load_checkpoint(eqx.filter(model1, is_checkpointed), tmpdir, discover_latest=True)
-        loaded = eqx.combine(loaded, model1)
-
+        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
+
+        loaded2 = load_checkpoint(eqx.filter(model1, is_checkpointed), tmpdir, discover_latest=True)
+        loaded2 = eqx.combine(loaded2, model1)
+
+        assert_trees_all_equal(
+            jax.tree_util.tree_leaves(arrays_only(loaded)),
+            jax.tree_util.tree_leaves(arrays_only(loaded2)),
+        )
 
         print(jax.tree_util.tree_leaves(loaded), file=sys.stderr)
         print("M1", file=sys.stderr)
