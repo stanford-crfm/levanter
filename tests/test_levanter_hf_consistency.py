@@ -8,6 +8,7 @@ from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 
 from levanter.checkpoint import load_checkpoint
+from levanter.models.attention import AttentionMask
 from levanter.models.backpack import BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2LMHeadModel
 from levanter.trainer import TrainerConfig
@@ -87,7 +88,7 @@ def _compare_models_output(model_1, model_2):
     out_1, out_2 = None, None
     if model_1 is not None:
         # model_1 output
-        attn_mask = hax.nn.attention.causal_mask(model_1.Pos, model_1.config.KeyPos)
+        attn_mask = AttentionMask.causal()
 
         def compute(input):
             return hax.nn.softmax(
