@@ -96,12 +96,7 @@ def test_conversion_to_jnp_bfloat16():
 def test_save_sharded_checkpoints():
     converter = Gpt2Config.default_hf_checkpoint_converter
 
-    nano_config = Gpt2Config(
-        hidden_dim=64,
-        num_heads=1,
-        num_layers=2,
-        resid_pdrop=0.0,
-    )
+    nano_config = Gpt2Config(hidden_dim=64, num_heads=2, num_layers=2, resid_pdrop=0.0, use_flash_attention=False)
 
     nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
