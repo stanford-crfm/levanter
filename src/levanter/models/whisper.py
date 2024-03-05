@@ -457,7 +457,7 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
 
     @property
     def config(self):
-        return self.transformer.config
+        return self.embeddings.config
 
     @property
     def Vocab(self) -> Axis:
@@ -485,9 +485,13 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
         *,
         key=None,
     ) -> NamedArray:
+        Pos = input_ids.resolve_axis("position")
+        causal_mask = hax.nn.attention.causal_mask(Pos, Pos.alias("key_position"))
+        if attn_mask:
+            causal_mask = causal_mask * attn_mask
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
-        x = self.transformer(x, audio_embeds, attn_mask, key=k_transformer)
+        x = self.transformer(x, audio_embeds, causal_mask, key=k_transformer)
         lm_logits = self.embeddings.unembed(x)
 
         return lm_logits
