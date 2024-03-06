@@ -338,6 +338,11 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
     escaped = re.escape(prefix or "")
     pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
 
+
+    # actually get slices of the tensors here!
+    # from the meta-data.
+    # get state dict to match here!
+    import ipdb; ipdb.set_trace()
     for k, v in state_dict.items():
         match = pattern.match(k)
         if match:
