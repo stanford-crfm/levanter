@@ -252,6 +252,8 @@ def unflatten_linear_layers(
         if not isinstance(layer, hnn.Linear):
             return layer
 
+        import ipdb; ipdb.set_trace()
+        # will this prefix get us the right key?
         weight = statedict[apply_prefix(prefix, "weight")]
         bias = statedict.get(apply_prefix(prefix, "bias"), None)
 
@@ -292,6 +294,7 @@ def unflatten_linear_layers(
     tree_prefixes = leaf_key_paths(
         layer, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True
     )
+    # unflatten linear function?
     jax.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
