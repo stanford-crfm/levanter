@@ -446,6 +446,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             with safetensors.safe_open(shard_path, framework="np", device="cpu") as f:
                 keys = list(f.keys())
                 for key in tqdm(keys, total=len(keys), desc="Loading weights"):
+                    import ipdb; ipdb.set_trace()
                     tensor_slice = f.get_slice(key)
                     final_state_dict[key] = tensor_slice
 

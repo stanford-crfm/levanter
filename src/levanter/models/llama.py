@@ -331,6 +331,7 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
+        # reshapes numpy array into jax arrays, happening on cpu by context manager!
         d = {}
         d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
         d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
