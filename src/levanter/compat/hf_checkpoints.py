@@ -447,6 +447,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 keys = list(f.keys())
                 for key in tqdm(keys, total=len(keys), desc="Loading weights"):
                     tensor_slice = f.get_slice(key)
+                    final_state_dict[key] = tensor_slice
 
         import time; time.sleep(5)
         return final_state_dict
