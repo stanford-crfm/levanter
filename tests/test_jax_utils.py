@@ -42,10 +42,7 @@ def test_best_effort_sharding():
     _assert_can_put_with_sharding(array, sharding)
 
     devices = jax.devices()[:6]
+
     array = array.reshape(2, 2, 2)
     sharding = best_effort_sharding(array.shape, devices=devices)
     _assert_can_put_with_sharding(array, sharding)
-
-
-
-
