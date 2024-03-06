@@ -13,6 +13,9 @@ from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 from urllib.parse import urlparse
 
+from tqdm import tqdm
+
+
 import draccus
 import equinox as eqx
 import fsspec
@@ -441,7 +444,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 shard_path = hf_hub_download(id, shard_file, revision=rev)
 
             with safetensors.safe_open(shard_path, framework="np", device="cpu") as f:
-                for key in f.keys():
+                keys = list(f.keys())
+                for key in tqdm(keys, total=len(keys), desc="Loading weights"):
                     final_state_dict[key] = f.get_tensor(key)
 
         return final_state_dict
