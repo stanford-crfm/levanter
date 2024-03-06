@@ -452,7 +452,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             axis_mapping_cm = nullcontext()
         else:
             axis_mapping_cm = haliax.axis_mapping(axis_mapping)
-        with use_cpu_device(), axis_mapping_cm:
+        with axis_mapping_cm:
             # TODO: in an ideal world, we would only load the part of the array we needed, but
             # AFAICT neither torch state dicts nor safetensors support this.
             state_dict = self.load_state_dict(ref)
