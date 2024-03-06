@@ -257,6 +257,9 @@ def unflatten_linear_layers(
         weight = statedict[apply_prefix(prefix, "weight")]
         bias = statedict.get(apply_prefix(prefix, "bias"), None)
 
+
+        # the dimensions below are determined by
+        # architecture from levanter we are loading
         Out = ensure_tuple(layer.Out)
         In = ensure_tuple(layer.In)
         InOut = In + Out
@@ -266,6 +269,9 @@ def unflatten_linear_layers(
             out_dims_first_in_dict = layer.out_first
 
         if out_dims_first_in_dict:
+            # this will fail because it's a pysafeslice
+            # which has get_shape, and you can index into by weight[:]
+            # like an array. This expects a numpy array
             weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__OUT__", "__IN__")))
         else:
             weight = hax.named(weight, hax.concat_axis_specs(extra_dims, ("__IN__", "__OUT__")))
