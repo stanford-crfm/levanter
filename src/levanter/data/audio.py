@@ -36,7 +36,7 @@ from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
-from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
+from levanter.compat.hf_checkpoints import load_processor  # noqa
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
@@ -167,3 +167,39 @@ class AudioDatasetSourceConfig:
 
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
+
+
+@dataclass
+class AudioTaskConfig(abc.ABC):
+    processor: str = "openai/whisper-tiny"
+
+    # config related to caching
+    cache_dir: str = "cache/"
+    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+
+    ignore_token_id: Optional[int] = None
+
+    @cached_property
+    def the_processor(self) -> PreTrainedTokenizerBase:
+        return load_processor(self.processor)
+
+    @cached_property
+    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+        return self.the_processor.tokenizer
+
+    @cached_property
+    def the_feature_extractor(self) -> PreTrainedTokenizerBase:
+        return self.the_processor.feature_extractor
+
+    @abc.abstractmethod
+    def train_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> ShardableDataset[np.ndarray]:
+        pass
+
+    @abc.abstractmethod
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+        pass
