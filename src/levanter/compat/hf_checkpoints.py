@@ -39,7 +39,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
-from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.jax_utils import best_effort_sharding, use_cpu_device
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
@@ -451,7 +451,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     # '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', 
                     # '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', 'get_dtype', 'get_shape']
                     tensor_slice = f.get_slice(key)
-                    final_state_dict[key] = tensor_slice
+                    final_state_dict[key] = _shard_best_effort(tensor_slice)
 
         import time; time.sleep(5)
         return final_state_dict
@@ -942,3 +942,15 @@ def _shard_hf_checkpoint(
     metadata = {"total_size": total_size}
     index = {"metadata": metadata, "weight_map": weight_map}
     return shards, index
+
+
+
+
+def _shard_best_effort(array_or_slice):
+    shape = array_or_slice.get_shape() if hasattr(array_or_slice, "get_shape") else array_or_slice.shape
+
+    sharding = best_effort_sharding(shape)
+
+    jax.make_array_from_callback(shape, sharding, lambda indices: array_or_slice[indices])
+
+

@@ -5,7 +5,9 @@ from typing import Any, Callable, Optional, TypeVar
 
 import equinox as eqx
 import jax
+import numpy as np
 from jax import numpy as jnp
+from jax._src.sharding_impls import PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like
@@ -167,3 +169,20 @@ def is_inexact_arrayish(x):
         return jnp.issubdtype(x.dtype, jnp.inexact)
     else:
         return False
+
+
+def best_effort_sharding(shape, devices=None):
+    if devices is None:
+        devices = jax.devices()
+    device_shape = (len(devices),)
+    # we want to shard an array with shape shape across len(devices)
+    # each axis in the array has to be divisible by the corresponding axis in device_shape, so
+    # we iterate from the right, taking the gcd of the shape and the left-most axis of device_shape
+    for i in range(len(shape) - 1, -1, -1):
+        shape_i = shape[i]
+        device_shape_i = device_shape[0]
+        gcd = np.gcd(shape_i, device_shape_i)
+        device_shape_i //= gcd
+        device_shape = (device_shape_i, gcd) + device_shape[1:]
+    sharding = PositionalSharding(devices).reshape(device_shape).replicate(axis=0, keepdims=True)
+    return sharding
