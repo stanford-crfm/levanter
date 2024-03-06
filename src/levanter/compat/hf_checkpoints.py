@@ -41,9 +41,14 @@ from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
 silence_transformer_nag()
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer  # noqa: E402
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa: E402
+from transformers import (  # noqa: E402
+    PreTrainedTokenizer,
+    PreTrainedTokenizerBase,
+    PreTrainedTokenizerFast,
+    ProcessorMixin,
+)
 from transformers.dynamic_module_utils import get_class_from_dynamic_module  # noqa: E402
 from transformers.models.auto.auto_factory import _get_model_class  # noqa: E402
 
@@ -795,6 +800,28 @@ def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trus
         )
     else:
         return AutoTokenizer.from_pretrained(
+            model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
+        )
+
+
+def load_processor(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> ProcessorMixin:
+    """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
+    is_url_like = urlparse(model_name_or_path).scheme != ""
+    if is_url_like:
+        if revision is not None:
+            raise ValueError("revision is not supported for URLs")
+        # tokenizers are directories, so we have to copy them locally
+        if local_cache_dir is None:
+            local_cache_dir = tempfile.mkdtemp()
+
+        fs, path = fsspec.core.url_to_fs(model_name_or_path)
+        fs.get(path, local_cache_dir, recursive=True)
+        base_path = os.path.basename(path)
+        return AutoProcessor.from_pretrained(
+            os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code
+        )
+    else:
+        return AutoProcessor.from_pretrained(
             model_name_or_path, revision=revision, trust_remote_code=trust_remote_code
         )
 
