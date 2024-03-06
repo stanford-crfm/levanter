@@ -1,7 +1,7 @@
 import json
 import os
 import warnings
-from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, Tuple, TypeVar
 
 import datasets
 import fsspec
@@ -224,6 +224,59 @@ class TextUrlDataset(ShardedDataset[str]):
                     data = json.load(f)
                     for doc in data[row:]:
                         yield doc[self.text_key]
+                case _:
+                    raise ValueError(f"Unknown format {format}")
+
+
+class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
+    """
+    Dataset for various audio and text formats.
+    """
+
+    def __init__(self, urls, text_key="sentence", audio_key="audio"):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        self.text_key = text_key
+        self.audio_key = audio_key
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def _resolve_audio_pointer(self, audio_pointer) -> dict[str, Any]:
+        if isinstance(audio_pointer, dict):
+            if "array" in audio_pointer and "sampling_rate" in audio_pointer:
+                audio = audio_pointer
+            else:
+                import soundfile
+
+                array, sr = soundfile.read(audio_pointer)
+                audio = {"array": array, "sampling_rate": sr}
+        return audio
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[Tuple[dict, str]]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            format = _sniff_format_for_dataset(url)
+            match format:
+                case ".jsonl":
+                    # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                    # which is not nothing, but not ideal.
+                    for line in f:
+                        if i >= row:
+                            mat_json = json.loads(line)
+                            audio_pointer = mat_json[self.audio_key]
+                            audio = self._resolve_audio_pointer(audio_pointer)
+                            yield (audio, mat_json[self.text_key])
+                        i += 1
+                case ".json":
+                    data = json.load(f)
+                    for doc in data[row:]:
+                        audio_pointer = doc[self.audio_key]
+                        audio = self._resolve_audio_pointer(audio_pointer)
+                        yield (audio, mat_json[self.text_key])
+                        yield (audio, doc[self.text_key])
                 case _:
                     raise ValueError(f"Unknown format {format}")
 
