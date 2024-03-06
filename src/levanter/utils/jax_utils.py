@@ -172,6 +172,9 @@ def is_inexact_arrayish(x):
 
 
 def best_effort_sharding(shape, devices=None):
+    if hasattr(shape, "shape"):
+        shape = shape.shape
+
     if devices is None:
         devices = jax.devices()
     device_shape = (len(devices),)
@@ -184,5 +187,5 @@ def best_effort_sharding(shape, devices=None):
         gcd = np.gcd(shape_i, device_shape_i)
         device_shape_i //= gcd
         device_shape = (device_shape_i, gcd) + device_shape[1:]
-    sharding = PositionalSharding(devices).reshape(device_shape).replicate(axis=0, keepdims=True)
+    sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
     return sharding

@@ -13,9 +13,6 @@ from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 from urllib.parse import urlparse
 
-from tqdm import tqdm
-
-
 import draccus
 import equinox as eqx
 import fsspec
@@ -29,6 +26,7 @@ from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidati
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
+from tqdm import tqdm
 
 import haliax
 from haliax import Axis
@@ -387,26 +385,18 @@ class HFCheckpointConverter(Generic[LevConfig]):
             except HFValidationError:
                 pass
 
-        jax.debug.breakpoint()
+        # TODO: load models from gcs etc.
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
-            state_dict = safetensors.numpy.load_file(os.path.join(id, SAFE_TENSORS_MODEL))
+            state_dict = self._load_safe_tensors(os.path.join(id, SAFE_TENSORS_MODEL))
         elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
-            import torch
-
-            device = torch.device("cpu")
-            state_dict = torch.load(os.path.join(id, PYTORCH_MODEL), map_location=device)
-            state_dict = {k: _convert_to_jnp(v) for k, v in state_dict.items()}
+            state_dict = self._load_torch(os.path.join(id, PYTORCH_MODEL))
         else:
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
-                state_dict = safetensors.numpy.load_file(model_path)
+                state_dict = self._load_safe_tensors(model_path)
             except (EntryNotFoundError, HFValidationError):
                 model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
-                import torch
-
-                device = torch.device("cpu")
-                state_dict = torch.load(model_path, map_location=device)
-                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
+                state_dict = self._load_torch(model_path)
 
         return state_dict
 
@@ -426,16 +416,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # right now we do safe tensors thing
         # where we load into memory then update some dict
         if "safetensors" in index_file:
-            import safetensors
-
-            loader = safetensors.numpy.load_file
+            loader = self._load_safe_tensors
         else:
-            import torch
-
-            def loader(path):
-                device = torch.device("cpu")
-                state_dict = torch.load(path, map_location=device)
-                return {k: _convert_to_jnp(v) for k, v in state_dict.items()}
+            loader = self._load_torch
 
         for shard_file in shard_files:
             shard_path = os.path.join(id, shard_file)
@@ -443,17 +426,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 # Download the shard if not found locally
                 shard_path = hf_hub_download(id, shard_file, revision=rev)
 
-            with safetensors.safe_open(shard_path, framework="np", device="cpu") as f:
-                keys = list(f.keys())
-                for key in tqdm(keys, total=len(keys), desc="Loading weights"):
-                    # ['__class__', '__delattr__', '__dir__', '__doc__', '__eq__', 
-                    # '__format__', '__ge__', '__getattribute__', '__getitem__', '__gt__', '__hash__', '__init__',
-                    # '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', 
-                    # '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', 'get_dtype', 'get_shape']
-                    tensor_slice = f.get_slice(key)
-                    final_state_dict[key] = _shard_best_effort(tensor_slice)
+            shard_state_dict = loader(shard_path)
+            final_state_dict.update(shard_state_dict)
 
-        import time; time.sleep(5)
         return final_state_dict
 
     def load_pretrained(
@@ -540,6 +515,31 @@ class HFCheckpointConverter(Generic[LevConfig]):
         gc.collect()
 
         return lev_model
+
+    def _load_safe_tensors(self, path):
+        d = {}
+        with safetensors.safe_open(path, framework="np", device="cpu") as f:
+            keys = list(f.keys())
+            for key in tqdm(keys, total=len(keys), desc="Loading weights"):
+                tensor_slice = f.get_slice(key)
+                d[key] = _shard_best_effort(tensor_slice)
+
+        return d
+
+    def _load_torch(self, path):
+        import torch
+
+        device = torch.device("cpu")
+        state_dict = torch.load(path, map_location=device)
+        d = {}
+
+        for k, v in tqdm(state_dict.items(), total=len(state_dict), desc="Loading weights"):
+            v = _convert_to_jnp(v)
+            if v is not None:
+                v = _shard_best_effort(v)
+            d[k] = v
+
+        return d
 
     def _save_pretrained_local(
         self,
@@ -825,12 +825,13 @@ def _convert_to_jnp(v):
     # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
     # if v.dtype == torch.bfloat16:
     #     v = v.to(torch.float32)
-    if v is None:
-        return None
-    elif v.dtype == torch.bfloat16:
-        return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
-    else:
-        return jax.numpy.array(v.cpu().numpy())
+    with use_cpu_device():
+        if v is None:
+            return None
+        elif v.dtype == torch.bfloat16:
+            return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
+        else:
+            return jax.numpy.array(v.cpu().numpy())
 
 
 def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key, axis_mapping):
@@ -944,13 +945,9 @@ def _shard_hf_checkpoint(
     return shards, index
 
 
-
-
-def _shard_best_effort(array_or_slice):
+def _shard_best_effort(array_or_slice) -> jax.Array:
     shape = array_or_slice.get_shape() if hasattr(array_or_slice, "get_shape") else array_or_slice.shape
 
     sharding = best_effort_sharding(shape)
 
-    jax.make_array_from_callback(shape, sharding, lambda indices: array_or_slice[indices])
-
-
+    return jax.make_array_from_callback(tuple(shape), sharding, lambda indices: array_or_slice[indices])

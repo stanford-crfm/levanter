@@ -252,11 +252,10 @@ def unflatten_linear_layers(
         if not isinstance(layer, hnn.Linear):
             return layer
 
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         # will this prefix get us the right key?
         weight = statedict[apply_prefix(prefix, "weight")]
         bias = statedict.get(apply_prefix(prefix, "bias"), None)
-
 
         # the dimensions below are determined by
         # architecture from levanter we are loading
@@ -347,11 +346,10 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
     escaped = re.escape(prefix or "")
     pattern = re.compile(rf"{escaped}\.(\d+)\.(.*)")
 
-
     # actually get slices of the tensors here!
     # from the meta-data.
     # get state dict to match here!
-    import ipdb; ipdb.set_trace()
+    # import ipdb; ipdb.set_trace()
     for k, v in state_dict.items():
         match = pattern.match(k)
         if match:

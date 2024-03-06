@@ -14,8 +14,6 @@ def _assert_can_put_with_sharding(array, sharding):
 
 @skip_if_not_enough_devices(8)
 def test_best_effort_sharding():
-    devices = jax.devices()
-
     # 1D array, 8 devices
     array = np.arange(8)
     sharding = best_effort_sharding(array.shape)

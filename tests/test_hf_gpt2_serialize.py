@@ -63,7 +63,10 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
 
     def compute(input):
-        return hax.nn.softmax(model(input, key=None, attn_mask=attn_mask), axis=model.Vocab)
+        out = model(input, key=None, attn_mask=attn_mask)
+        if isinstance(out, tuple):
+            out = out[0]
+        return hax.nn.softmax(out, axis=model.Vocab)
 
     compute = jax.jit(compute)
     jax_out = compute(input).array
@@ -84,7 +87,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
 
 # Gradient tests
 
-
+# XLA_FLAGS=--xla_force_host_platform_device_count=8
 @skip_if_no_torch
 def test_hf_gradient():
     _compare_gpt2_checkpoint_gradients("gpt2", None)
@@ -119,6 +122,9 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, attn_mask=causal_mask)
+
+        if isinstance(pred_y, tuple):
+            pred_y = pred_y[0]
 
         return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
 
