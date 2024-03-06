@@ -450,7 +450,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     # '__format__', '__ge__', '__getattribute__', '__getitem__', '__gt__', '__hash__', '__init__',
                     # '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', 
                     # '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', 'get_dtype', 'get_shape']
-                    import ipdb; ipdb.set_trace()
                     tensor_slice = f.get_slice(key)
                     final_state_dict[key] = tensor_slice
 
