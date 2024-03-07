@@ -129,6 +129,18 @@ def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
 
 
+def skip_if_module_missing(module: str):
+    def try_import_module(module):
+        try:
+            __import__(module)
+        except ImportError:
+            return False
+        else:
+            return True
+
+    return pytest.mark.skipif(not try_import_module(module), reason=f"{module} not installed")(lambda x: x)
+
+
 def skip_if_checkpoint_not_accessible(path: str):
     def try_load_path(path):
         try:
