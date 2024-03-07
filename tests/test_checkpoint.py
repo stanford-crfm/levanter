@@ -253,7 +253,7 @@ def test_load_from_checkpoint_or_initialize():
     Out = Axis("out", 1)
 
     def init_fn(key):
-        return haliax.nn.MLP.init(In, Out, 2, 3, key=key)
+        return haliax.nn.MLP.init(In, Out, 2, 1, key=key, use_bias=False, use_final_bias=False)
 
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)
@@ -270,7 +270,7 @@ def test_load_from_checkpoint_or_initialize():
         filtered = eqx.filter(model0, is_checkpointed)
         save_checkpoint(filtered, step=0, checkpoint_path=tmpdir)
 
-        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
+        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed, donate_args=False)(k1)
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
 
         loaded2 = load_checkpoint(eqx.filter(model1, is_checkpointed), tmpdir, discover_latest=True)
