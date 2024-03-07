@@ -1,6 +1,7 @@
 import dataclasses
 import datetime
 import pathlib
+import sys
 import tempfile
 from datetime import timedelta
 
@@ -9,7 +10,7 @@ import jax
 import jax.tree_util as jtu
 import numpy as np
 import optax
-from chex import assert_trees_all_close
+from chex import assert_trees_all_equal
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 
@@ -67,6 +68,8 @@ def test_checkpointer_changing_policy():
         for step in range(1, 50):
             checkpointer.on_step(_dummy_step_info(step))
 
+        checkpointer.wait_until_finished()
+
         # ensure we saved the right checkpoints
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10, 15, 20, 30, 40]
 
@@ -86,13 +89,16 @@ def test_checkpointer_temporal_policy():
         checkpointer.on_step(_dummy_step_info(0))
         advance_time(tick)
         checkpointer.on_step(_dummy_step_info(1))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
 
         advance_time(tick - 1)
         checkpointer.on_step(_dummy_step_info(2))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
         advance_time(1)
         checkpointer.on_step(_dummy_step_info(3))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [3]
 
 
@@ -120,26 +126,32 @@ def test_checkpointer_mixed_policy():
         checkpointer.on_step(_dummy_step_info(0))
         advance_time(tick)
         checkpointer.on_step(_dummy_step_info(1))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [1]
 
         advance_time(tick - 1)
         # time hasn't advanced enough, so we wouldn't save a checkpoint, but we do because of the interval
         checkpointer.on_step(_dummy_step_info(2))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2]
 
         advance_time(1)
         # time has advanced enough now from last temporal save, but we don't save a checkpoint because we just saved one
         checkpointer.on_step(_dummy_step_info(3))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2]
 
         for step in range(4, 11):
             advance_time(tick)
             checkpointer.on_step(_dummy_step_info(step))
+            # we need this to stop a race condition
 
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10]
 
         advance_time(tick - 1)
         checkpointer.on_step(_dummy_step_info(11))
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10]
 
         for step in range(12, 50):
@@ -147,6 +159,7 @@ def test_checkpointer_mixed_policy():
             advance_time(tick)
 
         # ensure we saved the right checkpoints
+        checkpointer.wait_until_finished()
         assert _get_checkpoint_steps(tmpdir) == [2, 4, 6, 8, 10, 15, 20, 30, 40, 49]  # 49 is last temporary checkpoint
 
 
@@ -179,7 +192,7 @@ def test_checkpoint_simple():
             discover_latest=False,
         )
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(restored_state.model)),
             jax.tree_util.tree_leaves(arrays_only(initial_state.model)),
         )
@@ -217,7 +230,7 @@ def test_checkpoint_steps():
         save_checkpoint(state, step=3, checkpoint_path=tmpdir)
         restored_state = load_checkpoint(rep_state, checkpoint_path=tmpdir, discover_latest=False)
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(restored_state)),
             jax.tree_util.tree_leaves(arrays_only(state)),
         )
@@ -240,27 +253,41 @@ def test_load_from_checkpoint_or_initialize():
     Out = Axis("out", 1)
 
     def init_fn(key):
-        return haliax.nn.MLP.init(In, Out, 2, 3, key=key)
+        return haliax.nn.MLP.init(In, Out, 2, 1, key=key, use_bias=False, use_final_bias=False)
 
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)
 
-    model0 = init_fn(k0)
-    model1 = init_fn(k1)
+    model0 = jax.jit(init_fn)(k0)
+    model1 = jax.jit(init_fn)(k1)
 
     is_checkpointed = jtu.tree_map(lambda _: False, model0)
     is_checkpointed = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
     is_checkpointed1 = jtu.tree_map(lambda _: False, model1)
-    is_checkpointed1 = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
+    is_checkpointed1 = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed1, replace=True)
+
     with jax.sharding.Mesh(jax.devices(), ("devices",)), tempfile.TemporaryDirectory() as tmpdir:
         filtered = eqx.filter(model0, is_checkpointed)
         save_checkpoint(filtered, step=0, checkpoint_path=tmpdir)
 
-        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed)(k1)
-
+        loaded = load_checkpoint_or_initialize(init_fn, tmpdir, is_checkpointed=is_checkpointed, donate_args=False)(k1)
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
 
-        assert_trees_all_close(
+        loaded2 = load_checkpoint(eqx.filter(model1, is_checkpointed), tmpdir, discover_latest=True)
+        loaded2 = eqx.combine(loaded2, model1)
+
+        assert_trees_all_equal(
+            jax.tree_util.tree_leaves(arrays_only(loaded)),
+            jax.tree_util.tree_leaves(arrays_only(loaded2)),
+        )
+
+        print(jax.tree_util.tree_leaves(loaded), file=sys.stderr)
+        print("M1", file=sys.stderr)
+        print(jax.tree_util.tree_leaves(model1), file=sys.stderr)
+        print("M0", file=sys.stderr)
+        print(jax.tree_util.tree_leaves(model0), file=sys.stderr)
+
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model0, is_checkpointed))),
         )
@@ -275,7 +302,7 @@ def test_load_from_checkpoint_or_initialize():
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )
 
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed, inverse=True))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed1, inverse=True))),
         )
@@ -304,7 +331,7 @@ def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
 
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
         # should be the same as model1
-        assert_trees_all_close(
+        assert_trees_all_equal(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )

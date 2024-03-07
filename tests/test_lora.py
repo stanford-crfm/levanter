@@ -274,6 +274,8 @@ def test_lora_works_with_checkpointer():
         checkpointer = Checkpointer(tempdir, None, [])
         checkpointer.save_checkpoint(info, "loraized")
 
+        checkpointer.wait_until_finished()
+
         # check on disk that we didn't serialize the non-loraized parameters
         if os.path.exists(f"{tempdir}/loraized/model/first/wrapped"):
             assert False

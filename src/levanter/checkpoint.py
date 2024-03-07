@@ -15,7 +15,8 @@ import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
-from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
+from jax.experimental.array_serialization.serialization import GlobalAsyncCheckpointManager
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
@@ -101,6 +102,9 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
+        # The default of 5 minutes is too short even for modestly sized models for some reason
+        self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
+
     def load_checkpoint(
         self,
         state: M,
@@ -181,15 +185,17 @@ class Checkpointer:
             last_checkpoint = self._last_temporary_checkpoint
             destination = f"step-{step}"
 
-            self.save_checkpoint(info, destination)
+            def callback():
+                if last_checkpoint is not None:
+                    self._rm_checkpoint(last_checkpoint)
+
+            self.save_checkpoint(info, destination, commit_callback=callback)
 
             if not save_permanent_ckpt:
                 self._last_temporary_checkpoint = destination
             else:
                 self._last_temporary_checkpoint = None
 
-            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
-            # so that we can delete it properly if we recover
             if last_checkpoint is not None:
                 self._rm_checkpoint(last_checkpoint)
 
@@ -200,6 +206,9 @@ class Checkpointer:
         if current_policy is None:
             return None
         return current_policy.every
+
+    def wait_until_finished(self):
+        self._manager.wait_until_finished()
 
     def _rm_checkpoint(self, checkpoint):
         if jax.process_index() != 0:
@@ -214,28 +223,30 @@ class Checkpointer:
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint", exc_info=True)
 
-    def save_checkpoint(self, info, destination: str):
+    def save_checkpoint(self, info, destination: str, commit_callback: Optional[Callable[[], None]] = None):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = saveable_state(info.state)
+        state = info.state.saveable_state
+
         save_checkpoint(
             state,
             step=info.step,
             checkpoint_path=path,
+            manager=self._manager,
+            commit_callback=commit_callback,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
-        logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
 
 
-def saveable_state(state):
-    to_keep = jax.tree_util.tree_map(lambda _: True, state)
-    to_keep = dataclasses.replace(to_keep, model=state.is_trainable)
-    state = equinox.filter(state, to_keep)
-    return state
-
-
-def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
+def save_checkpoint(
+    tree: M,
+    step: int,
+    checkpoint_path: PathLike,
+    manager: Optional[GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable[[], None]] = None,
+):
     """
     Save a checkpoint to a given path using TensorStore.
 
@@ -253,13 +264,14 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree)
-    save_metadata(checkpoint_path, fs, step)
+    def my_callback():
+        save_metadata(checkpoint_path, fs, step)
+        logger.info(f"Saved checkpoint to {checkpoint_path} for step {step}")
 
-    logger.info(f"Saved checkpoint for step {step}")
+        if commit_callback is not None:
+            commit_callback()
 
-    # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    sync_global_devices(checkpoint_path)
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback)
 
     return checkpoint_path
 
