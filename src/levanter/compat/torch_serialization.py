@@ -365,7 +365,7 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
     # now we have to vectorize the tensors
     for k, tensors in tensors_to_vectorize.items():
-        vectorized_dict[cast(str, apply_prefix(prefix, k))] = np.stack(tensors, axis=0)
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = jnp.stack(tensors, axis=0)
 
     return vectorized_dict
 

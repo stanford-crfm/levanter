@@ -480,39 +480,38 @@ class HFCheckpointConverter(Generic[LevConfig]):
             # TODO: the strategy is a bit too clever here.
             # we first evaluate the shape of our model, then use from_state_dict to actually populate the model
             # with the arrays.
-            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+            @haliax.named_jit(axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,))
+            def load_from_state_dict(state_dict):
+                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+                lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+
+                # However, this might miss some buffers that don't get persisted in the state dict
+                # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
+                # again, this time keeping only the (missing) buffers, and then combine the two models.
+                lev_model = _patch_missing_buffers_for_deser(
+                    lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
+                )
+
+                if Vocab.size != tokenizer_Vocab.size:
+                    if resize_vocab_to_match_tokenizer:
+                        logger.info(
+                            f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                        )
+                        # run in jit b/c we're manipulating sharded tensors
+                        lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                    else:
+                        logger.warning(
+                            f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size"
+                            f" ({tokenizer_Vocab.size})"
+                        )
+
+                lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+
+                return lev_model
+
+            lev_model = load_from_state_dict(state_dict)
             del state_dict
             gc.collect()  # sometimes takes a while to free buffers otherwise
-
-            # However, this might miss some buffers that don't get persisted in the state dict
-            # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
-            # again, this time keeping only the (missing) buffers, and then combine the two models.
-            lev_model = _patch_missing_buffers_for_deser(
-                lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
-            )
-
-            if Vocab.size != tokenizer_Vocab.size:
-                if resize_vocab_to_match_tokenizer:
-                    logger.info(
-                        f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
-                    )
-                    # run in jit b/c we're manipulating sharded tensors
-                    lev_model = haliax.named_jit(
-                        lambda m: m.resize_vocab(tokenizer_Vocab.size), axis_mapping, donate_args=(True,)
-                    )(lev_model)
-                else:
-                    logger.warning(
-                        f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size ({tokenizer_Vocab.size})"
-                    )
-
-        if axis_mapping is not None:
-            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
-        else:
-            lev_model = haliax.auto_sharded(lev_model)
-
-        # once more for good measure
-        gc.collect()
 
         return lev_model
 
