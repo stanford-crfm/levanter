@@ -7,7 +7,7 @@ import equinox as eqx
 import jax
 import numpy as np
 from jax import numpy as jnp
-from jax._src.sharding_impls import PositionalSharding
+from jax.sharding import PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
 from haliax.jax_utils import is_jax_array_like

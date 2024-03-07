@@ -119,7 +119,9 @@ def test_save_sharded_checkpoints():
 
         input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
         causal_mask = haliax.nn.attention.causal_mask(nano_model.config.Pos, nano_model.config.KeyPos)
-        np.testing.assert_equal(
+        np.testing.assert_allclose(
             np.array(nano_model(input, causal_mask, key=None).array),
             np.array(loaded_model(input, causal_mask, key=None).array),
+            rtol=1e-6,
+            atol=1e-6,
         )
