@@ -1,5 +1,6 @@
 import abc
 import logging
+import os
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
@@ -14,9 +15,16 @@ import numpy as np
 import haliax as hax
 
 from levanter.compat.hf_checkpoints import load_processor
-from levanter.data._preprocessor import BatchProcessor
+from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch
 from levanter.data.dataset import ShardableDataset
-from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, MetricsMonitor
+from levanter.data.shard_cache import (
+    DEFAULT_ROWS_PER_CHUNK,
+    LoggerMetricsMonitor,
+    LoggingMetricsMonitor,
+    MetricsMonitor,
+    ShardCache,
+    build_cache,
+)
 from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset
 from levanter.data.text import BatchTokenizer
 
@@ -137,7 +145,7 @@ class AudioDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[Mapping[str, Any], str]]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[Dict[str, Any], str]]]:
         if self.id is not None:
             try:
                 ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
@@ -214,12 +222,173 @@ class AudioTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> ShardableDataset[np.ndarray]:
         pass
 
     @abc.abstractmethod
     def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, ShardableDataset[np.ndarray]]:
         pass
+
+
+class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
+    """
+    Represents a cache of data with both pre-processed audio and tokenized text, which is a directory of parquet files with a ledger file.=
+    """
+
+    def __init__(self, chunk_cache: ShardCache):
+        self.chunk_cache = chunk_cache
+
+    def __iter__(self):
+        for batch in self._chunks():
+            yield dict_from_record_batch(batch)
+
+    def _chunks(self):
+        return self.chunk_cache.iter_batches_from_chunks()
+
+    @staticmethod
+    def build_or_load(
+        cache_dir: str,
+        source: ShardedDataset[Tuple[Dict[str, Any], str]],
+        processor: ProcessorMixin,
+        enforce_eos=True,
+        batch_size=128,
+        rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
+        monitors=None,
+        await_finished=True,
+        override_resources=None,
+    ) -> "ProcessedAudioCache":
+        bp: BatchProcessor[Tuple[Dict[str, Any], str]] = BatchAudioProcessor(
+            processor, enforce_eos=enforce_eos, override_resources=override_resources
+        )
+        monitors = monitors or []
+        cache = build_cache(
+            cache_dir,
+            source,
+            bp,
+            await_finished=await_finished,
+            batch_size=batch_size,
+            rows_per_chunk=rows_per_chunk,
+            monitors=monitors,
+        )
+        if cache.is_finished:
+            logger.info(f"Cache {cache_dir} is complete.")
+        else:
+            logger.info(
+                f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
+            )
+
+        return ProcessedAudioCache(cache)
+
+    @staticmethod
+    def load(cache_dir, batch_size: int = 128):
+        """
+        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
+        FileNotFoundError.
+
+        NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.
+
+        :param cache_dir:
+        :return:
+        """
+
+        try:
+            cache = ShardCache.load(cache_dir, batch_size=batch_size)
+            return ProcessedAudioCache(cache)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"{cache_dir} is not a complete cache")
+        except Exception:
+            logger.exception("error loading cache")
+            raise
+
+    def shard(self, shard_index, num_shards):
+        if num_shards <= shard_index:
+            raise ValueError(f"Shard index {shard_index} is out of range")
+
+        if num_shards == 1:
+            return self
+
+        return ProcessedAudioCache(self.chunk_cache.shard(shard_index, num_shards))
+
+
+@dataclass
+class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    def train_set(self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True) -> ProcessedAudioCache:
+        ds = self.build_or_load_cache("train", batch_size=batch_size, monitors=monitors)
+        if ds is None:
+            raise ValueError("No training set!")
+        return ds
+
+    def validation_set(
+        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[ProcessedAudioCache]:
+        return self.build_or_load_cache("validation", batch_size=batch_size, monitors=monitors)
+
+    def validation_sets(
+        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, ProcessedAudioCache]:
+        if self._has_validation_set:
+            validation_set = self.validation_set(batch_size, monitors)
+            if validation_set is not None:
+                return {"": validation_set}
+        return {}
+
+    @cached_property
+    def _has_validation_set(self):
+        if len(self.validation_urls) > 0:
+            return True
+
+        if self.id is not None:
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            try:
+                next(iter(dataset))
+                return True
+            except StopIteration:
+                return False
+
+        return False
+
+    def build_or_load_cache(
+        self,
+        split: str,
+        batch_size: int = 128,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        logger_name: Optional[str] = None,
+    ) -> Optional[ProcessedAudioCache]:
+        split_cache_dir = os.path.join(self.cache_dir, split)
+        name = logger_name or os.path.basename(self.cache_dir)
+
+        try:
+            return ProcessedAudioCache.load(split_cache_dir)
+        except FileNotFoundError:
+            pass
+
+        source = self.get_shard_source(split)
+        if source is None:
+            logger.info(f"No data for {split}")
+            return None
+
+        logger.info(f"Building cache for {split}...")
+
+        if monitors is True:
+            monitors = [
+                LoggingMetricsMonitor(prefix=f"preprocessing/{name}/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{name}.{split}"),
+            ]
+        elif monitors is False:
+            monitors = []
+
+        return ProcessedAudioCache.build_or_load(
+            split_cache_dir,
+            source,
+            self.the_processor,
+            enforce_eos=self.enforce_eos,
+            batch_size=batch_size,
+            rows_per_chunk=self.rows_per_chunk,
+            monitors=monitors,
+            await_finished=(split == "validation"),
+        )
