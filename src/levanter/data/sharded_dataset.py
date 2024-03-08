@@ -251,7 +251,8 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
             else:
                 import librosa  # noqa F401
 
-                array, sr = librosa.load(audio_pointer, sr=self.sampling_rate)
+                with fsspec.open(audio_pointer, "rb", compression="infer") as f:
+                    array, sr = librosa.load(f, sr=self.sampling_rate)
                 audio = {"array": array, "sampling_rate": sr}
         return audio
 
