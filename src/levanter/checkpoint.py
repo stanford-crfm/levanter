@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import queue
 import threading
 import time
 import urllib.parse
@@ -108,10 +109,7 @@ class Checkpointer:
         self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
 
         if jax.process_index() == 0:
-            # simple message queue for the async checkpoint remover
-            self._async_checkpoint_remover_queue: list[str] = []
-            # event to signal the async checkpoint remover to stop
-            self._async_event = threading.Event()
+            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue()
             self._async_checkpoint_remover_thread = threading.Thread(
                 target=self._async_checkpoint_remover, daemon=True
             )
@@ -221,7 +219,7 @@ class Checkpointer:
 
     def _rm_checkpoint(self, checkpoint):
         if jax.process_index() == 0:
-            self._async_checkpoint_remover_queue.append(checkpoint)
+            self._async_checkpoint_remover_queue.put(checkpoint)
 
     def _do_rm_checkpoint(self, checkpoint):
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
@@ -252,10 +250,9 @@ class Checkpointer:
         self._last_save_time = self._dt_now_injection()
 
     def _async_checkpoint_remover(self):
-        while not self._async_event.is_set():
-            while len(self._async_checkpoint_remover_queue) > 0:
-                checkpoint = self._async_checkpoint_remover_queue.pop(0)
-                self._do_rm_checkpoint(checkpoint)
+        while True:
+            checkpoint = self._async_checkpoint_remover_queue.get(block=True)
+            self._do_rm_checkpoint(checkpoint)
 
 
 def save_checkpoint(
