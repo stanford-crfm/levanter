@@ -1,4 +1,5 @@
 import abc
+import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -9,10 +10,14 @@ import braceexpand
 import datasets
 import equinox as eqx
 import fsspec
+import jax
 import jax.numpy as jnp
 import numpy as np
+from jaxtyping import PRNGKeyArray
+from typing_extensions import TypedDict
 
 import haliax as hax
+from haliax import Axis
 
 from levanter.compat.hf_checkpoints import load_processor
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch
@@ -31,6 +36,7 @@ from levanter.data.text import BatchTokenizer
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
+from levanter.utils.jax_utils import use_cpu_device
 
 
 silence_transformer_nag()  # noqa
@@ -43,42 +49,11 @@ from transformers import (  # noqa
 )
 
 
-logger = logging.getLogger("levanter.data.text")
+logger = logging.getLogger("levanter.data.audio")
 
-
-class AudioTextExample(eqx.Module):
-    audio: hax.NamedArray
-    tokens: hax.NamedArray
-    loss_mask: hax.NamedArray
-    attn_mask: AttentionMask | hax.NamedArray = AttentionMask.causal()
-
-    @staticmethod
-    def causal(
-        audio: hax.NamedArray,
-        tokens: hax.NamedArray,
-        *,
-        loss_mask: Optional[hax.NamedArray] = None,
-        ignore_id: Optional[int] = None,
-    ) -> "AudioTextExample":
-        if tokens.ndim != 1:
-            raise ValueError("tokens must be a 1D array")
-
-        if not jnp.issubdtype(tokens.dtype, jnp.integer):
-            raise ValueError("tokens must be an integer array")
-
-        Pos = tokens.axes[0]
-
-        # don't predict the last token.
-        if loss_mask is None:
-            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
-
-        if ignore_id is not None:
-            # we don't compute loss for any tokens matching the ignore index
-            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
-            loss_mask = loss_mask * ignore_mask
-
-        attn_mask = AttentionMask.causal()
-        return AudioTextExample(audio=audio, tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+AudioTextDict = TypedDict(
+    "AudioTextDict", {"audio_features": np.ndarray, "tokens": np.ndarray, "attention_mask": np.ndarray}
+)
 
 
 class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
@@ -102,7 +77,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
         self.override_resources = override_resources
         self._batch_size = batch_size
 
-    def __call__(self, batch: Sequence[Tuple[Dict[str, Any], str]]) -> Mapping[str, Sequence]:
+    def __call__(self, batch: Sequence[Tuple[Dict[str, Any], str]]) -> AudioTextDict:
         """
         Process a batch of data.
         """
@@ -392,3 +367,101 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             monitors=monitors,
             await_finished=(split == "validation"),
         )
+
+
+class AudioTextExample(eqx.Module):
+    audio: hax.NamedArray
+    tokens: hax.NamedArray
+    loss_mask: hax.NamedArray
+    attn_mask: AttentionMask | hax.NamedArray = AttentionMask.causal()
+
+    @staticmethod
+    def init(
+        audio: hax.NamedArray,
+        tokens: hax.NamedArray,
+        *,
+        attn_mask: Optional[hax.NamedArray | AttentionMask] = None,
+        loss_mask: Optional[hax.NamedArray] = None,
+        ignore_id: Optional[int] = None,
+    ) -> "AudioTextExample":
+        if tokens.ndim != 1:
+            raise ValueError("tokens must be a 1D array")
+
+        if not jnp.issubdtype(tokens.dtype, jnp.integer):
+            raise ValueError("tokens must be an integer array")
+
+        Pos = tokens.axes[0]
+
+        # don't predict the last token.
+        if loss_mask is None:
+            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+
+        if ignore_id is not None:
+            # we don't compute loss for any tokens matching the ignore index
+            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
+            loss_mask = loss_mask * ignore_mask
+
+        return AudioTextExample(audio=audio, tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+
+class AudioTextDataset(ShardableDataset[AudioTextExample]):
+    def __init__(
+        self,
+        dataset: ShardableDataset[AudioTextDict],
+        TextPos: Axis,
+        AudioPos: Axis,
+        KPos: Axis,
+        fcm_prob: float = 0.0,
+        key: Optional[PRNGKeyArray] = None,
+        ignore_index: Optional[int] = None,
+    ):
+        self.dataset = dataset
+        self.TextPos = TextPos
+        self.AudioPos = AudioPos
+        self.KPos = KPos
+        self.fcm_prob = fcm_prob
+        self.key = key
+        self.ignore_id = ignore_index
+
+        if self.fcm_prob > 0.0 and self.key is None:
+            raise ValueError("must provide key if fcm_prob > 0.0")
+
+    def shard(self, shard_id: int, num_shards: int) -> "AudioTextDataset":
+        return AudioTextDataset(
+            self.dataset.shard(shard_id, num_shards),
+            self.TextPos,
+            self.AudioPos,
+            self.KPos,
+            self.fcm_prob,
+            self.key,
+            self.ignore_id,
+        )
+
+    def __iter__(self) -> Iterator[AudioTextExample]:
+        key = self.key
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        with use_cpu_device():
+
+            @functools.partial(eqx.filter_jit, out_shardings=sharding)
+            def _create_example(inputs: AudioTextDict, key):
+                tokens = hax.named(inputs["tokens"], self.TextPos)
+                audio_features = hax.named(inputs["audio_features"], self.AudioPos)
+                attn_mask = hax.named(inputs["attention_mask"], self.KPos)
+                attn_mask = AttentionMask.explicit(attn_mask)
+
+                if self.fcm_prob > 0:
+                    # masks for attention
+                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                    assert self.key is not None
+                    this_key, key = jax.random.split(key)
+                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                    attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
+
+                return AudioTextExample(audio_features, tokens, attn_mask=attn_mask)
+
+            for tokens in self.dataset:
+                example = _create_example(tokens, key)
+                yield example
