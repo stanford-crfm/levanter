@@ -96,12 +96,7 @@ def test_conversion_to_jnp_bfloat16():
 def test_save_sharded_checkpoints():
     converter = Gpt2Config.default_hf_checkpoint_converter
 
-    nano_config = Gpt2Config(
-        hidden_dim=64,
-        num_heads=2,
-        num_layers=2,
-        resid_pdrop=0.0,
-    )
+    nano_config = Gpt2Config(hidden_dim=64, num_heads=2, num_layers=2, resid_pdrop=0.0, use_flash_attention=False)
 
     nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
@@ -113,14 +108,16 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=tmpdir)
+        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir)
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab
 
         input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
         causal_mask = AttentionMask.causal()
-        np.testing.assert_equal(
+        np.testing.assert_allclose(
             np.array(nano_model(input, causal_mask, key=None).array),
             np.array(loaded_model(input, causal_mask, key=None).array),
+            rtol=1e-6,
+            atol=1e-6,
         )

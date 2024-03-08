@@ -63,7 +63,11 @@ class TrainerState(eqx.Module, Generic[M]):
 
     @property
     def trainable_model(self) -> M:
-        return eqx.filter(self.model, self.is_trainable)
+        return trainables_only(self.model, self.is_trainable)
+
+    @property
+    def saveable_state(self) -> FilterTree:
+        return eqx.filter(self, saveable_training_mask(self, self.is_trainable))
 
     @classmethod
     def init(
@@ -120,16 +124,8 @@ def _partition_trainable_params(model, filter):
         trainable, non-trainable
     """
 
-    def trainable_and_diffable(pred):
-        if callable(pred):
-            return lambda x: pred(x) and is_inexact_arrayish(x)
-        elif pred is True:
-            return is_inexact_arrayish
-        else:
-            return pred
-
-    combined_mask = jax.tree_util.tree_map(trainable_and_diffable, filter)
-    return eqx.partition(model, combined_mask)
+    filter = make_floating_point_trainable_filter(filter)
+    return eqx.partition(model, filter)
 
 
 def trainables_only(model, filter):
@@ -160,6 +156,8 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     parameters for checkpointing and for logging.
     """
 
+    is_trainable_param = make_floating_point_trainable_filter(is_trainable_param)
+
     trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
     saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
     return saveable_state  # type: ignore
@@ -180,3 +178,19 @@ def take_train_step(
     model = eqx.apply_updates(model, updates)
 
     return model, opt_state
+
+
+def make_floating_point_trainable_filter(is_trainable: FilterTree) -> FilterTree:
+    """
+    Combines the is_trainable filter with a filter that only allows floating point parameters.
+    """
+
+    def is_trainable_and_floating_point(x):
+        if x is True:
+            return is_inexact_arrayish
+        elif x is False:
+            return False
+        else:
+            return lambda y: is_inexact_arrayish(y) and x(y)
+
+    return jax.tree_util.tree_map(is_trainable_and_floating_point, is_trainable)

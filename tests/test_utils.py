@@ -140,7 +140,19 @@ def skip_if_no_torch(f):
 
 
 def skip_if_no_soundlibs(f):
-    return pytest.mark.skipif(not has_soundlibs(), reason="torch not installed")(f)
+    return pytest.mark.skipif(not has_soundlibs(), reason="soundfile/librosa not installed")(f)
+
+
+def skip_if_module_missing(module: str):
+    def try_import_module(module):
+        try:
+            __import__(module)
+        except ImportError:
+            return False
+        else:
+            return True
+
+    return pytest.mark.skipif(not try_import_module(module), reason=f"{module} not installed")(lambda x: x)
 
 
 def skip_if_checkpoint_not_accessible(path: str):
