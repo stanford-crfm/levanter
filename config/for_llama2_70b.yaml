@@ -21,5 +21,3 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: -1
-
-alpha: 0.1
