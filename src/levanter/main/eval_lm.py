@@ -112,8 +112,10 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
             print(config.model)
-            import os; os._exit(0)
+            
             model_1 = converter.load_pretrained(model_init_type)
+            logger.info(f"model 1 config is {model_1.config}")
+            import os; os._exit(0)
 
             #multihost_broadcast_sync('syncing!', is_source=True, timeout=2.0)
             alpha = 1.0

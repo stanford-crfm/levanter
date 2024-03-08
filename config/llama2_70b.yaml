@@ -145,6 +145,12 @@ data:
 
 model:
   type: llama
+  hidden_dim: 4096
+  seq_len: 2048
+  intermediate_dim: 11008
+  num_heads: 32
+  num_layers: 32
+  num_kv_heads: 32
 # TODO: uncomment this once we resolve the resource exhaustion issue
 initialize_from_hf: "meta-llama/Llama-2-70b-hf"
 use_hf_model_config: true
