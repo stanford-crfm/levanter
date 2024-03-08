@@ -249,7 +249,7 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
             if "array" in audio_pointer and "sampling_rate" in audio_pointer:
                 audio = audio_pointer
             else:
-                import librosa
+                import librosa  # noqa F401
 
                 array, sr = librosa.load(audio_pointer, sr=self.sampling_rate)
                 audio = {"array": array, "sampling_rate": sr}

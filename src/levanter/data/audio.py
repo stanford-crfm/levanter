@@ -18,11 +18,11 @@ from levanter.data._preprocessor import BatchProcessor
 from levanter.data.dataset import ShardableDataset
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, MetricsMonitor
 from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset
+from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
-from levanter.text import BatchTokenizer
 
 
 silence_transformer_nag()  # noqa
@@ -102,7 +102,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
         text_batch: Sequence[str]
         audio_batch, text_batch = list(zip(*batch))
         raw_speech = [example["array"] for example in audio_batch]
-        sampling_rates = set([example["sampling_rates"] for example in audio_batch])
+        sampling_rates = set([example["sampling_rate"] for example in audio_batch])
         assert len(sampling_rates) == 1, "Sampling rates should be standardized"
         audio_features: BatchFeature = self.feature_extractor(raw_speech, sampling_rate=sampling_rates.pop())
         text_features: BatchEncoding = self.bt(text_batch)

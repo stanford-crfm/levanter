@@ -153,7 +153,7 @@ def skip_if_hf_model_not_accessible(model_id: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")
 
 
 class IdentityProcessor(BatchProcessor[BatchEncoding]):
