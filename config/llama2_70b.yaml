@@ -1,11 +1,5 @@
 data:
-  id: dlwh/wikitext_103_detokenized
-  cache_dir: "gs://levanter-data/tokenized/wiki-llama/"
-  tokenizer: "meta-llama/Llama-2-70b-hf"
-
-
-data:
-  cache_dir: "gs://levanter-data/tokenized/llama-pile-domains/"
+  cache_dir: "gs://levanter-data/tokenized/llama70b/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
   configs:
     arxiv:
@@ -123,7 +117,7 @@ data:
     pile_cc: 0.1811
     pubmed_central: 0.1440
     books3: 0.1207
-    owt2: 0.1001
+    owt2: 0.0
     arxiv: 0.0896
     github: 0.0759
     free_law: 0.0612
@@ -132,7 +126,7 @@ data:
     pubmed_abs: 0.0307
     pg_19: 0.0217
     opensubtitles: 0.0155
-    wiki_en: 0.0153
+    wiki_en: 0.0
     dm_math: 0.0124
     ubuntu_irc: 0.0088
     books2: 0.0075
@@ -142,32 +136,30 @@ data:
     philpapers: 0.0038
     nih: 0.0030
     enron: 0.0014
-
+ 
 model:
   type: llama
-  hidden_dim: 4096
-  seq_len: 2048
-  intermediate_dim: 11008
-  num_heads: 32
-  num_layers: 32
-  num_kv_heads: 32
-# TODO: uncomment this once we resolve the resource exhaustion issue
-initialize_from_hf: "meta-llama/Llama-2-70b-hf"
-use_hf_model_config: true
+  hidden_dim: 8192
+  intermediate_dim: 28672
+  num_layers: 80
+  num_heads: 64
+  num_kv_heads: 8
+  seq_len: 4096
+
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "llama2-amber"]
+    tags: [ "llama70bfull"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 1024  # set for v4-64 TPU
-  num_train_steps: 20000
-  steps_per_eval: 10
+  num_train_steps: 1000
+  steps_per_eval: 50
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 1e-4  # set low for fine-tuning
+  learning_rate: 1.2E-5  # set low for fine-tuning
   weight_decay: 0.1
-  min_lr_ratio: 0.0
+  min_lr_ratio: 0.1
 
