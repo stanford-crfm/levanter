@@ -13,33 +13,20 @@ import numpy as np
 
 import haliax as hax
 
+from levanter.compat.hf_checkpoints import load_processor
+from levanter.data._preprocessor import BatchProcessor
+from levanter.data.dataset import ShardableDataset
+from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, MetricsMonitor
+from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset
+
 # intercept the logging nonsense here
-from levanter.logging import silence_transformer_nag  # noqa
+from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
+from levanter.text import BatchTokenizer
 
 
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, BatchFeature, PreTrainedTokenizerBase, SequenceFeatureExtractor  # noqa
-
-from levanter.compat.hf_checkpoints import load_processor  # noqa
-from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
-from levanter.data.dataset import ShardableDataset  # noqa
-from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
-from levanter.data.shard_cache import CacheLedger  # noqa
-from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
-from levanter.data.shard_cache import (  # noqa
-    ChunkMetadata,
-    LoggerMetricsMonitor,
-    LoggingMetricsMonitor,
-    MetricsMonitor,
-    ShardCache,
-    _serialize_json_and_commit,
-    build_cache,
-)
-from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset  # noqa
-from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
-from levanter.text import BatchTokenizer  # noqa
-from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 
 logger = logging.getLogger("levanter.data.text")
