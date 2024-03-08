@@ -135,9 +135,9 @@ class DenoisingConfig(draccus.ChoiceRegistry):
         r_task_token: Optional[str] = "[NLU]", x_task_token: Optional[str] = "[NLG]", s_task_token=S_TASK_TOKEN
     ) -> Dict[str, "DenoisingConfig"]:
         return {
-            "r": RDenoisingConfig(r_task_token, 0.15, 3.0),
-            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0, False),
-            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0, False),
+            "r": RDenoisingConfig(r_task_token, 0.15, 3.0, True),
+            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0, True),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0, True),
             "s": PrefixLmConfig(s_task_token),
         }
 
