@@ -159,7 +159,7 @@ class MaskDenoisingConfig(DenoisingConfig):
         # Masking.
         noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
         inputs = np.concatenate(
-            [noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)], [sentinel_token_ids[0]]
+            [noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids), [sentinel_token_ids[0]]]
         )
         targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
         return Ul2Example(inputs, targets, task_token_id)
