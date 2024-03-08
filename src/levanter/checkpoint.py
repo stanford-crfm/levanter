@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import pathlib
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -105,6 +107,16 @@ class Checkpointer:
         # The default of 5 minutes is too short even for modestly sized models for some reason
         self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
 
+        if jax.process_index() == 0:
+            # simple message queue for the async checkpoint remover
+            self._async_checkpoint_remover_queue: list[str] = []
+            # event to signal the async checkpoint remover to stop
+            self._async_event = threading.Event()
+            self._async_checkpoint_remover_thread = threading.Thread(
+                target=self._async_checkpoint_remover, daemon=True
+            )
+            self._async_checkpoint_remover_thread.start()
+
     def load_checkpoint(
         self,
         state: M,
@@ -189,15 +201,12 @@ class Checkpointer:
                 if last_checkpoint is not None:
                     self._rm_checkpoint(last_checkpoint)
 
+                if not save_permanent_ckpt:
+                    self._last_temporary_checkpoint = destination
+                else:
+                    self._last_temporary_checkpoint = None
+
             self.save_checkpoint(info, destination, commit_callback=callback)
-
-            if not save_permanent_ckpt:
-                self._last_temporary_checkpoint = destination
-            else:
-                self._last_temporary_checkpoint = None
-
-            if last_checkpoint is not None:
-                self._rm_checkpoint(last_checkpoint)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
@@ -211,15 +220,19 @@ class Checkpointer:
         self._manager.wait_until_finished()
 
     def _rm_checkpoint(self, checkpoint):
-        if jax.process_index() != 0:
-            return
+        if jax.process_index() == 0:
+            self._async_checkpoint_remover_queue.append(checkpoint)
 
+    def _do_rm_checkpoint(self, checkpoint):
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
             cp_path = os.path.join(plain_path, checkpoint)
             logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
+            time_in = time.time()
             fs.rm(cp_path, recursive=True)
+            time_out = time.time()
+            logger.info(f"Deleted checkpoint {checkpoint} from {cp_path} in {time_out - time_in:.2f} seconds")
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to delete checkpoint", exc_info=True)
 
@@ -237,6 +250,12 @@ class Checkpointer:
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
+
+    def _async_checkpoint_remover(self):
+        while not self._async_event.is_set():
+            while len(self._async_checkpoint_remover_queue) > 0:
+                checkpoint = self._async_checkpoint_remover_queue.pop(0)
+                self._do_rm_checkpoint(checkpoint)
 
 
 def save_checkpoint(
