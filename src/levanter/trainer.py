@@ -416,6 +416,7 @@ class Trainer:
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
+                model = self.mp.cast_to_compute(model)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(

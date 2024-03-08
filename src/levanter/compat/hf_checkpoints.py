@@ -18,6 +18,7 @@ import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
+import jax.numpy as jnp
 import mergedeep
 import safetensors
 import safetensors.numpy
@@ -533,7 +534,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             keys = list(f.keys())
             for key in tqdm(keys, total=len(keys), desc="Loading weights"):
                 tensor_slice = f.get_slice(key)
-                d[key] = _shard_best_effort(tensor_slice)
+                d[key] = _maybe_shard_best_effort(tensor_slice)
 
         return d
 
@@ -547,7 +548,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         for k, v in tqdm(state_dict.items(), total=len(state_dict), desc="Loading weights"):
             v = _convert_to_jnp(v)
             if v is not None:
-                v = _shard_best_effort(v)
+                v = _maybe_shard_best_effort(v)
             d[k] = v
 
         return d
@@ -954,6 +955,21 @@ def _shard_hf_checkpoint(
     metadata = {"total_size": total_size}
     index = {"metadata": metadata, "weight_map": weight_map}
     return shards, index
+
+
+def _maybe_shard_best_effort(array_or_slice) -> jax.Array:
+    """Shards an array to non-cpu devices if we have more than one device, otherwise just stays on cpu"""
+    # We do this to not waste memory on the target device if it's not going to help us save memory/io
+    # TODO: This mostly helps with Stacked modules, which we should move away from
+    if jax.device_count() > 1:
+        return _shard_best_effort(array_or_slice)
+    else:
+        with use_cpu_device():
+            if hasattr(array_or_slice, "get_shape"):
+                # this is a PySafeSlice
+                return jnp.array(array_or_slice[:])
+            else:
+                return jnp.array(array_or_slice)
 
 
 def _shard_best_effort(array_or_slice) -> jax.Array:
