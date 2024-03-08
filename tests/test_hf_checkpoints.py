@@ -1,7 +1,6 @@
 import tempfile
 
 import jax.numpy as jnp
-import dataclasses
 import numpy as np
 import pytest
 from jax.random import PRNGKey
@@ -109,7 +108,6 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=tmpdir)
         loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir)
 
         assert loaded_model.config == nano_model.config
