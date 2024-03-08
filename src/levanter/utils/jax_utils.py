@@ -1,5 +1,6 @@
 import contextlib
 import json
+import warnings
 from dataclasses import fields
 from typing import Any, Callable, Optional, TypeVar
 
@@ -30,6 +31,11 @@ def use_cpu_device():
     """Temporarily sets the default device to CPU"""
     with jax.default_device(jax.local_devices(backend="cpu")[0]):
         yield
+
+
+def is_inside_jit():
+    """Returns True if we're currently inside a jit"""
+    return isinstance(jnp.zeros(()), jax.core.Tracer)
 
 
 def flops_estimate(fn, *args, **kwargs):
@@ -137,7 +143,12 @@ def leaf_key_paths(
 
             rec_value = rec(field, field_name)
             rec_values.append(rec_value)
-        return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
+
+        _, tree_def = eqx.tree_flatten_one_level(pytree)
+        out = jax.tree_util.tree_unflatten(tree_def, rec_values)
+        return out
+        # this doesn't work reliably because tree_at doesn't like none values
+        # return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values, is_leaf=lambda x: x is None)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
         if len(leaves) == 1:
@@ -152,7 +163,9 @@ def join_key(prefix, k):
     return f"{prefix}.{k}" if prefix else k
 
 
-def key_iterator(key: PRNGKeyArray):
+def key_iterator(key: PRNGKeyArray | int):
+    if isinstance(key, int):
+        key = jax.random.PRNGKey(key)
     while True:
         key, subkey = jax.random.split(key)
         yield subkey
@@ -169,6 +182,31 @@ def is_inexact_arrayish(x):
         return jnp.issubdtype(x.dtype, jnp.inexact)
     else:
         return False
+
+
+def tree_filter_like(template: X, tree: X) -> X:
+    """
+    Filters a tree to only include the leaves that are not None in the template.
+
+    This is useful for filtering out nontrainable parameters from a tree.
+    """
+
+    def match_like(templ_leaf, tree_leaf):
+        if templ_leaf is None:
+            return None
+        else:
+            if tree_leaf is None:
+                warnings.warn(f"Template has a non-None value where tree is None. Template value: {templ_leaf}")
+            return tree_leaf
+
+    return jax.tree_util.tree_map(match_like, template, tree, is_leaf=lambda x: x is None)
+
+
+def as_arrayish(x):
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return x
+    else:
+        return jnp.asarray(x)
 
 
 def best_effort_sharding(shape, devices=None):
