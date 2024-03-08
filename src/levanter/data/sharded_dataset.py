@@ -248,12 +248,12 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
         if isinstance(audio_pointer, dict):
             if "array" in audio_pointer and "sampling_rate" in audio_pointer:
                 audio = audio_pointer
-            else:
-                import librosa  # noqa F401
+        else:
+            import librosa  # noqa F401
 
-                with fsspec.open(audio_pointer, "rb", compression="infer") as f:
-                    array, sr = librosa.load(f, sr=self.sampling_rate)
-                audio = {"array": array, "sampling_rate": sr}
+            with fsspec.open(audio_pointer, "rb", compression="infer") as f:
+                array, sr = librosa.load(f, sr=self.sampling_rate)
+            audio = {"array": array, "sampling_rate": sr}
         return audio
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[Tuple[dict, str]]:
