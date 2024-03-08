@@ -157,7 +157,7 @@ class MaskDenoisingConfig(DenoisingConfig):
             tokens = tokens[:max_length]
 
         # Masking.
-        noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length)
+        noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length, random_roll=True)
         inputs = np.concatenate(
             [noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids), [sentinel_token_ids[0]]]
         )
@@ -482,6 +482,10 @@ def random_spans_noise_mask(length, noise_density, key: PRNGKey, mean_noise_span
     #     # Roll the mask by a random offset e.g. for offset=2: [1,2,3,4] => [3,4,1,2]
     #     offset = tf.random.stateless_uniform([1], seed=roll_seed, dtype=tf.int32, minval=0, maxval=length)[0]
     #     mask = tf.roll(mask, shift=offset, axis=0)
+
+    if random_roll:
+        offset = np_rng.integers(low=0, high=length, dtype=np.int32)
+        mask = np.roll(mask, offset, axis=0)
 
     return mask
 
