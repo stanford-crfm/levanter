@@ -530,4 +530,8 @@ def noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
 
 
 def nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_tokens):
-    return noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
+    tokens = noise_span_to_unique_sentinel(tokens, np.logical_not(noise_mask), sentinel_tokens)
+
+    if tokens[-1] in sentinel_tokens:
+        tokens = tokens[:-1]
+    return tokens
