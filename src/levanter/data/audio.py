@@ -31,14 +31,6 @@ from transformers import BatchEncoding, BatchFeature, PreTrainedTokenizerBase, S
 
 logger = logging.getLogger("levanter.data.text")
 
-# TASKS:
-# TODO: consider adding indexing a la Map-style datasets
-# TODO: support seeking/serialization/restore in the dataset
-
-LEDGER_FILE = "ledger.json"
-
-DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
-
 
 class AudioTextExample(eqx.Module):
     audio: hax.NamedArray
