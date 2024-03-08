@@ -26,7 +26,13 @@ from levanter.text import BatchTokenizer
 
 
 silence_transformer_nag()  # noqa
-from transformers import BatchEncoding, BatchFeature, PreTrainedTokenizerBase, SequenceFeatureExtractor  # noqa
+from transformers import (  # noqa
+    BatchEncoding,
+    BatchFeature,
+    PreTrainedTokenizerBase,
+    ProcessorMixin,
+    SequenceFeatureExtractor,
+)
 
 
 logger = logging.getLogger("levanter.data.text")
@@ -74,16 +80,15 @@ class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
 
     def __init__(
         self,
-        feature_extractor: SequenceFeatureExtractor,
-        tokenizer: PreTrainedTokenizerBase,
+        processor: ProcessorMixin,
         enforce_eos=True,
         *,
         batch_size=128,
         override_resources=None,
     ):
-        self.feature_extractor = feature_extractor
-        self.bt = BatchTokenizer(
-            tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+        self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
+        self.bt: PreTrainedTokenizerBase = BatchTokenizer(
+            processor.tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
         )
 
         self.override_resources = override_resources
