@@ -136,8 +136,8 @@ class DenoisingConfig(draccus.ChoiceRegistry):
     ) -> Dict[str, "DenoisingConfig"]:
         return {
             "r": RDenoisingConfig(r_task_token, 0.15, 3.0),
-            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0),
-            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0),
+            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0, False),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0, False),
             "s": PrefixLmConfig(s_task_token),
         }
 
@@ -146,6 +146,7 @@ class DenoisingConfig(draccus.ChoiceRegistry):
 class MaskDenoisingConfig(DenoisingConfig):
     mask_prob: float  # r in the paper
     mean_span_length: float  # mu in the paper
+    random_roll: bool = False
 
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build a mask denoiser example from a list of tokens"""
@@ -157,7 +158,9 @@ class MaskDenoisingConfig(DenoisingConfig):
             tokens = tokens[:max_length]
 
         # Masking.
-        noise_mask = random_spans_noise_mask(len(tokens), self.mask_prob, key, self.mean_span_length, random_roll=True)
+        noise_mask = random_spans_noise_mask(
+            len(tokens), self.mask_prob, key, self.mean_span_length, random_roll=self.random_roll
+        )
         inputs = np.concatenate(
             [noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids), [sentinel_token_ids[0]]]
         )
