@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -56,7 +56,7 @@ AudioTextDict = TypedDict(
 )
 
 
-class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
+class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
     """
     A batch processor that converts raw audio into the expected inputs of a model.
     """
@@ -77,17 +77,17 @@ class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
         self.override_resources = override_resources
         self._batch_size = batch_size
 
-    def __call__(self, batch: Sequence[Tuple[Dict[str, Any], str]]) -> AudioTextDict:
+    def __call__(self, batch: Sequence[Tuple[np.ndarray, int, str]]) -> AudioTextDict:
         """
         Process a batch of data.
         """
-        audio_batch: Sequence[Dict[str, Any]]
+        audio_batch: Sequence[np.ndarray]
+        sampling_rates: Sequence[int]
         text_batch: Sequence[str]
-        audio_batch, text_batch = list(zip(*batch))
-        raw_speech = [example["array"] for example in audio_batch]
-        sampling_rates = set([example["sampling_rate"] for example in audio_batch])
-        assert len(sampling_rates) == 1, "Sampling rates should be standardized"
-        audio_features: BatchFeature = self.feature_extractor(raw_speech, sampling_rate=sampling_rates.pop())
+        audio_batch, sampling_rates, text_batch = list(zip(*batch))
+        uniq_sampling_rates: set[int] = set(sampling_rates)
+        assert len(uniq_sampling_rates) == 1, "Sampling rates should be standardized"
+        audio_features: BatchFeature = self.feature_extractor(audio_batch, sampling_rate=uniq_sampling_rates.pop())
         text_features: BatchEncoding = self.bt(text_batch)
         return audio_features | text_features
 
@@ -120,7 +120,7 @@ class AudioDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[Dict[str, Any], str]]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[np.ndarray, int, str]]]:
         if self.id is not None:
             try:
                 ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
@@ -135,19 +135,18 @@ class AudioDatasetSourceConfig:
             if len(ds.shard_names) == 0:
                 return None
 
-            return ds.map(lambda x: (x[self.audio_key], x[self.text_key]))
+            return ds.map(lambda x: (x[self.audio_key]["array"], x[self.audio_key]["sampling_rate"], x[self.text_key]))
         else:
             split_urls = self.urls_for_split(split)
             if len(split_urls) == 0:
                 return None
             return AudioTextUrlDataset(split_urls, self.text_key, self.audio_key)
 
-    def doc_iterator(self, split: str) -> Iterator[Tuple[Mapping[str, Any], str]]:
+    def doc_iterator(self, split: str) -> Iterator[Tuple[np.ndarray, int, str]]:
         if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
-            data = dataset[split]
+            data = datasets.load_dataset(self.id, split=split, name=self.name, streaming=self.stream)
             for doc in data:
-                yield (doc[self.audio_key], doc[self.text_key])
+                yield (doc[self.audio_key]["array"], doc[self.audio_key]["sampling_rate"], doc[self.text_key])
         else:
             urls = self.urls_for_split(split)
 
@@ -177,6 +176,8 @@ class AudioTaskConfig(abc.ABC):
     processor: str = "openai/whisper-tiny"
 
     # config related to caching
+    train_split: str = "train"
+    validation_split: str = "validation"
     cache_dir: str = "cache/"
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
@@ -226,7 +227,7 @@ class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        source: ShardedDataset[Tuple[Dict[str, Any], str]],
+        source: ShardedDataset[Tuple[np.ndarray, int, str]],
         processor: ProcessorMixin,
         enforce_eos=True,
         batch_size=128,
@@ -235,7 +236,7 @@ class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
         await_finished=True,
         override_resources=None,
     ) -> "ProcessedAudioCache":
-        bp: BatchProcessor[Tuple[Dict[str, Any], str]] = BatchAudioProcessor(
+        bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
             processor, enforce_eos=enforce_eos, override_resources=override_resources
         )
         monitors = monitors or []
@@ -293,7 +294,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
     def train_set(self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True) -> ProcessedAudioCache:
-        ds = self.build_or_load_cache("train", batch_size=batch_size, monitors=monitors)
+        ds = self.build_or_load_cache(self.train_split, batch_size=batch_size, monitors=monitors)
         if ds is None:
             raise ValueError("No training set!")
         return ds
@@ -301,7 +302,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     def validation_set(
         self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[ProcessedAudioCache]:
-        return self.build_or_load_cache("validation", batch_size=batch_size, monitors=monitors)
+        return self.build_or_load_cache(self.validation_split, batch_size=batch_size, monitors=monitors)
 
     def validation_sets(
         self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True

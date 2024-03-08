@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, List, Optio
 
 import datasets
 import fsspec
+import numpy as np
 
 from levanter.utils import fsspec_utils
 
@@ -228,7 +229,7 @@ class TextUrlDataset(ShardedDataset[str]):
                     raise ValueError(f"Unknown format {format}")
 
 
-class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
+class AudioTextUrlDataset(ShardedDataset[Tuple[np.ndarray, int, str]]):
     """
     Dataset for various audio and text formats.
     """
@@ -256,7 +257,7 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
             audio = {"array": array, "sampling_rate": sr}
         return audio
 
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[Tuple[dict, str]]:
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[Tuple[np.ndarray, int, str]]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
         with fsspec.open(url, "r", compression="infer") as f:
@@ -270,15 +271,14 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
                             mat_json = json.loads(line)
                             audio_pointer = mat_json[self.audio_key]
                             audio = self._resolve_audio_pointer(audio_pointer)
-                            yield (audio, mat_json[self.text_key])
+                            yield (audio["array"], audio["sampling_rate"], mat_json[self.text_key])
                         i += 1
                 case ".json":
                     data = json.load(f)
                     for doc in data[row:]:
                         audio_pointer = doc[self.audio_key]
                         audio = self._resolve_audio_pointer(audio_pointer)
-                        yield (audio, mat_json[self.text_key])
-                        yield (audio, doc[self.text_key])
+                        yield (audio["array"], audio["sampling_rate"], doc[self.text_key])
                 case _:
                     raise ValueError(f"Unknown format {format}")
 
