@@ -1,40 +1,25 @@
 import abc
-import copy
-import dataclasses
-import functools
 import logging
-import os
 from dataclasses import dataclass
 from functools import cached_property
-from itertools import chain
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
 import equinox as eqx
 import fsspec
-import jax
+import jax.numpy as jnp
 import numpy as np
-import pyarrow as pa
-import regex
-from draccus import field
-from jaxtyping import PRNGKeyArray
-from tokenizers import normalizers
 
 import haliax as hax
-from haliax import Axis
-
-from levanter.data.mixture import MixtureDataset, StopStrategy
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
-from levanter.models.lm_model import LmExample
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
-from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
+from transformers import BatchEncoding, BatchFeature, PreTrainedTokenizerBase, SequenceFeatureExtractor  # noqa
 
 from levanter.compat.hf_checkpoints import load_processor  # noqa
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
@@ -51,8 +36,9 @@ from levanter.data.shard_cache import (  # noqa
     _serialize_json_and_commit,
     build_cache,
 )
-from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
+from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
+from levanter.text import BatchTokenizer  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 
@@ -71,7 +57,7 @@ class AudioTextExample(eqx.Module):
     audio: hax.NamedArray
     tokens: hax.NamedArray
     loss_mask: hax.NamedArray
-    attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
+    attn_mask: AttentionMask | hax.NamedArray = AttentionMask.causal()
 
     @staticmethod
     def causal(
@@ -102,6 +88,56 @@ class AudioTextExample(eqx.Module):
         return AudioTextExample(audio=audio, tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
+class BatchAudioProcessor(BatchProcessor[Tuple[Dict[str, Any], str]]):
+    """
+    A batch processor that converts raw audio into the expected inputs of a model.
+    """
+
+    def __init__(
+        self,
+        feature_extractor: SequenceFeatureExtractor,
+        tokenizer: PreTrainedTokenizerBase,
+        enforce_eos=True,
+        *,
+        batch_size=128,
+        override_resources=None,
+    ):
+        self.feature_extractor = feature_extractor
+        self.bt = BatchTokenizer(
+            tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+        )
+
+        self.override_resources = override_resources
+        self._batch_size = batch_size
+
+    def __call__(self, batch: Sequence[Tuple[Dict[str, Any], str]]) -> Mapping[str, Sequence]:
+        """
+        Process a batch of data.
+        """
+        audio_batch: Sequence[Dict[str, Any]]
+        text_batch: Sequence[str]
+        audio_batch, text_batch = list(zip(*batch))
+        raw_speech = [example["array"] for example in audio_batch]
+        sampling_rates = set([example["sampling_rates"] for example in audio_batch])
+        assert len(sampling_rates) == 1, "Sampling rates should be standardized"
+        audio_features: BatchFeature = self.feature_extractor(raw_speech, sampling_rate=sampling_rates.pop())
+        text_features: BatchEncoding = self.bt(text_batch)
+        return audio_features | text_features
+
+    @property
+    def num_cpus(self) -> int:
+        """The number of CPUs this processor needs to run."""
+        return self.bt.num_cpus
+
+    @property
+    def num_gpus(self) -> int:
+        return self.bt.num_gpus
+
+    @property
+    def batch_size(self) -> int:
+        return self.bt._batch_size
+
+
 @dataclass
 class AudioDatasetSourceConfig:
     """This class represents a dataset source with URLs or hf name/id."""
@@ -117,7 +153,7 @@ class AudioDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[dict, str]]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[Mapping[str, Any], str]]]:
         if self.id is not None:
             try:
                 ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
@@ -139,7 +175,7 @@ class AudioDatasetSourceConfig:
                 return None
             return AudioTextUrlDataset(split_urls, self.text_key, self.audio_key)
 
-    def doc_iterator(self, split: str) -> Iterator[Tuple[dict, str]]:
+    def doc_iterator(self, split: str) -> Iterator[Tuple[Mapping[str, Any], str]]:
         if self.id is not None:
             dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
             data = dataset[split]

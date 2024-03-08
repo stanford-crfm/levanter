@@ -233,11 +233,12 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
     Dataset for various audio and text formats.
     """
 
-    def __init__(self, urls, text_key="sentence", audio_key="audio"):
+    def __init__(self, urls, text_key="sentence", audio_key="audio", sampling_rate=16000):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
         self.text_key = text_key
         self.audio_key = audio_key
+        self.sampling_rate = sampling_rate
 
     @property
     def shard_names(self) -> Sequence[str]:
@@ -248,9 +249,9 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[dict, str]]):
             if "array" in audio_pointer and "sampling_rate" in audio_pointer:
                 audio = audio_pointer
             else:
-                import soundfile
+                import librosa
 
-                array, sr = soundfile.read(audio_pointer)
+                array, sr = librosa.load(audio_pointer, sr=self.sampling_rate)
                 audio = {"array": array, "sampling_rate": sr}
         return audio
 
