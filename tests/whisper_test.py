@@ -17,9 +17,10 @@ from levanter.compat.hf_checkpoints import RepoRef
 from levanter.models.attention import AttentionMask
 from levanter.models.whisper import WhisperConfig, WhisperModel
 from levanter.utils.tree_utils import inference_mode
-from test_utils import skip_if_no_torch
+from test_utils import skip_if_no_soundlibs, skip_if_no_torch
 
 
+@skip_if_no_soundlibs
 def test_basic_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     conf = WhisperConfig.from_hf_config(c)
@@ -44,6 +45,7 @@ def test_basic_forward_whisper():
     model(na, inp)
 
 
+@skip_if_no_soundlibs
 def test_mask_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     conf = WhisperConfig.from_hf_config(c)
@@ -68,6 +70,7 @@ def test_mask_forward_whisper():
     model(na, inp, attn_mask=AttentionMask.causal())
 
 
+@skip_if_no_soundlibs
 def test_namedarray_mask_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     conf = WhisperConfig.from_hf_config(c)
@@ -92,6 +95,7 @@ def test_namedarray_mask_forward_whisper():
     model(na, inp, attn_mask=AttentionMask.causal().explicit_mask)
 
 
+@skip_if_no_soundlibs
 @skip_if_no_torch
 def test_hf_roundtrip():
     import torch

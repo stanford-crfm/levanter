@@ -125,8 +125,22 @@ def has_torch():
         return False
 
 
+def has_soundlibs():
+    try:
+        import librosa  # noqa F401
+        import soundfile  # noqa F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
+
+
+def skip_if_no_soundlibs(f):
+    return pytest.mark.skipif(not has_soundlibs(), reason="torch not installed")(f)
 
 
 def skip_if_checkpoint_not_accessible(path: str):
