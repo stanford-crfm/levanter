@@ -152,7 +152,7 @@ class MaskDenoisingConfig(DenoisingConfig):
         """Build a mask denoiser example from a list of tokens"""
         # Slicing.
         # new_length = sliced_length + 2 * num_spans = sliced_length * (1 + 2r / mu) should be at most length (4096)
-        length = 4096 - 2 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        length = 4096 - 3 - (task_token_id is not None)  # TODO: change to actual model seqlen
         max_length = int(round(length * self.mean_span_length / (self.mean_span_length + 2 * self.mask_prob)))
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
@@ -162,11 +162,13 @@ class MaskDenoisingConfig(DenoisingConfig):
             len(tokens), self.mask_prob, key, self.mean_span_length, random_roll=self.random_roll
         )
         inputs = noise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
-        targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
 
         # if input start with a blank
         if inputs[0] in sentinel_token_ids:
+            targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids[1:])
             targets = np.concatenate([[sentinel_token_ids[1]], targets])
+        else:
+            targets = nonnoise_span_to_unique_sentinel(tokens, noise_mask, sentinel_token_ids)
         # if input end with a non-blank (if target ends with a blank)
         if targets[-1] in sentinel_token_ids:
             targets = targets[:-1]
