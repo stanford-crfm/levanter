@@ -9,9 +9,7 @@ from test_utils import skip_if_hf_model_not_accessible, skip_if_no_soundlibs
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_whisper_batch_processor():
     processor = AutoProcessor.from_pretrained("openai/whisper-tiny")
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation").select_columns(
-        ["audio", "text"]
-    )
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation").select_columns(["audio", "text"])
     batch_processor = BatchAudioProcessor(processor)
     inputs = [(audio["array"], audio["sampling_rate"], text) for audio, text in zip(ds[:16]["audio"], ds[:16]["text"])]
     batch_processor(inputs)
@@ -21,7 +19,7 @@ def test_whisper_batch_processor():
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_loading():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
-    ac = AudioDatasetSourceConfig(id="librispeech_asr", name="clean", text_key="text")
+    ac = AudioDatasetSourceConfig(id="WillHeld/test_librispeech_parquet", text_key="text")
     audio_iterator = ac.doc_iterator("validation")
     for i in range(10):
         audio, sample, text = next(audio_iterator)
@@ -31,7 +29,7 @@ def test_hf_audio_loading():
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_loading_source():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
-    ac = AudioDatasetSourceConfig(id="librispeech_asr", name="clean", text_key="text")
+    ac = AudioDatasetSourceConfig(id="WillHeld/test_librispeech_parquet", text_key="text")
     audio_iterator = iter(ac.get_shard_source("validation"))
     for i in range(10):
         audio, sample, text = next(audio_iterator)
@@ -41,7 +39,7 @@ def test_hf_audio_loading_source():
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_ray_pipeline():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
-    ac = AudioIODatasetConfig(id="librispeech_asr", name="clean", text_key="text", audio_key="audio")
+    ac = AudioIODatasetConfig(id="WillHeld/test_librispeech_parquet", text_key="text")
     audio_iterator = iter(ac.validation_set(batch_size=10))
     for i in range(10):
         t = next(audio_iterator)
