@@ -1,5 +1,6 @@
 import abc
 import functools
+import io
 import logging
 import os
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
+import librosa
 import numpy as np
 from jaxtyping import PRNGKeyArray
 from typing_extensions import TypedDict
@@ -51,8 +53,22 @@ from transformers import (  # noqa
 
 logger = logging.getLogger("levanter.data.audio")
 
+AudioTextStorageBatch = TypedDict(
+    "AudioTextStorageBatch",
+    {
+        "input_features": np.ndarray,
+        "input_ids": np.ndarray,
+        "attention_mask": np.ndarray,
+        "audio_shape": Sequence[Tuple[int, int]],
+    },
+)
 AudioTextDict = TypedDict(
-    "AudioTextDict", {"audio_features": np.ndarray, "tokens": np.ndarray, "attention_mask": np.ndarray}
+    "AudioTextDict",
+    {
+        "input_features": np.ndarray,
+        "input_ids": np.ndarray,
+        "attention_mask": np.ndarray,
+    },
 )
 
 
@@ -68,16 +84,22 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         *,
         batch_size=128,
         override_resources=None,
+        padding=True,
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
         self.bt: PreTrainedTokenizerBase = BatchTokenizer(
-            processor.tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+            processor.tokenizer,
+            enforce_eos=enforce_eos,
+            batch_size=batch_size,
+            override_resources=override_resources,
+            return_attention_mask=True,
+            padding="max_length" if padding else False,
         )
 
         self.override_resources = override_resources
         self._batch_size = batch_size
 
-    def __call__(self, batch: Sequence[Tuple[np.ndarray, int, str]]) -> AudioTextDict:
+    def __call__(self, batch: Sequence[Tuple[np.ndarray, int, str]]) -> AudioTextStorageBatch:
         """
         Process a batch of data.
         """
@@ -89,7 +111,14 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         assert len(uniq_sampling_rates) == 1, "Sampling rates should be standardized"
         audio_features: BatchFeature = self.feature_extractor(audio_batch, sampling_rate=uniq_sampling_rates.pop())
         text_features: BatchEncoding = self.bt(text_batch)
-        return audio_features | text_features
+        combined_features = audio_features | text_features
+        combined_features["input_ids"] = np.array(combined_features["input_ids"])
+        combined_features["attention_mask"] = np.array(combined_features["attention_mask"])
+        a_features = np.array(combined_features["input_features"])
+        a_shape = a_features.shape
+        combined_features["audio_shape"] = [a_shape[1:]] * a_shape[0]
+        combined_features["input_features"] = a_features.reshape(a_shape[0], -1)
+        return combined_features
 
     @property
     def num_cpus(self) -> int:
@@ -116,6 +145,7 @@ class AudioDatasetSourceConfig:
     stream: bool = True  # whether to use streaming when doing hf
     text_key: str = "sentence"  # key for the text field in the jsonl file or hf dataset
     audio_key: str = "audio"  # key for the text field in the jsonl file or hf dataset
+    sampling_rate: int = 16_000
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
@@ -135,12 +165,21 @@ class AudioDatasetSourceConfig:
             if len(ds.shard_names) == 0:
                 return None
 
-            return ds.map(lambda x: (x[self.audio_key]["array"], x[self.audio_key]["sampling_rate"], x[self.text_key]))
+            def decode(x):
+                text = x[self.text_key]
+                audio = x[self.audio_key]
+                if "array" in audio:
+                    return (audio["array"], audio["sampling_rate"], text)
+                else:
+                    array, sample_rate = librosa.load(io.BytesIO(audio["bytes"]), sr=self.sampling_rate)
+                    return (array, sample_rate, text)
+
+            return ds.map(decode)
         else:
             split_urls = self.urls_for_split(split)
             if len(split_urls) == 0:
                 return None
-            return AudioTextUrlDataset(split_urls, self.text_key, self.audio_key)
+            return AudioTextUrlDataset(split_urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
 
     def doc_iterator(self, split: str) -> Iterator[Tuple[np.ndarray, int, str]]:
         if self.id is not None:
@@ -150,7 +189,7 @@ class AudioDatasetSourceConfig:
         else:
             urls = self.urls_for_split(split)
 
-            yield from AudioTextUrlDataset(urls, self.text_key, self.audio_key)
+            yield from AudioTextUrlDataset(urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -209,7 +248,7 @@ class AudioTaskConfig(abc.ABC):
         pass
 
 
-class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
+class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
     """
     Represents a cache of data with both pre-processed audio and tokenized text, which is a directory of parquet files with a ledger file.=
     """
@@ -219,7 +258,12 @@ class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
 
     def __iter__(self):
         for batch in self._chunks():
-            yield dict_from_record_batch(batch)
+            unarrow = dict_from_record_batch(batch)
+            # Separates Batching For Processing from Batching For Training
+            for example in [dict(zip(unarrow, t)) for t in zip(*unarrow.values())]:
+                example["input_features"] = example["input_features"].reshape(example["audio_shape"])
+                del example["audio_shape"]
+                yield example
 
     def _chunks(self):
         return self.chunk_cache.iter_batches_from_chunks()
@@ -237,7 +281,7 @@ class ProcessedAudioCache(ShardableDataset[Mapping[str, Sequence]]):
         override_resources=None,
     ) -> "ProcessedAudioCache":
         bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
-            processor, enforce_eos=enforce_eos, override_resources=override_resources
+            processor, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
         )
         monitors = monitors or []
         cache = build_cache(
@@ -339,7 +383,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            return ProcessedAudioCache.load(split_cache_dir)
+            return ProcessedAudioCache.load(split_cache_dir, batch_size=batch_size)
         except FileNotFoundError:
             pass
 
@@ -408,9 +452,9 @@ class AudioTextExample(eqx.Module):
 class AudioTextDataset(ShardableDataset[AudioTextExample]):
     def __init__(
         self,
-        dataset: ShardableDataset[AudioTextDict],
+        dataset: ShardableDataset[AudioTextStorageBatch],
         TextPos: Axis,
-        AudioPos: Axis,
+        AudioPos: hax.AxisSelector,
         KPos: Axis,
         fcm_prob: float = 0.0,
         key: Optional[PRNGKeyArray] = None,
@@ -445,9 +489,9 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
         with use_cpu_device():
 
             @functools.partial(eqx.filter_jit, out_shardings=sharding)
-            def _create_example(inputs: AudioTextDict, key):
-                tokens = hax.named(inputs["tokens"], self.TextPos)
-                audio_features = hax.named(inputs["audio_features"], self.AudioPos)
+            def _convert_example(inputs: AudioTextDict, key) -> "AudioTextExample":
+                tokens = hax.named(inputs["input_ids"], self.TextPos)
+                audio_features = hax.named(inputs["input_features"], self.AudioPos)
                 attn_mask = hax.named(inputs["attention_mask"], self.KPos)
                 attn_mask = AttentionMask.explicit(attn_mask)
 
@@ -463,6 +507,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
 
                 return AudioTextExample(audio_features, tokens, attn_mask=attn_mask)
 
-            for tokens in self.dataset:
-                example = _create_example(tokens, key)
-                yield example
+            for example in self.dataset:
+                converted_example = _convert_example(example, key)
+                yield converted_example

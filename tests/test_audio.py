@@ -17,6 +17,8 @@ def test_whisper_batch_processor():
     batch_processor(inputs)
 
 
+@skip_if_no_soundlibs
+@skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_loading():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
     ac = AudioDatasetSourceConfig(id="librispeech_asr", name="clean", text_key="text")
@@ -25,6 +27,8 @@ def test_hf_audio_loading():
         audio, sample, text = next(audio_iterator)
 
 
+@skip_if_no_soundlibs
+@skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_loading_source():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
     ac = AudioDatasetSourceConfig(id="librispeech_asr", name="clean", text_key="text")
@@ -33,9 +37,14 @@ def test_hf_audio_loading_source():
         audio, sample, text = next(audio_iterator)
 
 
+@skip_if_no_soundlibs
+@skip_if_hf_model_not_accessible("openai/whisper-tiny")
 def test_hf_audio_batching():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
     ac = AudioIODatasetConfig(id="librispeech_asr", name="clean", text_key="text", audio_key="audio")
-    audio_iterator = ac.validation_set(batch_size=2)
-    for i in range(5):
-        audio, text = next(audio_iterator)
+    audio_iterator = iter(ac.validation_set(batch_size=10))
+    for i in range(10):
+        t = next(audio_iterator)
+        assert t["input_features"].shape == (80, 3000), t["input_features"].shape
+        assert t["input_ids"].shape == (1024,), t["input_ids"].shape
+        assert t["attention_mask"].shape == (1024,), t["attention_mask"].shape
