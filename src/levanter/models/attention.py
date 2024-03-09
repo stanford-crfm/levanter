@@ -168,7 +168,7 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     for a in reversed(q.axes):
         if a.name in present_in_all and a.name not in spoken_for:
             primary_H.append(a)
-        elif a == QPos:
+        elif a == QPos and not primary_H:  # better to always have at least one H?
             break  # anything before QPos we'll say is Batch
 
     # since we added them in reverse order, we need to reverse them
@@ -251,6 +251,7 @@ def _te_flash_attention(
         AttnBiasType,
         AttnMaskType,
         cross_fused_attn,
+        fused_attn,
         self_fused_attn,
     )
 
@@ -319,9 +320,10 @@ def _te_flash_attention(
             is_training=is_training,
         )
     else:
-        attn_output = cross_fused_attn(
+        attn_output = fused_attn(
             q=q_,
-            kv=k_,
+            k=k_,
+            v=v_,
             bias=fused_attn_bias,
             mask=fused_attn_mask,
             seed=prng,
