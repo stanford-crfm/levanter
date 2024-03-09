@@ -265,6 +265,9 @@ def _te_flash_attention(
     B, Sq, Hq, D = q_.shape
     Bk, Sk, Hk, Dk = k_.shape
 
+    QPos = query.resolve_axis(QPos)
+    KPos = key.resolve_axis(KPos)
+
     # TODO: must Dk == Dv?
     if k_.shape != v_.shape:
         raise ValueError("k and v must have the same axes")
