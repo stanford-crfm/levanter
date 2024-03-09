@@ -266,7 +266,7 @@ def _te_flash_attention(
     Bk, Sk, Hk, Dk = k_.shape
 
     # TODO: must Dk == Dv?
-    if k_.axes != v_.axes:
+    if k_.shape != v_.shape:
         raise ValueError("k and v must have the same axes")
 
     if B != Bk:
@@ -289,9 +289,9 @@ def _te_flash_attention(
 
     if q_.shape == k_.shape == v_.shape:
         # can use self_fused_attn
-        qkv = jnp.stack((q_, k_, v_), axis=2)
+        qkv_ = jnp.stack((q_, k_, v_), axis=2)
         attn_output = self_fused_attn(
-            qkv=qkv,  # jnp.ndarray,
+            qkv=qkv_,  # jnp.ndarray,
             bias=fused_attn_bias,  # jnp.ndarray,
             mask=fused_attn_mask,  # jnp.ndarray,
             seed=prng,  # jnp.ndarray,
@@ -302,11 +302,10 @@ def _te_flash_attention(
             is_training=is_training,  # bool,
         )
     elif k_.shape == v_.shape:
-        q = q_
-        kv = jnp.stack((k_, v_), axis=2)
+        kv_ = jnp.stack((k_, v_), axis=2)
         attn_output = cross_fused_attn(
-            q=q,
-            kv=kv,
+            q=q_,
+            kv=kv_,
             bias=fused_attn_bias,
             mask=fused_attn_mask,
             seed=prng,
