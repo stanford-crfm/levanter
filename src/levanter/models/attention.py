@@ -59,7 +59,7 @@ def dot_product_attention(
     if QPos == KPos:
         raise ValueError("QPos and KPos must be different")
 
-    accelerator_type = next(iter(query.array.devices())).platform
+    accelerator_type = jax.local_devices()[0].platform
 
     if not use_flash:
         return simple_attention_with_dropout(
