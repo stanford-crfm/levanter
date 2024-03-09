@@ -145,7 +145,8 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     - QPos and KPos are always S
     - the latest other axis that is present in all three is H. If there are no other axes, we'll add a dummy axis
     - Any other axis that is present in all three is B. If there are no other axes, we'll add a dummy axis
-    - If there's an axis present in Q and not in K or V, it's an extra H for Q (as part of GQA)
+    - If there's an axis present in Q and not in K or V, it's an extra H for Q (as part of GQA).
+      These go *after* the primary H because GQA wants these to be minor axes
     - If there are any other axes present in one but not all three, it's an error
      (TODO: we could vmap over these?)
     """
@@ -163,9 +164,10 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     # find the primary H axes: which are axes that are:
     # - present in all three
     # - not spoken for already
-    # - come after QPos in Q
+    # - come after QPos in Q (if there's already a primary H)
+    # - not the 0th axis in Q (even if there's no primary H)
     primary_H: list[Axis] = []
-    for a in reversed(q.axes):
+    for a in reversed(q.axes[1:]):
         if a.name in present_in_all and a.name not in spoken_for:
             primary_H.append(a)
         elif a == QPos and primary_H:  # better to always have at least one H?
@@ -188,8 +190,8 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     # if there's an axis in q that's not in k or v, it's an extra H for q
     extra_q_H = [ax for ax in q.axes if ax.name not in spoken_for]
 
-    # we want primary_h to be at the end for gqa~
-    q_class["H"] = extra_q_H + primary_H
+    # we want primary_h to be *before* extra_q_H b/c GQA wants these to be minor axes
+    q_class["H"] = primary_H + extra_q_H
     k_class["H"] = primary_H
     v_class["H"] = primary_H
 

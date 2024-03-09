@@ -71,9 +71,9 @@ def test_te_bin_and_group_axes_by_function():
     assert k_c["D"] == [D]
     assert v_c["D"] == [D]
 
-    gq = hax.zeros((B, QPos, G, H, D))
+    gq = hax.zeros((B, QPos, H, G, D))
     q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, k, v, "QPos", "KPos", "D")
-    assert q_c["H"] == [G, H]
+    assert q_c["H"] == [H, G]
     assert k_c["H"] == [H]
     assert v_c["H"] == [H]
 
@@ -84,12 +84,12 @@ def test_te_bin_and_group_axes_by_function():
     with pytest.raises(ValueError):
         _te_bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
 
-    for gk_axes in [(B, KPos, H, G, D), (B, KPos, G, H, D), (G, B, KPos, H, D)]:
+    for gk_axes in [(B, KPos, G, H, D), (B, KPos, G, H, D), (G, B, KPos, H, D)]:
         gk = hax.zeros(gk_axes)
         q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, gk, gk, "QPos", "KPos", "D")
-        assert q_c["H"] == [G, H]
-        assert k_c["H"] == [G, H]
-        assert v_c["H"] == [G, H]
+        assert q_c["H"] == [H, G]
+        assert k_c["H"] == [H, G]
+        assert v_c["H"] == [H, G]
 
     # axes that come before QPos are treated as batch (if shared)
     gq = hax.zeros((G, B, QPos, H, D))
