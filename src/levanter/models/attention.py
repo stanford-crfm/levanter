@@ -356,7 +356,7 @@ def _te_flash_attention(
         attention_dtype,
         precision,
         prng=prng,
-    )
+    ).axes
     attn_output = attn_output.rearrange(output_axes)
 
     return attn_output
