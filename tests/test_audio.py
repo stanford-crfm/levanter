@@ -39,7 +39,7 @@ def test_hf_audio_loading_source():
 
 @skip_if_no_soundlibs
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
-def test_hf_audio_batching():
+def test_hf_audio_ray_pipeline():
     # Use the Real Librispeech Valudation. Testing one doesn't support streaming.
     ac = AudioIODatasetConfig(id="librispeech_asr", name="clean", text_key="text", audio_key="audio")
     audio_iterator = iter(ac.validation_set(batch_size=10))
