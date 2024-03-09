@@ -168,7 +168,7 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     for a in reversed(q.axes):
         if a.name in present_in_all and a.name not in spoken_for:
             primary_H.append(a)
-        elif a == QPos and not primary_H:  # better to always have at least one H?
+        elif a == QPos and primary_H:  # better to always have at least one H?
             break  # anything before QPos we'll say is Batch
 
     # since we added them in reverse order, we need to reverse them
