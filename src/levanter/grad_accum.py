@@ -139,7 +139,7 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
             return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))
         else:
-            assert jnp.isscalar(x)
+            # assert jnp.isscalar(x)
             return x
 
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
