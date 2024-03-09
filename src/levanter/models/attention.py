@@ -203,6 +203,10 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
         if a.name not in spoken_for:
             raise ValueError(f"Axis {a.name} is present in v but not in q and/or k")
 
+    print("q_class", q_class)
+    print("k_class", k_class)
+    print("v_class", v_class)
+
     return q_class, k_class, v_class
 
 
@@ -210,10 +214,18 @@ def _reshape_axes_for_te_bins(q, q_class):
     """
     Reshape the axes of a qkv as BSHD to match the bins in q_class
     """
-    q = q.flatten_axes(q_class["B"], "B")
-    q = q.flatten_axes(q_class["S"], "S")
-    q = q.flatten_axes(q_class["H"], "H")
-    q = q.flatten_axes(q_class["D"], "D")
+
+    def _maybe_flatten(q, axes, name):
+        if axes:
+            q = q.flatten_axes(axes, name)
+        else:
+            q = q.broadcast_axis(Axis(name, 1))
+        return q
+
+    q = _maybe_flatten(q, q_class["B"], "B")
+    q = _maybe_flatten(q, q_class["S"], "S")
+    q = _maybe_flatten(q, q_class["H"], "H")
+    q = _maybe_flatten(q, q_class["D"], "D")
     q = q.rearrange(("B", "S", "H", "D"))
     return q
 
