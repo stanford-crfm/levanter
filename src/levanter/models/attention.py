@@ -405,10 +405,6 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
         if a.name not in spoken_for:
             raise ValueError(f"Axis {a.name} is present in v but not in q and/or k")
 
-    print("q_class", q_class)
-    print("k_class", k_class)
-    print("v_class", v_class)
-
     return q_class, k_class, v_class
 
 
