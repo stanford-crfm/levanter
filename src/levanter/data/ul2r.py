@@ -157,7 +157,8 @@ class MaskDenoisingConfig(DenoisingConfig):
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
 
-        np_rng = np.random.default_rng(np.array(key))
+        this_key, key = jax.random.split(key)
+        np_rng = np.random.default_rng(np.array(this_key))
         pivot = int(np_rng.integers(128, max_length))
         tokens = tokens[:pivot]
 
