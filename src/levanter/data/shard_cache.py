@@ -1737,6 +1737,10 @@ class ShardCache(Iterable[pa.RecordBatch]):
         """
         return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, 0, 1)
 
+    def set_batch_size(self, batch_size):
+        self._batch_size = batch_size
+        return self
+
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
         for batch in reader:

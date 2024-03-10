@@ -1,6 +1,5 @@
 import abc
 import functools
-import io
 import logging
 import os
 from dataclasses import dataclass
@@ -13,7 +12,6 @@ import equinox as eqx
 import fsspec
 import jax
 import jax.numpy as jnp
-import librosa
 import numpy as np
 from jaxtyping import PRNGKeyArray
 from typing_extensions import TypedDict
@@ -167,12 +165,9 @@ class AudioDatasetSourceConfig:
 
             def decode(x):
                 text = x[self.text_key]
-                audio = x[self.audio_key]
-                if "array" in audio:
-                    return (audio["array"], audio["sampling_rate"], text)
-                else:
-                    array, sample_rate = librosa.load(io.BytesIO(audio["bytes"]), sr=self.sampling_rate)
-                    return (array, sample_rate, text)
+                audio_pointer = x[self.audio_key]
+                audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                return (audio["array"], audio["sampling_rate"], text)
 
             return ds.map(decode)
         else:
@@ -250,20 +245,22 @@ class AudioTaskConfig(abc.ABC):
 
 class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
     """
-    Represents a cache of data with both pre-processed audio and tokenized text, which is a directory of parquet files with a ledger file.=
+    Represents a cache of data with both pre-processed audio and tokenized text, which is a directory of parquet files with a ledger file.
     """
 
     def __init__(self, chunk_cache: ShardCache):
-        self.chunk_cache = chunk_cache
+        # Separates Batching For Processing from Batching For Training
+        chunk_cache_flat = chunk_cache.set_batch_size(1)
+        self.chunk_cache = chunk_cache_flat
 
     def __iter__(self):
         for batch in self._chunks():
             unarrow = dict_from_record_batch(batch)
-            # Separates Batching For Processing from Batching For Training
-            for example in [dict(zip(unarrow, t)) for t in zip(*unarrow.values())]:
-                example["input_features"] = example["input_features"].reshape(example["audio_shape"])
-                del example["audio_shape"]
-                yield example
+            # Flatten Singleton Batch Dimension
+            singleton_dict = {key: unarrow[key].squeeze() for key in unarrow}
+            singleton_dict["input_features"] = singleton_dict["input_features"].reshape(singleton_dict["audio_shape"])
+            del singleton_dict["audio_shape"]
+            yield singleton_dict
 
     def _chunks(self):
         return self.chunk_cache.iter_batches_from_chunks()
@@ -456,7 +453,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
         TextPos: Axis,
         AudioPos: hax.AxisSelector,
         KPos: Axis,
-        fcm_prob: float = 0.0,
         key: Optional[PRNGKeyArray] = None,
         ignore_index: Optional[int] = None,
     ):
@@ -464,12 +460,8 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
         self.TextPos = TextPos
         self.AudioPos = AudioPos
         self.KPos = KPos
-        self.fcm_prob = fcm_prob
         self.key = key
         self.ignore_id = ignore_index
-
-        if self.fcm_prob > 0.0 and self.key is None:
-            raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "AudioTextDataset":
         return AudioTextDataset(
@@ -477,7 +469,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
             self.TextPos,
             self.AudioPos,
             self.KPos,
-            self.fcm_prob,
             self.key,
             self.ignore_id,
         )
@@ -494,16 +485,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
                 audio_features = hax.named(inputs["input_features"], self.AudioPos)
                 attn_mask = hax.named(inputs["attention_mask"], self.KPos)
                 attn_mask = AttentionMask.explicit(attn_mask)
-
-                if self.fcm_prob > 0:
-                    # masks for attention
-                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-                    assert self.key is not None
-                    this_key, key = jax.random.split(key)
-                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                    attn_mask = attn_mask & AttentionMask.explicit(fcm_mask)
 
                 return AudioTextExample(audio_features, tokens, attn_mask=attn_mask)
 
