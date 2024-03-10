@@ -152,10 +152,14 @@ class MaskDenoisingConfig(DenoisingConfig):
         """Build a mask denoiser example from a list of tokens"""
         # Slicing.
         # new_length = sliced_length + 2 * num_spans = sliced_length * (1 + 2r / mu) should be at most length (4096)
-        length = 4096 - 3 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        length = 1024 - 3 - (task_token_id is not None)  # TODO: change to actual model seqlen
         max_length = int(round(length * self.mean_span_length / (self.mean_span_length + 2 * self.mask_prob)))
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
+
+        np_rng = np.random.default_rng(np.array(key))
+        pivot = int(np_rng.integers(128, max_length))
+        tokens = tokens[:pivot]
 
         # Masking.
         noise_mask = random_spans_noise_mask(
@@ -202,14 +206,15 @@ class PrefixLmConfig(DenoisingConfig):
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
         # Slicing.
-        max_length = 4096 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        max_length = 1024 - 1 - (task_token_id is not None)  # TODO: change to actual model seqlen
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
 
         # choose a random length
         np_rng = np.random.default_rng(np.array(key))
         pivot = int(np_rng.integers(1, len(tokens) + 1))
-        return Ul2Example(np.array(tokens[:-pivot]), np.array(tokens[-pivot:]), task_token_id)
+        inputs = np.concatenate([np.array(tokens[:-pivot]), [sentinel_token_ids[0]]])
+        return Ul2Example(inputs, np.array(tokens[-pivot:]), task_token_id)
 
 
 # these aren't in the UL2(R) papers but they're nice to have
