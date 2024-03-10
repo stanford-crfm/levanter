@@ -96,11 +96,13 @@ def dot_product_attention(
         except ValueError as e:
             message = str(e)
             if message.startswith("Unsupported backend="):
-                warnings.warn(
-                    "TE doesn't work with these arguments. Falling back to the reference implementation.\n"
-                    "Check nvte_get_fused_attn_backend for supported configurations:\n"
-                    "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/fused_attn/fused_attn.cpp#L71"
-                )
+                _dtype = attention_dtype or query.dtype
+                msg = "TE doesn't work with these arguments. Falling back to the reference implementation.\n"
+                "Check nvte_get_fused_attn_backend for supported configurations:\n"
+                "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/fused_attn/fused_attn.cpp#L71"
+                if _dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
+                    msg += f"In particular, TE doesn't support {_dtype} yet."
+                warnings.warn(msg)
             else:
                 raise
 
@@ -257,6 +259,14 @@ def _te_flash_attention(
         self_fused_attn,
     )
 
+    attention_dtype = attention_dtype or query.dtype
+    query = query.astype(attention_dtype)
+    key = key.astype(attention_dtype)
+    value = value.astype(attention_dtype)
+
+    if precision is not None:
+        warnings.warn("precision is not supported for TE fused attention. Ignoring.")
+
     # references: https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/fused_attn.py#L31
     # https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/flax/transformer.py#L269
 
@@ -270,6 +280,10 @@ def _te_flash_attention(
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
+
+    dtype = query.dtype
+    if dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
+        raise NotImplementedError(f"TE doesn't support {dtype} yet.")
 
     # TODO: must Dk == Dv?
     if k_.shape != v_.shape:
