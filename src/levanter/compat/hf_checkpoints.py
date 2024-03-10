@@ -486,75 +486,72 @@ class HFCheckpointConverter(Generic[LevConfig]):
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
-        from contextlib import nullcontext, ExitStack
+        from contextlib import ExitStack
+
+        hf_config = self.hf_config_from_hf_checkpoint(ref)
+        if isinstance(lm_model_cls, type(self.default_config)):
+            config = lm_model_cls
+            lm_model_cls = config.model_type
+        else:
+            config = self.config_from_hf_config(hf_config)
+
+        # Vocab: first we have to resize the vocab as loaded from the checkpoint
+        tokenizer_Vocab = self.Vocab
+        Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
 
         contexts = ExitStack()
-
-        if axis_mapping is not None:
-            contexts.enter_context(haliax.axis_mapping(axis_mapping))
 
         just_use_cpu = len(jax.devices()) == 1
         if just_use_cpu:
             # if we only have 1 device, use CPU ram
             contexts.enter_context(use_cpu_device())
 
-
         with contexts:
             # TODO: in an ideal world, we would only load the part of the array we needed, but
             # AFAICT neither torch state dicts nor safetensors support this.
             state_dict = self.load_state_dict(ref)
 
-            hf_config = self.hf_config_from_hf_checkpoint(ref)
+        ignore_prefix: Optional[str] = None
+        if self.ignore_prefix:
+            for k in state_dict.keys():
+                if k.startswith(f"{self.ignore_prefix}."):
+                    ignore_prefix = self.ignore_prefix
+                    break
 
-            if isinstance(lm_model_cls, type(self.default_config)):
-                config = lm_model_cls
-                lm_model_cls = config.model_type
-            else:
-                config = self.config_from_hf_config(hf_config)
+        def load_from_state_dict(state_dict):
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
-            # Vocab: first we have to resize the vocab as loaded from the checkpoint
-            tokenizer_Vocab = self.Vocab
-            Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+            # However, this might miss some buffers that don't get persisted in the state dict
+            # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
+            # again, this time keeping only the (missing) buffers, and then combine the two models.
+            lev_model = _patch_missing_buffers_for_deser(
+                lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
+            )
 
-            ignore_prefix: Optional[str] = None
-            if self.ignore_prefix:
-                for k in state_dict.keys():
-                    if k.startswith(f"{self.ignore_prefix}."):
-                        ignore_prefix = self.ignore_prefix
-                        break
+            if Vocab.size != tokenizer_Vocab.size:
+                if resize_vocab_to_match_tokenizer:
+                    logger.info(
+                        f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                    )
+                    lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                else:
+                    logger.warning(
+                        f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size ({tokenizer_Vocab.size})"
+                    )
 
-            @haliax.named_jit(axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,))
-            def load_from_state_dict(state_dict):
-                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-                lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
 
-                # However, this might miss some buffers that don't get persisted in the state dict
-                # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
-                # again, this time keeping only the (missing) buffers, and then combine the two models.
-                lev_model = _patch_missing_buffers_for_deser(
-                    lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
-                )
+            return lev_model
 
-                if Vocab.size != tokenizer_Vocab.size:
-                    if resize_vocab_to_match_tokenizer:
-                        logger.info(
-                            f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
-                        )
-                        # run in jit b/c we're manipulating sharded tensors
-                        lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
-                    else:
-                        logger.warning(
-                            f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size"
-                            f" ({tokenizer_Vocab.size})"
-                        )
+        if not just_use_cpu:
+            load_from_state_dict = haliax.named_jit(
+                load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
+            )
 
-                lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
-
-                return lev_model
-
-            lev_model = load_from_state_dict(state_dict)
-            del state_dict
-            gc.collect()  # sometimes takes a while to free buffers otherwise
+        lev_model = load_from_state_dict(state_dict)
+        del state_dict
+        gc.collect()  # sometimes takes a while to free buffers otherwise
 
         return lev_model
 
@@ -980,10 +977,8 @@ def _maybe_shard_best_effort(array_or_slice) -> jax.Array:
 def _shard_best_effort(array_or_slice) -> jax.Array:
     if hasattr(array_or_slice, "get_shape"):
         shape = array_or_slice.get_shape()
-        dtype = array_or_slice.get_dtype()
     else:
         shape = array_or_slice.shape
-        dtype = array_or_slice.dtype
 
     sharding = best_effort_sharding(shape)
 
