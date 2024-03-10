@@ -24,7 +24,7 @@ def test_backpack_predict():
     trainer_config = TrainerConfig()
 
     Vocab = round_axis_for_partitioning(Axis("vocab", VOCAB_SIZE), trainer_config.compute_axis_mapping)
-    model_config = BackpackConfig()
+    model_config = BackpackConfig(use_flash_attention=False)
     model_key = PRNGKey(0)
     model = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)
     mp = trainer_config.mp
@@ -127,11 +127,11 @@ def test_backpack_configs(config_file):
 
 def test_pass_different_length_seq():
     config = BackpackConfig(
-        seq_len=32,
+        seq_len=64,
         hidden_dim=16,
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(BackpackLMHeadModel, config, 16)

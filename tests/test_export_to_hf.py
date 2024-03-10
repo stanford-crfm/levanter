@@ -23,7 +23,7 @@ def test_export_lm_to_hf():
         num_layers=2,
         num_heads=2,
         seq_len=32,
-        use_flash_attention=False,
+        use_flash_attention=True,
         hidden_dim=32,
     )
 
@@ -44,8 +44,8 @@ def test_export_lm_to_hf():
                 model=export_lm_to_hf.Gpt2Config(
                     num_layers=2,
                     num_heads=2,
-                    seq_len=32,
-                    use_flash_attention=False,
+                    seq_len=64,
+                    use_flash_attention=True,
                     hidden_dim=32,
                 ),
             )

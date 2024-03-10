@@ -466,7 +466,7 @@ class Trainer:
         def obj_fun(model):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key)
+                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
         new_state = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
