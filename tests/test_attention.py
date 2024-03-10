@@ -155,7 +155,7 @@ def test_llama_attention_uses_te(q_heads):
         attention_dtype=jnp.bfloat16,
     )
 
-    assert jnp.allclose(out, 0.0)
+    assert jnp.allclose(out.array, 0.0)
 
 
 @skip_if_module_missing("transformer_engine")
@@ -181,4 +181,4 @@ def test_gpt2_attention_uses_te():
         mask,
         attention_dtype=jnp.bfloat16,
     )
-    assert jnp.allclose(out, 0.0)
+    assert jnp.allclose(out.array, 0.0)
