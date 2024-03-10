@@ -22,9 +22,9 @@ def test_eval_lm():
     model_config = eval_lm.Gpt2Config(
         num_layers=2,
         num_heads=2,
-        seq_len=32,
+        seq_len=64,
         hidden_dim=32,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
 
     with tempfile.TemporaryDirectory() as f:

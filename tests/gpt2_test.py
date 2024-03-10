@@ -17,12 +17,12 @@ def test_gradient_checkpointing(num_blocks):
     # ensure that gradient checkpointing doesn't change the output
     # (this is a regression test for a bug that caused the output to change)
     config = Gpt2Config(
-        seq_len=16,
-        hidden_dim=72,
+        seq_len=64,
+        hidden_dim=64,
         num_layers=num_blocks,
         num_heads=8,
         gradient_checkpointing=False,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     config_checkpoint = dataclasses.replace(config, gradient_checkpointing=True)
     key = PRNGKey(0)
@@ -51,11 +51,11 @@ def test_gpt2_configs(config_file):
 
 def test_pass_different_length_seq_to_gpt2():
     config = Gpt2Config(
-        seq_len=32,
+        seq_len=64,
         hidden_dim=16,
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(Gpt2LMHeadModel, config, 16)
