@@ -126,112 +126,30 @@ def dot_product_attention(
     )
 
 
-_DUMMY_HEAD = "__head__"
-_DUMMY_BATCH = "__batch__"
-
-
-def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
-    """
-    TransformerEngine's fused attention API is not as expressive as ours is, so we have to do some grouping
-    to make this work.
-
-    TE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed). the size of the axes is a bit flexible,
-    with the following conditions:
-    - B must be the same for all (TODO: is this true?)
-    - S must be the same for K and V. Q's S can be different
-    - H: Q's H must be a multiple of K's H (for GQA or MQA)
-    - D must be the same for all (TODO: is this true? possibly V can be different)
-
-    We can thus classify the axes in q, k, v by their function and populate the TE axes in the right order
-    - Key is D. ATM we're assuming this is a single axis.
-    - QPos and KPos are always S
-    - the latest other axis that is present in all three is H. If there are no other axes, we'll add a dummy axis
-    - Any other axis that is present in all three is B. If there are no other axes, we'll add a dummy axis
-    - If there's an axis present in Q and not in K or V, it's an extra H for Q (as part of GQA).
-      These go *after* the primary H because GQA wants these to be minor axes
-    - If there are any other axes present in one but not all three, it's an error
-     (TODO: we could vmap over these?)
-    """
-    QPos = q.resolve_axis(QPos)
-    KPos = k.resolve_axis(KPos)
-    Key = q.resolve_axis(Key)
-
-    q_class = {"B": [], "S": [QPos], "H": [], "D": [Key]}
-    k_class = {"B": [], "S": [KPos], "H": [], "D": [Key]}
-    v_class = {"B": [], "S": [KPos], "H": [], "D": [Key]}
-
-    present_in_all: set[str] = q.shape.keys() & k.shape.keys() & v.shape.keys()
-    spoken_for: set[str] = {QPos.name, KPos.name, Key.name}
-
-    # find the primary H axes: which are axes that are:
-    # - present in all three
-    # - not spoken for already
-    # - come after QPos in Q (if there's already a primary H)
-    # - not the 0th axis in Q (even if there's no primary H)
-    primary_H: list[Axis] = []
-    for a in reversed(q.axes[1:]):
-        if a.name in present_in_all and a.name not in spoken_for:
-            primary_H.append(a)
-        elif a == QPos and primary_H:  # better to always have at least one H?
-            break  # anything before QPos we'll say is Batch
-
-    # since we added them in reverse order, we need to reverse them
-    primary_H.reverse()
-
-    spoken_for.update([ax.name for ax in primary_H])
-
-    # remaining shared axes are batch axes
-    batch_axes = [ax for ax in q.axes if ax.name not in spoken_for and ax.name in present_in_all]
-
-    spoken_for.update([ax.name for ax in batch_axes])
-
-    q_class["B"] = batch_axes
-    k_class["B"] = batch_axes
-    v_class["B"] = batch_axes
-
-    # if there's an axis in q that's not in k or v, it's an extra H for q
-    extra_q_H = [ax for ax in q.axes if ax.name not in spoken_for]
-
-    # we want primary_h to be *before* extra_q_H b/c GQA wants these to be minor axes
-    q_class["H"] = primary_H + extra_q_H
-    k_class["H"] = primary_H
-    v_class["H"] = primary_H
-
-    # now we want to detect any non-spoken-for axes. These are errors
-    # eventually we can vmapp over these, but for now we'll just raise an error
-    for a in k.axes:
-        if a.name not in spoken_for:
-            raise ValueError(f"Axis {a.name} is present in k but not in q and/or v")
-
-    for a in v.axes:
-        if a.name not in spoken_for:
-            raise ValueError(f"Axis {a.name} is present in v but not in q and/or k")
-
-    print("q_class", q_class)
-    print("k_class", k_class)
-    print("v_class", v_class)
-
-    return q_class, k_class, v_class
-
-
-def _reshape_axes_for_te_bins(q, q_class):
-    """
-    Reshape the axes of a qkv as BSHD to match the bins in q_class
-    """
-
-    def _maybe_flatten(q, axes, name):
-        if axes:
-            q = q.flatten_axes(axes, name)
-        else:
-            q = q.broadcast_axis(Axis(name, 1))
-        return q
-
-    q = _maybe_flatten(q, q_class["B"], "B")
-    q = _maybe_flatten(q, q_class["S"], "S")
-    q = _maybe_flatten(q, q_class["H"], "H")
-    q = _maybe_flatten(q, q_class["D"], "D")
-    q = q.rearrange(("B", "S", "H", "D"))
-    return q
+def simple_attention_with_dropout(
+    QPos: Axis,
+    KPos: Axis,
+    Key: Axis,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    inference: bool = False,
+    dropout: float = 0.0,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+):
+    QPos = query.resolve_axis(QPos)
+    KPos = key.resolve_axis(KPos)
+    m = materialize_mask(mask, QPos, KPos)
+    weights = haliax.nn.attention.dot_product_attention_weights(
+        Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
+    )
+    weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+    return haliax.dot(KPos, weights, value)
 
 
 def _te_flash_attention(
@@ -280,10 +198,6 @@ def _te_flash_attention(
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
-
-    dtype = query.dtype
-    if dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
-        raise NotImplementedError(f"TE doesn't support {dtype} yet.")
 
     # TODO: must Dk == Dv?
     if k_.shape != v_.shape:
@@ -410,30 +324,112 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
     return attn_mask_type, fused_attn_mask
 
 
-def simple_attention_with_dropout(
-    QPos: Axis,
-    KPos: Axis,
-    Key: Axis,
-    query: NamedArray,
-    key: NamedArray,
-    value: NamedArray,
-    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
-    bias: Optional[NamedArray] = None,
-    inference: bool = False,
-    dropout: float = 0.0,
-    attention_dtype: Optional[jnp.dtype] = None,
-    precision: PrecisionLike = None,
-    *,
-    prng: Optional[PRNGKeyArray] = None,
-):
-    QPos = query.resolve_axis(QPos)
-    KPos = key.resolve_axis(KPos)
-    m = materialize_mask(mask, QPos, KPos)
-    weights = haliax.nn.attention.dot_product_attention_weights(
-        Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
-    )
-    weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-    return haliax.dot(KPos, weights, value)
+_DUMMY_HEAD = "__head__"
+_DUMMY_BATCH = "__batch__"
+
+
+def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
+    """
+    TransformerEngine's fused attention API is not as expressive as ours is, so we have to do some grouping
+    to make this work.
+
+    TE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed). the size of the axes is a bit flexible,
+    with the following conditions:
+    - B must be the same for all (TODO: is this true?)
+    - S must be the same for K and V. Q's S can be different
+    - H: Q's H must be a multiple of K's H (for GQA or MQA)
+    - D must be the same for all (TODO: is this true? possibly V can be different)
+
+    We can thus classify the axes in q, k, v by their function and populate the TE axes in the right order
+    - Key is D. ATM we're assuming this is a single axis.
+    - QPos and KPos are always S
+    - the latest other axis that is present in all three is H. If there are no other axes, we'll add a dummy axis
+    - Any other axis that is present in all three is B. If there are no other axes, we'll add a dummy axis
+    - If there's an axis present in Q and not in K or V, it's an extra H for Q (as part of GQA).
+      These go *after* the primary H because GQA wants these to be minor axes
+    - If there are any other axes present in one but not all three, it's an error
+     (TODO: we could vmap over these?)
+    """
+    QPos = q.resolve_axis(QPos)
+    KPos = k.resolve_axis(KPos)
+    Key = q.resolve_axis(Key)
+
+    q_class = {"B": [], "S": [QPos], "H": [], "D": [Key]}
+    k_class = {"B": [], "S": [KPos], "H": [], "D": [Key]}
+    v_class = {"B": [], "S": [KPos], "H": [], "D": [Key]}
+
+    present_in_all: set[str] = q.shape.keys() & k.shape.keys() & v.shape.keys()
+    spoken_for: set[str] = {QPos.name, KPos.name, Key.name}
+
+    # find the primary H axes: which are axes that are:
+    # - present in all three
+    # - not spoken for already
+    # - come after QPos in Q (if there's already a primary H)
+    # - not the 0th axis in Q (even if there's no primary H)
+    primary_H: list[Axis] = []
+    for a in reversed(q.axes[1:]):
+        if a.name in present_in_all and a.name not in spoken_for:
+            primary_H.append(a)
+        elif a == QPos and primary_H:  # better to always have at least one H?
+            break  # anything before QPos we'll say is Batch
+
+    # since we added them in reverse order, we need to reverse them
+    primary_H.reverse()
+
+    spoken_for.update([ax.name for ax in primary_H])
+
+    # remaining shared axes are batch axes
+    batch_axes = [ax for ax in q.axes if ax.name not in spoken_for and ax.name in present_in_all]
+
+    spoken_for.update([ax.name for ax in batch_axes])
+
+    q_class["B"] = batch_axes
+    k_class["B"] = batch_axes
+    v_class["B"] = batch_axes
+
+    # if there's an axis in q that's not in k or v, it's an extra H for q
+    extra_q_H = [ax for ax in q.axes if ax.name not in spoken_for]
+
+    # we want primary_h to be *before* extra_q_H b/c GQA wants these to be minor axes
+    q_class["H"] = primary_H + extra_q_H
+    k_class["H"] = primary_H
+    v_class["H"] = primary_H
+
+    # now we want to detect any non-spoken-for axes. These are errors
+    # eventually we can vmapp over these, but for now we'll just raise an error
+    for a in k.axes:
+        if a.name not in spoken_for:
+            raise ValueError(f"Axis {a.name} is present in k but not in q and/or v")
+
+    for a in v.axes:
+        if a.name not in spoken_for:
+            raise ValueError(f"Axis {a.name} is present in v but not in q and/or k")
+
+    print("q_class", q_class)
+    print("k_class", k_class)
+    print("v_class", v_class)
+
+    return q_class, k_class, v_class
+
+
+def _reshape_axes_for_te_bins(q, q_class):
+    """
+    Reshape the axes of a qkv as BSHD to match the bins in q_class
+    """
+
+    def _maybe_flatten(q, axes, name):
+        if axes:
+            q = q.flatten_axes(axes, name)
+        else:
+            q = q.broadcast_axis(Axis(name, 1))
+        return q
+
+    q = _maybe_flatten(q, q_class["B"], "B")
+    q = _maybe_flatten(q, q_class["S"], "S")
+    q = _maybe_flatten(q, q_class["H"], "H")
+    q = _maybe_flatten(q, q_class["D"], "D")
+    q = q.rearrange(("B", "S", "H", "D"))
+    return q
 
 
 class AttentionMask(eqx.Module):

@@ -3,7 +3,8 @@ import pytest
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask, _te_bin_and_group_axes_by_function
+from levanter.models.attention import AttentionMask, _te_bin_and_group_axes_by_function, _te_flash_attention
+from test_utils import skip_if_module_missing
 
 
 @pytest.mark.skip
@@ -125,3 +126,59 @@ def test_mqa_te_bin_and_group_axes_by_function():
     with pytest.raises(ValueError):
         # don't currently handle dim in Q and K but not V
         _te_bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
+
+
+@skip_if_module_missing("transformer_engine")
+@pytest.mark.parametrize("q_heads", [1, 2, 4])
+def test_llama_attention_uses_te(q_heads):
+    QPos = hax.Axis("position", 128)
+    KPos = hax.Axis("key_position", 128)
+    B = hax.Axis("batch", 8)
+    Head = hax.Axis("kv_heads", 8)
+    D = hax.Axis("head_size", 64)
+    Q_Head = hax.Axis("q_heads_per_group", q_heads)
+    mask = AttentionMask.causal()
+
+    q = hax.zeros((B, Head, Q_Head, QPos, D), dtype=jnp.bfloat16)
+    k = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+    v = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+
+    # mostly testing that this doesn't crash
+    out = _te_flash_attention(
+        "position",
+        "key_position",
+        "head_size",
+        q,
+        k,
+        v,
+        mask,
+        attention_dtype=jnp.bfloat16,
+    )
+
+    assert jnp.allclose(out, 0.0)
+
+
+@skip_if_module_missing("transformer_engine")
+def test_gpt2_attention_uses_te():
+    QPos = hax.Axis("position", 128)
+    KPos = hax.Axis("key_position", 128)
+    B = hax.Axis("batch", 8)
+    Head = hax.Axis("heads", 8)
+    D = hax.Axis("head_size", 64)
+    mask = AttentionMask.causal()
+
+    q = hax.zeros((B, Head, QPos, D), dtype=jnp.bfloat16)
+    k = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+    v = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+
+    out = _te_flash_attention(
+        "position",
+        "key_position",
+        "head_size",
+        q,
+        k,
+        v,
+        mask,
+        attention_dtype=jnp.bfloat16,
+    )
+    assert jnp.allclose(out, 0.0)

@@ -138,7 +138,7 @@ def skip_if_module_missing(module: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_import_module(module), reason=f"{module} not installed")(lambda x: x)
+    return pytest.mark.skipif(not try_import_module(module), reason=f"{module} not installed")
 
 
 def skip_if_checkpoint_not_accessible(path: str):
@@ -151,7 +151,7 @@ def skip_if_checkpoint_not_accessible(path: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")
 
 
 def skip_if_hf_model_not_accessible(model_id: str):
@@ -165,7 +165,7 @@ def skip_if_hf_model_not_accessible(model_id: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")
 
 
 class IdentityProcessor(BatchProcessor[BatchEncoding]):
