@@ -127,11 +127,11 @@ def test_backpack_configs(config_file):
 
 def test_pass_different_length_seq():
     config = BackpackConfig(
-        seq_len=32,
+        seq_len=64,
         hidden_dim=16,
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(BackpackLMHeadModel, config, 16)

@@ -345,11 +345,11 @@ def test_llama_configs(config_file):
 @pytest.mark.parametrize("num_kv_heads", [1, 2])
 def test_pass_different_length_seq(num_kv_heads):
     config = LlamaConfig(
-        seq_len=32,
-        hidden_dim=16,
+        seq_len=64,
+        hidden_dim=64,
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
