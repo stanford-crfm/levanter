@@ -794,7 +794,7 @@ def save_hf_checkpoint_callback(
 
 
 def arbitrary_load_from_hf(
-    model_name_or_path, loading_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
+    model_name_or_path, from_pretrained_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
 ) -> Union[PreTrainedTokenizerBase | ProcessorMixin]:
     is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
@@ -807,9 +807,9 @@ def arbitrary_load_from_hf(
         fs, path = fsspec.core.url_to_fs(model_name_or_path)
         fs.get(path, local_cache_dir, recursive=True)
         base_path = os.path.basename(path)
-        return loading_lambda(os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code)
+        return from_pretrained_lambda(os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code)
     else:
-        return loading_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
+        return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
 
 
 def load_tokenizer(
