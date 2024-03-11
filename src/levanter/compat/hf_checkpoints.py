@@ -38,7 +38,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
-from levanter.utils.jax_utils import best_effort_sharding, use_cpu_device
+from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
 from levanter.utils.py_utils import classproperty, dataclass_with_default_init
 
 
@@ -547,7 +547,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if just_use_cpu:
             cpu_device = jax.local_devices(backend="cpu")[0]
             # TODO: clean this up
-            with jax.default_device(cpu_device), jax.sharding.Mesh([cpu_device], ("data", "model")):
+            with local_cpu_mesh():
                 current_devices = set(d for v in state_dict.values() for d in v.devices())
                 print("Current devices", current_devices)
                 lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)

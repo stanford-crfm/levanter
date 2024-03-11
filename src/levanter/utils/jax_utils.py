@@ -29,8 +29,18 @@ def jnp_to_python(a: jnp.ndarray):
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.local_devices(backend="cpu")[0]):
-        yield
+    cpu = jax.local_devices(backend="cpu")[0]
+    with jax.default_device(cpu):
+        yield cpu
+
+
+@contextlib.contextmanager
+def local_cpu_mesh():
+    """Temporarily sets the default device to CPU"""
+    cpu = jax.local_devices(backend="cpu")[0]
+    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    with use_cpu_device(), mesh:
+        yield mesh
 
 
 def is_inside_jit():
