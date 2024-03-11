@@ -101,7 +101,9 @@ def main(config: EvalLmConfig):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            model_from_hf_checkpoint = converter.load_pretrained(model_config.model_type, config.hf_checkpoint)
+            model_from_hf_checkpoint = converter.load_pretrained(
+                model_config.model_type, config.hf_checkpoint, dtype=mp.compute_dtype
+            )
             loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
             print("Loss from HF model: ", loss)
