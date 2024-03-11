@@ -28,7 +28,7 @@ dependencies = [
     "haliax @ git+https://github.com/stanford-crfm/haliax.git@main",
     "equinox>=0.10.7",
     "jaxtyping>=0.2.20",
-    "transformers>=4.22.0",
+    "transformers>=4.32.0",
     "optax>=0.1.9",
     "wandb",
     "draccus>=0.7.1",

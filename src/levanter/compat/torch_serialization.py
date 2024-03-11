@@ -148,6 +148,14 @@ def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateD
 
 
 def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: Optional[str] = None) -> Mod:
+    try:
+        from haliax.nn.scan import BlockSeq
+
+        if isinstance(mod, BlockSeq):
+            return block_seq_from_state_dict(mod, state_dict, prefix)
+    except ImportError:
+        pass
+
     key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     names = []
     values = []
@@ -175,6 +183,14 @@ def default_eqx_module_to_state_dict(mod: eqx.Module, prefix: Optional[str] = No
 def default_update_state_dict_with_eqx_module(
     state_dict: StateDict, mod: eqx.Module, prefix: Optional[str] = None
 ) -> StateDict:
+    try:
+        from haliax.nn.scan import BlockSeq
+
+        if isinstance(mod, BlockSeq):
+            return update_block_seq_state_dict(state_dict, mod, prefix)
+    except ImportError:
+        pass
+
     key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     for field in fields(mod):
         if field.metadata.get("static", False):
@@ -366,6 +382,24 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
         vectorized_dict[cast(str, apply_prefix(prefix, k))] = jnp.stack(tensors, axis=0)
 
     return vectorized_dict
+
+
+def block_seq_from_state_dict(seq, state_dict: StateDict, prefix: Optional[str] = None):
+    out_blocks = []
+    for i, block in enumerate(seq.blocks):
+        my_prefix = apply_prefix(prefix, str(i))
+        block = block.from_state_dict(state_dict, my_prefix)
+        out_blocks.append(block)
+
+    return eqx.tree_at(lambda m: m.blocks, seq, out_blocks)
+
+
+def update_block_seq_state_dict(state_dict: StateDict, seq, prefix: Optional[str] = None):
+    for i, block in enumerate(seq.blocks):
+        my_prefix = apply_prefix(prefix, str(i))
+        block.update_state_dict(state_dict, my_prefix)
+
+    return state_dict
 
 
 def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
