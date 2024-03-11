@@ -13,7 +13,13 @@ X = TypeVar("X", contravariant=True)  # Input
 try:
     from haliax.nn.scan import BlockFoldable
 except ImportError:
-    BlockFoldable = Any
+
+    class BlockFoldable(Protocol):  # type: ignore
+        def fold(self, *args, **kwargs):
+            ...
+
+        def scan(self, *args, **kwargs):
+            ...
 
 
 class ValAndGradFn(Protocol[M, X]):
