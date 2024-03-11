@@ -8,6 +8,7 @@ data:
 model:
   type: llama
   hidden_dim: 768
+  intermediate_dim: 2048
   num_heads: 12
   num_kv_heads: 12
   num_layers: 12
