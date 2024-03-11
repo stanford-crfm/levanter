@@ -14,6 +14,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
+from levanter.models.asr_model import ASRConfig
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class TrainASRConfig:
     data: AudioIODatasetConfig = field(default_factory=AudioIODatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    model: HFCompatConfig = field(default_factory=WhisperConfig)
+    model: ASRConfig = field(default_factory=WhisperConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
     batch_size: int = 16
 
@@ -116,7 +117,7 @@ def main(config: TrainASRConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+        state = trainer.initial_state(training_key, model_init=lambda: config.model.build_asr(Vocab, key=model_key))
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?

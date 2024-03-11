@@ -26,7 +26,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.asr_model import ASRMixin
+from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -39,7 +39,7 @@ from transformers import WhisperConfig as HfWhisperConfig  # noqa: E402
 
 @LmConfig.register_subclass("whisper")
 @dataclass(frozen=True)
-class WhisperConfig(HFCompatConfig):
+class WhisperConfig(HFCompatConfig, ASRConfig):
     vocab_size: int = 51865
     num_mel_bins: int = 80
     encoder_layers: int = 4
@@ -68,6 +68,10 @@ class WhisperConfig(HFCompatConfig):
     @property
     def model_type(self) -> Type["WhisperModel"]:
         return WhisperModel
+
+    @property
+    def asr_model_type(self) -> Type["WhisperASRModel"]:
+        return WhisperASRModel
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
@@ -551,7 +555,7 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         return lm_logits
 
 
-class WhisperASRModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig], ASRMixin):
+class WhisperASRModel(WhisperModel, ASRMixin):
     pass
 
 

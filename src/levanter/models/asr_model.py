@@ -1,5 +1,5 @@
 import abc
-from typing import Optional
+from typing import Optional, Type
 
 import jax.numpy as jnp
 from jax.random import PRNGKey
@@ -10,6 +10,18 @@ from haliax.nn import cross_entropy_loss
 
 from levanter.data.audio import AudioTextExample
 from levanter.models.attention import AttentionMask
+from levanter.models.lm_model import LmConfig
+
+
+class ASRConfig(LmConfig):
+    @abc.abstractmethod
+    def build_asr(self, Vocab: Axis, *, key: PRNGKey) -> "ASRMixin":
+        return self.asr_model_type.init(Vocab, self, key=key)  # type: ignore
+
+    @property
+    @abc.abstractmethod
+    def asr_model_type(cls) -> Type["ASRMixin"]:
+        pass
 
 
 class ASRMixin(abc.ABC):
