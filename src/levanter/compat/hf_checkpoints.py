@@ -545,10 +545,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
             return lev_model
 
         if just_use_cpu:
-            with use_cpu_device():
+            cpu_device = jax.local_devices("cpu")[0]
+            # TODO: clean this up
+            with jax.default_device(cpu_device), jax.sharding.Mesh([cpu_device], ("data", "model")):
                 current_devices = set(d for v in state_dict.values() for d in v.devices())
                 print("Current devices", current_devices)
-                cpu_device = jax.devices("cpu")[0]
                 lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
         else:
             load_from_state_dict = haliax.named_jit(
