@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
+from levanter.models.asr_model import ASRMixin
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -521,6 +522,10 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
     def Vocab(self) -> Axis:
         return self.decoder.embeddings.Vocab
 
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "WhisperModel":
+        new_decoder = self.decoder.resize_vocab(new_size, key)
+        return dataclasses.replace(self, decoder=new_decoder)
+
     @classmethod
     def init(cls, Vocab: Axis, config: WhisperConfig, *, key) -> "WhisperModel":
         k_t, k_embeddings = haliax.jax_utils.maybe_rng_split(key, 2)
@@ -544,6 +549,10 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         lm_logits = self.decoder(input_ids, audio_features, key=k_decoder)
 
         return lm_logits
+
+
+class WhisperASRModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig], ASRMixin):
+    pass
 
 
 def whisper_sinusoids(Channels: Axis, SourcePos: Axis, base: int = 10000) -> NamedArray:
