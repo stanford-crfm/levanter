@@ -6,12 +6,12 @@ model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "meta-llama/Llama-2-7b-hf"
-second_hf_checkpoint: "meta-llama/Llama-2-7b-hf"
+second_hf_checkpoint: "LLM360/Amber"
 
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "llama", "mistral-medium"]
+    tags: ["openwebtext", "llama", "llama2-amber360"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
@@ -21,5 +21,3 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: -1
-
-alpha: 0.1
