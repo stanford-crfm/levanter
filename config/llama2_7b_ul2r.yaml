@@ -29,6 +29,6 @@ optimizer:
   learning_rate: 1E-4
   weight_decay: 0.1
   min_lr_ratio: 0.01
-task:
-  ul2r:
-    shortcut: ul2r
+# task:
+#   ul2r:
+#     shortcut: ul2r
