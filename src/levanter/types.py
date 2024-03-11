@@ -14,7 +14,7 @@ try:
     from haliax.nn.scan import BlockFoldable
 except ImportError:
 
-    class BlockFoldable(Protocol):  # type: ignore
+    class BlockFoldable(Protocol[M]):  # type: ignore
         def fold(self, *args, **kwargs):
             ...
 
