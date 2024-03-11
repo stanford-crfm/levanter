@@ -545,7 +545,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             return lev_model
 
         if just_use_cpu:
-            cpu_device = jax.local_devices("cpu")[0]
+            cpu_device = jax.local_devices(backend="cpu")[0]
             # TODO: clean this up
             with jax.default_device(cpu_device), jax.sharding.Mesh([cpu_device], ("data", "model")):
                 current_devices = set(d for v in state_dict.values() for d in v.devices())
