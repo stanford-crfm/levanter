@@ -250,8 +250,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
 
     def __init__(self, chunk_cache: ShardCache):
         # Separates Batching For Processing from Batching For Training
-        chunk_cache_flat = chunk_cache.set_batch_size(1)
-        self.chunk_cache = chunk_cache_flat
+        self.chunk_cache = chunk_cache.with_batch_size(1)
 
     def __iter__(self):
         for batch in self._chunks():
