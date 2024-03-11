@@ -125,8 +125,22 @@ def has_torch():
         return False
 
 
+def has_soundlibs():
+    try:
+        import librosa  # noqa F401
+        import soundfile  # noqa F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
+
+
+def skip_if_no_soundlibs(f):
+    return pytest.mark.skipif(not has_soundlibs(), reason="soundfile/librosa not installed")(f)
 
 
 def skip_if_module_missing(module: str):
@@ -157,9 +171,9 @@ def skip_if_checkpoint_not_accessible(path: str):
 def skip_if_hf_model_not_accessible(model_id: str):
     def try_load_hf(model_id):
         try:
-            from transformers import AutoModelForCausalLM
+            from transformers import AutoModel
 
-            AutoModelForCausalLM.from_pretrained(model_id)
+            AutoModel.from_pretrained(model_id)
         except Exception:
             return False
         else:
