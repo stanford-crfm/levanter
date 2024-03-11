@@ -546,7 +546,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         if just_use_cpu:
             with use_cpu_device():
-                lev_model = load_from_state_dict(state_dict)
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all")(state_dict)
         else:
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
