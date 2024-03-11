@@ -548,7 +548,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             with use_cpu_device():
                 current_devices = set(d for v in state_dict.values() for d in v.devices())
                 print("Current devices", current_devices)
-                lev_model = eqx.filter_jit(load_from_state_dict, donate="all")(state_dict)
+                cpu_device = jax.devices("cpu")[0]
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
         else:
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
