@@ -551,8 +551,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 current_devices = set(d for v in state_dict.values() for d in v.devices())
                 print("Current devices", current_devices)
                 lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
-                # gotta move it to the accelerator now (assuming there is one!)
-                lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+
+            # gotta move it to the accelerator now (assuming there is one!)
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+            current_devices = set(d for v in jax.tree_util.tree_leaves(lev_model) for d in v.devices())
+            print("Current devices, take 2", current_devices)
         else:
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
