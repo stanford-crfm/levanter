@@ -78,6 +78,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
         return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
 
     # Axis
+    MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))
     Pos = property(lambda self: Axis(name="position", size=self.max_length))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     SourcePos = property(lambda self: Axis(name="position", size=self.max_source_positions))

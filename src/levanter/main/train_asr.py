@@ -104,7 +104,7 @@ def main(config: TrainASRConfig):
         train_dataset = AudioTextDataset(
             config.data.train_set(config.batch_size),
             Pos,
-            [config.model.Mels, Pos],
+            [config.model.Mels, config.model.MelPos],
             KeyPos,
             ignore_index=config.data.ignore_token_id,
         )
@@ -144,7 +144,7 @@ def main(config: TrainASRConfig):
             hax_eval_dataset = AudioTextDataset(
                 eval_dataset,
                 Pos,
-                [config.model.Mels, Pos],
+                [config.model.Mels, config.model.Mels],
                 KeyPos,
                 ignore_index=config.data.ignore_token_id,
             )
