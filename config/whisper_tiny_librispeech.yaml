@@ -1,7 +1,7 @@
 data:
   id: WillHeld/librispeech_parquet
   cache_dir: "gs://public_data_lev/processed/librispeech"
-  train_split: "train.100"
+  train_split: "train.360"
   text_key: "text"
 model:
   type: whisper
@@ -11,13 +11,13 @@ trainer:
       project: "levanter"
       tags: [ "librispeech", "whisper"]
 
-  mp: p=f32,c=f32
+  mp: p=f32,c=bf16
   model_axis_size: 1
   per_device_parallelism: -1
 
-  train_batch_size: 64
+  train_batch_size: 256
   num_train_steps: 20000
 optimizer:
-  learning_rate: 1E-3
+  learning_rate: 1.5E-3
   weight_decay: 0.1
   warmup: 0.01

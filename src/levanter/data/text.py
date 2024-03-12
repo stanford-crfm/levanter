@@ -341,7 +341,7 @@ class BatchTokenizer(BatchProcessor[str]):
         self.override_resources = override_resources
         self.return_attention_mask = return_attention_mask
         self.padding = padding
-        if max_length is None:
+        if max_length is not None:
             self.max_length = max_length
         else:
             self.max_length = self.tokenizer.model_max_length
