@@ -345,7 +345,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         *,
         key=None,
     ) -> NamedArray:
-        keys = hax.jax_utils.maybe_rng_split(key, self.Layer) if key is not None else None
+        keys = hax.jax_utils.maybe_rng_split(key, self.Layer.size) if key is not None else None
         x = self.layers.fold(x, xa, attn_mask, key=keys)
         x = self.layer_norm(x)
 
@@ -524,6 +524,10 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         return self.encoder.config
 
     @property
+    def Pos(self) -> Axis:
+        return self.config.Pos
+
+    @property
     def Vocab(self) -> Axis:
         return self.decoder.embeddings.Vocab
 
@@ -537,7 +541,7 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         encoder = WhisperEncoder.init(config, key=k_embeddings)
         decoder = WhisperDecoder.init(config, key=k_t)
 
-        return WhisperModel(encoder, decoder)
+        return cls(encoder, decoder)
 
     def __call__(
         self,

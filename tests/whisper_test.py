@@ -14,10 +14,33 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.compat.hf_checkpoints import RepoRef
+from levanter.data.audio import AudioTextExample
 from levanter.models.attention import AttentionMask
-from levanter.models.whisper import WhisperConfig, WhisperModel
+from levanter.models.whisper import WhisperASRModel, WhisperConfig, WhisperModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_soundlibs, skip_if_no_torch
+
+
+@skip_if_no_soundlibs
+def test_whisper_loss():
+    c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
+    conf = WhisperConfig.from_hf_config(c)
+    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    model: WhisperASRModel = conf.build_asr(conf.Vocab, key=PRNGKey(42))
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
+    audio_sample = ds[3]
+    speech_data = audio_sample["audio"]["array"]
+    inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
+
+    na = hax.NamedArray(
+        inputs["input_features"].squeeze(),
+        axes=(conf.Mels, Axis(name="position", size=3000)),
+    )
+    inp = hax.NamedArray(
+        jnp.array([processor.get_decoder_prompt_ids() * 3])[:, :, 1].squeeze(0),
+        axes=(Axis("position", size=3),),
+    )
+    model.compute_loss(AudioTextExample.init(na, inp))
 
 
 @skip_if_no_soundlibs

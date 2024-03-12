@@ -453,7 +453,7 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
                 attn_mask = hax.named(inputs["attention_mask"], self.KPos)
                 attn_mask = AttentionMask.explicit(attn_mask)
 
-                return AudioTextExample(audio_features, tokens, attn_mask=attn_mask)
+                return AudioTextExample.init(audio_features, tokens, attn_mask=attn_mask)
 
             for example in self.dataset:
                 converted_example = _convert_example(example, key)
