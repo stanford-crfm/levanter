@@ -1,0 +1,24 @@
+data:
+  id: librispeech_asr
+  name: "clean"
+  cache_dir: "gs://public_data_lev/processed/librispeech"
+  train_split: "train.100"
+  text_key: "text"
+model:
+  type: whisper
+trainer:
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: [ "librispeech", "whisper"]
+
+  mp: p=f32,c=f32
+  model_axis_size: 1
+  per_device_parallelism: -1
+
+  train_batch_size: 16
+  num_train_steps: 20000
+optimizer:
+  learning_rate: 1E-3
+  weight_decay: 0.1
+  warmup: 0.01
