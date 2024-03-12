@@ -1,6 +1,7 @@
 import abc
 from typing import Optional, Type
 
+import equinox as eqx
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
@@ -8,9 +9,43 @@ import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
 
-from levanter.data.audio import AudioTextExample
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
+
+
+class AudioTextExample(eqx.Module):
+    audio: hax.NamedArray
+    tokens: hax.NamedArray
+    loss_mask: hax.NamedArray
+    attn_mask: AttentionMask | hax.NamedArray = AttentionMask.causal()
+
+    @staticmethod
+    def init(
+        audio: hax.NamedArray,
+        tokens: hax.NamedArray,
+        *,
+        attn_mask: Optional[hax.NamedArray | AttentionMask] = None,
+        loss_mask: Optional[hax.NamedArray] = None,
+        ignore_id: Optional[int] = None,
+    ) -> "AudioTextExample":
+        if tokens.ndim != 1:
+            raise ValueError("tokens must be a 1D array")
+
+        if not jnp.issubdtype(tokens.dtype, jnp.integer):
+            raise ValueError("tokens must be an integer array")
+
+        Pos = tokens.axes[0]
+
+        # don't predict the last token.
+        if loss_mask is None:
+            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+
+        if ignore_id is not None:
+            # we don't compute loss for any tokens matching the ignore index
+            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
+            loss_mask = loss_mask * ignore_mask
+
+        return AudioTextExample(audio=audio, tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
 class ASRConfig(LmConfig):
