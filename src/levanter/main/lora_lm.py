@@ -90,7 +90,9 @@ def main(config: LoraLmConfig):
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model = converter.load_pretrained(
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+        )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):

@@ -416,6 +416,7 @@ class Trainer:
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
+                model = self.mp.cast_to_compute(model)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
@@ -453,7 +454,12 @@ class Trainer:
 
     @cached_property
     def _jit_train_step_fn(self):
-        return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
+        return named_jit(
+            self._train_step,
+            axis_resources=self.parameter_axis_mapping,
+            out_axis_resources=self.parameter_axis_mapping,
+            donate_args=(True,),
+        )
 
     def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
