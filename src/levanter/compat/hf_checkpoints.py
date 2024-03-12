@@ -24,6 +24,7 @@ import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
+from jax._src.xla_bridge import get_backend
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
@@ -565,7 +566,21 @@ class HFCheckpointConverter(Generic[LevConfig]):
             )
             lev_model = load_from_state_dict(state_dict)
 
+        all_arrays: list[jax.Array] = get_backend().live_arrays()
+        total_size = sum(a.size * a.itemsize for a in all_arrays)
+        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
         gc.collect()  # sometimes takes a while to free buffers otherwise
+        try:
+            get_backend().defragment()
+        except Exception as e:
+            warnings.warn(f"Could not defragment because {e}")
+            pass
+        all_arrays = get_backend().live_arrays()
+        total_size = sum(a.size * a.itemsize for a in all_arrays)
+        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        all_arrays = get_backend().live_arrays()
+        total_size = sum(a.size * a.itemsize for a in all_arrays)
+        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
 
         return lev_model
 
