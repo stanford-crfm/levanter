@@ -387,7 +387,7 @@ class BatchTokenizer(BatchProcessor[str]):
         else:
             needs_merge = []
 
-        encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding)  # type: ignore
+        encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=448)  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
