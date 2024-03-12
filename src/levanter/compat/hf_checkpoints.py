@@ -1,6 +1,5 @@
 import abc
 import dataclasses
-import gc
 import json
 import logging
 import os
@@ -24,7 +23,6 @@ import safetensors
 import safetensors.numpy
 from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
-from jax._src.xla_bridge import get_backend
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
@@ -32,16 +30,16 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
-from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
+from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
-from levanter.utils.py_utils import classproperty, dataclass_with_default_init
+from levanter.utils.py_utils import classproperty, dataclass_with_default_init, logical_cpu_memory_size
 
 
 silence_transformer_nag()
@@ -504,7 +502,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         contexts = ExitStack()
 
-        just_use_cpu = len(jax.devices()) == 1
+        # we want to use a CPU if (1) we only have 1 device, or (2) the total amount of accelerator memory is less than
+        # the amount of CPU memory.
+        just_use_cpu = _should_use_cpu_for_checkpoint_loading()
         if just_use_cpu:
             # if we only have 1 device, use CPU ram
             contexts.enter_context(use_cpu_device())
@@ -550,37 +550,32 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if just_use_cpu:
             cpu_device = jax.local_devices(backend="cpu")[0]
             with local_cpu_mesh():
-                current_devices = set(d for v in state_dict.values() for d in v.devices())
-                print("Current devices", current_devices)
                 lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
 
             del state_dict
             # gotta move it to the accelerator now (assuming there is one!)
             lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
-            arrays = eqx.filter(jax.tree_util.tree_leaves(lev_model), is_jax_array_like)
-            current_devices = set(d for v in arrays if v is not None for d in v.devices())
-            print("Current devices, take 2", current_devices)
         else:
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
             )
             lev_model = load_from_state_dict(state_dict)
 
-        all_arrays: list[jax.Array] = get_backend().live_arrays()
-        total_size = sum(a.size * a.itemsize for a in all_arrays)
-        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
-        gc.collect()  # sometimes takes a while to free buffers otherwise
-        try:
-            get_backend().defragment()
-        except Exception as e:
-            warnings.warn(f"Could not defragment because {e}")
-            pass
-        all_arrays = get_backend().live_arrays()
-        total_size = sum(a.size * a.itemsize for a in all_arrays)
-        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
-        all_arrays = get_backend().live_arrays()
-        total_size = sum(a.size * a.itemsize for a in all_arrays)
-        print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        # all_arrays: list[jax.Array] = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        # gc.collect()  # sometimes takes a while to free buffers otherwise
+        # try:
+        #     get_backend().defragment()
+        # except Exception as e:
+        #     warnings.warn(f"Could not defragment because {e}")
+        #     pass
+        # all_arrays = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        # all_arrays = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
 
         return lev_model
 
@@ -1022,3 +1017,19 @@ def _shard_best_effort(array_or_slice, dtype) -> jax.Array:
         return arr
 
     return jax.make_array_from_callback(tuple(shape), sharding, get_slice)
+
+
+def _should_use_cpu_for_checkpoint_loading():
+    if jax.process_count() > 1:
+        return False
+
+    if jax.device_count() == 1:
+        return True
+
+    cpu_memory = logical_cpu_memory_size()
+    devices = jax.devices()
+    accel_memory = [jax_utils.estimated_free_device_memory(d) for d in devices]
+    if any(m is None for m in accel_memory):
+        return False
+    if sum(accel_memory) < cpu_memory:
+        return True

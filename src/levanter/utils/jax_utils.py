@@ -237,3 +237,25 @@ def best_effort_sharding(shape, devices=None):
         device_shape = (device_shape_i, gcd) + device_shape[1:]
     sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
     return sharding
+
+
+def estimated_free_device_memory(device) -> Optional[float]:
+    """
+    Returns free memory in GB. If the device doesn't support memory stats, returns None.
+    Args:
+        device:
+
+    Returns:
+
+    """
+    stats = device.memory_stats()
+    if stats is None:
+        return None
+    else:
+        limit = stats.get("bytes_limit", None)
+        if limit is None:
+            return None
+
+        in_use = stats.get("bytes_in_use", 0)
+
+        return (limit - in_use) // (1024.0**3)
