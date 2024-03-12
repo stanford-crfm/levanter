@@ -28,6 +28,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.types import BlockFoldable
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -71,6 +72,7 @@ class LlamaConfig(HFCompatConfig):
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
+    scan_layers: bool = True
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
@@ -382,12 +384,18 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     config: LlamaConfig = eqx.static_field()
-    layers: Stacked[LlamaDecoderLayer]
+    layers: BlockFoldable[LlamaDecoderLayer]
     norm: LlamaRMSNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
-        layers = Stacked.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
+        S = Stacked
+        if not config.scan_layers:
+            from haliax.nn.scan import BlockSeq
+
+            S = BlockSeq
+
+        layers = S.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
@@ -404,16 +412,19 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return x
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
-        out = super().from_state_dict(stacked, prefix=prefix)
+        if isinstance(self.layers, Stacked):
+            state_dict = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
+
+        out = super().from_state_dict(state_dict, prefix=prefix)
         return out
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         my_state_dict: StateDict = {}
         super().update_state_dict(my_state_dict, prefix=prefix)
 
-        stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
-        state_dict.update(stacked_dict)
+        if isinstance(self.layers, Stacked):
+            stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
+            state_dict.update(stacked_dict)
 
         return state_dict
 

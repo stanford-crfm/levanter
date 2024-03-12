@@ -1,6 +1,5 @@
 import abc
 import dataclasses
-import gc
 import json
 import logging
 import os
@@ -18,6 +17,7 @@ import equinox as eqx
 import fsspec
 import huggingface_hub
 import jax
+import jax.numpy as jnp
 import mergedeep
 import safetensors
 import safetensors.numpy
@@ -36,9 +36,10 @@ from levanter.compat.torch_serialization import StateDictSerializationMixin, sav
 from levanter.logging import silence_transformer_nag
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
+from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
-from levanter.utils.jax_utils import best_effort_sharding, use_cpu_device
-from levanter.utils.py_utils import classproperty, dataclass_with_default_init
+from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
+from levanter.utils.py_utils import classproperty, dataclass_with_default_init, logical_cpu_memory_size
 
 
 silence_transformer_nag()
@@ -161,6 +162,33 @@ KEYS_TO_COPY_FROM_BASE_CONFIG = {
     "architectures",
     "auto_map",
 }
+
+
+def _load_torch(path, dtype):
+    import torch
+
+    device = torch.device("cpu")
+    state_dict = torch.load(path, map_location=device)
+    d = {}
+
+    for k, v in tqdm(state_dict.items(), total=len(state_dict), desc="Loading weights"):
+        v = _convert_to_jnp(v, dtype)
+        if v is not None:
+            v = _maybe_shard_best_effort(v, dtype)
+        d[k] = v
+
+    return d
+
+
+def _load_safe_tensors(path, dtype):
+    d = {}
+    with safetensors.safe_open(path, framework="jax", device="cpu") as f:
+        keys = list(f.keys())
+        for key in tqdm(keys, total=len(keys), desc="Loading weights"):
+            tensor_slice = f.get_slice(key)
+            d[key] = _maybe_shard_best_effort(tensor_slice, dtype)
+
+    return d
 
 
 @dataclass_with_default_init(frozen=True)
@@ -386,7 +414,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         ref = _coerce_to_rr(ref)
         return ref.model_name_or_path, ref.revision
 
-    def load_state_dict(self, ref: Optional[Union[str, RepoRef]] = None):
+    def load_state_dict(self, ref: Optional[Union[str, RepoRef]] = None, dtype: Optional[jnp.dtype] = None) -> dict:
         if ref is None:
             ref = self.reference_checkpoint
         if ref is None:
@@ -396,7 +424,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
             try:
-                return self._load_shards(id, index_file, rev)
+                return self._load_shards(id, index_file, rev, dtype)
             except EntryNotFoundError:
                 pass
             except HFValidationError:
@@ -404,20 +432,20 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # TODO: load models from gcs etc.
         if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
-            state_dict = self._load_safe_tensors(os.path.join(id, SAFE_TENSORS_MODEL))
+            state_dict = _load_safe_tensors(os.path.join(id, SAFE_TENSORS_MODEL), dtype)
         elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
-            state_dict = self._load_torch(os.path.join(id, PYTORCH_MODEL))
+            state_dict = _load_torch(os.path.join(id, PYTORCH_MODEL), dtype)
         else:
             try:
                 model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
-                state_dict = self._load_safe_tensors(model_path)
+                state_dict = _load_safe_tensors(model_path, dtype)
             except (EntryNotFoundError, HFValidationError):
                 model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
-                state_dict = self._load_torch(model_path)
+                state_dict = _load_torch(model_path, dtype)
 
         return state_dict
 
-    def _load_shards(self, id: str, index_file: str, rev: Optional[str]) -> dict:
+    def _load_shards(self, id: str, index_file: str, rev: Optional[str], dtype) -> dict:
         """Load model from sharded files based on the provided index."""
         index_path = os.path.join(id, index_file)
         if not os.path.exists(index_path):
@@ -433,9 +461,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # right now we do safe tensors thing
         # where we load into memory then update some dict
         if "safetensors" in index_file:
-            loader = self._load_safe_tensors
+            loader = _load_safe_tensors
         else:
-            loader = self._load_torch
+            loader = _load_torch
 
         for shard_file in shard_files:
             shard_path = os.path.join(id, shard_file)
@@ -443,7 +471,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 # Download the shard if not found locally
                 shard_path = hf_hub_download(id, shard_file, revision=rev)
 
-            shard_state_dict = loader(shard_path)
+            shard_state_dict = loader(shard_path, dtype)
             final_state_dict.update(shard_state_dict)
 
         return final_state_dict
@@ -454,6 +482,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         ref: Optional[Union[str, RepoRef]] = None,
         axis_mapping: Optional[ResourceMapping] = None,
         resize_vocab_to_match_tokenizer: bool = True,
+        dtype: Optional[jnp.dtype] = None,
     ) -> ModelWithHfSerializationMixin:
         """
         Loads a levanter model from a huggingface checkpoint.
@@ -463,99 +492,97 @@ class HFCheckpointConverter(Generic[LevConfig]):
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
-        from contextlib import nullcontext
+        from contextlib import ExitStack
 
-        if axis_mapping is None:
-            axis_mapping_cm = nullcontext()
+        hf_config = self.hf_config_from_hf_checkpoint(ref)
+        if isinstance(lm_model_cls, type(self.default_config)):
+            config = lm_model_cls
+            lm_model_cls = config.model_type
         else:
-            axis_mapping_cm = haliax.axis_mapping(axis_mapping)
-        with axis_mapping_cm:
+            config = self.config_from_hf_config(hf_config)
+
+        # Vocab: first we have to resize the vocab as loaded from the checkpoint
+        tokenizer_Vocab = self.Vocab
+        Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+
+        contexts = ExitStack()
+
+        # we want to use a CPU if (1) we only have 1 device, or (2) the total amount of accelerator memory is less than
+        # the amount of CPU memory.
+        just_use_cpu = _should_use_cpu_for_checkpoint_loading()
+        if just_use_cpu:
+            # if we only have 1 device, use CPU ram
+            contexts.enter_context(use_cpu_device())
+
+        with contexts:
             # TODO: in an ideal world, we would only load the part of the array we needed, but
             # AFAICT neither torch state dicts nor safetensors support this.
-            state_dict = self.load_state_dict(ref)
+            state_dict = self.load_state_dict(ref, dtype)
 
-            hf_config = self.hf_config_from_hf_checkpoint(ref)
+        ignore_prefix: Optional[str] = None
+        if self.ignore_prefix:
+            for k in state_dict.keys():
+                if k.startswith(f"{self.ignore_prefix}."):
+                    ignore_prefix = self.ignore_prefix
+                    break
 
-            if isinstance(lm_model_cls, type(self.default_config)):
-                config = lm_model_cls
-                lm_model_cls = config.model_type
-            else:
-                config = self.config_from_hf_config(hf_config)
+        def load_from_state_dict(state_dict):
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
-            # Vocab: first we have to resize the vocab as loaded from the checkpoint
-            tokenizer_Vocab = self.Vocab
-            Vocab = tokenizer_Vocab.resize(hf_config.vocab_size)
+            # However, this might miss some buffers that don't get persisted in the state dict
+            # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
+            # again, this time keeping only the (missing) buffers, and then combine the two models.
+            lev_model = _patch_missing_buffers_for_deser(
+                lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
+            )
 
-            ignore_prefix: Optional[str] = None
-            if self.ignore_prefix:
-                for k in state_dict.keys():
-                    if k.startswith(f"{self.ignore_prefix}."):
-                        ignore_prefix = self.ignore_prefix
-                        break
+            if Vocab.size != tokenizer_Vocab.size:
+                if resize_vocab_to_match_tokenizer:
+                    logger.info(
+                        f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
+                    )
+                    lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
+                else:
+                    logger.warning(
+                        f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size ({tokenizer_Vocab.size})"
+                    )
 
-            # TODO: this could be simpler if we just started using a "persistent" or "buffer" thing
-            # TODO: the strategy is a bit too clever here.
-            # we first evaluate the shape of our model, then use from_state_dict to actually populate the model
-            # with the arrays.
-            @haliax.named_jit(axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,))
-            def load_from_state_dict(state_dict):
-                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-                lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
 
-                # However, this might miss some buffers that don't get persisted in the state dict
-                # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
-                # again, this time keeping only the (missing) buffers, and then combine the two models.
-                lev_model = _patch_missing_buffers_for_deser(
-                    lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
-                )
+            return lev_model
 
-                if Vocab.size != tokenizer_Vocab.size:
-                    if resize_vocab_to_match_tokenizer:
-                        logger.info(
-                            f"Resizing model from {Vocab.size} to {tokenizer_Vocab.size} to match tokenizer vocab size"
-                        )
-                        # run in jit b/c we're manipulating sharded tensors
-                        lev_model = lev_model.resize_vocab(tokenizer_Vocab.size)
-                    else:
-                        logger.warning(
-                            f"Model vocab size ({Vocab.size}) does not match tokenizer vocab size"
-                            f" ({tokenizer_Vocab.size})"
-                        )
+        if just_use_cpu:
+            cpu_device = jax.local_devices(backend="cpu")[0]
+            with local_cpu_mesh():
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
 
-                lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
-
-                return lev_model
-
-            lev_model = load_from_state_dict(state_dict)
             del state_dict
-            gc.collect()  # sometimes takes a while to free buffers otherwise
+            # gotta move it to the accelerator now (assuming there is one!)
+            lev_model = haliax.shard_with_axis_mapping(lev_model, axis_mapping)
+        else:
+            load_from_state_dict = haliax.named_jit(
+                load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
+            )
+            lev_model = load_from_state_dict(state_dict)
+
+        # all_arrays: list[jax.Array] = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        # gc.collect()  # sometimes takes a while to free buffers otherwise
+        # try:
+        #     get_backend().defragment()
+        # except Exception as e:
+        #     warnings.warn(f"Could not defragment because {e}")
+        #     pass
+        # all_arrays = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+        # all_arrays = get_backend().live_arrays()
+        # total_size = sum(a.size * a.itemsize for a in all_arrays)
+        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
 
         return lev_model
-
-    def _load_safe_tensors(self, path):
-        d = {}
-        with safetensors.safe_open(path, framework="np", device="cpu") as f:
-            keys = list(f.keys())
-            for key in tqdm(keys, total=len(keys), desc="Loading weights"):
-                tensor_slice = f.get_slice(key)
-                d[key] = _shard_best_effort(tensor_slice)
-
-        return d
-
-    def _load_torch(self, path):
-        import torch
-
-        device = torch.device("cpu")
-        state_dict = torch.load(path, map_location=device)
-        d = {}
-
-        for k, v in tqdm(state_dict.items(), total=len(state_dict), desc="Loading weights"):
-            v = _convert_to_jnp(v)
-            if v is not None:
-                v = _shard_best_effort(v)
-            d[k] = v
-
-        return d
 
     def _save_pretrained_local(
         self,
@@ -856,19 +883,22 @@ def upload_to_hub(local_path: str, repo_ref: Union[str, RepoRef], **hf_upload_kw
     _sync_count += 1
 
 
-def _convert_to_jnp(v):
+def _convert_to_jnp(v, dtype):
     import torch
 
     # we'd rather not convert to float32 to conserve memory, so we convert direct to jax.numpy
-    # if v.dtype == torch.bfloat16:
-    #     v = v.to(torch.float32)
     with use_cpu_device():
         if v is None:
             return None
         elif v.dtype == torch.bfloat16:
-            return jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
+            arr = jax.numpy.array(v.cpu().view(torch.float16).numpy()).view(jax.numpy.bfloat16)
         else:
-            return jax.numpy.array(v.cpu().numpy())
+            arr = jax.numpy.array(v.cpu().numpy())
+
+        if dtype is not None:
+            arr = arr.astype(dtype)
+
+        return arr
 
 
 def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key, axis_mapping):
@@ -982,9 +1012,50 @@ def _shard_hf_checkpoint(
     return shards, index
 
 
-def _shard_best_effort(array_or_slice) -> jax.Array:
-    shape = array_or_slice.get_shape() if hasattr(array_or_slice, "get_shape") else array_or_slice.shape
+def _maybe_shard_best_effort(array_or_slice, dtype) -> jax.Array:
+    """Shards an array to non-cpu devices if we have more than one device, otherwise just stays on cpu"""
+    # We do this to not waste memory on the target device if it's not going to help us save memory/io
+    # TODO: This mostly helps with Stacked modules, which we should move away from
+    if jax.device_count() > 1:
+        return _shard_best_effort(array_or_slice, dtype)
+    else:
+        with use_cpu_device():
+            if hasattr(array_or_slice, "get_shape"):
+                # this is a PySafeSlice
+                return jnp.array(array_or_slice[:], dtype=dtype)
+            else:
+                return jnp.array(array_or_slice, dtype=dtype)
+
+
+def _shard_best_effort(array_or_slice, dtype) -> jax.Array:
+    if hasattr(array_or_slice, "get_shape"):
+        shape = array_or_slice.get_shape()
+    else:
+        shape = array_or_slice.shape
 
     sharding = best_effort_sharding(shape)
 
-    return jax.make_array_from_callback(tuple(shape), sharding, lambda indices: array_or_slice[indices])
+    def get_slice(indices):
+        arr = array_or_slice[indices]
+        if dtype is not None:
+            arr = arr.astype(dtype)
+
+        return arr
+
+    return jax.make_array_from_callback(tuple(shape), sharding, get_slice)
+
+
+def _should_use_cpu_for_checkpoint_loading():
+    if jax.process_count() > 1:
+        return False
+
+    if jax.device_count() == 1:
+        return True
+
+    cpu_memory = logical_cpu_memory_size()
+    devices = jax.devices()
+    accel_memory = [jax_utils.estimated_free_device_memory(d) for d in devices]
+    if any(m is None for m in accel_memory):
+        return False
+    if sum(accel_memory) < cpu_memory:
+        return True
