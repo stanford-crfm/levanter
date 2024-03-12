@@ -93,6 +93,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
             override_resources=override_resources,
             return_attention_mask=True,
             padding="max_length" if padding else False,
+            max_length=max_length,
         )
 
         self.override_resources = override_resources

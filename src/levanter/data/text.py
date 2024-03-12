@@ -334,12 +334,17 @@ class BatchTokenizer(BatchProcessor[str]):
         _workaround_len=LONG_STRING_WORKAROUND,
         return_attention_mask=False,
         padding=False,
+        max_length=None,
     ):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
         self.override_resources = override_resources
         self.return_attention_mask = return_attention_mask
         self.padding = padding
+        if max_length is None:
+            self.max_length = max_length
+        else:
+            self.max_length = self.tokenizer.model_max_length
 
         # see if the tokenizer appends eos
         # HF's BPE-based tokenizers do not, but the bert and roberta ones do
@@ -387,7 +392,10 @@ class BatchTokenizer(BatchProcessor[str]):
         else:
             needs_merge = []
 
-        encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=448)  # type: ignore
+        if self.padding is not False:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length)  # type: ignore
+        else:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)

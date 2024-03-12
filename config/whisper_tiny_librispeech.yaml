@@ -1,6 +1,5 @@
 data:
-  id: librispeech_asr
-  name: "clean"
+  id: WillHeld/librispeech_parquet
   cache_dir: "gs://public_data_lev/processed/librispeech"
   train_split: "train.100"
   text_key: "text"
@@ -16,7 +15,7 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: -1
 
-  train_batch_size: 16
+  train_batch_size: 64
   num_train_steps: 20000
 optimizer:
   learning_rate: 1E-3
