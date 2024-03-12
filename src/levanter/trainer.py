@@ -454,7 +454,12 @@ class Trainer:
 
     @cached_property
     def _jit_train_step_fn(self):
-        return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
+        return named_jit(
+            self._train_step,
+            axis_resources=self.parameter_axis_mapping,
+            out_axis_resources=self.parameter_axis_mapping,
+            donate_args=(True,),
+        )
 
     def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
