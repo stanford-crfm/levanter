@@ -218,11 +218,13 @@ class AudioTaskConfig(abc.ABC):
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
-    ignore_token_id: Optional[int] = None
-
     @cached_property
     def the_processor(self) -> PreTrainedTokenizerBase:
         return load_processor(self.processor)
+
+    @cached_property
+    def ignore_token_id(self) -> int:
+        return self.the_tokenizer.pad_token_id
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
@@ -454,7 +456,7 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
                 attn_mask = hax.named(inputs["attention_mask"], self.KPos)
                 attn_mask = AttentionMask.explicit(attn_mask)
 
-                return AudioTextExample.init(audio_features, tokens, attn_mask=attn_mask)
+                return AudioTextExample.init(audio_features, tokens, attn_mask=attn_mask, ignore_id=self.ignore_id)
 
             for example in self.dataset:
                 converted_example = _convert_example(example, key)

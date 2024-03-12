@@ -399,6 +399,7 @@ class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
 
     def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
         k_conv1, k_conv2, k_transformer = haliax.jax_utils.maybe_rng_split(key, 3)
+        spec = spec.astype(self.conv1.weight.dtype)
         x = self.act(self.conv1(spec, key=k_conv1))
         x = self.act(self.conv2(x, key=k_conv2))
 
