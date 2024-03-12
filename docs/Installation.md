@@ -83,6 +83,7 @@ There are many limitations to using Metal. You can see [bugs in the JAX issue tr
 Some of the limitations are:
 
 * `with_sharding_constraint` is not supported. Haliax's `shard` operation will just ignore these on Metal, so you don't need to worry about it.
+* `bfloat16` is not currently supported. You can use `f32` instead. (Change your configs so that it's `mp: f32`.)
 * Argument donation in `jit` is not supported. This is a JAX feature that allows you to donate the memory of an argument to the output of a function. This is not supported on Metal,
 and you'll get a warning if you try to use it. It's not as critical as it is on TPU/GPU because Metal has a lot of memory for the amount of FLOPs it can do.
 * Reductions with more than 4 dimensions are not supported.
