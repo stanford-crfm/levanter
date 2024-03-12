@@ -26,7 +26,7 @@ def test_basic_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -51,7 +51,7 @@ def test_mask_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -76,7 +76,7 @@ def test_namedarray_mask_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -112,7 +112,7 @@ def test_hf_roundtrip():
     model: WhisperModel = cast(WhisperModel, converter.load_pretrained(config, RepoRef(model_id)))
     model = inference_mode(model, True)
 
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     inputs = processor.feature_extractor(ds[0]["audio"]["array"], return_tensors="pt")
     input_features = inputs.input_features
     decoder_input_ids = torch.tensor([[1, 1]]) * c.decoder_start_token_id

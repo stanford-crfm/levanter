@@ -14,7 +14,6 @@ from levanter.models.lm_model import LmConfig
 
 
 class ASRConfig(LmConfig):
-    @abc.abstractmethod
     def build_asr(self, Vocab: Axis, *, key: PRNGKey) -> "ASRMixin":
         return self.asr_model_type.init(Vocab, self, key=key)  # type: ignore
 

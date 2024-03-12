@@ -359,7 +359,9 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             return True
 
         if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            dataset = datasets.load_dataset(
+                self.id, name=self.name, streaming=self.stream, split=self.validation_split
+            )
             try:
                 next(iter(dataset))
                 return True
