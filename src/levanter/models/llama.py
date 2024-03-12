@@ -1,5 +1,4 @@
 import dataclasses
-import warnings
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple, Type, Union
 
@@ -73,7 +72,7 @@ class LlamaConfig(HFCompatConfig):
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
-    scan_layers: bool = False  # set to true to use legacy Stacked
+    scan_layers: bool = True
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
@@ -392,12 +391,10 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
         S = Stacked
         if not config.scan_layers:
-            try:
-                from haliax.nn.scan import BlockSeq
+            from haliax.nn.scan import BlockSeq
 
-                S = BlockSeq
-            except ImportError:
-                warnings.warn("Using legacy Stacked instead of BlockSeq. Please update Haliax.")
+            S = BlockSeq
+
         layers = S.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_layers),
