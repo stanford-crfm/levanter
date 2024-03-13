@@ -3,6 +3,8 @@ data:
   cache_dir: "gs://public_data_lev/processed/librispeech"
   train_split: "train.360"
   text_key: "text"
+  # The Whisper Tokenizer is way too large for Librispeech
+  tokenizer: "facebook/wav2vec2-base-960h"
 model:
   type: whisper
 trainer:

@@ -18,7 +18,7 @@ from typing_extensions import TypedDict
 import haliax as hax
 from haliax import Axis
 
-from levanter.compat.hf_checkpoints import load_processor
+from levanter.compat.hf_checkpoints import load_processor, load_tokenizer
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch
 from levanter.data.dataset import ShardableDataset
 from levanter.data.shard_cache import (
@@ -210,7 +210,7 @@ class AudioDatasetSourceConfig:
 @dataclass
 class AudioTaskConfig(abc.ABC):
     processor: str = "openai/whisper-tiny"
-
+    tokenizer: Optional[str] = None
     # config related to caching
     train_split: str = "train"
     validation_split: str = "validation"
@@ -228,7 +228,10 @@ class AudioTaskConfig(abc.ABC):
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
-        return self.the_processor.tokenizer
+        if self.tokenizer is None:
+            return self.the_processor.tokenizer
+        else:
+            return load_tokenizer(self.tokenizer)
 
     @cached_property
     def the_feature_extractor(self) -> PreTrainedTokenizerBase:

@@ -113,8 +113,6 @@ def main(config: TrainASRConfig):
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
 
-        tokenizer.pad_token_id = 50362
-        tokenizer.predict_timestamps = True
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
         if vocab_size != Vocab.size:
