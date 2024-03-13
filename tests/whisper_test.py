@@ -39,13 +39,13 @@ def test_whisper_loss():
     tokenized = processor.tokenizer("This is a test", max_length=12, padding="max_length")
     inp = hax.NamedArray(
         jnp.array(tokenized["input_ids"]),
-        axes=(Axis("position", size=12),),
+        axes=(Axis("position", size=6),),
     )
     mask = AttentionMask.explicit(
         hax.NamedArray(
             jnp.array(tokenized["attention_mask"]),
-            axes=(Axis("key_position", size=12),),
-        ).broadcast_axis(Axis("position", size=12))
+            axes=(Axis("key_position", size=6),),
+        ).broadcast_axis(Axis("position", size=6))
     )
     model.compute_loss(AudioTextExample.init(na, inp, attn_mask=mask))
 
