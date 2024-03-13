@@ -138,7 +138,11 @@ def test_hf_roundtrip():
     ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     inputs = processor.feature_extractor(ds[0]["audio"]["array"], return_tensors="pt")
     input_features = inputs.input_features
-    decoder_input_ids = torch.tensor([[1, 1]]) * c.decoder_start_token_id
+    tokenized = processor.tokenizer(
+        ds[0]["text"], max_length=6, padding="max_length", truncation=True, return_tensors="pt"
+    )
+    decoder_input_ids = tokenized["input_ids"]
+    torch.tensor([[1, 1]]) * c.decoder_start_token_id
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
     torch_out = torch_model(input_features, decoder_input_ids=decoder_input_ids)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
@@ -152,7 +156,7 @@ def test_hf_roundtrip():
         decoder_input_ids.cpu().numpy(),
         axes=(
             Axis("batch", size=1),
-            Axis("position", size=2),
+            Axis("position", size=6),
         ),
     )
 
@@ -164,6 +168,7 @@ def test_hf_roundtrip():
 
     compute = jax.jit(compute)
     jax_out = compute(na, inp).array[0]
+
     assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
