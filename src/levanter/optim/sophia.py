@@ -344,7 +344,9 @@ def _sophia_gradient_transform(
         )
 
         if clip_threshold is not None:
-            unclipped_count = sum(jnp.sum(jnp.abs(u) < clip_threshold) for u in jax.tree_util.tree_leaves(updates))
+            unclipped_count = sum(
+                jnp.sum(jnp.abs(u) < clip_threshold).astype(jnp.int64) for u in jax.tree_util.tree_leaves(updates)
+            )
             updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
             stats["optim/unclipped_fraction"] = unclipped_count / parameter_count(updates)
 
