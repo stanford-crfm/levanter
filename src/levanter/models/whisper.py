@@ -61,7 +61,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     gradient_checkpointing: bool = True
 
     # Attention-related config
-    upcast_attn: bool = False
+    upcast_attn: bool = True
     use_flash_attention: bool = False
     flash_attention_block_size: Optional[int] = None
 
@@ -556,7 +556,7 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
             attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_decoder = haliax.jax_utils.maybe_rng_split(key, 2)
         audio_features = self.encoder(mel, key=k_encoder)
-        lm_logits = self.decoder(input_ids, audio_features, key=k_decoder)
+        lm_logits = self.decoder(input_ids, audio_features, attn_mask=attn_mask, key=k_decoder)
 
         return lm_logits
 

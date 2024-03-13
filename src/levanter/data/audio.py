@@ -454,7 +454,7 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
                 tokens = hax.named(inputs["input_ids"], self.TextPos)
                 audio_features = hax.named(inputs["input_features"], self.AudioPos)
                 attn_mask = hax.named(inputs["attention_mask"], self.KPos)
-                attn_mask = AttentionMask.explicit(attn_mask)
+                attn_mask = AttentionMask.explicit(attn_mask.broadcast_axis(self.TextPos))
 
                 return AudioTextExample.init(audio_features, tokens, attn_mask=attn_mask, ignore_id=self.ignore_id)
 
