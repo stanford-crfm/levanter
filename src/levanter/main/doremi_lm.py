@@ -86,7 +86,7 @@ def main(config: TrainLmConfig):
         # initialize the ref model
         if config.ref_model_from_hf:
             assert converter is not None
-            ref_model = converter.load_pretrained(type(config.model))
+            ref_model = converter.load_pretrained(type(config.model), dtype=config.trainer.mp.compute_dtype)
         else:
             ref_model_shape = eqx.filter_eval_shape(config.model.build, Vocab, key=jrandom.PRNGKey(0))
             ref_model = levanter.checkpoint.load_checkpoint(

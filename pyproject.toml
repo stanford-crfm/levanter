@@ -28,7 +28,7 @@ dependencies = [
     "haliax @ git+https://github.com/stanford-crfm/haliax.git@main",
     "equinox>=0.10.7",
     "jaxtyping>=0.2.20",
-    "transformers>=4.22.0",
+    "transformers>=4.32.0",
     "optax>=0.1.9",
     "wandb",
     "draccus>=0.7.1",
@@ -42,7 +42,7 @@ dependencies = [
     # TODO: minimize and report an issue to tensorstore
     # causes hangs when serializing to GCS
 #    "tensorstore==0.1.54",
-    "tensorstore==0.1.45",
+    "tensorstore==0.1.54",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]",
