@@ -56,7 +56,7 @@ def test_hf_backpack_consistency():
 def test_hf_gpt2_consistency():
     hf_model_config = GPT2Config.from_pretrained(HF_GPT2)
     hf_model = GPT2LMHeadModel.from_pretrained(HF_GPT2)
-    hf_model.cuda().eval()
+    hf_model.eval()
 
     from levanter.models.gpt2 import Gpt2Config
 
