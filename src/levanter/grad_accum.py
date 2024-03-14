@@ -112,7 +112,11 @@ def microbatched(
                 this_r = fn(*microbatch, **microbatch_kwargs)
 
             with jax.named_scope("accum"):
-                acc = eqx.apply_updates(acc, this_r)
+                import haliax.quantization as hq
+
+                # TODO: this uses the latest value for the scale for fp8, which seems not ideal but probably ok?
+                overwrites, updates = hq.partition_for_grad_overwrite(this_r)
+                acc = hq.apply_updates(acc, updates, overwrites)
                 acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
 
             return acc
