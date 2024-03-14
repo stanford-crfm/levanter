@@ -36,7 +36,7 @@ def test_whisper_loss():
         inputs["input_features"].squeeze(),
         axes=(conf.Mels, Axis(name="position", size=3000)),
     )
-    tokenized = processor.tokenizer("This is a test", max_length=12, padding="max_length")
+    tokenized = processor.tokenizer("This is a test", max_length=6, padding="max_length")
     inp = hax.NamedArray(
         jnp.array(tokenized["input_ids"]),
         axes=(Axis("position", size=6),),
