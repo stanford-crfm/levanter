@@ -9,7 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
-from haliax.quantization import Fp8Config, fp8_quantize_tree
+from haliax.quantization import Fp8Config, apply_updates, fp8_quantize_tree, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
 from levanter.types import FilterTree
@@ -178,9 +178,10 @@ def take_train_step(
     is_trainable: FilterTree = True,
 ) -> Tuple[M, OptState]:
     train_grads = trainables_only(grads, is_trainable)
+    overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
-    model = eqx.apply_updates(model, updates)
+    model = apply_updates(model, updates, overwrites)
 
     return model, opt_state
 
