@@ -35,7 +35,6 @@ from levanter.data.text import BatchTokenizer
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
-from levanter.models.attention import AttentionMask
 from levanter.utils.jax_utils import use_cpu_device
 
 
@@ -450,20 +449,19 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
         )
 
     def __iter__(self) -> Iterator[AudioTextExample]:
-        key = self.key
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
         with use_cpu_device():
 
             @functools.partial(eqx.filter_jit, out_shardings=sharding)
-            def _convert_example(inputs: AudioTextDict, key) -> "AudioTextExample":
+            def _convert_example(inputs: AudioTextDict) -> "AudioTextExample":
                 tokens = hax.named(inputs["input_ids"], self.TextPos)
                 audio_features = hax.named(inputs["input_features"], self.AudioPos)
-                attn_mask = hax.named(inputs["attention_mask"], self.KPos)
-                attn_mask = AttentionMask.explicit(attn_mask.broadcast_axis(self.TextPos))
 
-                return AudioTextExample.init(audio_features, tokens, attn_mask=attn_mask, ignore_id=self.ignore_id)
+                print(self.ignore_id)
+                print(inputs)
+                return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
 
             for example in self.dataset:
-                converted_example = _convert_example(example, key)
+                converted_example = _convert_example(example)
                 yield converted_example
