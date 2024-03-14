@@ -9,6 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
+from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
 from levanter.types import FilterTree
@@ -78,12 +79,16 @@ class TrainerState(eqx.Module, Generic[M]):
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
+        fp8: Fp8Config = None,
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
             model = cast_params_by_trainability(model, mp, is_trainable)
         else:
             mp = jmp.get_policy("f32")
+
+        if fp8 is not None:
+            model = fp8_linear_layers(model, fp8)
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
         return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
@@ -106,6 +111,7 @@ def init_optimizer_for_trainables(optimizer, model, is_trainable):
     Initializes the optimizer state for the trainable parameters of the model.
     """
     trainable = trainables_only(model, is_trainable)
+    _, trainable = partition_for_grad_overwrite(trainable)  # doesn't make a huge difference, but saves some ram
     opt_state = optimizer.init(trainable)
     return opt_state
 
@@ -173,9 +179,10 @@ def take_train_step(
     is_trainable: FilterTree = True,
 ) -> Tuple[M, OptState]:
     train_grads = trainables_only(grads, is_trainable)
+    overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
-    model = eqx.apply_updates(model, updates)
+    model = apply_updates(model, updates, overwrites)
 
     return model, opt_state
 
