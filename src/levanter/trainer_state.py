@@ -9,6 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
+from haliax.quantization import Fp8Config, fp8_quantize_tree
 from haliax.types import IntScalar, Scalar
 
 from levanter.types import FilterTree
@@ -78,12 +79,16 @@ class TrainerState(eqx.Module, Generic[M]):
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
+        fp8: Fp8Config = None,
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
             model = cast_params_by_trainability(model, mp, is_trainable)
         else:
             mp = jmp.get_policy("f32")
+
+        if fp8 is not None:
+            model = fp8_quantize_tree(model, fp8)
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
         return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
