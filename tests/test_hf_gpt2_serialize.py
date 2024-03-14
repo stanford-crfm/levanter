@@ -20,7 +20,7 @@ from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.optim import AdamConfig
 from levanter.utils.tree_utils import inference_mode
-from test_utils import skip_if_no_torch
+from test_utils import arrays_only, skip_if_no_torch
 
 
 @skip_if_no_torch
@@ -158,7 +158,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_optimizer.step()
 
     jax_optimizer = optimizer_config.build(1000)
-    state = jax_optimizer.init(model)
+    state = jax_optimizer.init(arrays_only(model))
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 

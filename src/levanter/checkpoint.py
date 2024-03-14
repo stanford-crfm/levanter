@@ -24,7 +24,7 @@ from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
-from haliax.jax_utils import is_in_jit
+from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
@@ -295,6 +295,8 @@ def save_checkpoint(
         if commit_callback is not None:
             commit_callback()
 
+    tree = equinox.filter(tree, lambda x: is_jax_array_like(x) or isinstance(x, (int, float, bool, complex)))
+
     tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback)
 
     return checkpoint_path
@@ -353,8 +355,10 @@ def load_checkpoint(
     if subpath:
         checkpoint_path = os.path.join(checkpoint_path, subpath)
 
+    ser, non_ser = equinox.partition(tree, is_jax_array_like)
     try:
-        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
+        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh)
+        tree = equinox.combine(tree, non_ser)
         return tree
     except:  # noqa
         from levanter.trainer_state import TrainerState
