@@ -458,8 +458,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
                 tokens = hax.named(inputs["input_ids"], self.TextPos)
                 audio_features = hax.named(inputs["input_features"], self.AudioPos)
 
-                print(self.ignore_id)
-                print(inputs)
                 return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
 
             for example in self.dataset:
