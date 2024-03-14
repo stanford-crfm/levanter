@@ -393,7 +393,7 @@ class BatchTokenizer(BatchProcessor[str]):
             needs_merge = []
 
         if self.padding is not False:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length)  # type: ignore
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
         else:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 

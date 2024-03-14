@@ -7,6 +7,7 @@ data:
   tokenizer: "facebook/wav2vec2-base-960h"
 model:
   type: whisper
+  vocab_size: 32
 trainer:
   tracker:
     - type: wandb

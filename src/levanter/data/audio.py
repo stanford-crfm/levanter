@@ -78,6 +78,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
     def __init__(
         self,
         processor: ProcessorMixin,
+        tokenizer: PreTrainedTokenizerBase,
         enforce_eos=True,
         *,
         batch_size=128,
@@ -87,7 +88,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
         self.bt: PreTrainedTokenizerBase = BatchTokenizer(
-            processor.tokenizer,
+            tokenizer,
             enforce_eos=enforce_eos,
             batch_size=batch_size,
             override_resources=override_resources,
@@ -276,6 +277,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         cache_dir: str,
         source: ShardedDataset[Tuple[np.ndarray, int, str]],
         processor: ProcessorMixin,
+        tokenizer: PreTrainedTokenizerBase,
         enforce_eos=True,
         batch_size=128,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
@@ -284,7 +286,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         override_resources=None,
     ) -> "ProcessedAudioCache":
         bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
-            processor, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+            processor, tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
         )
         monitors = monitors or []
         cache = build_cache(
@@ -411,6 +413,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             split_cache_dir,
             source,
             self.the_processor,
+            self.the_tokenizer,
             enforce_eos=self.enforce_eos,
             batch_size=batch_size,
             rows_per_chunk=self.rows_per_chunk,
