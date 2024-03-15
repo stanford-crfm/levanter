@@ -682,11 +682,11 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 tokenizer_dependent_config["decoder_start_token_id"] = self.tokenizer.bos_token_id
                 suppress_tokens.append(self.tokenizer.bos_token_id)
             if len(suppress_tokens) > 0:
-                tokenizer_dependent_config["begin_suppress_tokens"] = suppress_tokens
+                tokenizer_dependent_config["begin_suppress_tokens"] = set(suppress_tokens)
             dict_config = mergedeep.merge(
                 {},
                 dict_config,
-                suppress_tokens,
+                tokenizer_dependent_config,
             )
 
         if self.config_overrides:
