@@ -3,6 +3,7 @@ import os
 
 import numpy
 
+from levanter.data.audio import AudioIODatasetConfig
 from levanter.data.shard_cache import ShardCache
 from levanter.data.text import LMDatasetConfig
 
@@ -27,6 +28,15 @@ def tiny_corpus_config(path):
         train_urls=[f"file://{path}/train/docs.jsonl"],
         validation_urls=[f"file://{path}/validation/docs.jsonl"],
         cache_dir=f"{path}/cache",
+    )
+
+
+def tiny_asr_corpus_config(path):
+    return AudioIODatasetConfig(
+        id="WillHeld/test_librispeech_parquet",
+        train_split="validation",
+        validation_split="validation",
+        cache_dir=f"{path}/cache_asr",
     )
 
 
