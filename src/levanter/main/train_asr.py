@@ -76,7 +76,7 @@ def main(config: TrainASRConfig):
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
         converter = config.model.default_hf_checkpoint_converter
-        converter = converter.replaced(tokenizer=tokenizer)
+        converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
     else:
         converter = None
 
