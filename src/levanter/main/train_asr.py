@@ -62,9 +62,13 @@ def main(config: TrainASRConfig):
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
         if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
+            converter = converter.replaced(
+                reference_checkpoint=config.initialize_from_hf,
+                tokenizer=tokenizer,
+                feature_extractor=config.data.the_feature_extractor,
+            )
         else:
-            converter = converter.replaced(tokenizer=tokenizer)
+            converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
 
         if config.use_hf_model_config:
             # TODO: log diff of old and new config
@@ -156,7 +160,9 @@ def main(config: TrainASRConfig):
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
 
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
+                save_hf_checkpoint_callback(
+                    full_save_path, converter, upload_to_hf=config.hf_upload or False, save_feature_extractor=True
+                ),
                 every=config.hf_save_steps,
             )
 
