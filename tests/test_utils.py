@@ -113,7 +113,7 @@ def assert_trees_not_close(a, b):
 
 
 def arrays_only(x):
-    return eqx.filter(x, eqx.is_inexact_array_like)
+    return eqx.filter(x, eqx.is_array_like)
 
 
 def has_torch():
