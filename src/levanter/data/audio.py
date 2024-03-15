@@ -226,7 +226,7 @@ class AudioTaskConfig(abc.ABC):
         return load_processor(self.processor)
 
     @cached_property
-    def ignore_token_id(self) -> int:
+    def pad_token_id(self) -> int:
         return self.the_tokenizer.pad_token_id
 
     @cached_property

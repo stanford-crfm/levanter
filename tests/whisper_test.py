@@ -128,8 +128,6 @@ def test_namedarray_mask_forward_whisper():
 @skip_if_no_soundlibs
 @skip_if_no_torch
 def test_hf_roundtrip():
-    import torch
-
     model_id = "openai/whisper-tiny"
     converter = WhisperConfig.default_hf_checkpoint_converter
     c = HfWhisperConfig.from_pretrained(model_id)
@@ -149,7 +147,6 @@ def test_hf_roundtrip():
         ds[0]["text"], max_length=6, padding="max_length", truncation=True, return_tensors="pt"
     )
     decoder_input_ids = tokenized["input_ids"]
-    torch.tensor([[1, 1]]) * c.decoder_start_token_id
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
     torch_out = torch_model(input_features, decoder_input_ids=decoder_input_ids)
     torch_out = torch_out.logits[0].detach().cpu().numpy()

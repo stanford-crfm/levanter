@@ -44,8 +44,6 @@ class TrainASRConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
-    update_hessian_steps: int = 10
-
 
 def main(config: TrainASRConfig):
     tokenizer = config.data.the_tokenizer
@@ -110,7 +108,7 @@ def main(config: TrainASRConfig):
             Pos,
             [config.model.Mels, config.model.MelPos],
             KeyPos,
-            ignore_index=config.data.ignore_token_id,
+            ignore_index=config.data.pad_token_id,
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -151,7 +149,7 @@ def main(config: TrainASRConfig):
                 Pos,
                 [config.model.Mels, config.model.MelPos],
                 KeyPos,
-                ignore_index=config.data.ignore_token_id,
+                ignore_index=config.data.pad_token_id,
             )
             trainer.add_eval_hook(hax_eval_dataset, name=name)
 
