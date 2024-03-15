@@ -7,6 +7,7 @@ import os
 from functools import partial
 from typing import Callable, Optional
 
+import equinox
 import jax
 import jax.experimental.array_serialization.serialization as array_ser
 import jax.numpy as jnp
@@ -64,7 +65,7 @@ def tree_serialize_leaves_tensorstore(
     arrays = [_ensure_is_array(x) for x in leaves]
 
     # filter out the None leaves and paths (must be zip)
-    arrays, paths = zip(*[(a, p) for a, p in zip(arrays, paths) if a is not None])
+    arrays, paths = zip(*[(a, p) for a, p in zip(arrays, paths) if equinox.is_array_like(a)])
 
     arrays = list(arrays)
     paths = list(paths)
@@ -139,6 +140,8 @@ async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
         return None
     elif isinstance(like, jnp.ndarray) or isinstance(like, np.ndarray) or isinstance(like, jax.ShapeDtypeStruct):
         return await load_array_from_tensorstore(spec)
+    elif callable(like):
+        return like
     else:
         raise TypeError(f"Can't deserialize {type(like)}")
 
@@ -178,9 +181,10 @@ def tree_deserialize_leaves_tensorstore(
 
     deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
 
+    futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)
+    leaves, structure = jtu.tree_flatten(futures, is_leaf=is_named_array)
+
     async def _do_deserialize():
-        futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)
-        leaves, structure = jtu.tree_flatten(futures, is_leaf=is_named_array)
         values = await asyncio.gather(*leaves)
         return jtu.tree_unflatten(structure, values)
 
