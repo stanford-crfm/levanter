@@ -260,14 +260,16 @@ def log_memory_usage(sample_interval: float = 1.0, log_individual_devices: bool 
 
 
 def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bool) -> Callable[[StepInfo], None]:
+    _create_perfetto_link = create_perfetto_link and jax.process_index() == 0
+    print(f"create_perfetto_link: {_create_perfetto_link}")
+
     def profiler_callback_fn(step: StepInfo):
         # -1 b/c step is the finished step
         if step.step == start_step - 1:
             logger.info(f"Starting profiler until step {start_step + num_steps}.")
-            _create_perfetto_link = create_perfetto_link and jax.process_index() == 0
             jax.profiler.start_trace(path, create_perfetto_link=_create_perfetto_link, create_perfetto_trace=True)
         elif step.step == start_step + num_steps - 1:
-            if create_perfetto_link:
+            if _create_perfetto_link:
                 logger.info(
                     f"Stopping profiler. Process 0 will open a perfetto link. I am process {jax.process_index()}"
                 )
