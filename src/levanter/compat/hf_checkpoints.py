@@ -668,6 +668,23 @@ class HFCheckpointConverter(Generic[LevConfig]):
             else:
                 raise
 
+        if self.tokenizer:
+            dict_config = mergedeep.merge(
+                {},
+                dict_config,
+                {
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "bos_token_id": self.tokenizer.bos_token_id,
+                    "eos_token_id": self.tokenizer.eos_token_id,
+                    "decoder_start_token_id": self.tokenizer.bos_token_id,
+                    "begin_suppress_tokens": [
+                        self.tokenizer.bos_token_id,
+                        self.tokenizer.pad_token_id,
+                        self.tokenizer.eos_token_id,
+                    ],
+                },
+            )
+
         if self.config_overrides:
             dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
 

@@ -65,12 +65,6 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     use_flash_attention: bool = False
     flash_attention_block_size: Optional[int] = None
 
-    # Tokenizer Info
-    # (Annoyingly Required for HF Compat because no separation of concerns)
-    pad_token_id: int = 220
-    bos_token_id: int = 50257
-    eos_token_id: int = 50256
-
     @property
     def model_type(self) -> Type["WhisperModel"]:
         return WhisperModel
@@ -116,11 +110,6 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
             activation_function=self.activation_function,
             max_source_positions=self.max_source_positions,
             d_model=self.d_model,
-            pad_token_id=self.pad_token_id,
-            bos_token_id=self.bos_token_id,
-            eos_token_id=self.eos_token_id,
-            decoder_start_token_id=self.bos_token_id,
-            begin_suppress_tokens=[self.bos_token_id, self.pad_token_id, self.eos_token_id],
         )
 
     @classmethod
@@ -137,9 +126,6 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
             activation_function=hf_config.activation_function,
             max_source_positions=hf_config.max_source_positions,
             d_model=hf_config.d_model,
-            pad_token_id=hf_config.pad_token_id,
-            bos_token_id=hf_config.decoder_start_token_id,
-            eos_token_id=hf_config.eos_token_id,
         )
 
 
