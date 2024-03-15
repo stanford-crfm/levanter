@@ -34,6 +34,7 @@ from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
+from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
@@ -43,7 +44,14 @@ from levanter.utils.py_utils import classproperty, dataclass_with_default_init, 
 
 
 silence_transformer_nag()
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # noqa: E402
+from transformers import (  # noqa: E402
+    AutoConfig,
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,
+    FeatureExtractionMixin,
+)
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 from transformers import (  # noqa: E402
     PreTrainedTokenizer,
@@ -140,6 +148,10 @@ class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixi
         pass
 
 
+class ASRWithHfSerializationMixin(ASRMixin, ModelWithHfSerializationMixin[MConfig]):
+    pass
+
+
 class LmWithHfSerializationMixin(LmHeadModel, ModelWithHfSerializationMixin[MConfig]):
     @classmethod
     @abc.abstractmethod
@@ -216,6 +228,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
     tokenizer: PreTrainedTokenizerFast | PreTrainedTokenizer
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
+    feature_extractor: Optional[FeatureExtractionMixin] = None
+    "The non-text preprocessor to use for multi-modality."
+
     config_overrides: Optional[dict] = None
     "A dictionary of config overrides to apply to the HFConfig when saving. typically used for auto_map"
 
@@ -232,6 +247,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
         HfConfigClass: Optional[Union[str, Type]] = None,
         tokenizer: Optional[Union[str, PreTrainedTokenizer, PreTrainedTokenizerFast]] = None,
+        feature_extractor: Optional[FeatureExtractionMixin] = None,
         config_overrides: Optional[dict] = None,
         trust_remote_code: bool = False,
         ignore_prefix: Optional[str] = None,
@@ -247,6 +263,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             reference_checkpoint=ref,
             HfConfigClass=HfConfigClass,
             tokenizer=tokenizer,
+            feature_extractor=feature_extractor,
             config_overrides=config_overrides,
             trust_remote_code=trust_remote_code,
             ignore_prefix=ignore_prefix,
@@ -281,6 +298,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         self,
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
         tokenizer: Optional[Union[str, PreTrainedTokenizerBase]] = None,
+        feature_extractor: Optional[FeatureExtractionMixin] = None,
         trust_remote_code: Optional[bool] = None,
     ) -> "HFCheckpointConverter":
         replacements: dict = {}
@@ -288,6 +306,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             replacements["reference_checkpoint"] = reference_checkpoint
         if tokenizer is not None:
             replacements["tokenizer"] = tokenizer
+        if feature_extractor is not None:
+            replacements["feature_extractor"] = feature_extractor
         if trust_remote_code is not None:
             replacements["trust_remote_code"] = trust_remote_code
 
@@ -591,6 +611,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_tokenizer: bool,
         save_reference_code: Optional[bool],
         max_shard_size: int,
+        save_feature_extractor: bool = False,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -617,6 +638,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
             logger.info("Saving tokenizer")
             self.tokenizer.save_pretrained(path)
 
+        if save_feature_extractor and self.feature_extractor is not None:
+            logger.info("Saving feature extractor")
+            self.feature_extractor.save_pretrained(path)
+
         # Config
         config = model.config.to_hf_config(model.Vocab.size)
         dict_config = config.to_dict()
@@ -642,6 +667,27 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 dict_config["architectures"] = [self.HFAutoModelClass(AutoModelForCausalLM).__name__]
             else:
                 raise
+
+        if self.tokenizer:
+            tokenizer_dependent_config = {}
+            suppress_tokens = []
+            if self.tokenizer.pad_token_id is not None:
+                tokenizer_dependent_config["pad_token_id"] = self.tokenizer.pad_token_id
+                suppress_tokens.append(self.tokenizer.pad_token_id)
+            if self.tokenizer.eos_token_id is not None:
+                tokenizer_dependent_config["eos_token_id"] = self.tokenizer.eos_token_id
+                suppress_tokens.append(self.tokenizer.eos_token_id)
+            if self.tokenizer.bos_token_id is not None:
+                tokenizer_dependent_config["bos_token_id"] = self.tokenizer.bos_token_id
+                tokenizer_dependent_config["decoder_start_token_id"] = self.tokenizer.bos_token_id
+                suppress_tokens.append(self.tokenizer.bos_token_id)
+            if len(suppress_tokens) > 0:
+                tokenizer_dependent_config["begin_suppress_tokens"] = list(set(suppress_tokens))
+            dict_config = mergedeep.merge(
+                {},
+                dict_config,
+                tokenizer_dependent_config,
+            )
 
         if self.config_overrides:
             dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
@@ -672,6 +718,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_reference_code: Optional[bool] = None,
         save_tokenizer: bool = True,
         max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
+        save_feature_extractor: bool = False,
         **hf_upload_kwargs,
     ):
         """
@@ -700,6 +747,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 local_path,
                 save_reference_code=save_reference_code,
                 save_tokenizer=save_tokenizer,
+                save_feature_extractor=save_feature_extractor,
                 max_shard_size=max_shard_size,
             )
 

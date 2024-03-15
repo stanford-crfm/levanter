@@ -26,6 +26,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
+from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
@@ -38,7 +39,7 @@ from transformers import WhisperConfig as HfWhisperConfig  # noqa: E402
 
 @LmConfig.register_subclass("whisper")
 @dataclass(frozen=True)
-class WhisperConfig(HFCompatConfig):
+class WhisperConfig(HFCompatConfig, ASRConfig):
     vocab_size: int = 51865
     num_mel_bins: int = 80
     encoder_layers: int = 4
@@ -60,7 +61,7 @@ class WhisperConfig(HFCompatConfig):
     gradient_checkpointing: bool = True
 
     # Attention-related config
-    upcast_attn: bool = False
+    upcast_attn: bool = True
     use_flash_attention: bool = False
     flash_attention_block_size: Optional[int] = None
 
@@ -68,11 +69,16 @@ class WhisperConfig(HFCompatConfig):
     def model_type(self) -> Type["WhisperModel"]:
         return WhisperModel
 
+    @property
+    def asr_model_type(self) -> Type["WhisperASRModel"]:
+        return WhisperASRModel
+
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
         return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
 
     # Axis
+    MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))
     Pos = property(lambda self: Axis(name="position", size=self.max_length))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     SourcePos = property(lambda self: Axis(name="position", size=self.max_source_positions))
@@ -339,7 +345,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         *,
         key=None,
     ) -> NamedArray:
-        keys = hax.jax_utils.maybe_rng_split(key, self.Layer) if key is not None else None
+        keys = hax.jax_utils.maybe_rng_split(key, self.Layer.size) if key is not None else None
         x = self.layers.fold(x, xa, attn_mask, key=keys)
         x = self.layer_norm(x)
 
@@ -393,6 +399,7 @@ class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
 
     def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
         k_conv1, k_conv2, k_transformer = haliax.jax_utils.maybe_rng_split(key, 3)
+        spec = spec.astype(self.conv1.weight.dtype)
         x = self.act(self.conv1(spec, key=k_conv1))
         x = self.act(self.conv2(x, key=k_conv2))
 
@@ -518,8 +525,16 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         return self.encoder.config
 
     @property
+    def Pos(self) -> Axis:
+        return self.config.Pos
+
+    @property
     def Vocab(self) -> Axis:
         return self.decoder.embeddings.Vocab
+
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "WhisperModel":
+        new_decoder = self.decoder.resize_vocab(new_size, key)
+        return dataclasses.replace(self, decoder=new_decoder)
 
     @classmethod
     def init(cls, Vocab: Axis, config: WhisperConfig, *, key) -> "WhisperModel":
@@ -527,7 +542,7 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         encoder = WhisperEncoder.init(config, key=k_embeddings)
         decoder = WhisperDecoder.init(config, key=k_t)
 
-        return WhisperModel(encoder, decoder)
+        return cls(encoder, decoder)
 
     def __call__(
         self,
@@ -541,9 +556,13 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
             attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_decoder = haliax.jax_utils.maybe_rng_split(key, 2)
         audio_features = self.encoder(mel, key=k_encoder)
-        lm_logits = self.decoder(input_ids, audio_features, key=k_decoder)
+        lm_logits = self.decoder(input_ids, audio_features, attn_mask=attn_mask, key=k_decoder)
 
         return lm_logits
+
+
+class WhisperASRModel(WhisperModel, ASRMixin):
+    pass
 
 
 def whisper_sinusoids(Channels: Axis, SourcePos: Axis, base: int = 10000) -> NamedArray:
