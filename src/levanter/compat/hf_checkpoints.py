@@ -723,6 +723,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 local_path,
                 save_reference_code=save_reference_code,
                 save_tokenizer=save_tokenizer,
+                save_feature_extractor=save_feature_extractor,
                 max_shard_size=max_shard_size,
             )
 
