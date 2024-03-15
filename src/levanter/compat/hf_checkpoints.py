@@ -669,20 +669,24 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 raise
 
         if self.tokenizer:
+            tokenizer_dependent_config = {}
+            suppress_tokens = []
+            if self.tokenizer.pad_token_id is not None:
+                tokenizer_dependent_config["pad_token_id"] = self.tokenizer.pad_token_id
+                suppress_tokens.append(self.tokenizer.pad_token_id)
+            if self.tokenizer.eos_token_id is not None:
+                tokenizer_dependent_config["eos_token_id"] = self.tokenizer.eos_token_id
+                suppress_tokens.append(self.tokenizer.eos_token_id)
+            if self.tokenizer.bos_token_id is not None:
+                tokenizer_dependent_config["bos_token_id"] = self.tokenizer.bos_token_id
+                tokenizer_dependent_config["decoder_start_token_id"] = self.tokenizer.bos_token_id
+                suppress_tokens.append(self.tokenizer.bos_token_id)
+            if len(suppress_tokens) > 0:
+                tokenizer_dependent_config["begin_suppress_tokens"] = suppress_tokens
             dict_config = mergedeep.merge(
                 {},
                 dict_config,
-                {
-                    "pad_token_id": self.tokenizer.pad_token_id,
-                    "bos_token_id": self.tokenizer.bos_token_id,
-                    "eos_token_id": self.tokenizer.eos_token_id,
-                    "decoder_start_token_id": self.tokenizer.bos_token_id,
-                    "begin_suppress_tokens": [
-                        self.tokenizer.bos_token_id,
-                        self.tokenizer.pad_token_id,
-                        self.tokenizer.eos_token_id,
-                    ],
-                },
+                suppress_tokens,
             )
 
         if self.config_overrides:
