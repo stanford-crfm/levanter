@@ -78,6 +78,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         self,
         processor: ProcessorMixin,
         tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
         enforce_eos=True,
         *,
         batch_size=128,
@@ -88,6 +89,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
         self.bt: PreTrainedTokenizerBase = BatchTokenizer(
             tokenizer,
+            enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
             batch_size=batch_size,
             override_resources=override_resources,
@@ -216,6 +218,7 @@ class AudioTaskConfig(abc.ABC):
     validation_split: str = "validation"
     cache_dir: str = "cache/"
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    enforce_bos: bool = True  # whether to append bos even if the tokenizer doesn't
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     @cached_property
@@ -277,6 +280,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         source: ShardedDataset[Tuple[np.ndarray, int, str]],
         processor: ProcessorMixin,
         tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
         enforce_eos=True,
         batch_size=128,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
@@ -285,7 +289,12 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         override_resources=None,
     ) -> "ProcessedAudioCache":
         bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
-            processor, tokenizer, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+            processor,
+            tokenizer,
+            enforce_bos=enforce_bos,
+            enforce_eos=enforce_eos,
+            batch_size=batch_size,
+            override_resources=override_resources,
         )
         monitors = monitors or []
         cache = build_cache(
@@ -413,6 +422,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             source,
             self.the_processor,
             self.the_tokenizer,
+            enforce_bos=self.enforce_bos,
             enforce_eos=self.enforce_eos,
             batch_size=batch_size,
             rows_per_chunk=self.rows_per_chunk,
