@@ -228,7 +228,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
     tokenizer: PreTrainedTokenizerFast | PreTrainedTokenizer
     "The tokenizer to use. If None, will be inferred from the reference_checkpoint"
 
-    feature_extractor: Optional[FeatureExtractionMixin]
+    feature_extractor: Optional[FeatureExtractionMixin] = None
     "The non-text preprocessor to use for multi-modality."
 
     config_overrides: Optional[dict] = None
