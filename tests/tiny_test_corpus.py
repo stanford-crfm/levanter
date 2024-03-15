@@ -34,6 +34,7 @@ def tiny_corpus_config(path):
 def tiny_asr_corpus_config(path):
     return AudioIODatasetConfig(
         id="WillHeld/test_librispeech_parquet",
+        text_key="text",
         train_split="validation",
         validation_split="validation",
         cache_dir=f"{path}/cache_asr",

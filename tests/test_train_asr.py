@@ -14,16 +14,12 @@ from levanter.tracker.wandb import WandbConfig
 def test_train_asr():
     # just testing if train_lm has a pulse
     with tempfile.TemporaryDirectory() as tmpdir:
-        data_config, _ = tiny_test_corpus.tiny_asr_corpus_config(tmpdir)
+        data_config = tiny_test_corpus.tiny_asr_corpus_config(tmpdir)
         try:
             config = train_asr.TrainASRConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
-                    num_layers=2,
-                    num_heads=2,
-                    seq_len=64,
+                model=train_asr.WhisperConfig(
                     d_model=32,
-                    use_flash_attention=True,
                 ),
                 trainer=train_asr.TrainerConfig(
                     num_train_steps=2,
@@ -32,8 +28,8 @@ def test_train_asr():
                     wandb=WandbConfig(mode="disabled"),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
-                    hf_save_path=f"{path}/hf_asr_output",
                 ),
+                hf_save_path=f"{tmpdir}/hf_asr_output",
             )
             train_asr.main(config)
         finally:
