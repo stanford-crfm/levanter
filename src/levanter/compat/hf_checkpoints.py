@@ -298,6 +298,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         self,
         reference_checkpoint: Optional[Union[RepoRef, str]] = None,
         tokenizer: Optional[Union[str, PreTrainedTokenizerBase]] = None,
+        feature_extractor: Optional[FeatureExtractionMixin] = None,
         trust_remote_code: Optional[bool] = None,
     ) -> "HFCheckpointConverter":
         replacements: dict = {}
@@ -305,6 +306,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             replacements["reference_checkpoint"] = reference_checkpoint
         if tokenizer is not None:
             replacements["tokenizer"] = tokenizer
+        if feature_extractor is not None:
+            replacements["feature_extractor"] = feature_extractor
         if trust_remote_code is not None:
             replacements["trust_remote_code"] = trust_remote_code
 
