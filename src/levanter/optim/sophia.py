@@ -348,7 +348,7 @@ def _sophia_gradient_transform(
                 jnp.sum(jnp.abs(u) < clip_threshold).astype(jnp.int64) for u in jax.tree_util.tree_leaves(updates)
             )
             updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
-            stats["optim/unclipped_fraction"] = unclipped_count * 1.0 / parameter_count(updates).astype(jnp.int64)
+            stats["optim/unclipped_fraction"] = unclipped_count * 1.0 / jnp.array(parameter_count(updates), jnp.int64)
 
         levanter.tracker.jit_log_metrics(stats, step=state.count)
 
