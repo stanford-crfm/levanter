@@ -58,6 +58,8 @@ class WandbTracker(Tracker):
             )
             return
 
+        step = int(step)
+
         self.run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics: dict[str, Any]):
