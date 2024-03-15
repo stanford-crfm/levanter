@@ -258,8 +258,8 @@ def test_load_from_checkpoint_or_initialize():
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)
 
-    model0 = jax.jit(init_fn)(k0)
-    model1 = jax.jit(init_fn)(k1)
+    model0 = eqx.filter_jit(init_fn)(k0)
+    model1 = eqx.filter_jit(init_fn)(k1)
 
     is_checkpointed = jtu.tree_map(lambda _: False, model0)
     is_checkpointed = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
