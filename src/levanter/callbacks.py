@@ -277,16 +277,33 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
             else:
                 logger.info("Stopping profiler.")
             # so, annoyingly, gcloud ssh doesn't reliably flush stdout here, so we need to spin up
-            # a thread to force it out. We
-            unbuffered = os.fdopen(sys.stdout.fileno(), "w", 0)
-            old_stdout = sys.stdout
-            sys.stdout = unbuffered
+            # a thread to flush and print periodically until we make it past stop_trace
+            # (note: stop_trace blocks if perfetto is enabled)
+            event = threading.Event()
+            if create_perfetto_link and jax.process_index() == 0:
+                _flush_while_waiting(event)
+
             jax.profiler.stop_trace()
-            sys.stdout = old_stdout
+
+            if create_perfetto_link and jax.process_index() == 0:
+                event.set()
+
             levanter.tracker.current_tracker().log_artifact(path, type="jax_profile")
             barrier_sync()
 
     return profiler_callback_fn
+
+
+def _flush_while_waiting(event):
+    def flush_stdout():
+        sys.stdout.flush()
+        time.sleep(5)
+        while not event.is_set():
+            print("Waiting...", flush=True)
+            time.sleep(5)
+
+    thread = threading.Thread(target=flush_stdout)
+    thread.start()
 
 
 def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
