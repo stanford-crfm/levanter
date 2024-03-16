@@ -111,7 +111,7 @@ def test_tensorstore_gpt2_mlp():
         optim = optax.adam(1e-4)
         opt_state = optim.init(arrays_only(model))
 
-        return model, opt_state, key
+        return arrays_only(model), arrays_only(opt_state), key
 
     initial_model, initial_opt_state, initial_key = make_state(key0)
     rep_model, rep_state, rep_key = make_state(key1)

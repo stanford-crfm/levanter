@@ -233,7 +233,9 @@ def train(config: TrainArgs):
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model: LmHeadModel = converter.load_pretrained(  # type: ignore
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
+        )
 
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)

@@ -5,8 +5,9 @@ import functools
 import logging
 import os
 from functools import partial
-from typing import Optional
+from typing import Callable, Optional
 
+import equinox
 import jax
 import jax.experimental.array_serialization.serialization as array_ser
 import jax.numpy as jnp
@@ -31,16 +32,51 @@ def _is_named_or_none(x):
     return x is None or is_named_array(x)
 
 
-def tree_serialize_leaves_tensorstore(checkpoint_dir, pytree):
+def tree_serialize_leaves_tensorstore(
+    checkpoint_dir,
+    pytree,
+    manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable] = None,
+):
+    if manager is None:
+        manager = array_ser.GlobalAsyncCheckpointManager()
+        manager_was_none = True
+    else:
+        manager_was_none = False
+
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
-    specs = jtu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths, is_leaf=_is_named_or_none)
 
-    # TODO: jax array_ser has a fancy async manager thing to checkpoint while training, would be good but not right now.
-    async def _do_serialize():
-        futures = jtu.tree_map(_serialize_one_leaf, pytree, specs, is_leaf=_is_named_or_none)
-        return await asyncio.gather(*jtu.tree_leaves(futures))
+    def path_from_key_path(key_path):
+        return os.path.join(checkpoint_dir, *key_path.split("."))
 
-    asyncio.run(_do_serialize())
+    paths = jtu.tree_map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
+    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
+    leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
+    assert len(leaves) == len(paths)
+
+    # ok, not all of these are arrays, but we'll deal with that in the async function
+    def _ensure_is_array(x):
+        if isinstance(x, (int, float, bool, complex)):
+            return jnp.array(x)
+        else:
+            return x
+
+    arrays = [_ensure_is_array(x) for x in leaves]
+
+    # filter out the None leaves and paths (must be zip)
+    arrays, paths = zip(*[(a, p) for a, p in zip(arrays, paths) if equinox.is_array_like(a)])
+
+    arrays = list(arrays)
+    paths = list(paths)
+
+    if commit_callback is None:
+        commit_callback = lambda: logger.info("Committed checkpoint to Tensorstore")  # noqa
+
+    manager.serialize_with_paths(arrays, paths, on_commit_callback=commit_callback)
+
+    if manager_was_none:
+        manager.wait_until_finished()
 
 
 def _tensorstore_spec_for(checkpoint_dir, key_path: str):
@@ -104,6 +140,8 @@ async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
         return None
     elif isinstance(like, jnp.ndarray) or isinstance(like, np.ndarray) or isinstance(like, jax.ShapeDtypeStruct):
         return await load_array_from_tensorstore(spec)
+    elif callable(like):
+        return like
     else:
         raise TypeError(f"Can't deserialize {type(like)}")
 
@@ -143,9 +181,10 @@ def tree_deserialize_leaves_tensorstore(
 
     deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
 
+    futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)
+    leaves, structure = jtu.tree_flatten(futures, is_leaf=is_named_array)
+
     async def _do_deserialize():
-        futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)
-        leaves, structure = jtu.tree_flatten(futures, is_leaf=is_named_array)
         values = await asyncio.gather(*leaves)
         return jtu.tree_unflatten(structure, values)
 

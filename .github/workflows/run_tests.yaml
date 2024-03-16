@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10"]
-        jax-version: ["0.4.20"]
+        jax-version: ["0.4.23"]
 
     steps:
       - uses: actions/checkout@v3
@@ -22,6 +22,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install flake8 pytest
           pip install . "jax[cpu]==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
+          pip install soundfile librosa
       - name: Test with pytest
         run: |
           XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow"

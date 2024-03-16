@@ -43,6 +43,7 @@ class LoraLmConfig:
     merged_hf_upload: Optional[str] = None
 
     trust_remote_code: bool = False
+    max_train_length: Optional[int] = None  # if set, train on sequences of this length
 
 
 def main(config: LoraLmConfig):
@@ -67,15 +68,31 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
+    if config.max_train_length is not None:
+        logger.info(f"Setting max tune length to {config.max_train_length}")
+        Pos = Pos.resize(config.max_train_length)
+        KeyPos = KeyPos.resize(config.max_train_length)
+
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+        eval_datasets = config.data.validation_sets(Pos.size)
+
+        # data loaders
+        if len(eval_datasets) == 0:
+            logger.warning("No evaluation datasets provided.")
+
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        train_loader = trainer.sharded_loader(train_dataset, Batch)
+
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model = converter.load_pretrained(
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+        )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
@@ -84,9 +101,6 @@ def main(config: LoraLmConfig):
         model = loraize_hf_model(model)
 
         lora_param_filter = lora_trainable_params_filter(model)
-
-        # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-        eval_datasets = config.data.validation_sets(Pos.size)
 
         state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
@@ -106,16 +120,9 @@ def main(config: LoraLmConfig):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
-        # data loaders
-        if len(eval_datasets) == 0:
-            logger.warning("No evaluation datasets provided.")
-
         for name, eval_dataset in eval_datasets.items():
             eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
             trainer.add_eval_hook(eval_dataset, name=name)
-
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # boilerplate hooks and such
         if len(eval_datasets) == 0:

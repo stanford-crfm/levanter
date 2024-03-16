@@ -21,9 +21,9 @@ def test_train_lm():
                 model=train_lm.Gpt2Config(
                     num_layers=2,
                     num_heads=2,
-                    seq_len=32,
+                    seq_len=64,
                     hidden_dim=32,
-                    flash_attention_block_size=32,
+                    use_flash_attention=True,
                 ),
                 trainer=train_lm.TrainerConfig(
                     num_train_steps=2,

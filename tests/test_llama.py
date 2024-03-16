@@ -9,16 +9,12 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.llama import (
-    LlamaAttention,
-    LlamaConfig,
-    LlamaDecoderLayer,
-    LlamaLMHeadModel,
-    LlamaRMSNorm,
-    LlamaRotaryEmbedding,
-)
+from levanter.models.attention import AttentionMask
+from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
 from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
 from levanter.models.llama import _rotate_half as levanter_rotate_half
+from levanter.models.llama import llama_rotary_pos_emb
+from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
 
@@ -64,10 +60,9 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_rope = LlamaRotaryEmbedding(HeadSize=HeadSize, Pos=Pos)
-    levanter_output = levanter_rope(seq_len=seq_len)
+    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
-    hf_output = hf_rope(x_torch, seq_len=seq_len)
+    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1), seq_len=seq_len)
 
     for jax_out, torch_out in zip(levanter_output, hf_output):
         torch_out = torch_out.numpy()
@@ -116,14 +111,10 @@ def test_apply_rotary_pos_emb():
     sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
 
     levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
-    cos_tensor = named_array_to_tensor(cos)
-    sin_tensor = named_array_to_tensor(sin)
-    position_ids = hax.arange(Pos).broadcast_axis(Batch)
-    position_ids_tensor = named_array_to_tensor(position_ids)
+    cos_tensor = named_array_to_tensor(cos)[None, :, :]
+    sin_tensor = named_array_to_tensor(sin)[None, :, :]
 
-    hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(
-        q_tensor, k_tensor, cos_tensor, sin_tensor, position_ids_tensor
-    )
+    hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(q_tensor, k_tensor, cos_tensor, sin_tensor)
     hf_out_rope_q = hf_out_rope_q.transpose(1, 2)  # re-transpose to match levanter
     hf_out_rope_k = hf_out_rope_k.transpose(1, 2)
     assert_equal_out(levanter_out_rope_q, hf_out_rope_q)
@@ -149,17 +140,25 @@ def test_llama_attention(use_flash, num_kv_heads):
     x, mask = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
 
     # the torch mask is really a bias, so we need to invert it and make it a big negative number
     mask_torch = (mask_torch == 0).float() * -1e9
 
     out = attention(x, mask)
-    hf_out = hf_attention(x_torch, mask_torch)
+    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
+    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     assert np.isclose(
         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
     ).all(), f"{hf_out[0]} != {out}"
+
+
+def test_llama_param_counts_dont_change_with_seqlen():
+    model = LlamaLMHeadModel.init(hax.Axis("v", 2048), _get_llama_config(seq_len=128), key=random.PRNGKey(0))
+    model2 = LlamaLMHeadModel.init(hax.Axis("v", 2048), _get_llama_config(seq_len=256), key=random.PRNGKey(0))
+    assert parameter_count(model) == parameter_count(model2)
 
 
 @skip_if_no_torch
@@ -200,11 +199,14 @@ def test_llama_decoder_layer(num_kv_heads):
     x, mask = _get_random_inputs(llama_config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(llama_config.Pos, llama_config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
     mask_torch = (mask_torch == 0).float() * -1e9
 
+    position_ids = torch.arange(llama_config.Pos.size).reshape(1, -1)
+
     out = llama_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, mask_torch)
+    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     assert np.isclose(
         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
@@ -218,7 +220,7 @@ def test_llama_lm_head_model(num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+    mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
     out = llama_model(input_ids, mask)
@@ -233,7 +235,7 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+    mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
@@ -245,8 +247,9 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
 
 
 @skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_llama_roundtrip(num_kv_heads):
+def test_llama_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
@@ -258,13 +261,14 @@ def test_llama_roundtrip(num_kv_heads):
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
+        scan_layers=scan_layers,
     )
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    attn_mask = AttentionMask.causal()
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
     torch.random.manual_seed(0)
@@ -304,13 +308,13 @@ def test_llama_roundtrip(num_kv_heads):
         assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
-def _get_llama_config(use_flash=False, num_kv_heads=4) -> LlamaConfig:
+def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
     rope_scaling = {
         "type": "linear",
         "factor": 2.0,
     }
     return LlamaConfig(
-        seq_len=128,
+        seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
@@ -326,7 +330,7 @@ def _get_random_inputs(config: LlamaConfig):
     Pos = config.Pos
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
-    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    mask = AttentionMask.causal()
     return x, mask
 
 
@@ -342,11 +346,11 @@ def test_llama_configs(config_file):
 @pytest.mark.parametrize("num_kv_heads", [1, 2])
 def test_pass_different_length_seq(num_kv_heads):
     config = LlamaConfig(
-        seq_len=32,
-        hidden_dim=16,
+        seq_len=64,
+        hidden_dim=64,
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
-        use_flash_attention=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)

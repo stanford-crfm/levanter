@@ -41,6 +41,7 @@ from optax import GradientTransformation
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.quantization import Fp8Config
 from haliax.types import Scalar
 
 import levanter.checkpoint
@@ -289,6 +290,15 @@ class Trainer:
         return self.config.mp
 
     @property
+    def fp8(self) -> Optional[Fp8Config]:
+        if self.config.fp8 is True:
+            return Fp8Config()
+        elif self.config.fp8 is False:
+            return None
+        else:
+            return self.config.fp8
+
+    @property
     def num_train_steps(self) -> int:
         return self.config.num_train_steps
 
@@ -413,7 +423,8 @@ class Trainer:
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
             bjafkjafn need to initialize cb_states, which currently requires a full state
-            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp)
+            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+            )
             return state
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
@@ -503,6 +514,7 @@ class Trainer:
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
+                model = self.mp.cast_to_compute(model)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
@@ -540,7 +552,12 @@ class Trainer:
 
     @cached_property
     def _jit_train_step_fn(self):
-        return named_jit(self._train_step, axis_resources=self.parameter_axis_mapping, donate_args=(True,))
+        return named_jit(
+            self._train_step,
+            axis_resources=self.parameter_axis_mapping,
+            out_axis_resources=self.parameter_axis_mapping,
+            donate_args=(True,),
+        )
 
     def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
@@ -549,10 +566,11 @@ class Trainer:
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
         # Sophia needs to be able to access the loss function in the optimizer
-        def obj_fun(model):
+        def obj_fun(trainable_model):
+            model = eqx.combine(trainable_model, state.model)
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key)
+                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
         new_hook_states = self.hooks.run_jit_hooks(state, batch, grads)
 
@@ -581,6 +599,7 @@ def _initialize_global_tracker(config, run_id):
 class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
+    fp8: Optional[bool | Fp8Config] = None
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")

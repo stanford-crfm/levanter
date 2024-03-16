@@ -54,6 +54,14 @@ class WandbTracker(Tracker):
         if step is None and not commit:
             step = self.run.step
 
+        if step < self.run.step:
+            logger.warning(
+                f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
+            )
+            return
+
+        step = int(step)
+
         self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
 
     def log_summary(self, metrics: typing.Mapping[str, Any]):
@@ -108,7 +116,7 @@ class WandbConfig(TrackerConfig):
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
     group: Optional[str] = None  # Specify a group to organize individual runs into a larger experiment.
     mode: Optional[str] = None  # Can be "online", "offline" or "disabled". If None, it will be whatever W&B decides.
-    resume: Optional[Union[bool, str]] = None
+    resume: Optional[Union[bool, str]] = "allow"
     """
     Set the resume behavior. Options: "allow", "must", "never", "auto" or None.
     By default, if the new run has the same ID as a previous run, this run overwrites that data.
@@ -165,6 +173,9 @@ class WandbConfig(TrackerConfig):
         )
 
         assert r is not None
+
+        if r.step != 0:
+            logger.info("Resuming wandb run. Attempting to mitigate issues.")
 
         if jax.process_count() > 1:
             # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things

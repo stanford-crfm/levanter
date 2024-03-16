@@ -4,6 +4,10 @@ import json
 import logging
 import os
 import pathlib
+import queue
+import sys
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -15,11 +19,12 @@ import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
-from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
+from jax.experimental.array_serialization.serialization import GlobalAsyncCheckpointManager
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
-from haliax.jax_utils import is_in_jit
+from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
@@ -101,6 +106,17 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
+        # The default of 5 minutes is too short even for modestly sized models for some reason
+        self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
+
+        if jax.process_index() == 0:
+            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue()
+            self._async_checkpoint_remover_thread = threading.Thread(
+                target=self._async_checkpoint_remover, daemon=True
+            )
+            self._async_checkpoint_remover_thread.start()
+            self._checkpoint_being_removed = None
+
     def load_checkpoint(
         self,
         state: M,
@@ -181,17 +197,16 @@ class Checkpointer:
             last_checkpoint = self._last_temporary_checkpoint
             destination = f"step-{step}"
 
-            self.save_checkpoint(info, destination)
-
             if not save_permanent_ckpt:
                 self._last_temporary_checkpoint = destination
             else:
                 self._last_temporary_checkpoint = None
 
-            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
-            # so that we can delete it properly if we recover
-            if last_checkpoint is not None:
-                self._rm_checkpoint(last_checkpoint)
+            def callback():
+                if last_checkpoint is not None:
+                    self._rm_checkpoint(last_checkpoint)
+
+            self.save_checkpoint(info, destination, commit_callback=callback)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
@@ -201,41 +216,61 @@ class Checkpointer:
             return None
         return current_policy.every
 
-    def _rm_checkpoint(self, checkpoint):
-        if jax.process_index() != 0:
-            return
+    def wait_until_finished(self):
+        self._manager.wait_until_finished()
+        if jax.process_index() == 0:
+            while self._checkpoint_being_removed is not None or not self._async_checkpoint_remover_queue.empty():
+                time.sleep(0.2)
 
+    def _rm_checkpoint(self, checkpoint):
+        if jax.process_index() == 0:
+            print(f"Removing checkpoint {checkpoint}", file=sys.stderr, flush=True)
+            self._async_checkpoint_remover_queue.put(checkpoint)
+
+    def _do_rm_checkpoint(self, checkpoint):
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
             cp_path = os.path.join(plain_path, checkpoint)
-            logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
+            logger.info(f"Deleting old checkpoint {checkpoint} from {cp_path}")
+            time_in = time.time()
             fs.rm(cp_path, recursive=True)
+            time_out = time.time()
+            logger.info(f"Deleted old checkpoint {checkpoint} from {cp_path} in {time_out - time_in:.2f} seconds")
         except Exception:  # pylint: disable=broad-except
-            logger.exception("Failed to delete checkpoint", exc_info=True)
+            logger.exception(f"Failed to delete checkpoint {checkpoint}", exc_info=True)
 
-    def save_checkpoint(self, info, destination: str):
+    def save_checkpoint(self, info, destination: str, commit_callback: Optional[Callable[[], None]] = None):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        state = saveable_state(info.state)
+        state = info.state.saveable_state
+
         save_checkpoint(
             state,
             step=info.step,
             checkpoint_path=path,
+            manager=self._manager,
+            commit_callback=commit_callback,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
-        logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
+
+    def _async_checkpoint_remover(self):
+        while True:
+            checkpoint = self._async_checkpoint_remover_queue.get(block=True)
+            self._checkpoint_being_removed = checkpoint
+            self._do_rm_checkpoint(checkpoint)
+            self._checkpoint_being_removed = None
 
 
-def saveable_state(state):
-    to_keep = jax.tree_util.tree_map(lambda _: True, state)
-    to_keep = dataclasses.replace(to_keep, model=state.is_trainable)
-    state = equinox.filter(state, to_keep)
-    return state
-
-
-def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
+def save_checkpoint(
+    tree: M,
+    step: int,
+    checkpoint_path: PathLike,
+    manager: Optional[GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable[[], None]] = None,
+):
     """
     Save a checkpoint to a given path using TensorStore.
 
@@ -253,13 +288,16 @@ def save_checkpoint(tree: M, step: int, checkpoint_path: PathLike):
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
     fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(checkpoint_path, tree)
-    save_metadata(checkpoint_path, fs, step)
+    def my_callback():
+        save_metadata(checkpoint_path, fs, step)
+        logger.info(f"Saved checkpoint to {checkpoint_path} for step {step}")
 
-    logger.info(f"Saved checkpoint for step {step}")
+        if commit_callback is not None:
+            commit_callback()
 
-    # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    sync_global_devices(checkpoint_path)
+    tree = equinox.filter(tree, lambda x: is_jax_array_like(x) or isinstance(x, (int, float, bool, complex)))
+
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback)
 
     return checkpoint_path
 
@@ -317,8 +355,10 @@ def load_checkpoint(
     if subpath:
         checkpoint_path = os.path.join(checkpoint_path, subpath)
 
+    ser, non_ser = equinox.partition(tree, is_jax_array_like)
     try:
-        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, tree, axis_mapping=axis_mapping, mesh=mesh)
+        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh)
+        tree = equinox.combine(tree, non_ser)
         return tree
     except:  # noqa
         from levanter.trainer_state import TrainerState
