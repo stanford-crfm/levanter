@@ -3,6 +3,7 @@ import logging as pylogging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -275,7 +276,13 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
                 )
             else:
                 logger.info("Stopping profiler.")
+            # so, annoyingly, gcloud ssh doesn't reliably flush stdout here, so we need to spin up
+            # a thread to force it out. We
+            unbuffered = os.fdopen(sys.stdout.fileno(), "w", 0)
+            old_stdout = sys.stdout
+            sys.stdout = unbuffered
             jax.profiler.stop_trace()
+            sys.stdout = old_stdout
             levanter.tracker.current_tracker().log_artifact(path, type="jax_profile")
             barrier_sync()
 
