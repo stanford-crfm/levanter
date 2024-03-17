@@ -91,6 +91,7 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
+      - 'Performance-Guide.md'
   - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"

@@ -4,6 +4,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import fsspec
 import jax
 import numpy as np
 
@@ -59,8 +60,14 @@ class TensorboardTracker(Tracker):
             self.writer.add_scalar(k, v, global_step=None)
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
-        pylogger.error("TensorboardLogger does not support logging artifacts yet")
-        pass
+        log_path = self.writer.logdir
+        # sync the artifact to the logdir via fsspec
+        try:
+            fs, fs_path = fsspec.core.url_to_fs(log_path)
+            fs.put(artifact_path, os.path.join(fs_path, name or os.path.basename(artifact_path)), recursive=True)
+        except Exception:
+            pylogger.exception(f"Error logging artifact {artifact_path} to {log_path}")
+            return
 
 
 @TrackerConfig.register_subclass("tensorboard")

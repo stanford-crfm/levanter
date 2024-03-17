@@ -14,10 +14,40 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.compat.hf_checkpoints import RepoRef
+from levanter.data.audio import AudioTextExample
 from levanter.models.attention import AttentionMask
-from levanter.models.whisper import WhisperConfig, WhisperModel
+from levanter.models.whisper import WhisperASRModel, WhisperConfig, WhisperModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_soundlibs, skip_if_no_torch
+
+
+@skip_if_no_soundlibs
+def test_whisper_loss():
+    c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
+    conf = WhisperConfig.from_hf_config(c)
+    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    model: WhisperASRModel = conf.build_asr(conf.Vocab, key=PRNGKey(42))
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
+    audio_sample = ds[3]
+    speech_data = audio_sample["audio"]["array"]
+    inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
+
+    na = hax.NamedArray(
+        inputs["input_features"].squeeze(),
+        axes=(conf.Mels, Axis(name="position", size=3000)),
+    )
+    tokenized = processor.tokenizer("This is a test", max_length=6, padding="max_length", truncation=True)
+    inp = hax.NamedArray(
+        jnp.array(tokenized["input_ids"]),
+        axes=(Axis("position", size=6),),
+    )
+    mask = AttentionMask.explicit(
+        hax.NamedArray(
+            jnp.array(tokenized["attention_mask"]),
+            axes=(Axis("key_position", size=6),),
+        ).broadcast_axis(Axis("position", size=6))
+    )
+    model.compute_loss(AudioTextExample.init(na, inp, attn_mask=mask))
 
 
 @skip_if_no_soundlibs
@@ -26,7 +56,7 @@ def test_basic_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -51,7 +81,7 @@ def test_mask_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -76,7 +106,7 @@ def test_namedarray_mask_forward_whisper():
     conf = WhisperConfig.from_hf_config(c)
     processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     model = WhisperModel.init(conf.Vocab, conf, key=PRNGKey(42))
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
@@ -98,8 +128,6 @@ def test_namedarray_mask_forward_whisper():
 @skip_if_no_soundlibs
 @skip_if_no_torch
 def test_hf_roundtrip():
-    import torch
-
     model_id = "openai/whisper-tiny"
     converter = WhisperConfig.default_hf_checkpoint_converter
     c = HfWhisperConfig.from_pretrained(model_id)
@@ -112,10 +140,13 @@ def test_hf_roundtrip():
     model: WhisperModel = cast(WhisperModel, converter.load_pretrained(config, RepoRef(model_id)))
     model = inference_mode(model, True)
 
-    ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     inputs = processor.feature_extractor(ds[0]["audio"]["array"], return_tensors="pt")
     input_features = inputs.input_features
-    decoder_input_ids = torch.tensor([[1, 1]]) * c.decoder_start_token_id
+    tokenized = processor.tokenizer(
+        ds[0]["text"], max_length=6, padding="max_length", truncation=True, return_tensors="pt"
+    )
+    decoder_input_ids = tokenized["input_ids"]
     # we compare softmaxes because the numerics are wonky and we usually just care about the softmax
     torch_out = torch_model(input_features, decoder_input_ids=decoder_input_ids)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
@@ -129,7 +160,7 @@ def test_hf_roundtrip():
         decoder_input_ids.cpu().numpy(),
         axes=(
             Axis("batch", size=1),
-            Axis("position", size=2),
+            Axis("position", size=6),
         ),
     )
 
@@ -141,6 +172,7 @@ def test_hf_roundtrip():
 
     compute = jax.jit(compute)
     jax_out = compute(na, inp).array[0]
+
     assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
     assert onp.isclose(torch_out, onp.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
