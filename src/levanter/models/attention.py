@@ -9,10 +9,12 @@ from jaxtyping import PRNGKeyArray
 
 import haliax
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray
+from haliax.jax_utils import named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.types import PrecisionLike
 
 
+@named_call
 def dot_product_attention(
     QPos: AxisSelector,
     KPos: AxisSelection,

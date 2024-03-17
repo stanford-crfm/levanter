@@ -417,6 +417,24 @@ class Trainer:
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        if self.config.profiler:
+            profile_path = self.config.log_dir / self.run_id / "profiler"
+            total_prof_steps = self.config.profiler_num_steps
+            if total_prof_steps + self.config.profiler_start_step > self.config.num_train_steps:
+                logger.warning(
+                    f"Adjusting profiler_total_steps from {total_prof_steps} to"
+                    f" {self.config.num_train_steps - self.config.profiler_start_step}"
+                )
+                total_prof_steps = self.config.num_train_steps - self.config.profiler_start_step
+            self.add_hook(
+                callbacks.profile(
+                    str(profile_path),
+                    self.config.profiler_start_step,
+                    total_prof_steps,
+                    self.config.profiler_perfetto_link,
+                ),
+                every=1,
+            )
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
@@ -518,6 +536,12 @@ class TrainerConfig:
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
+
+    # TODO: refactor callbacks
+    profiler: bool = False
+    profiler_start_step: int = 5
+    profiler_num_steps: int = 100
+    profiler_perfetto_link: bool = False
 
     # config related to partitioning
 
