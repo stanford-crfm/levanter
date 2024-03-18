@@ -84,7 +84,7 @@ By default, you can define both the `tokenizer` and `preprocessor` from HuggingF
 Below is an example which defines the preprocessor using the Whisper pre-processor from OpenAI, but switched the tokenizer to a simple character-level tokenizer used in prior-ASR work.
 ```yaml
     tokenizer: "facebook/wav2vec2-base-960h"
-	preprocessor: "openai/whisper-tiny"
+    preprocessor: "openai/whisper-tiny"
 ```
 
 ## Configuration
