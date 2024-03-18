@@ -1,4 +1,4 @@
-# Training on Your Own Data
+# Training on Audio Data
 
 This guide will provide a detailed walkthrough of training a system for Automatic Speech Recognition (i.e. transcribing speech to text) from scratch. ASR systems, such as [Whisper](https://arxiv.org/abs/2212.04356), are a major focus for speech processing research since the same ASR system can be paired with many text-only NLP systems to provide broad capabilities for spoken language understanding. However, it is worth noting that the tooling and scripts referenced here are applicable to any task which expects audio as input and text as output.
 
