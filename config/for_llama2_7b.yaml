@@ -10,13 +10,13 @@ model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "meta-llama/Llama-2-7b-hf"
-second_hf_checkpoint: "EleutherAI/llemma_7b"
+second_hf_checkpoint: "openlm-research/open_llama_7b"
 
 trainer:
   wandb:
     project: "levanter"
-    name: "llama2_7b--lemma7b-github"
-    tags: ["openwebtext", "github", "lemma7b"]
+    name: "llama2_7b--openllama-github"
+    tags: ["openwebtext", "github", "openllama"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
