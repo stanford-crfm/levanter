@@ -108,15 +108,11 @@ def main(config: EvalLmConfig):
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             
 
-            model_init_type = LlamaLMHeadModel
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
-            print(config.model)
-            
-            model_1 = converter.load_pretrained(model_config)
-            logger.info(f"model 1 config is {model_1.config}")
-
-
+            logger.info(f"model config {model_config}")
+            model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
+    
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
