@@ -25,3 +25,4 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: -1
+  max_eval_batches: 1
