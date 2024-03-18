@@ -98,6 +98,7 @@ nav:
       - "LoRA.md"
       - "tutorials/Fine-Tuning-Semantic-Parsing.md"
       - "Hardware-Agnostic-Training.md"
+      - "tutorials/Training-On-Audio-Data.md"
   - 'Developer Guide':
       - 'dev/Port-Models.md'
       - 'dev/Trackers.md'

@@ -145,7 +145,7 @@ class AudioDatasetSourceConfig:
 
     plaintext: bool = False
     stream: bool = True  # whether to use streaming when doing hf
-    text_key: str = "sentence"  # key for the text field in the jsonl file or hf dataset
+    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
     audio_key: str = "audio"  # key for the text field in the jsonl file or hf dataset
     sampling_rate: int = 16_000
 
