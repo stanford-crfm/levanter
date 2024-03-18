@@ -82,14 +82,29 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    --use_alpha)
+    --use_alpha|--use-alpha)
       USE_ALPHA="true"
       shift # past argument
       ;;
-    *)    # unknown option, assume it's the vm name
+    *)    # unknown option, assume it's the vm name if it doesn't start with a dash
+      if [[ $1 == -* ]]; then
+        echo "Error: unknown option $1" >&2
+        echo "Options:" >&2
+        echo "  -z, --zone: zone to create the VM in (default: us-east1-d)" >&2
+        echo "  -t, --type: type of VM to create (default: v3-32)" >&2
+        echo "  -i, --image: VM image to use (default: tpu-vm-base)" >&2
+        echo "  -p, --preemptible: use a preemptible VM (default: false)" >&2
+        echo "  -a, --autodelete: delete the VM when it's done (default: true)" >&2
+        echo "  -s, --setup: setup script to run on the VM (default: infra/helpers/setup-tpu-vm.sh)" >&2
+        echo "  -b, --branch: git branch to use (default: current branch)" >&2
+        echo "  -r, --repo: git repo to use (default: origin remote)" >&2
+        echo "  -n, --subnetwork: subnetwork to use (default: default)" >&2
+        echo "  --use-alpha: use gcloud alpha (default: false)" >&2
+        exit 1
+      fi
       # error out if we already set a name
       if [ -n "$VM_NAME" ]; then
-        echo "Error: VM name already set to $VM_NAME"
+        echo "Error: VM name already set to $VM_NAME. Got $1 as well." >&2
         exit 1
       fi
       VM_NAME="$1"

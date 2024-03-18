@@ -38,6 +38,7 @@ from optax import GradientTransformation
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.quantization import Fp8Config
 from haliax.types import Scalar
 
 import levanter.checkpoint
@@ -203,6 +204,15 @@ class Trainer:
         return self.config.mp
 
     @property
+    def fp8(self) -> Optional[Fp8Config]:
+        if self.config.fp8 is True:
+            return Fp8Config()
+        elif self.config.fp8 is False:
+            return None
+        else:
+            return self.config.fp8
+
+    @property
     def num_train_steps(self) -> int:
         return self.config.num_train_steps
 
@@ -326,7 +336,9 @@ class Trainer:
         def init_state_and_model(model_init, training_key):
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
-            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp)
+            state = TrainerState.init(
+                self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+            )
             return state
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
@@ -405,6 +417,24 @@ class Trainer:
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        if self.config.profiler:
+            profile_path = self.config.log_dir / self.run_id / "profiler"
+            total_prof_steps = self.config.profiler_num_steps
+            if total_prof_steps + self.config.profiler_start_step > self.config.num_train_steps:
+                logger.warning(
+                    f"Adjusting profiler_total_steps from {total_prof_steps} to"
+                    f" {self.config.num_train_steps - self.config.profiler_start_step}"
+                )
+                total_prof_steps = self.config.num_train_steps - self.config.profiler_start_step
+            self.add_hook(
+                callbacks.profile(
+                    str(profile_path),
+                    self.config.profiler_start_step,
+                    total_prof_steps,
+                    self.config.profiler_perfetto_link,
+                ),
+                every=1,
+            )
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
@@ -468,7 +498,8 @@ class Trainer:
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
         # Sophia needs to be able to access the loss function in the optimizer
-        def obj_fun(model):
+        def obj_fun(trainable_model):
+            model = eqx.combine(trainable_model, state.model)
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
@@ -497,6 +528,7 @@ def _initialize_global_tracker(config, run_id):
 class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
+    fp8: Optional[bool | Fp8Config] = None
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
@@ -504,6 +536,12 @@ class TrainerConfig:
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
+
+    # TODO: refactor callbacks
+    profiler: bool = False
+    profiler_start_step: int = 5
+    profiler_num_steps: int = 100
+    profiler_perfetto_link: bool = False
 
     # config related to partitioning
 

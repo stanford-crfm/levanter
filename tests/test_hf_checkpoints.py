@@ -87,7 +87,7 @@ def test_conversion_to_jnp_bfloat16():
     with pytest.raises(TypeError):
         x.cpu().numpy()
 
-    x_jnp = _convert_to_jnp(x)
+    x_jnp = _convert_to_jnp(x, None)
     assert x_jnp.dtype == jnp.bfloat16
     assert x_jnp.shape == x.shape
     assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)

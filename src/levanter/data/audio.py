@@ -11,7 +11,6 @@ import datasets
 import equinox as eqx
 import fsspec
 import jax
-import jax.numpy as jnp
 import numpy as np
 from jaxtyping import PRNGKeyArray
 from typing_extensions import TypedDict
@@ -19,7 +18,7 @@ from typing_extensions import TypedDict
 import haliax as hax
 from haliax import Axis
 
-from levanter.compat.hf_checkpoints import load_processor
+from levanter.compat.hf_checkpoints import load_processor, load_tokenizer
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch
 from levanter.data.dataset import ShardableDataset
 from levanter.data.shard_cache import (
@@ -35,7 +34,7 @@ from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask
+from levanter.models.asr_model import AudioTextExample
 from levanter.utils.jax_utils import use_cpu_device
 
 
@@ -78,20 +77,25 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
     def __init__(
         self,
         processor: ProcessorMixin,
+        tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
         enforce_eos=True,
         *,
         batch_size=128,
         override_resources=None,
+        max_length=448,
         padding=True,
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
         self.bt: PreTrainedTokenizerBase = BatchTokenizer(
-            processor.tokenizer,
+            tokenizer,
+            enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
             batch_size=batch_size,
             override_resources=override_resources,
             return_attention_mask=True,
             padding="max_length" if padding else False,
+            max_length=max_length,
         )
 
         self.override_resources = override_resources
@@ -208,23 +212,29 @@ class AudioDatasetSourceConfig:
 @dataclass
 class AudioTaskConfig(abc.ABC):
     processor: str = "openai/whisper-tiny"
-
+    tokenizer: Optional[str] = None
     # config related to caching
     train_split: str = "train"
     validation_split: str = "validation"
     cache_dir: str = "cache/"
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    enforce_bos: bool = True  # whether to append bos even if the tokenizer doesn't
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
-
-    ignore_token_id: Optional[int] = None
 
     @cached_property
     def the_processor(self) -> PreTrainedTokenizerBase:
         return load_processor(self.processor)
 
     @cached_property
+    def pad_token_id(self) -> int:
+        return self.the_tokenizer.pad_token_id
+
+    @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
-        return self.the_processor.tokenizer
+        if self.tokenizer is None:
+            return self.the_processor.tokenizer
+        else:
+            return load_tokenizer(self.tokenizer)
 
     @cached_property
     def the_feature_extractor(self) -> PreTrainedTokenizerBase:
@@ -269,6 +279,8 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         cache_dir: str,
         source: ShardedDataset[Tuple[np.ndarray, int, str]],
         processor: ProcessorMixin,
+        tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
         enforce_eos=True,
         batch_size=128,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
@@ -277,7 +289,12 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         override_resources=None,
     ) -> "ProcessedAudioCache":
         bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
-            processor, enforce_eos=enforce_eos, batch_size=batch_size, override_resources=override_resources
+            processor,
+            tokenizer,
+            enforce_bos=enforce_bos,
+            enforce_eos=enforce_eos,
+            batch_size=batch_size,
+            override_resources=override_resources,
         )
         monitors = monitors or []
         cache = build_cache(
@@ -359,7 +376,9 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             return True
 
         if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            dataset = datasets.load_dataset(
+                self.id, name=self.name, streaming=self.stream, split=self.validation_split
+            )
             try:
                 next(iter(dataset))
                 return True
@@ -402,47 +421,14 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             split_cache_dir,
             source,
             self.the_processor,
+            self.the_tokenizer,
+            enforce_bos=self.enforce_bos,
             enforce_eos=self.enforce_eos,
             batch_size=batch_size,
             rows_per_chunk=self.rows_per_chunk,
             monitors=monitors,
             await_finished=(split == "validation"),
         )
-
-
-class AudioTextExample(eqx.Module):
-    audio: hax.NamedArray
-    tokens: hax.NamedArray
-    loss_mask: hax.NamedArray
-    attn_mask: AttentionMask | hax.NamedArray = AttentionMask.causal()
-
-    @staticmethod
-    def init(
-        audio: hax.NamedArray,
-        tokens: hax.NamedArray,
-        *,
-        attn_mask: Optional[hax.NamedArray | AttentionMask] = None,
-        loss_mask: Optional[hax.NamedArray] = None,
-        ignore_id: Optional[int] = None,
-    ) -> "AudioTextExample":
-        if tokens.ndim != 1:
-            raise ValueError("tokens must be a 1D array")
-
-        if not jnp.issubdtype(tokens.dtype, jnp.integer):
-            raise ValueError("tokens must be an integer array")
-
-        Pos = tokens.axes[0]
-
-        # don't predict the last token.
-        if loss_mask is None:
-            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
-
-        if ignore_id is not None:
-            # we don't compute loss for any tokens matching the ignore index
-            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
-            loss_mask = loss_mask * ignore_mask
-
-        return AudioTextExample(audio=audio, tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
 class AudioTextDataset(ShardableDataset[AudioTextExample]):
@@ -473,20 +459,17 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
         )
 
     def __iter__(self) -> Iterator[AudioTextExample]:
-        key = self.key
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
         with use_cpu_device():
 
             @functools.partial(eqx.filter_jit, out_shardings=sharding)
-            def _convert_example(inputs: AudioTextDict, key) -> "AudioTextExample":
+            def _convert_example(inputs: AudioTextDict) -> "AudioTextExample":
                 tokens = hax.named(inputs["input_ids"], self.TextPos)
                 audio_features = hax.named(inputs["input_features"], self.AudioPos)
-                attn_mask = hax.named(inputs["attention_mask"], self.KPos)
-                attn_mask = AttentionMask.explicit(attn_mask)
 
-                return AudioTextExample(audio_features, tokens, attn_mask=attn_mask)
+                return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
 
             for example in self.dataset:
-                converted_example = _convert_example(example, key)
+                converted_example = _convert_example(example)
                 yield converted_example
