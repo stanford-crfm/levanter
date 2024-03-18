@@ -64,19 +64,6 @@ path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
 
 
-
-**For Stanford CRFM Developers**:
-
-Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
-
-```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/helpers/setup-tpu-vm-nfs.sh
-```
-
-In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
-venv and a copy of the repo.
-
-
 ## Useful commands
 
 ### SSHing into one TPU VM worker
