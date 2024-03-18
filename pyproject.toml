@@ -38,7 +38,7 @@ dependencies = [
     "gcsfs<2024.3.0",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
-    "fsspec<2024.3.0",
+    "fsspec<2024.4.0",
     # TODO: minimize and report an issue to tensorstore
     # causes hangs when serializing to GCS
 #    "tensorstore==0.1.54",
