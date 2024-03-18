@@ -1,5 +1,5 @@
 data:
-  id: githubllama2 #dlwh/wikitext_103_detokenized
+  #id: githubllama2 #dlwh/wikitext_103_detokenized
   cache_dir: "gs://levanter-data/tokenized/git-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
