@@ -33,7 +33,7 @@ Unlike text-only LM's, large-scale Audio models are usually multi-modal and both
 
 As always in Levanter, a data source can either be a list of training and validation URLs pointing to (possibly compressed) JSONL files, or a Huggingface Dataset. For either of these formats, there must be at least two fields present `text_key` and `audio_key`, which default to `"text"` and `"audio"`. The data stored under `text_key` should contain the text which is expected as output for the example, in this case the transcription.
 
-The data stored under `audio_key`, however, can take a variety of formats discussed below to allow flexibility and avoid the need to pre-process existing datasets into new formats. 
+The data stored under `audio_key`, however, can take a variety of formats discussed below to allow flexibility and avoid the need to pre-process existing datasets into new formats.
 
 
 #### Data Format: Huggingface Datasets
@@ -80,6 +80,12 @@ so it can transparently handle compressed files and files in cloud storage (like
 Using Levanter's [Ray](https://docs.ray.io/en/latest/) based pre-processing and caching, you can apply further tokenization and feature extraction in the background while your model is training.
 
 By default, you can define both `tokenizer` and `preprocessor` from HuggingFace. By default, if no tokenizer is provided Levanter will fall back to the one defined by the `preprocessor`. Regardless of the tokenization, the Pre-Processor will always be used to convert the time-domain audio data into the expected input for your model, such as Log-Mel-Spectrograms for Whisper.
+
+Below is an example which defines the preprocessor using the Whisper pre-processor from OpenAI, but switched the tokenizer to a simple character-level tokenizer used in prior-ASR work.
+```yaml
+    tokenizer: "facebook/wav2vec2-base-960h"
+	preprocessor: "openai/whisper-tiny"
+```
 
 ## Configuration
 
