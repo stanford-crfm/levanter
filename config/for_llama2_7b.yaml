@@ -15,7 +15,8 @@ second_hf_checkpoint: "EleutherAI/llemma_7b"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "github", "llama2-lemma"]
+    name: "llama2_7b--{second_hf_checkpoint}-github"
+    tags: ["openwebtext", "github", "{second_hf_checkpoint}"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
@@ -25,4 +26,4 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: -1
-  max_eval_batches: 10
+  max_eval_batches: 1
