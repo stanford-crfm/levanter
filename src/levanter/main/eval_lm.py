@@ -131,7 +131,7 @@ def main(config: EvalLmConfig):
                         minus_alpha = 1.0 - alpha
                         return x * alpha + y * minus_alpha
                     else:
-                        return x + y
+                        return x
 
                 # Use the rounded alpha for merging models
                 merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False)(model_1, model_2)
