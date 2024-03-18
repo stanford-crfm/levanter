@@ -1,12 +1,10 @@
 data:
   id: githubllama2 #dlwh/wikitext_103_detokenized
   cache_dir: "gs://levanter-data/tokenized/git-llama2/"
-
-  github:
-      train_urls:
-        - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
-      validation_urls:
-        - gs://levanter-data/pile-domains/github/val.jsonl.zst
+  train_urls:
+    - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
+  validation_urls:
+    - gs://levanter-data/pile-domains/github/val.jsonl.zst
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
