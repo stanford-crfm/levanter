@@ -154,6 +154,8 @@ The same set of hyperparameters and functionalities that are supported for text-
 First, we assume you've gone through the setup steps in [the TPU guide](../Getting-Started-TPU-VM.md), at least through setting up your gcloud account.
 We also strongly recommend setting up ssh keys and ssh-agent.
 
+On TPU, you will also need to ensure that all hosts installed `librosa` and `soundfile`: `gcloud compute tpus tpu-vm ssh $TPU_NAME   --zone $ZONE --worker=all --command "source venv310/bin/activate; pip install librosa soundfile`
+
 #### Upload Config To GCS
 
 Once you have your config built, you should upload it to GCS. You could also `scp` it to all workers, but this is easier
