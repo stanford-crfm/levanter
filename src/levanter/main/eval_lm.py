@@ -113,14 +113,14 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading first model from {config.model}")
             print(config.model)
             
-            model_1 = converter.load_pretrained(model_init_type)
+            model_1 = converter.load_pretrained(model_config)
             logger.info(f"model 1 config is {model_1.config}")
 
 
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
-            model_2 = converter.load_pretrained(model_init_type)
+            model_2 = converter.load_pretrained(model_config)
 
 # Generate alphas from 0 to 1 with a step of 0.05
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
