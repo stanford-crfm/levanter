@@ -15,7 +15,7 @@ second_hf_checkpoint: "LLM360/Amber"
 trainer:
   wandb:
     project: "levanter"
-    tags: ["openwebtext", "wiki", "llama2-amber360"]
+    tags: ["openwebtext", "github", "llama2-amber360"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
