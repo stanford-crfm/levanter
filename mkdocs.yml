@@ -99,6 +99,7 @@ nav:
   - 'Developer Guide':
       - 'dev/Port-Models.md'
       - 'dev/Trackers.md'
+      - 'dev/GPU-Docker-Dev.md'
   - 'FAQ' : 'faq.md'
   - Other:
       - 'Levanter-1.0-Release.md'
