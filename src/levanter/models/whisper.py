@@ -410,10 +410,6 @@ class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
         x = self.transformer(x, key=k_transformer)
         return x
 
-    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "WhisperDecoder":
-        new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
-        return dataclasses.replace(self, embeddings=new_embeddings)
-
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": None}
 
