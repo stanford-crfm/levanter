@@ -26,36 +26,15 @@ silence_transformer_nag()
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
-class ViaConnector(eqx.Module, StateDictSerializationMixin):
-    conv1: hnn.Conv
-    act: Callable = eqx.static_field()
-
-    @classmethod
-    def init(cls, config: ViaConfig, *, key) -> "ViaConnector":
-        k_conv1 = maybe_rng_split(key, 3)
-
-        Len = hax.Axis("position", size=config.SourcePos.size * 2)
-        Mid = hax.Axis("mid", config.Embed.size)
-        conv1 = hnn.Conv.init(Len, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
-        if isinstance(config.activation_function, str):
-            activation_fn = ACT2FN[config.activation_function]
-        act = activation_fn  # type: ignore
-
-        return ViaConnector(conv1, act)
-
-    def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
-        k_conv1 = maybe_rng_split(key, 3)
-        spec = spec.astype(self.conv1.weight.dtype)
-        x = self.act(self.conv1(spec, key=k_conv1))
-        return x
-
-
 @LmConfig.register_subclass("via")
 @dataclass(frozen=True)
 class ViaConfig(HFCompatConfig, ASRConfig):
     # SubConfigs
     enc_config: WhisperConfig
     dec_config: LlamaConfig
+
+    Pos = property(lambda self: Axis(name="position", size=self.dec_config.seq_len))
+    KeyPos = property(lambda self: self.Pos.alias("key_position"))
 
     @property
     def model_type(self) -> Type["ViaModel"]:
@@ -73,8 +52,9 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
-        hf_enc_config = HfConfig.from_dict(hf_config["encoder"])
-        hf_dec_config = HfConfig.from_dict(hf_config["decoder"])
+        config_dict = hf_config.to_dict()
+        hf_enc_config = HfConfig.from_dict(config_dict["encoder"])
+        hf_dec_config = HfConfig.from_dict(config_dict["decoder"])
         enc_config = WhisperConfig(hf_enc_config)
         dec_config = LlamaConfig(hf_dec_config)
         return ViaConfig(enc_config, dec_config)
@@ -82,6 +62,30 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
         return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
+
+
+class ViaConnector(eqx.Module, StateDictSerializationMixin):
+    conv1: hnn.Conv
+    act: Callable = eqx.static_field()
+
+    @classmethod
+    def init(cls, config: ViaConfig, *, key) -> "ViaConnector":
+        # k_conv1 = maybe_rng_split(key, 1)
+
+        Len = hax.Axis("position", size=config.enc_config.SourcePos.size * 2)
+        Mid = hax.Axis("mid", config.enc_config.Embed.size)
+        conv1 = hnn.Conv.init(Len, config.enc_config.Mels, Mid, kernel_size=3, padding=1, key=key)
+        if isinstance(config.enc_config.activation_function, str):
+            activation_fn = ACT2FN[config.enc_config.activation_function]
+        act = activation_fn  # type: ignore
+
+        return ViaConnector(conv1, act)
+
+    def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
+        k_conv1 = maybe_rng_split(key, 3)
+        spec = spec.astype(self.conv1.weight.dtype)
+        x = self.act(self.conv1(spec, key=k_conv1))
+        return x
 
 
 class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
