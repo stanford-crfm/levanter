@@ -366,7 +366,7 @@ class BatchTokenizer(BatchProcessor[str]):
     def __call__(self, batch: Sequence[str]) -> BatchEncoding:
         orig_lengths = [len(d) for d in batch]
         if self._need_to_add_bos:
-            batch = [self.tokenizer.bos_token_id + " " + d for d in batch]
+            batch = [self.tokenizer.bos_token + " " + d for d in batch]
 
         if self._need_to_add_eos:
             batch = [d + " " + self.tokenizer.eos_token for d in batch]

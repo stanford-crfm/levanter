@@ -75,13 +75,6 @@ def main(config: TrainASRConfig):
             # NB: gross mutability
             if not config.via_init:
                 config.model = converter.config_from_hf_config(converter.default_hf_config)
-            if config.via_init:
-                from transformers import PretrainedConfig as HfConfig  # noqa
-
-                from levanter.models.via import ViaConfig
-
-                c = HfConfig.from_pretrained(config.initialize_from_hf)
-                config.model = ViaConfig.from_hf_config(c)
     elif isinstance(config.model, HFCompatConfig):
         converter = config.model.default_hf_checkpoint_converter
         converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
@@ -89,6 +82,15 @@ def main(config: TrainASRConfig):
         converter = None
 
     levanter.initialize(config)
+    if config.via_init:
+        from transformers import PretrainedConfig as HfConfig  # noqa
+
+        from levanter.models.via import ViaConfig
+
+        c = HfConfig.from_pretrained(config.initialize_from_hf)
+        config.model = ViaConfig.from_hf_config(c)
+        converter = config.model.default_hf_checkpoint_converter
+        converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     # Using the trainer as a context manager does 3 things:
