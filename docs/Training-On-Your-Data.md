@@ -373,10 +373,10 @@ gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command
 
 In the below instructions, we assume you've been through our [GPU Setup Guide](Getting-Started-GPU.md) already.
 
-#### Single GPU Node Training
+#### Single Node GPU Training
 TODO
 
-#### Multi GPU Node Training
+#### Multi-Node GPU Training
 For multi-gpu training, you need to additionally have [nvidia-fabricmanager](https://docs.nvidia.com/datacenter/tesla/pdf/fabric-manager-user-guide.pdf) installed on each of your nodes.
 
 ```
