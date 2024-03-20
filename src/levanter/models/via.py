@@ -1,6 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Optional, Type, Union
+from typing import Callable, Optional, Sequence, Type, Union
 
 import equinox as eqx
 from jaxtyping import PRNGKeyArray
@@ -33,8 +33,17 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     enc_config: WhisperConfig
     dec_config: LlamaConfig
 
+    # Connector Config
+    time_dialation: int = 25
+
     Pos = property(lambda self: Axis(name="position", size=self.dec_config.seq_len))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
+    TimeGroup = property(
+        lambda self: Axis(name="position", size=(self.enc_config.SourcePos.size // self.time_dialation))
+    )
+    GroupEmbed = property(
+        lambda self: Axis(name="group_embed", size=(self.enc_config.Embed.size * self.time_dialation))
+    )
 
     @property
     def model_type(self) -> Type["ViaModel"]:
@@ -47,7 +56,11 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[dict] = None) -> HfConfig:
         hf_enc_config = self.enc_config.to_hf_config(vocab_size, config_overrides)
         hf_dec_config = self.dec_config.to_hf_config(vocab_size, config_overrides)
-        merged_config = {"encoder": hf_enc_config.to_dict(), "decoder": hf_dec_config.to_dict()}
+        merged_config = {
+            "encoder": hf_enc_config.to_dict(),
+            "decoder": hf_dec_config.to_dict(),
+            "time_dialation": self.time_dialation,
+        }
         return HfConfig.from_dict(merged_config)
 
     @classmethod
@@ -57,7 +70,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
         hf_dec_config = HfConfig.from_dict(config_dict["decoder"])
         enc_config = WhisperConfig(hf_enc_config)
         dec_config = LlamaConfig(hf_dec_config)
-        return ViaConfig(enc_config, dec_config)
+        return ViaConfig(config_dict["time_dialation"], enc_config, dec_config)
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
@@ -65,26 +78,26 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
 
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
-    conv1: hnn.Conv
+    Grouping: Sequence[Axis]
+    dialator: hnn.Linear
     act: Callable = eqx.static_field()
 
     @classmethod
     def init(cls, config: ViaConfig, *, key) -> "ViaConnector":
-        # k_conv1 = maybe_rng_split(key, 1)
+        dialator = hnn.Linear.init(In=config.GroupEmbed, Out=config.dec_config.Embed, key=key)
 
-        Len = hax.Axis("position", size=config.enc_config.SourcePos.size * 2)
-        Mid = hax.Axis("mid", config.enc_config.Embed.size)
-        conv1 = hnn.Conv.init(Len, config.enc_config.Mels, Mid, kernel_size=3, padding=1, key=key)
         if isinstance(config.enc_config.activation_function, str):
             activation_fn = ACT2FN[config.enc_config.activation_function]
         act = activation_fn  # type: ignore
 
-        return ViaConnector(conv1, act)
+        Grouping = (config.TimeGroup, config.GroupEmbed)
 
-    def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
-        k_conv1 = maybe_rng_split(key, 3)
-        spec = spec.astype(self.conv1.weight.dtype)
-        x = self.act(self.conv1(spec, key=k_conv1))
+        return ViaConnector(Grouping, dialator, act)
+
+    def __call__(self, encoder_outputs: NamedArray, *, key=None) -> NamedArray:
+        flat_encoder_outputs = hax.flatten_axes(encoder_outputs, ("position", "embed_dim"), "flat_embed")
+        grouped_encoder_outputs = hax.unflatten_axis(flat_encoder_outputs, "flat_embed", self.Grouping)
+        x = self.act(self.dialator(grouped_encoder_outputs, key=key))
         return x
 
 
@@ -139,7 +152,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
         virtual_tokens = self.connector(audio_features, key=k_connector)
         embedded_tokens = self.decoder.embeddings.embed(input_ids)
-        tokens_and_targets = hax.concatenate([virtual_tokens, embedded_tokens], axis=self.Pos)
+        tokens_and_targets = hax.concatenate("position", [virtual_tokens, embedded_tokens])
         x = self.decoder.transformer(tokens_and_targets, attn_mask=attn_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
         return lm_logits

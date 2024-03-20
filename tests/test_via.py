@@ -8,6 +8,7 @@ from transformers import WhisperProcessor
 import haliax as hax
 from haliax import Axis
 
+from levanter.models.llama import LlamaLMHeadModel
 from levanter.models.via import ViaConfig, ViaModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_soundlibs
@@ -18,11 +19,11 @@ def test_basic_forward_via():
     # Model Setup
     hf_enc_config = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     hf_dec_config = HfLlamaConfig.from_pretrained("WillHeld/debug_llama")
-    merged_config = {"encoder": hf_enc_config.to_dict(), "decoder": hf_dec_config.to_dict()}
+    merged_config = {"encoder": hf_enc_config.to_dict(), "decoder": hf_dec_config.to_dict(), "time_dialation": 50}
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)
     Vocab = hax.Axis("vocab", 1000)
-    model = ViaModel.init(Vocab, conf, key=PRNGKey(42))
+    model = ViaModel.init(Vocab, conf, key=PRNGKey(42), dec_cls=LlamaLMHeadModel)
     model = inference_mode(model, True)
 
     # Data
