@@ -43,6 +43,7 @@ class TrainASRConfig:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+    via_init: bool = False
 
 
 def main(config: TrainASRConfig):
@@ -50,6 +51,7 @@ def main(config: TrainASRConfig):
 
     # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
     # I recommend skipping it for now
+
     if config.initialize_from_hf:
         if config.trainer.initialize_from is not None:
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
@@ -71,7 +73,15 @@ def main(config: TrainASRConfig):
         if config.use_hf_model_config:
             # TODO: log diff of old and new config
             # NB: gross mutability
-            config.model = converter.config_from_hf_config(converter.default_hf_config)
+            if not config.via_init:
+                config.model = converter.config_from_hf_config(converter.default_hf_config)
+            if config.via_init:
+                from transformers import PretrainedConfig as HfConfig  # noqa
+
+                from levanter.models.via import ViaConfig
+
+                c = HfConfig.from_pretrained(config.initialize_from_hf)
+                config.model = ViaConfig.from_hf_config(c)
     elif isinstance(config.model, HFCompatConfig):
         converter = config.model.default_hf_checkpoint_converter
         converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
