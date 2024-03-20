@@ -14,6 +14,40 @@
 </a>
 
 
+<!--levanter-intro-start-->
+> *You could not prevent a thunderstorm, but you could use the electricity; you could not direct the wind, but you could trim your sail so as to propel your vessel as you pleased, no matter which way the wind blew.* <br/>
+> — Cora L. V. Hatch
+
+Levanter is a framework for training large language models (LLMs) and other foundation models that strives for legibility, scalability, and reproducibility:
+
+1. **Legible**: Levanter uses our named tensor library [Haliax](https://github.com/stanford-crfm/haliax) to write easy-to-follow, composable deep learning code, while still being high performance.
+2. **Scalable**: Levanter scales to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
+3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+
+We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
+
+## Documentation
+
+Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
+Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
+
+## Features
+
+* **Distributed Training**: We support distributed training on TPUs (and soon, GPUs), including FSDP and tensor parallelism.
+* **Compatibility**: Levanter supports importing and exporting models to/from the Hugging Face ecosystem, including tokenizers, datasets, and models via [SafeTensors](https://github.com/huggingface/safetensors).
+* **Performance**: Levanter's performance rivals commercially-backed frameworks like MosaicML's Composer or Google's MaxText.
+* **Reproducibility**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+* **Cached On-Demand Data Preprocessing**: We preprocess corpora online, but we cache the results of preprocessing so
+that resumes are much faster and so that subsequent runs are even faster. As soon as the first part of the cache is complete, Levanter will start training.
+* **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
+* **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
+* **Optimization**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization. Our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is available in the [dev branch](https://github.com/stanford-crfm/levanter/tree/dev).
+
+<!--levanter-intro-end-->
+
+Levanter was created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team.
+You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/CKazXcbbBm)
+
 ## Getting Started
 
 Here is a small set of examples to get you started. For more information about the various configuration options,
@@ -41,6 +75,17 @@ pip install -e .
 wandb login  # optional, we use wandb for logging
 ```
 
+If you're developing Haliax and Levanter at the same time, you can do something like.
+```bash
+git clone https://github.com/stanford-crfm/levanter.git
+cd levanter
+pip install -e .
+cd ..
+git clone https://github.com/stanford-crfm/haliax.git
+cd haliax
+pip install -e .
+cd ../levanter
+```
 
 
 <!--levanter-installation-end-->
@@ -151,41 +196,10 @@ Please see the [CUDA Getting Started](docs/Getting-Started-GPU.md) guide for mor
 
 <!--levanter-user-guide-end-->
 
-## Model Tracing
+## Contributing
 
-To run a mode connectivity experiment testing Llama2 against Lemma (for example) run the following
-```bash
-python -m levanter.main.eval_lm --config_path config/for_llama2_7b.yaml --trainer.wandb.name trace_llama2_lemma
-```
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
 
-Currently the config will look like so
+## License
 
-```yaml
-data:
-  id: dlwh/wikitext_103_detokenized
-  cache_dir: "gs://levanter-data/tokenized/wiki-llama2/"
-  tokenizer: "meta-llama/Llama-2-70b-hf"
-  
-model:
-  type: llama
-# TODO: uncomment this once we resolve the resource exhaustion issue
-hf_checkpoint: "meta-llama/Llama-2-7b-hf"
-second_hf_checkpoint: "openlm-research/open_llama_7b"
-
-trainer:
-  wandb:
-    project: "levanter"
-    name: "llama2_7b--openllama-github"
-    tags: ["openwebtext", "github", "openllama"]
-
-  mp: p=f32,c=bfloat16
-  train_batch_size: 64  # set for v4-64 TPU
-  num_train_steps: 2
-  steps_per_eval: 1
-  tensor_parallel_axes: ["mlp", "heads"]
-  fsdp_axis: "embed"
-  batch_axis: "batch"
-  per_device_eval_parallelism: -1
-  max_eval_batches: 1
-```
-
+Levanter is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full license text.
