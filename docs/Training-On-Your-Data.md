@@ -369,14 +369,12 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
-### GPU
 
+### GPU Training
 In the below instructions, we assume you've been through our [GPU Setup Guide](Getting-Started-GPU.md) already.
-
-#### Single Node GPU Training
 TODO
 
-#### Multi-Node GPU Training
+### Multi-Node GPU Training
 For multi-gpu training, you need to additionally have [nvidia-fabricmanager](https://docs.nvidia.com/datacenter/tesla/pdf/fabric-manager-user-guide.pdf) installed on each of your nodes.
 
 ```
@@ -405,7 +403,7 @@ This will start a 4 node job where each node has 8 GPUs.
 
 When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
 
-### Switching Between GPU and TPU
+## Switching Between GPU and TPU
 In levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
 
 ## Monitoring
