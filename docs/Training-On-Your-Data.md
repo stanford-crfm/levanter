@@ -371,7 +371,42 @@ gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command
 
 ### GPU
 
-TODO, but you can mostly follow the guide for [TPU](#tpu) above.
+In the below instructions, we assume you've been through our [GPU Setup Guide](Getting-Started-GPU.md) already.
+
+#### Single GPU Node Training
+TODO
+
+#### Multi GPU Node Training
+For multi-gpu training, you need to additionally have [nvidia-fabricmanager](https://docs.nvidia.com/datacenter/tesla/pdf/fabric-manager-user-guide.pdf) installed on each of your nodes.
+
+```
+sudo apt-get install cuda-drivers-fabricmanager
+sudo systemctl start nvidia-fabricmanager
+```
+
+We use (JAX Distributed)[https://jax.readthedocs.io/en/latest/multi_process.html] to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
+
+```
+NCCL_DEBUG=INFO python src/levanter/main/train_lm.py \
+  --config_path config/gpt2_7b.yaml \
+  --trainer.ray.auto_start_cluster false \
+  --trainer.per_device_parallelism -1 \
+  --trainer.distributed.num_processes 4 \
+  --trainer.distributed.local_device_ids "[0,1,2,3,4,5,6,7]" \
+  --trainer.distributed.coordinator_address 10.223.253.32:22345 \
+  --trainer.distributed.process_id 0
+```
+This will start a 4 node job where each node has 8 GPUs.
+
+- `--trainer.distributed.num_processes` - sets the number of nodes used in this training run
+- `--trainer.distributed.local_device_ids` - sets the ids of the local GPUs to use on this specific node
+- `--trainer.distributed.coordinator_address` - is the IP address and port number of the node that will be leading the training run. All other nodes should have network access to the port and IP address set by this argument. The same IP address and port number should be used for this argument in every node's run command.
+- `--trainer.distributed.process_id` - The process ID of the current node. If the node is coordinator for the training run (its IP address was the one specified at `--trainer.distributed.coordinator_address`), its process ID needs to be set to zero. All other nodes in the train run should have a unique integer ID between [1, `num_processes` - 1].
+
+When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
+
+### Switching Between GPU and TPU
+In levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
 
 ## Monitoring
 
