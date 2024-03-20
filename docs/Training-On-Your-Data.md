@@ -384,7 +384,7 @@ sudo apt-get install cuda-drivers-fabricmanager
 sudo systemctl start nvidia-fabricmanager
 ```
 
-We use (JAX Distributed)[https://jax.readthedocs.io/en/latest/multi_process.html] to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
+We use [JAX Distributed](https://jax.readthedocs.io/en/latest/multi_process.html) to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
 
 ```
 NCCL_DEBUG=INFO python src/levanter/main/train_lm.py \
