@@ -42,6 +42,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
     suffix = property(lambda self: hax.named(self.pre_text_prompt, axis="position"))
     Pos = property(lambda self: Axis(name="position", size=self.dec_config.seq_len))
+    AudioPos = property(lambda self: [self.enc_config.Mels, self.enc_config.MelPos])
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     TimeGroup = property(
         lambda self: Axis(name="position", size=(self.enc_config.SourcePos.size // self.time_dialation))

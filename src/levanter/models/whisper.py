@@ -93,6 +93,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     DecoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.decoder_attention_heads))
     DecoderLayer = property(lambda self: Axis(name="decoder_layers", size=self.decoder_layers))
     Mels = property(lambda self: Axis(name="n_mels", size=self.num_mel_bins))
+    AudioPos = property(lambda self: [self.Mels, self.MelPos])
 
     def to_hf_config(self, vocab_size, config_overrides=None):
         if config_overrides is None:
