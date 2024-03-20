@@ -403,7 +403,7 @@ This will start a 4 node job where each node has 8 GPUs.
 
 When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
 
-## Switching Between GPU and TPU
+### Switching Between GPU and TPU
 In levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
 
 ## Monitoring
