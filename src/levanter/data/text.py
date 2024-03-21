@@ -327,32 +327,47 @@ class BatchTokenizer(BatchProcessor[str]):
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
         enforce_eos=True,
         *,
         batch_size=128,
         override_resources=None,
         _workaround_len=LONG_STRING_WORKAROUND,
+        return_attention_mask=False,
+        padding=False,
+        max_length=None,
     ):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
         self.override_resources = override_resources
+        self.return_attention_mask = return_attention_mask
+        self.padding = padding
+        if max_length is not None:
+            self.max_length = max_length
+        else:
+            self.max_length = self.tokenizer.model_max_length
 
         # see if the tokenizer appends eos
         # HF's BPE-based tokenizers do not, but the bert and roberta ones do
         # TODO: this doesn't necessarily ensure it, I guess, but eh
-        if enforce_eos:
+        if enforce_eos or enforce_bos:
             input_ids = tokenizer("hi there")["input_ids"]
-            should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+            should_append_eos = input_ids[-1] != tokenizer.eos_token_id and enforce_eos
+            should_append_bos = input_ids[0] == tokenizer.bos_token_id and enforce_bos
         else:
             should_append_eos = False
 
         self._batch_size = batch_size
 
         self._need_to_add_eos = should_append_eos
+        self._need_to_add_bos = should_append_bos
         self._workaround_len = _workaround_len
 
     def __call__(self, batch: Sequence[str]) -> BatchEncoding:
         orig_lengths = [len(d) for d in batch]
+        if self._need_to_add_bos:
+            batch = [self.tokenizer.bos_token_id + " " + d for d in batch]
+
         if self._need_to_add_eos:
             batch = [d + " " + self.tokenizer.eos_token for d in batch]
 
@@ -383,7 +398,10 @@ class BatchTokenizer(BatchProcessor[str]):
         else:
             needs_merge = []
 
-        encoding = self.tokenizer(batch, return_attention_mask=False, verbose=False)  # type: ignore
+        if self.padding is not False:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
+        else:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)

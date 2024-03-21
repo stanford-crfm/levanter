@@ -16,6 +16,22 @@ def logical_cpu_core_count():
         return 1
 
 
+def logical_cpu_memory_size():
+    """Returns the total amount of memory in GB available to the process or logical memory for SLURM."""
+    mem = os.getenv("SLURM_MEM_PER_NODE", None)
+    tasks = os.getenv("SLURM_NTASKS_PER_NODE", None)
+    if mem is not None and tasks is not None:
+        return float(mem) / int(tasks) / 1024.0  # MEM_PER_NODE is in MB
+
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total / (1024.0**3)
+    except ValueError:
+        import psutil
+
+        return psutil.virtual_memory().total / (1024.0**3)
+
+
 def non_caching_cycle(iterable):
     """Like itertools.cycle, but doesn't cache the iterable."""
     while True:

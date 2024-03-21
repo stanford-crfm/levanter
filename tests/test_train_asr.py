@@ -4,28 +4,24 @@ import tempfile
 import jax
 import pytest
 
-import levanter.main.train_lm as train_lm
+import levanter.main.train_asr as train_asr
 import tiny_test_corpus
 from levanter.distributed import RayConfig
 from levanter.tracker.wandb import WandbConfig
 
 
 @pytest.mark.entry
-def test_train_lm():
+def test_train_asr():
     # just testing if train_lm has a pulse
     with tempfile.TemporaryDirectory() as tmpdir:
-        data_config, _ = tiny_test_corpus.construct_small_data_cache(tmpdir)
+        data_config = tiny_test_corpus.tiny_asr_corpus_config(tmpdir)
         try:
-            config = train_lm.TrainLmConfig(
+            config = train_asr.TrainASRConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
-                    num_layers=2,
-                    num_heads=2,
-                    seq_len=64,
-                    hidden_dim=32,
-                    use_flash_attention=True,
+                model=train_asr.WhisperConfig(
+                    d_model=32,
                 ),
-                trainer=train_lm.TrainerConfig(
+                trainer=train_asr.TrainerConfig(
                     num_train_steps=2,
                     train_batch_size=len(jax.devices()),
                     max_eval_batches=1,
@@ -33,8 +29,9 @@ def test_train_lm():
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),
+                hf_save_path=f"{tmpdir}/hf_asr_output",
             )
-            train_lm.main(config)
+            train_asr.main(config)
         finally:
             try:
                 os.unlink("wandb")

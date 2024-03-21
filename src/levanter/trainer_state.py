@@ -9,6 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
+from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
 from levanter.types import FilterTree
@@ -63,7 +64,11 @@ class TrainerState(eqx.Module, Generic[M]):
 
     @property
     def trainable_model(self) -> M:
-        return eqx.filter(self.model, self.is_trainable)
+        return trainables_only(self.model, self.is_trainable)
+
+    @property
+    def saveable_state(self) -> FilterTree:
+        return eqx.filter(self, saveable_training_mask(self, self.is_trainable))
 
     @classmethod
     def init(
@@ -74,12 +79,16 @@ class TrainerState(eqx.Module, Generic[M]):
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
+        fp8: Fp8Config = None,
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
             model = cast_params_by_trainability(model, mp, is_trainable)
         else:
             mp = jmp.get_policy("f32")
+
+        if fp8 is not None:
+            model = fp8_linear_layers(model, fp8)
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
         return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
@@ -102,6 +111,7 @@ def init_optimizer_for_trainables(optimizer, model, is_trainable):
     Initializes the optimizer state for the trainable parameters of the model.
     """
     trainable = trainables_only(model, is_trainable)
+    _, trainable = partition_for_grad_overwrite(trainable)  # doesn't make a huge difference, but saves some ram
     opt_state = optimizer.init(trainable)
     return opt_state
 
@@ -120,16 +130,8 @@ def _partition_trainable_params(model, filter):
         trainable, non-trainable
     """
 
-    def trainable_and_diffable(pred):
-        if callable(pred):
-            return lambda x: pred(x) and is_inexact_arrayish(x)
-        elif pred is True:
-            return is_inexact_arrayish
-        else:
-            return pred
-
-    combined_mask = jax.tree_util.tree_map(trainable_and_diffable, filter)
-    return eqx.partition(model, combined_mask)
+    filter = make_floating_point_trainable_filter(filter)
+    return eqx.partition(model, filter)
 
 
 def trainables_only(model, filter):
@@ -160,6 +162,8 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     parameters for checkpointing and for logging.
     """
 
+    is_trainable_param = make_floating_point_trainable_filter(is_trainable_param)
+
     trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
     saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
     return saveable_state  # type: ignore
@@ -175,8 +179,25 @@ def take_train_step(
     is_trainable: FilterTree = True,
 ) -> Tuple[M, OptState]:
     train_grads = trainables_only(grads, is_trainable)
+    overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
-    model = eqx.apply_updates(model, updates)
+    model = apply_updates(model, updates, overwrites)
 
     return model, opt_state
+
+
+def make_floating_point_trainable_filter(is_trainable: FilterTree) -> FilterTree:
+    """
+    Combines the is_trainable filter with a filter that only allows floating point parameters.
+    """
+
+    def is_trainable_and_floating_point(x):
+        if x is True:
+            return is_inexact_arrayish
+        elif x is False:
+            return False
+        else:
+            return lambda y: is_inexact_arrayish(y) and x(y)
+
+    return jax.tree_util.tree_map(is_trainable_and_floating_point, is_trainable)

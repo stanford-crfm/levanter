@@ -2,10 +2,11 @@ site_name: Levanter
 repo_url: https://github.com/stanford-crfm/levanter/
 edit_uri: blob/main/docs/
 theme:
-  name: material
-  highlightjs: false
-  features:
-    - content.code.copy
+  name: readthedocs
+#  name: material
+#  highlightjs: false
+#  features:
+#    - content.code.copy
 markdown_extensions:
 - attr_list
 - admonition
@@ -29,7 +30,7 @@ markdown_extensions:
 - pymdownx.superfences
 - toc:
     permalink: "¤"
-    toc_depth: "2-3"
+    toc_depth: "1-3"
 
 plugins:
   - search
@@ -68,9 +69,9 @@ plugins:
             line_length: 100
   - include-markdown
 extra_css:
-  - css/material.css
   - css/mkdocstrings.css
   - css/custom.css
+  - css/friendly.css
 
 extra_javascript:
   - javascripts/mathjax.js
@@ -91,14 +92,17 @@ nav:
       - 'Getting-Started-Training.md'
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
+      - 'Performance-Guide.md'
   - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"
       - "tutorials/Fine-Tuning-Semantic-Parsing.md"
       - "Hardware-Agnostic-Training.md"
+      - "tutorials/Training-On-Audio-Data.md"
   - 'Developer Guide':
       - 'dev/Port-Models.md'
       - 'dev/Trackers.md'
+      - 'dev/GPU-Docker-Dev.md'
   - 'FAQ' : 'faq.md'
   - Other:
       - 'Levanter-1.0-Release.md'

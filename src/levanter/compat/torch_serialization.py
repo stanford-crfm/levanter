@@ -89,14 +89,21 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
 
         array = state_dict[prefix]
-        mesh = haliax.partitioning._get_mesh()
-        if mesh.devices.size > 1:  # this happens with the default mesh
-            pspec = haliax.partitioning.pspec_for_axis(tree.axes)
-            sharding = jax.sharding.NamedSharding(mesh, pspec)
-            array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])
+
+        if isinstance(array, np.ndarray):
+            mesh = haliax.partitioning._get_mesh()
+            if mesh.devices.size > 1:  # this happens with the default mesh
+                pspec = haliax.partitioning.pspec_for_axis(tree.axes)
+                sharding = jax.sharding.NamedSharding(mesh, pspec)
+                array = jax.make_array_from_callback(tree.array.shape, sharding, lambda indices: array[indices])
+            else:
+                array = jnp.array(array)
+            array = haliax.named(array, tree.axes)
         else:
-            array = jnp.array(array)
-        return NamedArray(array, axes=tree.axes)
+            array = haliax.named(array, tree.axes)
+            array = haliax.auto_sharded(array)
+
+        return array
     elif is_jax_array_like(tree):
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a state dict without a prefix")
@@ -141,6 +148,14 @@ def jax_tree_to_state_dict(tree: PyTree, prefix: Optional[str] = None) -> StateD
 
 
 def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: Optional[str] = None) -> Mod:
+    try:
+        from haliax.nn.scan import BlockSeq
+
+        if isinstance(mod, BlockSeq):
+            return block_seq_from_state_dict(mod, state_dict, prefix)
+    except ImportError:
+        pass
+
     key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     names = []
     values = []
@@ -151,6 +166,9 @@ def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: 
         value = getattr(mod, field.name)
         # TODO: might want to add a flag that allows missing keys?
         new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
+        # Do not try to update parameters that are never defined
+        if value is None and new is None:
+            continue
         names.append(field.name)
         values.append(new)
     return eqx.tree_at(lambda m: [getattr(m, name) for name in names], mod, values)
@@ -165,6 +183,14 @@ def default_eqx_module_to_state_dict(mod: eqx.Module, prefix: Optional[str] = No
 def default_update_state_dict_with_eqx_module(
     state_dict: StateDict, mod: eqx.Module, prefix: Optional[str] = None
 ) -> StateDict:
+    try:
+        from haliax.nn.scan import BlockSeq
+
+        if isinstance(mod, BlockSeq):
+            return update_block_seq_state_dict(state_dict, mod, prefix)
+    except ImportError:
+        pass
+
     key_map: Dict[str, Optional[str]] = getattr(mod, "_state_dict_key_map", lambda: {})()  # type: ignore
     for field in fields(mod):
         if field.metadata.get("static", False):
@@ -353,9 +379,27 @@ def stack_state_dict(state_dict: StateDict, prefix: Optional[str] = None) -> Sta
 
     # now we have to vectorize the tensors
     for k, tensors in tensors_to_vectorize.items():
-        vectorized_dict[cast(str, apply_prefix(prefix, k))] = np.stack(tensors, axis=0)
+        vectorized_dict[cast(str, apply_prefix(prefix, k))] = jnp.stack(tensors, axis=0)
 
     return vectorized_dict
+
+
+def block_seq_from_state_dict(seq, state_dict: StateDict, prefix: Optional[str] = None):
+    out_blocks = []
+    for i, block in enumerate(seq.blocks):
+        my_prefix = apply_prefix(prefix, str(i))
+        block = block.from_state_dict(state_dict, my_prefix)
+        out_blocks.append(block)
+
+    return eqx.tree_at(lambda m: m.blocks, seq, out_blocks)
+
+
+def update_block_seq_state_dict(state_dict: StateDict, seq, prefix: Optional[str] = None):
+    for i, block in enumerate(seq.blocks):
+        my_prefix = apply_prefix(prefix, str(i))
+        block.update_state_dict(state_dict, my_prefix)
+
+    return state_dict
 
 
 def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:

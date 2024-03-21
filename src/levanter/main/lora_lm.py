@@ -43,6 +43,7 @@ class LoraLmConfig:
     merged_hf_upload: Optional[str] = None
 
     trust_remote_code: bool = False
+    max_train_length: Optional[int] = None  # if set, train on sequences of this length
 
 
 def main(config: LoraLmConfig):
@@ -67,6 +68,11 @@ def main(config: LoraLmConfig):
     Pos = model_config.Pos
     KeyPos = model_config.KeyPos
 
+    if config.max_train_length is not None:
+        logger.info(f"Setting max tune length to {config.max_train_length}")
+        Pos = Pos.resize(config.max_train_length)
+        KeyPos = KeyPos.resize(config.max_train_length)
+
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     with Trainer(config.trainer, optimizer) as trainer:
@@ -84,7 +90,9 @@ def main(config: LoraLmConfig):
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model = converter.load_pretrained(
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+        )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
         def loraize_hf_model(model):
