@@ -90,12 +90,11 @@ class ViaConfig(HFCompatConfig, ASRConfig):
         return HFCheckpointConverter(cls, "WillHeld/via-llama")
 
 
-def is_connector_param(node):
-    return isinstance(node, ViaConnector)
-
-
 def connector_only(model):
-    return jax.tree_util.tree_map(is_connector_param, model)
+    frozen_tree = jax.tree_util.tree_map(lambda _: False, model)
+    return eqx.tree_at(
+        lambda tree: (tree.connector.dialator.weight, tree.connector.dialator.bias), frozen_tree, (True, True)
+    )
 
 
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
