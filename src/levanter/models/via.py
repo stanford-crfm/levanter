@@ -11,7 +11,13 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
-from levanter.compat.torch_serialization import StateDictSerializationMixin
+from levanter.compat.torch_serialization import (
+    StateDict,
+    StateDictSerializationMixin,
+    apply_prefix,
+    flatten_linear_layers,
+    unflatten_linear_layers,
+)
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionMask
@@ -80,7 +86,15 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama")
+
+
+def is_connector_param(node):
+    return isinstance(node, ViaConnector)
+
+
+def connector_only(model):
+    return jax.tree_util.tree_map(is_connector_param, model, is_leaf=is_connector_param)
 
 
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
@@ -111,6 +125,23 @@ class ViaConnector(eqx.Module, StateDictSerializationMixin):
         grouped_encoder_outputs = hax.unflatten_axis(flat_encoder_outputs, "flat_embed", self.Grouping)
         x = self.act(self.dialator(grouped_encoder_outputs, key=key))
         return x
+
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "ViaConnector":
+        # convert to Haliax's nice multiple dim input linear syntax
+        d = {}
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "dialator"), state_dict, self.dialator, None))
+
+        return super().from_state_dict(d, prefix)
+
+    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+        # need to undo the reshape we did in from_state_dict
+        my_dict: StateDict = {}
+        super().update_state_dict(my_dict, prefix)
+
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "dialator"), self.dialator, None))
+
+        state_dict.update(my_dict)
+        return state_dict
 
 
 class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):

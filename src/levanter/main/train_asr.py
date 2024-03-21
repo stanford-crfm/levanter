@@ -1,10 +1,10 @@
-import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
+from transformers import PretrainedConfig as HfConfig  # noqa
 
 import haliax as hax
 from haliax import Axis
@@ -15,6 +15,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig
+from levanter.models.via import ViaConfig, connector_only
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -83,10 +84,6 @@ def main(config: TrainASRConfig):
 
     levanter.initialize(config)
     if config.via_init:
-        from transformers import PretrainedConfig as HfConfig  # noqa
-
-        from levanter.models.via import ViaConfig
-
         c = HfConfig.from_pretrained(config.initialize_from_hf)
         config.model = ViaConfig.from_hf_config(c)
         converter = config.model.default_hf_checkpoint_converter
@@ -132,23 +129,24 @@ def main(config: TrainASRConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build_asr(Vocab, key=model_key))
+        if config.initialize_from_hf:
+            logger.info(
+                "No training checkpoint found. Initializing model from HF checkpoint"
+                f" '{converter.reference_checkpoint}'"
+            )
+            load_model = lambda: converter.load_pretrained(
+                config.model,
+                ref="WillHeld/via-llama",
+                axis_mapping=parameter_axis_mapping,
+                dtype=trainer.mp.compute_dtype,
+            )
+        else:
+            logger.info("No checkpoint found. Starting from scratch.")
+            load_model = lambda: config.model.build_asr(Vocab, key=model_key)
 
-        if int(state.step) == 0:
-            # TODO: I don't love that we init the model twice, but it's not a big deal i think?
-            if config.initialize_from_hf:
-                # initialize from an hf pretrained model
-                logger.info(
-                    "No training checkpoint found. Initializing model from HF checkpoint"
-                    f" '{converter.reference_checkpoint}'"
-                )
-                # this is a bit gross, but we want to free up the memory from the model we just built
-                state = dataclasses.replace(state, model=None)
-                model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
-                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
-                state = dataclasses.replace(state, model=model)
-            else:
-                logger.info("No checkpoint found. Starting from scratch.")
+        state = trainer.initial_state(
+            training_key, model_init=lambda: load_model, is_trainable=connector_only if config.via_init else None
+        )
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
