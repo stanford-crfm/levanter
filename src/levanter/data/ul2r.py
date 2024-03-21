@@ -152,15 +152,16 @@ class MaskDenoisingConfig(DenoisingConfig):
         """Build a mask denoiser example from a list of tokens"""
         # Slicing.
         # new_length = sliced_length + 2 * num_spans = sliced_length * (1 + 2r / mu) should be at most length (4096)
-        length = 1024 - 3 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        length = tokens.shape[0] - 3 - (task_token_id is not None)  # TODO: change to actual model seqlen
         max_length = int(round(length * self.mean_span_length / (self.mean_span_length + 2 * self.mask_prob)))
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
 
-        this_key, key = jax.random.split(key)
-        np_rng = np.random.default_rng(np.array(this_key))
-        pivot = int(np_rng.integers(128, max_length))
-        tokens = tokens[:pivot]
+        # Randomize sequence length.
+        # this_key, key = jax.random.split(key)
+        # np_rng = np.random.default_rng(np.array(this_key))
+        # pivot = int(np_rng.integers(128, max_length))
+        # tokens = tokens[:pivot]
 
         # Masking.
         noise_mask = random_spans_noise_mask(
@@ -207,7 +208,7 @@ class PrefixLmConfig(DenoisingConfig):
     def sample(self, key: PRNGKey, tokens: np.ndarray, sentinel_token_ids, task_token_id) -> Ul2Example:
         """Build an S-denoiser example from a list of tokens"""
         # Slicing.
-        max_length = 1024 - 1 - (task_token_id is not None)  # TODO: change to actual model seqlen
+        max_length = tokens.shape[0] - 1 - (task_token_id is not None)
         if tokens.shape[0] > max_length:
             tokens = tokens[:max_length]
 
