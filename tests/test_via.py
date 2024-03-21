@@ -19,7 +19,11 @@ def test_basic_forward_via():
     # Model Setup
     hf_enc_config = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     hf_dec_config = HfLlamaConfig.from_pretrained("WillHeld/debug_llama")
-    merged_config = {"encoder": hf_enc_config.to_dict(), "decoder": hf_dec_config.to_dict(), "time_dialation": 50}
+    merged_config = {
+        "encoder": hf_enc_config.to_dict(),
+        "decoder": hf_dec_config.to_dict(),
+        "time_dialation": 50,
+    }
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)
     Vocab = hax.Axis("vocab", 1000)
@@ -38,5 +42,5 @@ def test_basic_forward_via():
         inputs["input_features"],
         axes=(Batch, conf.enc_config.Mels, Axis(name="position", size=3000)),
     )
-    inp = hax.arange(Axis("position", size=10)).broadcast_axis(Batch)
+    inp = hax.arange(Axis("position", size=50)).broadcast_axis(Batch)
     model(na, inp)

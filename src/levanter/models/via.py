@@ -193,21 +193,25 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         *,
         key=None,
     ) -> NamedArray:
+        Batch = input_ids.resolve_axis("batch")
         if attn_mask is not None and not isinstance(attn_mask, AttentionMask):
             attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_connector, k_decoder, k_head = maybe_rng_split(key, 4)
         audio_features = self.encoder(mel, key=k_encoder)
         virtual_tokens = self.connector(audio_features, key=k_connector)
-        prefix = self.decoder.embeddings.embed(self.config.prefix.broadcast_axis(input_ids.resolve_axis("batch")))
+        prefix = self.decoder.embeddings.embed(self.config.prefix.broadcast_axis(Batch))
         embedded_tokens = self.decoder.embeddings.embed(input_ids)
-        suffix = self.decoder.embeddings.embed(self.config.suffix.broadcast_axis(input_ids.resolve_axis("batch")))
+        suffix = self.decoder.embeddings.embed(self.config.suffix.broadcast_axis(Batch))
+        input_size = input_ids.resolve_axis("position").size
         tokens_and_targets = hax.concatenate("position", [prefix, virtual_tokens, suffix, embedded_tokens])
-        llm_input = tokens_and_targets["position", : self.Pos.size]
-        padding = tokens_and_targets["position", -self.Pos.size :]
+        llm_input = tokens_and_targets["position", :input_size]
+        padding = tokens_and_targets["position", input_size:]
         x = self.decoder.transformer(llm_input, attn_mask=attn_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
         target_logits = lm_logits["position", padding.resolve_axis("position").size :]
-        return hax.concatenate("position", [target_logits, padding])
+        return hax.concatenate(
+            "position", [target_logits, hax.zeros((Batch, padding.resolve_axis("position"), self.Vocab))]
+        )
 
 
 class ViaASRModel(ViaModel, ASRMixin):
