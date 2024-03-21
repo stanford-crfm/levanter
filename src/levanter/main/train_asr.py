@@ -140,14 +140,14 @@ def main(config: TrainASRConfig):
                 axis_mapping=parameter_axis_mapping,
                 dtype=trainer.mp.compute_dtype,
             )
-            load_model = lambda: cast(
+            model = cast(
                 ViaASRModel,
                 base_model,
             )
             state = trainer.initial_state(
                 training_key,
-                model_init=load_model,
-                is_trainable=connector_only(base_model),
+                model=model,
+                is_trainable=connector_only(model),
             )
         else:
             logger.info("No checkpoint found. Starting from scratch.")
