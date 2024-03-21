@@ -95,7 +95,7 @@ def is_connector_param(node):
 
 
 def connector_only(model):
-    return jax.tree_util.tree_map(is_connector_param, model, is_leaf=is_connector_param)
+    return jax.tree_util.tree_map(is_connector_param, model)
 
 
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
