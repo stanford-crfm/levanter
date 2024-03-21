@@ -83,7 +83,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         *,
         batch_size=128,
         override_resources=None,
-        max_length=448,
+        max_length=1024,
         padding=True,
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
