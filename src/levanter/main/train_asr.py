@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Union, cast
+from typing import Optional, Union
 
 import jax.random as jrandom
 from transformers import PretrainedConfig as HfConfig  # noqa
@@ -15,7 +15,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig
-from levanter.models.via import ViaASRModel, ViaConfig, ViaModel, connector_only
+from levanter.models.via import ViaASRModel, ViaConfig, connector_only
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -134,14 +134,12 @@ def main(config: TrainASRConfig):
                 "No training checkpoint found. Initializing model from HF checkpoint"
                 f" '{converter.reference_checkpoint}'"
             )
-            base_model: ViaModel = converter.load_pretrained(
-                config.model,
+            model: ViaASRModel = converter.load_pretrained(
+                config.model.asr_model_type,
                 ref="WillHeld/via-llama",
                 axis_mapping=parameter_axis_mapping,
                 dtype=trainer.mp.compute_dtype,
             )
-            model: ViaASRModel = cast(ViaASRModel, base_model)
-            model.__class__ = ViaASRModel
             state = trainer.initial_state(
                 training_key,
                 model=model,
