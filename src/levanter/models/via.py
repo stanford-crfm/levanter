@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence, Type, Union
 
 import equinox as eqx
+import jax
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
