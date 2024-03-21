@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Union, cast
 
 import jax.random as jrandom
 from transformers import PretrainedConfig as HfConfig  # noqa
@@ -15,7 +15,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig
-from levanter.models.via import ViaConfig, connector_only
+from levanter.models.via import ViaASRModel, ViaConfig, ViaModel, connector_only
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -134,19 +134,28 @@ def main(config: TrainASRConfig):
                 "No training checkpoint found. Initializing model from HF checkpoint"
                 f" '{converter.reference_checkpoint}'"
             )
-            load_model = lambda: converter.load_pretrained(
+            base_model: ViaModel = converter.load_pretrained(
                 config.model,
                 ref="WillHeld/via-llama",
                 axis_mapping=parameter_axis_mapping,
                 dtype=trainer.mp.compute_dtype,
             )
+            load_model = lambda: cast(
+                ViaASRModel,
+                base_model,
+            )
+            state = trainer.initial_state(
+                training_key,
+                model_init=lambda: load_model,
+                is_trainable=connector_only,
+            )
         else:
             logger.info("No checkpoint found. Starting from scratch.")
-            load_model = lambda: config.model.build_asr(Vocab, key=model_key)
 
-        state = trainer.initial_state(
-            training_key, model_init=lambda: load_model, is_trainable=connector_only if config.via_init else None
-        )
+            state = trainer.initial_state(
+                training_key,
+                model_init=lambda: config.model.build_asr(Vocab, key=model_key),
+            )
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
