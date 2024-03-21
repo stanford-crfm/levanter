@@ -202,10 +202,12 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         embedded_tokens = self.decoder.embeddings.embed(input_ids)
         suffix = self.decoder.embeddings.embed(self.config.suffix.broadcast_axis(input_ids.resolve_axis("batch")))
         tokens_and_targets = hax.concatenate("position", [prefix, virtual_tokens, suffix, embedded_tokens])
-        x = self.decoder.transformer(tokens_and_targets, attn_mask=attn_mask, key=k_decoder)
+        llm_input = tokens_and_targets["position", : self.Pos.size]
+        padding = tokens_and_targets["position", -self.Pos.size :]
+        x = self.decoder.transformer(llm_input, attn_mask=attn_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
-        prompt_length = lm_logits.resolve_axis("position").size - input_ids.resolve_axis("position").size
-        return lm_logits["position", prompt_length:]
+        target_logits = lm_logits["position", padding.resolve_axis("position").size :]
+        return hax.concatenate("position", [target_logits, padding])
 
 
 class ViaASRModel(ViaModel, ASRMixin):
