@@ -140,7 +140,7 @@ def main(config: TrainASRConfig):
                 axis_mapping=parameter_axis_mapping,
                 dtype=trainer.mp.compute_dtype,
             )
-            model = cast(
+            model: ViaASRModel = cast(
                 ViaASRModel,
                 base_model,
             )
