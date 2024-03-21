@@ -371,8 +371,8 @@ gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command
 
 
 ### GPU Training
-In the below instructions, we assume you've been through our [GPU Setup Guide](Getting-Started-GPU.md) already.
-TODO
+The [GPU Setup Guide](Getting-Started-GPU.md) covers how to do your first training runs with a model on GPU. Our [GPU Docker Development Guide](dev/GPU-Docker-Dev.md) explains how to setup a docker container for Levanter development, and our [Getting Started Training Guide](Getting-Started-Training.md)
+provides a detailed explanation of different training arguments and configurations.
 
 ### Multi-Node GPU Training
 For multi-gpu training, you need to additionally have [nvidia-fabricmanager](https://docs.nvidia.com/datacenter/tesla/pdf/fabric-manager-user-guide.pdf) installed on each of your nodes.
@@ -381,6 +381,13 @@ For multi-gpu training, you need to additionally have [nvidia-fabricmanager](htt
 sudo apt-get install cuda-drivers-fabricmanager
 sudo systemctl start nvidia-fabricmanager
 ```
+
+If you are using a docker container to train your model, your docker run command should look similar to this
+
+```
+sudo docker run -it --network=host -v ~/src/levanter/cache:/cache -v /home/user/levanter:/levanter --gpus=all --shm-size=16g  ghcr.io/nvidia/jax:levanter
+```
+The main difference between the command here and the one found in the [GPU Docker Development Guide](dev/GPU-Docker-Dev.md) is the `--network=host` argument. This tells the docker container to use the host machine's network instead of the default docker `bridge` network. The `bridge` network is used for communication between docker containers that are on the same host machine, while the `host` network settings is better for container communication across different hosts. Since we are using multiple nodes, we want to use the `host` network setting. Please see the docker's [host](https://docs.docker.com/network/network-tutorial-host/) and [bridge](https://docs.docker.com/network/network-tutorial-standalone/) network documentation for more information.
 
 We use [JAX Distributed](https://jax.readthedocs.io/en/latest/multi_process.html) to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
 
@@ -391,7 +398,7 @@ NCCL_DEBUG=INFO python src/levanter/main/train_lm.py \
   --trainer.per_device_parallelism -1 \
   --trainer.distributed.num_processes 4 \
   --trainer.distributed.local_device_ids "[0,1,2,3,4,5,6,7]" \
-  --trainer.distributed.coordinator_address 10.223.253.32:22345 \
+  --trainer.distributed.coordinator_address 12.345.678.91:2403 \
   --trainer.distributed.process_id 0
 ```
 This will start a 4 node job where each node has 8 GPUs.
@@ -402,6 +409,7 @@ This will start a 4 node job where each node has 8 GPUs.
 - `--trainer.distributed.process_id` - The process ID of the current node. If the node is coordinator for the training run (its IP address was the one specified at `--trainer.distributed.coordinator_address`), its process ID needs to be set to zero. All other nodes in the train run should have a unique integer ID between [1, `num_processes` - 1].
 
 When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
+
 
 ### Switching Between GPU and TPU
 In levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
