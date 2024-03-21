@@ -193,32 +193,34 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         *,
         key=None,
     ) -> NamedArray:
-        Batch = input_ids.resolve_axis("batch")
+        InputPosition = input_ids.resolve_axis("position")
         if attn_mask is not None and not isinstance(attn_mask, AttentionMask):
             attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_connector, k_decoder, k_head = maybe_rng_split(key, 4)
         audio_features = self.encoder(mel, key=k_encoder)
         virtual_tokens = self.connector(audio_features, key=k_connector)
-        prefix = self.decoder.embeddings.embed(self.config.prefix.broadcast_axis(Batch))
+        prefix = self.decoder.embeddings.embed(self.config.prefix)
         embedded_tokens = self.decoder.embeddings.embed(input_ids)
-        suffix = self.decoder.embeddings.embed(self.config.suffix.broadcast_axis(Batch))
+        OtherAxes = hax.axis.eliminate_axes(embedded_tokens.axes, "position")
+        suffix = self.decoder.embeddings.embed(self.config.suffix)
         in_tokens = hax.concatenate(
             "position",
             [
-                prefix,
+                prefix.broadcast_axis(OtherAxes) if OtherAxes != () else prefix,
                 virtual_tokens,
-                suffix,
+                suffix.broadcast_axis(OtherAxes) if OtherAxes != () else prefix,
             ],
         )
-        target_size = input_ids.resolve_axis("position").size
         in_tokens_size = in_tokens.resolve_axis("position").size
         tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
-        llm_input = tokens_and_targets["position", :target_size]
+        llm_input = tokens_and_targets["position", : self.Pos.size]
         x = self.decoder.transformer(llm_input, attn_mask=attn_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
         target_logits = lm_logits["position", in_tokens_size:]
+        diff = InputPosition.size - target_logits.resolve_axis("position").size
+        OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
         return hax.concatenate(
-            "position", [target_logits, hax.zeros((Batch, in_tokens.resolve_axis("position"), self.Vocab))]
+            "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
         )
 
 
