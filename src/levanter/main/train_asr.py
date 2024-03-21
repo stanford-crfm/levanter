@@ -146,7 +146,7 @@ def main(config: TrainASRConfig):
             )
             state = trainer.initial_state(
                 training_key,
-                model_init=lambda: load_model,
+                model_init=load_model,
                 is_trainable=connector_only,
             )
         else:
