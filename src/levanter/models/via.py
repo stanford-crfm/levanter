@@ -202,15 +202,23 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         prefix = self.decoder.embeddings.embed(self.config.prefix.broadcast_axis(Batch))
         embedded_tokens = self.decoder.embeddings.embed(input_ids)
         suffix = self.decoder.embeddings.embed(self.config.suffix.broadcast_axis(Batch))
-        input_size = input_ids.resolve_axis("position").size
-        tokens_and_targets = hax.concatenate("position", [prefix, virtual_tokens, suffix, embedded_tokens])
-        llm_input = tokens_and_targets["position", :input_size]
-        padding = tokens_and_targets["position", input_size:]
+        in_tokens = hax.concatenate(
+            "position",
+            [
+                prefix,
+                virtual_tokens,
+                suffix,
+            ],
+        )
+        target_size = input_ids.resolve_axis("position").size
+        in_tokens_size = in_tokens.resolve_axis("position").size
+        tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
+        llm_input = tokens_and_targets["position", :target_size]
         x = self.decoder.transformer(llm_input, attn_mask=attn_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
-        target_logits = lm_logits["position", padding.resolve_axis("position").size :]
+        target_logits = lm_logits["position", in_tokens_size:]
         return hax.concatenate(
-            "position", [target_logits, hax.zeros((Batch, padding.resolve_axis("position"), self.Vocab))]
+            "position", [target_logits, hax.zeros((Batch, in_tokens.resolve_axis("position"), self.Vocab))]
         )
 
 
