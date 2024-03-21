@@ -172,7 +172,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         config: ViaConfig,
         *,
         key,
-        dec_cls: Type["LmHeadModel"] = MistralLMHeadModel,
+        dec_cls: Type["LmHeadModel"] = LlamaLMHeadModel,
     ) -> "ViaModel":
         k_enc, k_connector, k_dec = maybe_rng_split(key, 3)
         encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
@@ -206,16 +206,19 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         in_tokens = hax.concatenate(
             "position",
             [
-                prefix.broadcast_axis(OtherAxes) if OtherAxes != () else prefix,
+                prefix.broadcast_axis(OtherAxes),
                 virtual_tokens,
-                suffix.broadcast_axis(OtherAxes) if OtherAxes != () else prefix,
+                suffix.broadcast_axis(OtherAxes),
             ],
         )
-        in_tokens_size = in_tokens.resolve_axis("position").size
         tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
         llm_input = tokens_and_targets["position", : self.Pos.size]
-        x = self.decoder.transformer(llm_input, attn_mask=attn_mask, key=k_decoder)
+        causal_mask = AttentionMask.causal()
+        print(causal_mask)
+        x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
+
+        in_tokens_size = in_tokens.resolve_axis("position").size
         target_logits = lm_logits["position", in_tokens_size:]
         diff = InputPosition.size - target_logits.resolve_axis("position").size
         OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")

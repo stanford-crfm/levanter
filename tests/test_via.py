@@ -49,8 +49,7 @@ def test_via_loss():
         tokenized["input_ids"],
         axis="position",
     )
-    loss = model.compute_loss(AudioTextExample.init(na, inp))
-    print(loss)
+    model.compute_loss(AudioTextExample.init(na, inp))
 
 
 @skip_if_no_soundlibs
