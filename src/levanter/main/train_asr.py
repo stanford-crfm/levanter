@@ -147,7 +147,7 @@ def main(config: TrainASRConfig):
             state = trainer.initial_state(
                 training_key,
                 model_init=load_model,
-                is_trainable=connector_only,
+                is_trainable=connector_only(base_model),
             )
         else:
             logger.info("No checkpoint found. Starting from scratch.")
