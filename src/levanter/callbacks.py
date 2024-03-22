@@ -85,7 +85,7 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
         return jsd
     import ipdb; ipdb.set_trace()
-    
+
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         logits = logit_fn(model1, batch)
@@ -105,7 +105,7 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
     return total_loss
 
 
-def logit_avg_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+def logit_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
 
