@@ -19,6 +19,9 @@ from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
+import haliax as hax
+from haliax.nn import cross_entropy_loss
+
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp, kl_div
 from jax import jit
@@ -82,11 +85,42 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
         return jsd
     import ipdb; ipdb.set_trace()
+    
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
+        ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
         loss = js_divergence(logits, logits2)
+        total_loss += loss.item()
+        n += 1
+        pbar.set_postfix(loss=total_loss / n)
+
+        if max_batches is not None and n >= max_batches:
+            break
+
+    if n > 0:
+        total_loss /= n
+
+    return total_loss
+
+
+def logit_avg_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+    total_loss = 0.0
+    n = 0
+
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+
+    
+    import ipdb; ipdb.set_trace()
+    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
+    for batch in pbar:
+        logits = logit_fn(model1, batch)
+        logits2 = logit_fn(model2, batch)
+        loss = hax.mean(logits, logits2)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
