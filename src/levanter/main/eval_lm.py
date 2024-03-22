@@ -50,7 +50,7 @@ class EvalLmConfig:
 
 
 def main(config: EvalLmConfig):
-    import ipdb; ipdb.set_trace()
+    # HACK: This is a workaround for the fact that the config is not properly deserialized
     config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path['model_name_or_path']
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
