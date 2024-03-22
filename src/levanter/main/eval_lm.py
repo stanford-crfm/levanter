@@ -31,6 +31,8 @@ from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact
 logger = logging.getLogger(__name__)
 
 
+
+
 @dataclass
 class EvalLmConfig:
     checkpoint_path: Optional[str] = None
@@ -43,6 +45,8 @@ class EvalLmConfig:
     compare_torch: bool = False
     eval_on_train: bool = False
     alpha: float = 0.5
+
+
 
 
 def main(config: EvalLmConfig):
@@ -77,6 +81,12 @@ def main(config: EvalLmConfig):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
             return model.compute_loss(example, key=None)
+        
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def compute_logit(model: LmHeadModel, example: LmExample):
+            model = inference_mode(model, True)
+            model = mp.cast_to_compute(model)
+            return model.compute_logits(example, key=None)
 
         total = config.trainer.max_eval_batches
 
@@ -117,7 +127,8 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(model_config)
-
+            import ipdb; ipdb.set_trace()
+            jsd = callbacks.jsd_loss_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
 # Generate alphas from 0 to 1 with a step of 0.05
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 

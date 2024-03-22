@@ -10,6 +10,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.nn import cross_entropy_loss
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
@@ -27,7 +28,7 @@ from levanter.compat.torch_serialization import (
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmHeadModel, LmExample
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -560,6 +561,27 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
+
+    def compute_logits(
+        self,
+        example: LmExample,
+        *,
+        key=None,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> NamedArray:
+        """
+        Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
+        across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+        reduced, and the result is a named array with axes (*batch axes, sequence_length).
+        """
+        logits = self(example.tokens, example.attn_mask, key=key)
+        return logits
+        # targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
+        # target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        # return cross_entropy_loss(
+        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        # )
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp

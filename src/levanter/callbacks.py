@@ -19,6 +19,9 @@ from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
+import jax.numpy as jnp
+from jax.scipy.special import logsumexp, kl_div
+from jax import jit
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         desc = f"eval {name}"
     else:
         desc = "eval"
-    import ipdb; ipdb.set_trace()
+    
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         loss = loss_fn(model, batch)
@@ -46,6 +49,56 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         total_loss /= n
 
     return total_loss
+
+def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+    total_loss = 0.0
+    n = 0
+
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+
+    # Helper functions to compute JSD
+    def softmax(logits):
+        # Subtract the max for numerical stability
+        return jnp.exp(logits - logsumexp(logits, axis=-1, keepdims=True))
+
+
+    @jit
+    def js_divergence(logits1, logits2):
+        # Convert logits to probabilities
+        p1 = softmax(logits1)
+        p2 = softmax(logits2)
+
+        # Mean probability distribution
+        m = (p1 + p2) / 2
+
+        # Compute KL divergences using jax.scipy.special.kl_div
+        kl1 = kl_div(p1, m)
+        kl2 = kl_div(p2, m)
+
+        # Sum KL divergences and normalize to get Jensen-Shannon Divergence
+        jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
+        return jsd
+    import ipdb; ipdb.set_trace()
+    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
+    for batch in pbar:
+        logits = logit_fn(model1, batch)
+        logits2 = logit_fn(model2, batch)
+        loss = js_divergence(logits, logits2)
+        total_loss += loss.item()
+        n += 1
+        pbar.set_postfix(loss=total_loss / n)
+
+        if max_batches is not None and n >= max_batches:
+            break
+
+    if n > 0:
+        total_loss /= n
+
+    return total_loss
+
 
 
 def compute_validation_loss(
