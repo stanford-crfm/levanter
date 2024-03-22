@@ -133,6 +133,7 @@ def main(config: EvalLmConfig):
 # Generate alphas from 0 to 1 with a step of 0.05
             l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
             wandb.log({"eval/logits_diff": logits_diff})
+            wandb.log({"eval/l2_norm_diff": l2_norm_num})
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 
             for alpha in alphas:
