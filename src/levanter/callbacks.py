@@ -68,8 +68,8 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
     @jit
     def js_divergence(logits1, logits2):
         # Convert logits to probabilities
-        p1 = softmax(logits1)
-        p2 = softmax(logits2)
+        p1 = softmax(logits1.array)
+        p2 = softmax(logits2.array)
 
         # Mean probability distribution
         m = (p1 + p2) / 2
