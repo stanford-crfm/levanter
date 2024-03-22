@@ -41,6 +41,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     # Connector Config
     time_dialation: int = 25
+    dialation_factor: int = 4
     pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [1, 518, 25580, 29962, 376])
     pre_text_prompt: Sequence[int] = field(
         default_factory=lambda: [376, 13, 830, 11666, 393, 1250, 304, 592, 29889, 518, 29914, 25580, 29962]
@@ -56,6 +57,11 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     )
     GroupEmbed = property(
         lambda self: Axis(name="group_embed", size=(self.enc_config.Embed.size * self.time_dialation))
+    )
+    DialationEmbed = property(
+        lambda self: Axis(
+            name="dialation_embed", size=((self.enc_config.Embed.size * self.time_dialation) // self.dialation_factor)
+        )
     )
 
     @property
@@ -100,12 +106,14 @@ def connector_only(model):
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
     Grouping: Sequence[Axis]
     dialator: hnn.Linear
+    compressor: hnn.Linear
     act: Callable = eqx.static_field()
     config: ViaConfig = eqx.static_field()
 
     @classmethod
     def init(cls, config: ViaConfig, *, key) -> "ViaConnector":
-        dialator = hnn.Linear.init(In=config.GroupEmbed, Out=config.dec_config.Embed, key=key)
+        dialator = hnn.Linear.init(In=config.GroupEmbed, Out=config.DialationEmbed, key=key)
+        compressor = hnn.Linear.init(In=config.DialationEmbed, Out=config.dec_config.Embed, key=key)
 
         if isinstance(config.enc_config.activation_function, str):
             activation_fn = ACT2FN[config.enc_config.activation_function]
@@ -116,6 +124,7 @@ class ViaConnector(eqx.Module, StateDictSerializationMixin):
         return ViaConnector(
             Grouping,
             dialator,
+            compressor,
             act,
             config,
         )
@@ -124,12 +133,15 @@ class ViaConnector(eqx.Module, StateDictSerializationMixin):
         flat_encoder_outputs = hax.flatten_axes(encoder_outputs, ("position", "embed_dim"), "flat_embed")
         grouped_encoder_outputs = hax.unflatten_axis(flat_encoder_outputs, "flat_embed", self.Grouping)
         x = self.act(self.dialator(grouped_encoder_outputs, key=key))
+        x = self.compressor(x)
         return x
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "ViaConnector":
         # convert to Haliax's nice multiple dim input linear syntax
         d = {}
         d.update(unflatten_linear_layers(apply_prefix(prefix, "dialator"), state_dict, self.dialator, None))
+
+        d.update(unflatten_linear_layers(apply_prefix(prefix, "compressor"), state_dict, self.compressor, None))
 
         return super().from_state_dict(d, prefix)
 
@@ -139,6 +151,8 @@ class ViaConnector(eqx.Module, StateDictSerializationMixin):
         super().update_state_dict(my_dict, prefix)
 
         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "dialator"), self.dialator, None))
+
+        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "compressor"), self.compressor, None))
 
         state_dict.update(my_dict)
         return state_dict
@@ -214,7 +228,6 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
         llm_input = tokens_and_targets["position", : self.Pos.size]
         causal_mask = AttentionMask.causal()
-        print(causal_mask)
         x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
         lm_logits = self.decoder.lm_head(x, key=k_head)
 
