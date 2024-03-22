@@ -50,6 +50,7 @@ class EvalLmConfig:
 
 
 def main(config: EvalLmConfig):
+    import ipdb; ipdb.set_trace()
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
 
