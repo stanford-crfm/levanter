@@ -51,6 +51,7 @@ class EvalLmConfig:
 
 def main(config: EvalLmConfig):
     import ipdb; ipdb.set_trace()
+    config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path['model_name_or_path']
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
 

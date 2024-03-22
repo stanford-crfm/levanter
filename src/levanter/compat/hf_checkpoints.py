@@ -60,7 +60,7 @@ PYTORCH_WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_TENSORS_INDEX_NAME = "model.safetensors.index.json"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class RepoRef:
     """Represents a reference to a model (or similar) in a remote repository or local file system, and
     optionally a revision. This lets you load particular revisions or branches of a model.
