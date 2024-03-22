@@ -105,7 +105,7 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
     return total_loss
 
 
-def logit_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
 
