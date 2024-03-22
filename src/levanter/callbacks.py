@@ -89,6 +89,7 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
+        import ipdb; ipdb.set_trace()
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
         ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
@@ -120,7 +121,7 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
     for batch in pbar:
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-        loss = hax.mean(logits - logits2)
+        loss = hax.mean(logits - logits2)**2
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
