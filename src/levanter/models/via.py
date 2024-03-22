@@ -171,7 +171,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
     encoder: WhisperEncoder
     connector: WhisperTransformer
     decoder: Union[LlamaLMHeadModel | MistralLMHeadModel]
-    _config: ViaConfig
+    _config: ViaConfig = eqx.static_field()
 
     @property
     def config(self):
