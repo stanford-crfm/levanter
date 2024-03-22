@@ -369,10 +369,6 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
-### GPU
-
-TODO, but you can mostly follow the guide for [TPU](#tpu) above.
-
 ## Monitoring
 
 Levanter integrates with WandB for logging. You can view your run on the WandB website. Levanter will also log

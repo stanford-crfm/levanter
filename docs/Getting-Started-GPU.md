@@ -248,9 +248,47 @@ Then, submit the job with sbatch:
 sbatch my-job.sh
 ```
 
-#### Multinode
+### Multi-Node GPU Training
+For multi-gpu training, you need to additionally have [nvidia-fabricmanager](https://docs.nvidia.com/datacenter/tesla/pdf/fabric-manager-user-guide.pdf) installed on each of your nodes.
 
-Something is wrong and this doesn't work right now on the NLP cluster. In theory this should work:
+```
+sudo apt-get install cuda-drivers-fabricmanager
+sudo systemctl start nvidia-fabricmanager
+```
+
+#### Multi-Node Docker Environment Setup
+If you are using a docker container to train your model, your docker run command should look similar to this
+
+```
+sudo docker run -it --network=host -v ~/src/levanter/cache:/cache -v /home/user/levanter:/levanter --gpus=all --shm-size=16g  ghcr.io/nvidia/jax:levanter
+```
+The main difference between the command here and the one found in the [GPU Docker Development Guide](dev/GPU-Docker-Dev.md) is the `--network=host` argument. This tells the docker container to use the host machine's network instead of the default docker `bridge` network. Using `host` is the easiest way to do multi-node networking with docker and should be sufficient for your training purposes. Please see docker's [host](https://docs.docker.com/network/network-tutorial-host/) and [bridge](https://docs.docker.com/network/network-tutorial-standalone/) network documentation for more information.
+
+#### Multi-Node Training Command
+We use [JAX Distributed](https://jax.readthedocs.io/en/latest/multi_process.html) to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
+
+```
+NCCL_DEBUG=INFO python src/levanter/main/train_lm.py \
+  --config_path config/gpt2_7b.yaml \
+  --trainer.ray.auto_start_cluster false \
+  --trainer.per_device_parallelism -1 \
+  --trainer.distributed.num_processes 4 \
+  --trainer.distributed.local_device_ids "[0,1,2,3,4,5,6,7]" \
+  --trainer.distributed.coordinator_address 12.345.678.91:2403 \
+  --trainer.distributed.process_id 0
+```
+This will start a 4 node job where each node has 8 GPUs.
+
+- `--trainer.distributed.num_processes` - sets the number of nodes used in this training run
+- `--trainer.distributed.local_device_ids` - sets the ids of the local GPUs to use on this specific node
+- `--trainer.distributed.coordinator_address` - is the IP address and port number of the node that will be leading the training run. All other nodes should have network access to the port and IP address set by this argument. The same IP address and port number should be used for this argument in every node's run command.
+- `--trainer.distributed.process_id` - The process ID of the current node. If the node is coordinator for the training run (its IP address was the one specified at `--trainer.distributed.coordinator_address`), its process ID needs to be set to zero. All other nodes in the train run should have a unique integer ID between [1, `num_processes` - 1].
+
+When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
+
+#### Launching a Multi-Node Slurm Job
+Here is an updated SLURM script example where we've added `#SBATCH --nodes=2`.
+***NOTE: This script hasn't been tested yet.***
 
 ```bash
 #!/bin/bash
@@ -265,16 +303,15 @@ Something is wrong and this doesn't work right now on the NLP cluster. In theory
 # On the Stanford NLP cluster, you might need this:
 export PATH=$(echo $PATH | sed 's|:/usr/local/cuda/bin||')
 
-# Activate your virtual environment
-source levanter/bin/activate
+CONTAINER_PATH="ghcr.io/nvidia/jax:levanter"
+TRAINING_COMMAND="python -m levanter.main.train_lm --config_path config/gpt2_7b.yaml --trainer.ray.auto_start_cluster false --trainer.per_device_parallelism -1"
 
-srun --nodes=2 python -m levanter.main.train_lm --config config/gpt2_small.yaml --trainer.per_device_parallelism -1
-
-Submit the job with sbatch:
-
-```bash
-sbatch my-job.sh
+srun docker run --gpus=all --shm-size=16g --rm $CONTAINER_PATH $TRAINING_COMMAND
 ```
+If you're SLURM (and using Pyxis), you won't need to do provide the distributed arguments described in the previous section. JAX/Levanter will infer them for you.
+
+### Switching Between GPU and TPU
+In Levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
 
 ## Miscellaneous Problems
 
