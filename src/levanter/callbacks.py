@@ -31,7 +31,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         desc = f"eval {name}"
     else:
         desc = "eval"
-
+    import ipdb; ipdb.set_trace()
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         loss = loss_fn(model, batch)
