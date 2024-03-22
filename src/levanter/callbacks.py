@@ -19,6 +19,8 @@ from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
+from levanter.utils.jax_utils import is_inexact_arrayish
+
 import haliax as hax
 from haliax.nn import cross_entropy_loss
 
@@ -84,7 +86,6 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
         return jsd
-    import ipdb; ipdb.set_trace()
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
@@ -115,7 +116,6 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
         desc = "eval"
 
     
-    import ipdb; ipdb.set_trace()
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         logits = logit_fn(model1, batch)
@@ -141,12 +141,13 @@ def l2_norm_diff(model1, model2, name: Optional[str] = None):
         desc = f"eval {name}"
     else:
         desc = "eval"
-    import ipdb; ipdb.set_trace()
     params1 = tree_util.tree_leaves(model1)
     params2 = tree_util.tree_leaves(model2)
 
     for p1, p2 in zip(params1, params2):
-        total_loss += hax.mean((p1 - p2)) ** 2
+        if is_inexact_arrayish(p1) and is_inexact_arrayish(p2):
+            l2_norm_delta = hax.mean(p1 - p2) ** 2
+            total_loss += l2_norm_delta.item()
 
 
     return total_loss / len(params1)

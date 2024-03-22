@@ -127,8 +127,8 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(model_config)
-            import ipdb; ipdb.set_trace()
 
+            
             logits_diff = callbacks.logits_diff_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
 # Generate alphas from 0 to 1 with a step of 0.05
             l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
