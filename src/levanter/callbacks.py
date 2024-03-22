@@ -120,7 +120,7 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
     for batch in pbar:
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-        loss = hax.mean(logits, logits2)
+        loss = hax.mean(logits - logits2)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
@@ -132,6 +132,24 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
         total_loss /= n
 
     return total_loss
+
+def l2_norm_diff(model1, model2, name: Optional[str] = None):
+    total_loss = 0.0
+    n = 0
+    import jax.tree_util as tree_util
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+    import ipdb; ipdb.set_trace()
+    params1 = tree_util.tree_leaves(model1)
+    params2 = tree_util.tree_leaves(model2)
+
+    for p1, p2 in zip(params1, params2):
+        total_loss += hax.mean((p1 - p2)) ** 2
+
+
+    return total_loss / len(params1)
 
 
 

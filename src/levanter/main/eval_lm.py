@@ -131,6 +131,8 @@ def main(config: EvalLmConfig):
 
             logits_diff = callbacks.logits_diff_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
 # Generate alphas from 0 to 1 with a step of 0.05
+            l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
+            wandb.log({"eval/logits_diff": logits_diff})
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 
             for alpha in alphas:
