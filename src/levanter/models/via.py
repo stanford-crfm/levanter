@@ -25,7 +25,7 @@ from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmHeadModel
 from levanter.models.mistral import MistralLMHeadModel
-from levanter.models.whisper import ACT2FN, WhisperConfig, WhisperEncoder
+from levanter.models.whisper import ACT2FN, WhisperConfig, WhisperEncoder, WhisperTransformer
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -99,8 +99,15 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 def connector_only(model):
     frozen_tree = jax.tree_util.tree_map(lambda _: False, model)
     return eqx.tree_at(
-        lambda tree: (tree.connector.dialator.weight, tree.connector.dialator.bias), frozen_tree, (True, True)
+        lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias), frozen_tree, (True, True, True)
     )
+
+
+# def connector_only(model):
+#    frozen_tree = jax.tree_util.tree_map(lambda _: False, model)
+#    return eqx.tree_at(
+#        lambda tree: (tree.connector.dialator.weight, tree.connector.dialator.bias), frozen_tree, #(True, True)
+#    )
 
 
 class ViaConnector(eqx.Module, StateDictSerializationMixin):
@@ -159,13 +166,16 @@ class ViaConnector(eqx.Module, StateDictSerializationMixin):
 
 
 class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
+    query_tokens: NamedArray
+    projection: hnn.Linear
     encoder: WhisperEncoder
-    connector: ViaConnector
+    connector: WhisperTransformer
     decoder: Union[LlamaLMHeadModel | MistralLMHeadModel]
+    _config: ViaConfig
 
     @property
     def config(self):
-        return self.connector.config
+        return self._config
 
     @property
     def Pos(self) -> Axis:
@@ -188,16 +198,22 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         key,
         dec_cls: Type["LmHeadModel"] = LlamaLMHeadModel,
     ) -> "ViaModel":
-        k_enc, k_connector, k_dec = maybe_rng_split(key, 3)
+        k_query, k_projection, k_enc, k_connector, k_dec = maybe_rng_split(key, 5)
         encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
-        connector = ViaConnector.init(config, key=k_connector)
+        connector = WhisperTransformer.init(
+            config.enc_config.DecoderLayer,
+            config.enc_config.DecoderHeads,
+            config.enc_config.DecoderHeadSize,
+            config.enc_config.DecoderMlp,
+            config.enc_config,
+            has_cross=True,
+            key=k_connector,
+        )
+        query_tokens = hax.random.normal(k_query, (config.TimeGroup, config.enc_config.Embed)) * 0.02
+        projection = hnn.Linear.init(In=config.enc_config.Embed, Out=config.dec_config.Embed, key=key)
         decoder = dec_cls.init(Vocab, config.dec_config, key=k_dec)
 
-        return cls(
-            encoder,
-            connector,
-            decoder,
-        )
+        return cls(query_tokens, projection, encoder, connector, decoder, config)
 
     def __call__(
         self,
@@ -207,16 +223,29 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         *,
         key=None,
     ) -> NamedArray:
+        # Setup
         InputPosition = input_ids.resolve_axis("position")
-        if attn_mask is not None and not isinstance(attn_mask, AttentionMask):
-            attn_mask = AttentionMask.explicit(attn_mask)
+        OtherAxes = hax.axis.eliminate_axes(input_ids.axes, "position")
+        causal_mask = AttentionMask.causal()
+        if attn_mask is not None:
+            causal_mask = causal_mask & attn_mask
         k_encoder, k_connector, k_decoder, k_head = maybe_rng_split(key, 4)
+
+        # Encode Audio With Whisper Encoder
         audio_features = self.encoder(mel, key=k_encoder)
-        virtual_tokens = self.connector(audio_features, key=k_connector)
+
+        # Convert to Virtual LLM Tokens
+        virt_whisper_tokens = self.connector(
+            self.query_tokens.broadcast_axis(OtherAxes), audio_features, causal_mask, key=k_connector
+        )
+        virtual_tokens = self.projection(virt_whisper_tokens)
+
+        # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
-        embedded_tokens = self.decoder.embeddings.embed(input_ids)
-        OtherAxes = hax.axis.eliminate_axes(embedded_tokens.axes, "position")
         suffix = self.decoder.embeddings.embed(self.config.suffix)
+        embedded_tokens = self.decoder.embeddings.embed(input_ids)
+
+        # Create Mixed Virtual and Real Input
         in_tokens = hax.concatenate(
             "position",
             [
@@ -227,12 +256,14 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         )
         tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
         llm_input = tokens_and_targets["position", : self.Pos.size]
-        causal_mask = AttentionMask.causal()
-        x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
-        lm_logits = self.decoder.lm_head(x, key=k_head)
 
+        # Create LLM Response
         in_tokens_size = in_tokens.resolve_axis("position").size
-        target_logits = lm_logits["position", in_tokens_size:]
+        x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
+        target_x = x["position", in_tokens_size:]
+        target_logits = self.decoder.lm_head(target_x, key=k_head)
+
+        # Reconstruct Padded Output Prediction with Input Predictions Removed
         diff = InputPosition.size - target_logits.resolve_axis("position").size
         OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
         return hax.concatenate(
