@@ -235,8 +235,13 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
+        position_embeds = self.orig_position_embeddings.embed(hax.arange(self.TimeGroup))
+
         virt_whisper_tokens = self.connector(
-            self.query_tokens.broadcast_axis(OtherAxes), audio_features, causal_mask, key=k_connector
+            (self.query_tokens + position_embeds).broadcast_axis(OtherAxes),
+            audio_features,
+            causal_mask,
+            key=k_connector,
         )
         virtual_tokens = self.projection(virt_whisper_tokens)
 
