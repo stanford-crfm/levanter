@@ -92,6 +92,9 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         import ipdb; ipdb.set_trace()
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
+        model_output = model1(batch)
+        hax.nn.softmax(model_output, axis=model1.Vocab)
+
         ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
         loss = js_divergence(logits, logits2)
         total_loss += loss.item()
