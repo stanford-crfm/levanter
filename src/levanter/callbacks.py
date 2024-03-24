@@ -90,7 +90,11 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         print(jsd.array.shape)
         
         # Compute the mean JSD across the batch and sequence dimensions
+<<<<<<< Updated upstream
         mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1]))
+=======
+        mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1])).item()
+>>>>>>> Stashed changes
         
         total_jsd += mean_jsd
         n += 1
