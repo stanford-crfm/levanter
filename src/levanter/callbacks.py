@@ -62,50 +62,49 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 
 @named_jit(axis_resources=None)
 def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
-    total_loss = 0.0
+    total_jsd = 0.0
     n = 0
-
     if name is not None:
         desc = f"eval {name}"
     else:
         desc = "eval"
-
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-
         # Compute log probabilities using log_softmax for numerical stability
         log_p1 = hax.nn.log_softmax(logits, axis=model1.Vocab)
         log_p2 = hax.nn.log_softmax(logits2, axis=model2.Vocab)
-
         # Obtain probabilities from log probabilities using exp
         p1 = hax.exp(log_p1)
         p2 = hax.exp(log_p2)
-
         # Mean probability distribution
         m = (p1 + p2) / 2
-
         # Compute KL divergences using the formula KL(p||q) = sum(p * log(p / q))
         kl1 = hax.dot(p1, log_p1 - hax.log(m), axis=model1.Vocab)
         kl2 = hax.dot(p2, log_p2 - hax.log(m), axis=model2.Vocab)
-
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (kl1 + kl2)
-        loss = jsd
         print(f'\n JSD: {jsd} \n')
         print(f'\n \n JSD \n')
         print(jsd.array.shape)
-        total_loss += loss.item()
+        
+        # Compute the mean JSD across the batch and sequence dimensions
+        mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1])).scalar()
+        
+        total_jsd += mean_jsd
         n += 1
-        pbar.set_postfix(loss=total_loss / n)
+        
+        pbar.set_postfix(jsd=total_jsd / n)
         if max_batches is not None and n >= max_batches:
             break
-
+    
     if n > 0:
-        total_loss /= n
-
-    return total_loss
+        scalar_jsd = total_jsd / n
+    else:
+        scalar_jsd = 0.0
+    
+    return scalar_jsd
 
 
 def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
