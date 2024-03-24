@@ -67,7 +67,9 @@ class Gpt2Config(HFCompatConfig):
 
     use_bias: bool = True
 
-    use_flash_attention: bool = False  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    use_flash_attention: bool = (
+        False  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    )
     flash_attention_block_size: int = 1024
 
     # Axes
@@ -251,59 +253,60 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[AttentionMask | NamedArray], layer_idx, *, key):
-            """
-            Applies the GPT2 model on the input tensor.
+        """
+        Applies the GPT2 model on the input tensor.
 
-            Args:
-                x (NamedArray): The input tensor.
-                mask (Optional[AttentionMask | NamedArray]): The attention mask.
-                layer_idx: The index of the layer.
-                key: The random key.
+        Args:
+            x (NamedArray): The input tensor.
+            mask (Optional[AttentionMask | NamedArray]): The attention mask.
+            layer_idx: The index of the layer.
+            key: The random key.
 
-            Returns:
-                NamedArray: The output tensor.
-            """
-            k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
-            # Open forget:
-            # Define the functions for conditional execution
-            prev_x = x
-            attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
-            attn_output = self.resid_dropout(attn_output, key=k2)
-            x = x + attn_output
+        Returns:
+            NamedArray: The output tensor.
+        """
+        k1, k2, k3, k4 = haliax.jax_utils.maybe_rng_split(key, 4)
+        # Open forget:
+        # Define the functions for conditional execution
+        prev_x = x
+        attn_output = self.attn(self.ln_1(x), mask=mask, layer_idx=layer_idx, key=k1)
+        attn_output = self.resid_dropout(attn_output, key=k2)
+        x = x + attn_output
 
-            # Rest of the code remains the same
-            ff_output = self.mlp(self.ln_2(x), key=k3)
-            ff_output = self.resid_dropout(ff_output, key=k4)
+        # Rest of the code remains the same
+        ff_output = self.mlp(self.ln_2(x), key=k3)
+        ff_output = self.resid_dropout(ff_output, key=k4)
 
-            # sine output on attention
-            def true_fun(_):
-                # sin is function of attention outputs
-                # so we distil into features? ....
-                # not into ff for now
-                # Operations if layer_idx equals 4
-                # sum over sequence length
-                mode = "integrated"
-                if mode == "integrated":
-                    return hax.sin(0.1*hax.sum(prev_x, axis='position')) + attn_output + ff_output
-                elif mode == "mod":
-                    return prev_x + hax.sin(32*attn_output) + ff_output
-                else:
-                    return x + ff_output
-            def false_fun(_):
-                # Otherwise return the same tensor
-                # as expected
+        # sine output on attention
+        def true_fun(_):
+            # sin is function of attention outputs
+            # so we distil into features? ....
+            # not into ff for now
+            # Operations if layer_idx equals 4
+            # sum over sequence length
+            mode = "integrated"
+            if mode == "integrated":
+                return hax.sin(0.1 * hax.sum(prev_x, axis="position")) + attn_output + ff_output
+            elif mode == "mod":
+                return prev_x + hax.sin(32 * attn_output) + ff_output
+            else:
                 return x + ff_output
-            
-            # if layer is one of the last three (12 layers) add sine target
-            sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 12), true_fun, false_fun, None)
 
-            # jax.lax.stopgradient
+        def false_fun(_):
+            # Otherwise return the same tensor
+            # as expected
+            return x + ff_output
 
-            #x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
-            x = x + ff_output
-            activation_diff = hax.square(x - sin_target)
-            return x, activation_diff
-   
+        # if layer is one of the last three (12 layers) add sine target
+        sin_target = lax.cond(jnp.greater_equal(layer_idx.array, 12), true_fun, false_fun, None)
+
+        # jax.lax.stopgradient
+
+        # x = x + hax.sin(hax.sum(ff_output, axis='position')) + ff_output
+        x = x + ff_output
+        activation_diff = hax.square(x - sin_target)
+        return x, activation_diff
+
 
 class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     config: Gpt2Config = eqx.static_field()
@@ -325,7 +328,7 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     def __call__(self, x: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None) -> NamedArray:
         keys = hax.jax_utils.maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x, sine_outputs = self.blocks.scan(x, attn_mask, hax.arange(self.config.Layers), key=keys)
-        #x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
+        # x = self.blocks.fold(x, attn_mask, hax.arange(self.config.Layers), key=keys)
         x = self.ln_f(x)
 
         return x, sine_outputs
@@ -382,7 +385,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         input_Pos = input_ids.resolve_axis("position")
         position_embeds = self.position_embeddings.embed(hax.arange(input_Pos))
         x = input_embeds + position_embeds
-        #x = self.dropout(x, key=key)
+        # x = self.dropout(x, key=key)
 
         return x
 
@@ -427,10 +430,10 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
         x, sine_output = self.transformer(x, attn_mask, key=k_transformer)
-        
+
         lm_logits = self.embeddings.unembed(x)
         return lm_logits, sine_output
-    
+
     def compute_loss(
         self,
         example: LmExample,
@@ -447,18 +450,17 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         logits, sine_output = self(example.tokens, example.attn_mask, key=key)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        
-        
+
         if key is None:
             return cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
         return cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        ), hax.mean(sine_output)     
+        ), hax.mean(sine_output)
         if key is None:
             return cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
         else:
             # MSE loss

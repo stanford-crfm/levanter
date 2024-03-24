@@ -1,3 +1,5 @@
+import jax.tree_util as tree_util
+
 import copy
 import logging
 import os
@@ -39,7 +41,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         desc = f"eval {name}"
     else:
         desc = "eval"
-    
+
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         loss = loss_fn(model, batch)
@@ -55,6 +57,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 
     return total_loss
 
+
 def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
@@ -66,11 +69,9 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
-        import ipdb; ipdb.set_trace()
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
 
-        
         # Compute log probabilities using log_softmax for numerical stability
         log_p1 = hax.nn.log_softmax(logits, axis=model1.Vocab)
         log_p2 = hax.nn.log_softmax(logits2, axis=model2.Vocab)
@@ -88,8 +89,6 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
 
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (kl1 + kl2)
-
-        ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
         loss = jsd
         total_loss += loss.item()
         n += 1
@@ -113,12 +112,11 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
     else:
         desc = "eval"
 
-    
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-        loss = hax.mean(logits - logits2)**2
+        loss = hax.mean(logits - logits2) ** 2
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
@@ -131,25 +129,21 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
 
     return total_loss
 
+
 def l2_norm_diff(model1, model2, name: Optional[str] = None):
-    total_loss = 0.0
-    n = 0
-    import jax.tree_util as tree_util
+    def l2_norm_sq(x, y):
+        return hax.mean(hax.l2_norm(x - y) ** 2)
+
     if name is not None:
         desc = f"eval {name}"
     else:
         desc = "eval"
-    params1 = tree_util.tree_leaves(model1)
-    params2 = tree_util.tree_leaves(model2)
 
-    for p1, p2 in zip(params1, params2):
-        if is_inexact_arrayish(p1) and is_inexact_arrayish(p2):
-            l2_norm_delta = hax.mean(p1 - p2) ** 2
-            total_loss += l2_norm_delta.item()
+    tree_diff = tree_util.tree_map(l2_norm_sq, model1, model2)
+    total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
 
-
-    return total_loss / len(params1)
-
+    num_params = len(tree_util.tree_leaves(model1))
+    return total_loss / num_params
 
 
 def compute_validation_loss(

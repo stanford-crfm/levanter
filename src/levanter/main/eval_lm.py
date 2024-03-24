@@ -31,8 +31,6 @@ from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact
 logger = logging.getLogger(__name__)
 
 
-
-
 @dataclass
 class EvalLmConfig:
     checkpoint_path: Optional[str] = None
@@ -47,11 +45,11 @@ class EvalLmConfig:
     alpha: float = 0.5
 
 
-
-
 def main(config: EvalLmConfig):
     # HACK: This is a workaround for the fact that the config is not properly deserialized
-    config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path['model_name_or_path']
+    config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path[
+        "model_name_or_path"
+    ]
     config.trainer.initialize(config)
     tokenizer = config.data.the_tokenizer
 
@@ -83,7 +81,7 @@ def main(config: EvalLmConfig):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
             return model.compute_loss(example, key=None)
-        
+
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_logit(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
@@ -114,17 +112,16 @@ def main(config: EvalLmConfig):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             model_config = config.model
-            #if not hasattr(model_config, "hf_checkpoint_converter"):
+            # if not hasattr(model_config, "hf_checkpoint_converter"):
             #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            
 
             logger.info(f"Loading first model from {converter.reference_checkpoint}")
             logger.info(f"Loading first model from {config.model}")
             logger.info(f"model config {model_config}")
             model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
-    
+
             converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
             logger.info(f"Loading second model from {converter.reference_checkpoint}")
             logger.info(f"Loading second model from {config.model}")
@@ -132,15 +129,16 @@ def main(config: EvalLmConfig):
 
             jsd = callbacks.jsd_loss_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
             logits_diff = callbacks.logits_diff_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
-# Generate alphas from 0 to 1 with a step of 0.05
+            # Generate alphas from 0 to 1 with a step of 0.05
             l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
             wandb.log({"eval/logits_diff": logits_diff})
             wandb.log({"eval/l2_norm_diff": l2_norm_num})
+            wandb.log({"eval/jsd": jsd})
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 
             for alpha in alphas:
                 print(f"alpha: {alpha}")
-                
+
                 def add_floats(path, x, y):
                     print(path)
                     if is_inexact_arrayish(x) and is_inexact_arrayish(y):
@@ -151,7 +149,9 @@ def main(config: EvalLmConfig):
                         return x
 
                 # Use the rounded alpha for merging models
-                merged_model = named_jit(lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False)(model_1, model_2)
+                merged_model = named_jit(
+                    lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False
+                )(model_1, model_2)
 
                 # Use the rounded alpha for merging models
                 # Evaluate the loss for the merged model
@@ -162,10 +162,6 @@ def main(config: EvalLmConfig):
 
                 print(f"Loss from merged model (alpha={alpha}): ", loss)
                 del merged_model
-        
-
-            
-            
 
             if config.compare_torch:
                 import torch

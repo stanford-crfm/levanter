@@ -182,12 +182,10 @@ class Trainer:
         return self.config.mp
 
     @typing.overload
-    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
-        ...
+    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1): ...
 
     @typing.overload
-    def add_hook(self, *, every: int = 1):
-        ...
+    def add_hook(self, *, every: int = 1): ...
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
         return self.hooks.add_hook(fn, every=every)
@@ -419,11 +417,9 @@ class Trainer:
                 model = eqx.combine(trainable_model, rest_model)
                 return self.loss_fn(model, *batch, **batch_kwargs)
 
-            loss, grads = self._compute_gradients_microbatched(
-                split_loss_fn, trainable_model, batch, **batch_kwargs
-            )
+            loss, grads = self._compute_gradients_microbatched(split_loss_fn, trainable_model, batch, **batch_kwargs)
 
-            #jittable_wandb_log({"sin_loss": aux}, step=opt_state.count)
+            # jittable_wandb_log({"sin_loss": aux}, step=opt_state.count)
 
             updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
             model = eqx.apply_updates(model, updates)

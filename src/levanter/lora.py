@@ -39,6 +39,7 @@ Consider a simple model with two parameters, attention and mlp. That might look 
    ```
  which just grounds out into a call to [equinox.combine][]
 """
+
 import dataclasses
 import functools
 import json

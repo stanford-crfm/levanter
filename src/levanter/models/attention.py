@@ -163,8 +163,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray:
-    ...
+) -> NamedArray: ...
 
 
 @overload
@@ -174,8 +173,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]:
-    ...
+) -> Optional[NamedArray]: ...
 
 
 def materialize_mask(

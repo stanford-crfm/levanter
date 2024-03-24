@@ -632,8 +632,7 @@ class InProgressCacheMetrics:
 
 
 class MetricsMonitor(Protocol):
-    def __call__(self, metrics: InProgressCacheMetrics):
-        ...
+    def __call__(self, metrics: InProgressCacheMetrics): ...
 
 
 class RichMetricsMonitor(MetricsMonitor):
@@ -996,9 +995,9 @@ class _ChunkCollator:
         self.chunk_writers: dict[int, _ChunkWriter] = {}  # chunk index -> writer
         self.batch_counts: dict[int, int] = {}  # chunk index -> number of batches written
         self.expected_totals: dict[int, int] = {}  # chunk index -> expected num batches.
-        self.chunk_partial_batches: dict[
-            int, list[tuple[int, pa.RecordBatch]]
-        ] = {}  # chunk index -> heapq of (batch index, batch)
+        self.chunk_partial_batches: dict[int, list[tuple[int, pa.RecordBatch]]] = (
+            {}
+        )  # chunk index -> heapq of (batch index, batch)
 
     def new_batch(self, chunk_id, batch_idx, batch) -> Optional[ChunkMetadata]:
         if chunk_id not in self.chunk_partial_batches:
@@ -1578,6 +1577,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 return
 
             import os
+
             while True:
                 i = 0
                 logger.info(f"\n START EPOCH! \n")
@@ -1586,7 +1586,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     chunk = self._ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
-                #os._exit(0)
+                # os._exit(0)
                 logger.info(f"\n END EPOCH! \n")
                 logger.info(f"\n END EPOCH! \n")
                 if not loop:

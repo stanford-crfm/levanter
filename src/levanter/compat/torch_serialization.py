@@ -27,18 +27,15 @@ Tensor = Any
 
 
 @overload
-def apply_prefix(prefix: Optional[str], leaf: str) -> str:
-    ...
+def apply_prefix(prefix: Optional[str], leaf: str) -> str: ...
 
 
 @overload
-def apply_prefix(prefix: Optional[str], leaf: None) -> Optional[str]:
-    ...
+def apply_prefix(prefix: Optional[str], leaf: None) -> Optional[str]: ...
 
 
 @overload
-def apply_prefix(prefix: None, leaf: Optional[str]) -> Optional[str]:
-    ...
+def apply_prefix(prefix: None, leaf: Optional[str]) -> Optional[str]: ...
 
 
 def apply_prefix(prefix: Optional[str], leaf: Optional[str]) -> Optional[str]:
