@@ -70,20 +70,24 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         logits = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
 
-        p1 = hax.nn.softmax(logits, axis=model1.Vocab)
-        p2 = hax.nn.softmax(logits2, axis=model2.Vocab)
+        
+        # Compute log probabilities using log_softmax for numerical stability
+        log_p1 = hax.nn.log_softmax(logits, axis=model1.Vocab)
+        log_p2 = hax.nn.log_softmax(logits2, axis=model2.Vocab)
+
+        # Obtain probabilities from log probabilities using exp
+        p1 = hax.exp(log_p1)
+        p2 = hax.exp(log_p2)
 
         # Mean probability distribution
-        sum_check = hax.sum(p1, axis=model1.Vocab)
-
         m = (p1 + p2) / 2
 
-        # Compute KL divergences using jax.scipy.special.kl_div
-        kl1 = kl_div(p1, m)
-        kl2 = kl_div(p2, m)
+        # Compute KL divergences using the formula KL(p||q) = sum(p * log(p / q))
+        kl1 = hax.dot(p1, log_p1 - hax.log(m), axis=model1.Vocab)
+        kl2 = hax.dot(p2, log_p2 - hax.log(m), axis=model2.Vocab)
 
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
-        jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
+        jsd = 0.5 * (kl1 + kl2)
 
         ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
         loss = jsd
