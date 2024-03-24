@@ -1,4 +1,5 @@
 import jax.tree_util as tree_util
+from haliax import named_jit
 
 import copy
 import logging
@@ -58,6 +59,8 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
     return total_loss
 
 
+
+@named_jit(axis_resources=None)
 def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
@@ -93,7 +96,6 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
-
         if max_batches is not None and n >= max_batches:
             break
 
