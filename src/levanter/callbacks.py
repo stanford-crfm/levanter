@@ -64,19 +64,18 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
     else:
         desc = "eval"
 
-    # Helper functions to compute JSD
-    def softmax(logits):
-        # Subtract the max for numerical stability
-        return jnp.exp(logits - logsumexp(logits, axis=-1, keepdims=True))
+    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
+    for batch in pbar:
+        import ipdb; ipdb.set_trace()
+        logits = logit_fn(model1, batch)
+        logits2 = logit_fn(model2, batch)
 
-
-    @jit
-    def js_divergence(logits1, logits2):
-        # Convert logits to probabilities
-        p1 = softmax(logits1.array)
-        p2 = softmax(logits2.array)
+        p1 = hax.nn.softmax(logits, axis=model1.Vocab)
+        p2 = hax.nn.softmax(logits2, axis=model2.Vocab)
 
         # Mean probability distribution
+        sum_check = hax.sum(p1, axis=model1.Vocab)
+
         m = (p1 + p2) / 2
 
         # Compute KL divergences using jax.scipy.special.kl_div
@@ -85,18 +84,9 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
 
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (jnp.sum(kl1) + jnp.sum(kl2))
-        return jsd
-
-    pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
-    for batch in pbar:
-        import ipdb; ipdb.set_trace()
-        logits = logit_fn(model1, batch)
-        logits2 = logit_fn(model2, batch)
-        model_output = model1(batch)
-        hax.nn.softmax(model_output, axis=model1.Vocab)
 
         ce = cross_entropy_loss(logits, model1.Vocab, logits2, hax.mean)
-        loss = js_divergence(logits, logits2)
+        loss = jsd
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
