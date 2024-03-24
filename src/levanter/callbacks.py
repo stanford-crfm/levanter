@@ -85,9 +85,7 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         kl2 = hax.dot(p2, log_p2 - hax.log(m), axis=model2.Vocab)
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (kl1 + kl2)
-        print(f'\n JSD: {jsd} \n')
-        print(f'\n \n JSD \n')
-        print(jsd.array.shape)
+    
         
         # Compute the mean JSD across the batch and sequence dimensions
         mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1])).scalar()
