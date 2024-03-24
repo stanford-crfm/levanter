@@ -93,6 +93,9 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (kl1 + kl2)
         loss = jsd
+        print(f'\n JSD: {jsd} \n')
+        print(f'\n \n JSD \n')
+        print(jsd.array.shape)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
