@@ -25,7 +25,7 @@ from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmHeadModel
 from levanter.models.mistral import MistralLMHeadModel
-from levanter.models.whisper import ACT2FN, WhisperConfig, WhisperEncoder, WhisperTransformer
+from levanter.models.whisper import ACT2FN, WhisperConfig, WhisperDecoder, WhisperEncoder
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -169,7 +169,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
     query_tokens: NamedArray
     projection: hnn.Linear
     encoder: WhisperEncoder
-    connector: WhisperTransformer
+    connector: WhisperDecoder
     decoder: Union[LlamaLMHeadModel | MistralLMHeadModel]
     _config: ViaConfig = eqx.static_field()
 
@@ -200,20 +200,16 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
     ) -> "ViaModel":
         k_query, k_projection, k_enc, k_connector, k_dec = maybe_rng_split(key, 5)
         encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
-        connector = WhisperTransformer.init(
-            config.enc_config.DecoderLayer,
-            config.enc_config.DecoderHeads,
-            config.enc_config.DecoderHeadSize,
-            config.enc_config.DecoderMlp,
-            config.enc_config,
-            has_cross=True,
-            key=k_connector,
-        )
+        connector = WhisperDecoder.init(config.enc_config, key=k_connector)
         query_tokens = hax.random.normal(k_query, (config.TimeGroup, config.enc_config.Embed)) * 0.02
         projection = hnn.Linear.init(In=config.enc_config.Embed, Out=config.dec_config.Embed, key=key)
         decoder = dec_cls.init(Vocab, config.dec_config, key=k_dec)
 
         return cls(query_tokens, projection, encoder, connector, decoder, config)
+
+    @property
+    def query_position_embeds(self) -> NamedArray:
+        return self.connector.embeddings.position_embeddings.embed(hax.arange(self.config.TimeGroup))
 
     def __call__(
         self,
@@ -235,10 +231,8 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
-        position_embeds = self.orig_position_embeddings.embed(hax.arange(self.TimeGroup))
-
-        virt_whisper_tokens = self.connector(
-            (self.query_tokens + position_embeds).broadcast_axis(OtherAxes),
+        virt_whisper_tokens = self.connector.transformer(
+            (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
             audio_features,
             causal_mask,
             key=k_connector,
