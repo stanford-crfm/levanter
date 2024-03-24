@@ -114,13 +114,12 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
-        logits = logit_fn(model1, batch)
+        logits1 = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-        loss = hax.mean(logits - logits2) ** 2
+        loss = hax.mean(hax.l2_norm(logits1 - logits2) ** 2)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
-
         if max_batches is not None and n >= max_batches:
             break
 
