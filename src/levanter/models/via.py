@@ -40,7 +40,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     dec_config: LlamaConfig = field(default_factory=LlamaConfig)
 
     # Connector Config
-    time_dialation: int = 25
+    time_dialation: int = 6
     dialation_factor: int = 4
     pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [1, 518, 25580, 29962, 376])
     pre_text_prompt: Sequence[int] = field(
