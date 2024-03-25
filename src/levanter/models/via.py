@@ -1,6 +1,6 @@
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence, Type, Union
+from typing import Optional, Sequence, Type, Union
 
 import equinox as eqx
 import jax
@@ -12,20 +12,13 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmHeadModel
 from levanter.models.mistral import MistralLMHeadModel
-from levanter.models.whisper import ACT2FN, WhisperConfig, WhisperDecoder, WhisperEncoder
+from levanter.models.whisper import WhisperConfig, WhisperDecoder, WhisperEncoder
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -40,11 +33,39 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     dec_config: LlamaConfig = field(default_factory=LlamaConfig)
 
     # Connector Config
-    time_dialation: int = 6
+    time_dialation: int = 4
     dialation_factor: int = 4
     pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [1, 518, 25580, 29962, 376])
     pre_text_prompt: Sequence[int] = field(
-        default_factory=lambda: [376, 13, 830, 11666, 393, 1250, 304, 592, 29889, 518, 29914, 25580, 29962]
+        default_factory=lambda: [
+            376,
+            13,
+            830,
+            11666,
+            9750,
+            271,
+            326,
+            825,
+            471,
+            1497,
+            297,
+            11839,
+            437,
+            451,
+            1827,
+            3099,
+            1683,
+            29889,
+            1938,
+            451,
+            1827,
+            1854,
+            29889,
+            518,
+            29914,
+            25580,
+            29962,
+        ]
     )
 
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
@@ -57,11 +78,6 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     )
     GroupEmbed = property(
         lambda self: Axis(name="group_embed", size=(self.enc_config.Embed.size * self.time_dialation))
-    )
-    DialationEmbed = property(
-        lambda self: Axis(
-            name="dialation_embed", size=((self.enc_config.Embed.size * self.time_dialation) // self.dialation_factor)
-        )
     )
 
     @property
@@ -101,68 +117,6 @@ def connector_only(model):
     return eqx.tree_at(
         lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias), frozen_tree, (True, True, True)
     )
-
-
-# def connector_only(model):
-#    frozen_tree = jax.tree_util.tree_map(lambda _: False, model)
-#    return eqx.tree_at(
-#        lambda tree: (tree.connector.dialator.weight, tree.connector.dialator.bias), frozen_tree, #(True, True)
-#    )
-
-
-class ViaConnector(eqx.Module, StateDictSerializationMixin):
-    Grouping: Sequence[Axis]
-    dialator: hnn.Linear
-    compressor: hnn.Linear
-    act: Callable = eqx.static_field()
-    config: ViaConfig = eqx.static_field()
-
-    @classmethod
-    def init(cls, config: ViaConfig, *, key) -> "ViaConnector":
-        dialator = hnn.Linear.init(In=config.GroupEmbed, Out=config.DialationEmbed, key=key)
-        compressor = hnn.Linear.init(In=config.DialationEmbed, Out=config.dec_config.Embed, key=key)
-
-        if isinstance(config.enc_config.activation_function, str):
-            activation_fn = ACT2FN[config.enc_config.activation_function]
-        act = activation_fn  # type: ignore
-
-        Grouping = (config.TimeGroup, config.GroupEmbed)
-
-        return ViaConnector(
-            Grouping,
-            dialator,
-            compressor,
-            act,
-            config,
-        )
-
-    def __call__(self, encoder_outputs: NamedArray, *, key=None) -> NamedArray:
-        flat_encoder_outputs = hax.flatten_axes(encoder_outputs, ("position", "embed_dim"), "flat_embed")
-        grouped_encoder_outputs = hax.unflatten_axis(flat_encoder_outputs, "flat_embed", self.Grouping)
-        x = self.act(self.dialator(grouped_encoder_outputs, key=key))
-        x = self.compressor(x)
-        return x
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "ViaConnector":
-        # convert to Haliax's nice multiple dim input linear syntax
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "dialator"), state_dict, self.dialator, None))
-
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "compressor"), state_dict, self.compressor, None))
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "dialator"), self.dialator, None))
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "compressor"), self.compressor, None))
-
-        state_dict.update(my_dict)
-        return state_dict
 
 
 class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
