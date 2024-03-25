@@ -132,7 +132,7 @@ def main(config: TrainASRConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state = dataclasses.replace(state, model=None)
-                model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                model = converter.load_pretrained(config.model.asr_model_type, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
             else:
