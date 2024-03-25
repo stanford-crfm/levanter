@@ -97,9 +97,9 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
             break
     
     scalar_jsd = total_jsd / n
-    scalar_jsd = scalar_jsd.scalar()
+    scalar_jsd = scalar_jsd
     
-    return scalar_jsd
+    return hax.ops.raw_scalar_or_array(scalar_jsd)
 
 
 def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
