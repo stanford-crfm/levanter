@@ -87,6 +87,39 @@ def main(config: EvalLmConfig):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
             return model.compute_logits(example, key=None)
+        
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def compute_jsd_loss(model1: LmHeadModel, model2: LmHeadModel, example: LmExample):
+            model1 = inference_mode(model1, True)
+            model1 = mp.cast_to_compute(model1)
+            model2 = inference_mode(model2, True)
+            model2 = mp.cast_to_compute(model2)
+            
+            logits = model1.compute_logits(example, key=None)
+            logits2 = model2.compute_logits(example, key=None)
+            
+            # Compute log probabilities using log_softmax for numerical stability
+            log_p1 = hax.nn.log_softmax(logits, axis=model1.Vocab)
+            log_p2 = hax.nn.log_softmax(logits2, axis=model2.Vocab)
+            
+            # Obtain probabilities from log probabilities using exp
+            p1 = hax.exp(log_p1)
+            p2 = hax.exp(log_p2)
+            
+            # Mean probability distribution
+            m = (p1 + p2) / 2
+            
+            # Compute KL divergences using the formula KL(p||q) = sum(p * log(p / q))
+            kl1 = hax.dot(p1, log_p1 - hax.log(m), axis=model1.Vocab)
+            kl2 = hax.dot(p2, log_p2 - hax.log(m), axis=model2.Vocab)
+            
+            # Sum KL divergences and normalize to get Jensen-Shannon Divergence
+            jsd = 0.5 * (kl1 + kl2)
+            
+            # Compute the mean JSD across the batch and sequence dimensions
+            mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1]))
+            
+            return mean_jsd
 
         total = config.trainer.max_eval_batches
 
@@ -127,7 +160,7 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(model_config)
 
-            jsd = callbacks.jsd_loss_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
+            jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
             logits_diff = callbacks.logits_diff_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
             # Generate alphas from 0 to 1 with a step of 0.05
             l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
