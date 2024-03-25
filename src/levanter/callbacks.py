@@ -84,7 +84,21 @@ def jsd_loss_loop(compute_jsd_loss, model1, model2, dataset, max_batches: Option
     return total_jsd
 
 
-def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
+def l2_norm_diff_loop(l2_norm_diff, model1, model2, max_batches: Optional[int] = None, name: Optional[str] = None):
+    total_loss = 0.0
+    n = 0
+    
+    if name is not None:
+        desc = f"eval {name}"
+    else:
+        desc = "eval"
+    
+    total_loss = l2_norm_diff(model1, model2)
+    
+    return total_loss
+
+
+def logits_diff_loop(logit_fn, loss_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     n = 0
 
@@ -95,14 +109,7 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
 
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
     for batch in pbar:
-        logits1 = logit_fn(model1, batch)
-        logits2 = logit_fn(model2, batch)
-
-        diff = logits1 - logits2
-        squared_diff = diff ** 2
-        mean_squared_diff = hax.mean(squared_diff)
-        loss = mean_squared_diff
-
+        loss = loss_fn(logit_fn, model1, model2, batch)
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
@@ -113,26 +120,6 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
         total_loss /= n
 
     return total_loss
-
-
-def l2_norm_diff(model1, model2, name: Optional[str] = None):
-    @jit
-    def squared_diff_mean(x, y):
-        diff = x - y
-        squared_diff = diff ** 2
-        mean_squared_diff = hax.mean(squared_diff)
-        return mean_squared_diff
-
-    if name is not None:
-        desc = f"eval {name}"
-    else:
-        desc = "eval"
-
-    tree_diff = tree_util.tree_map(squared_diff_mean, model1, model2)
-    total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
-    num_params = len(tree_util.tree_leaves(model1))
-
-    return total_loss / num_params
 
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],

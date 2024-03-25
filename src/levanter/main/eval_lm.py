@@ -25,6 +25,7 @@ from levanter.models.llama import LlamaLMHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
+import jax.tree_util as tree_util
 from levanter.utils.jax_utils import parameter_count, flops_estimate, is_inexact_arrayish, multihost_broadcast_sync
 
 
@@ -76,6 +77,34 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
+
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def l2_norm_diff(model1: LmHeadModel, model2: LmHeadModel):
+            def squared_diff_mean(x, y):
+                diff = x - y
+                squared_diff = diff ** 2
+                mean_squared_diff = hax.mean(squared_diff)
+                return mean_squared_diff
+
+            tree_diff = tree_util.tree_map(squared_diff_mean, model1, model2)
+            total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
+            num_params = len(tree_util.tree_leaves(model1))
+
+            return total_loss / num_params
+
+
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def compute_logits_diff(logit_fn, model1: LmHeadModel, model2: LmHeadModel, batch: LmExample):
+            logits1 = logit_fn(model1, batch)
+            logits2 = logit_fn(model2, batch)
+
+            diff = logits1 - logits2
+            squared_diff = diff ** 2
+            mean_squared_diff = hax.mean(squared_diff)
+            loss = mean_squared_diff
+
+            return loss
+        
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_loss(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
@@ -161,9 +190,10 @@ def main(config: EvalLmConfig):
             model_2 = converter.load_pretrained(model_config)
 
             jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
-            logits_diff = callbacks.logits_diff_loop(compute_logit, model_1, model_2, eval_loader, max_batches=total)
+            l2_norm_num = callbacks.l2_norm_diff(l2_norm_diff, model_1, model_2)
+            logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
             # Generate alphas from 0 to 1 with a step of 0.05
-            l2_norm_num = callbacks.l2_norm_diff(model_1, model_2)
+            
             wandb.log({"eval/logits_diff": logits_diff})
             wandb.log({"eval/l2_norm_diff": l2_norm_num})
             wandb.log({"eval/jsd": jsd})
