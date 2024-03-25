@@ -63,7 +63,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 @named_jit(axis_resources=None)
 def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_jsd = hax.zeros(())
-    n = hax.zeros((), dtype=jnp.int32)
+    n = 0
     if name is not None:
         desc = f"eval {name}"
     else:
@@ -85,21 +85,19 @@ def jsd_loss_loop(logit_fn, model1, model2, dataset, max_batches: Optional[int] 
         kl2 = hax.dot(p2, log_p2 - hax.log(m), axis=model2.Vocab)
         # Sum KL divergences and normalize to get Jensen-Shannon Divergence
         jsd = 0.5 * (kl1 + kl2)
-        print(f'\n JSD: {jsd} \n')
-        print(f'\n \n JSD \n')
-        print(jsd.array.shape)
         
         # Compute the mean JSD across the batch and sequence dimensions
-        mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1])).item()
+        mean_jsd = hax.mean(jsd, axis=(jsd.axes[0], jsd.axes[1]))
         
         total_jsd += mean_jsd
         n += 1
         
-        pbar.set_postfix(jsd=hax.array_to_scalar(total_jsd) / hax.array_to_scalar(n))
-        if max_batches is not None and hax.array_to_scalar(n) >= max_batches:
+        
+        if max_batches is not None and n >= max_batches:
             break
     
-    scalar_jsd = hax.array_to_scalar(total_jsd) / hax.array_to_scalar(n) if hax.array_to_scalar(n) > 0 else 0.0
+    scalar_jsd = total_jsd / n
+    scalar_jsd = scalar_jsd.scalar()
     
     return scalar_jsd
 
