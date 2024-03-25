@@ -116,6 +116,7 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
 
 
 def l2_norm_diff(model1, model2, name: Optional[str] = None):
+    @jit
     def squared_diff_mean(x, y):
         diff = x - y
         squared_diff = diff ** 2
