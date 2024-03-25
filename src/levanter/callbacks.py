@@ -97,7 +97,12 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
     for batch in pbar:
         logits1 = logit_fn(model1, batch)
         logits2 = logit_fn(model2, batch)
-        loss = hax.mean(hax.l2_norm(logits1 - logits2) ** 2)
+
+        diff = logits1 - logits2
+        squared_diff = diff ** 2
+        mean_squared_diff = hax.mean(squared_diff)
+        loss = mean_squared_diff
+
         total_loss += loss.item()
         n += 1
         pbar.set_postfix(loss=total_loss / n)
@@ -111,20 +116,22 @@ def logits_diff_loop(logit_fn, model1, model2, dataset, max_batches: Optional[in
 
 
 def l2_norm_diff(model1, model2, name: Optional[str] = None):
-    def l2_norm_sq(x, y):
-        return hax.mean(hax.l2_norm(x - y) ** 2)
+    def squared_diff_mean(x, y):
+        diff = x - y
+        squared_diff = diff ** 2
+        mean_squared_diff = hax.mean(squared_diff)
+        return mean_squared_diff
 
     if name is not None:
         desc = f"eval {name}"
     else:
         desc = "eval"
 
-    tree_diff = tree_util.tree_map(l2_norm_sq, model1, model2)
+    tree_diff = tree_util.tree_map(squared_diff_mean, model1, model2)
     total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
-
     num_params = len(tree_util.tree_leaves(model1))
-    return total_loss / num_params
 
+    return total_loss / num_params
 
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
