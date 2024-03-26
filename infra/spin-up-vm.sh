@@ -68,9 +68,9 @@ SETUP_SCRIPT_NAME=$(basename $SETUP_SCRIPT)
 # note that gcloud scp doesn't always work... so we do it a few times to just be sure
 for i in {1..5}; do
   echo "Uploading $SETUP_SCRIPT to VM $VM_NAME"
-  $GCLOUD_CMD tpus tpu-vm scp --zone=$ZONE $SETUP_SCRIPT $VM_NAME:~/ --worker=all
+  $GCLOUD_CMD tpus tpu-vm scp --zone=$ZONE --project "hai-gcp-models" $SETUP_SCRIPT $VM_NAME:~/ --worker=all
   # check to see if the file exists on all nodes
-  if $GCLOUD_CMD tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="ls ~/$SETUP_SCRIPT_NAME" --worker=all; then
+  if $GCLOUD_CMD tpus tpu-vm ssh --zone=$ZONE --project "hai-gcp-models" $VM_NAME --command="ls ~/$SETUP_SCRIPT_NAME" --worker=all; then
     break
   fi
   if [ 5 -eq $i ]; then
@@ -83,7 +83,7 @@ done
 
 # run the setup script
 for i in {1..5}; do
-  $GCLOUD_CMD tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="bash ~/$SETUP_SCRIPT_NAME --branch ${GIT_BRANCH} --repo ${GIT_REPO} > setup.out" --worker=all
+  $GCLOUD_CMD tpus tpu-vm ssh --zone=$ZONE $VM_NAME --project "hai-gcp-models" --command="bash ~/$SETUP_SCRIPT_NAME --branch ${GIT_BRANCH} --repo ${GIT_REPO} > setup.out" --worker=all
   if [ $? -eq 0 ]; then
     break
   fi
