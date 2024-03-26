@@ -12,8 +12,7 @@ second_hf_checkpoint: "openlm-research/open_llama_7b"
 trainer:
   wandb:
     project: "levanter"
-    name: "llama2_7b--openllama-github"
-    tags: ["openwebtext", "github", "openllama"]
+    tags: ["wikitext"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64  # set for v4-64 TPU
