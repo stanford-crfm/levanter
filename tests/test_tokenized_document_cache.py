@@ -3,16 +3,15 @@ from typing import List, Sequence, TypeVar
 
 import pytest
 import ray
-from transformers import AutoTokenizer, BatchEncoding
+from transformers import BatchEncoding
 
 from levanter.data.shard_cache import build_cache
 from levanter.data.sharded_dataset import ShardedDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource
+from test_utils import gpt2_tokenizer as tokenizer
 
-
-tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
 T = TypeVar("T")
 

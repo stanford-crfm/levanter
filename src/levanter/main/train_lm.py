@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
+from jax.random import PRNGKey
 
 import haliax as hax
 from haliax import Axis
@@ -14,7 +15,8 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, ShardableDataset
+from levanter.data.ul2r import Ul2rConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -26,11 +28,38 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TaskConfig:
+    # TODO: should we move this to choice types?
+    fcm_prob: float = 0.0  # forgetful causal masking prob. recommended 0.15, https://arxiv.org/abs/2210.13432
+    ul2r: Optional[Ul2rConfig] = None
+
+    def __post_init__(self):
+        if self.fcm_prob > 0 and self.ul2r is not None:
+            raise ValueError("You can't use both fcm and ul2r")
+
+    def build(
+        self,
+        raw_dataset: ShardableDataset,
+        Pos: hax.Axis,
+        KPos: hax.Axis,
+        tokenizer,
+        key: PRNGKey,
+        ignore_index: int | None,
+    ):
+        # NOTE: ul2r will mutate the tokenizer if it doesn't already have task/sentinel tokens
+        if self.ul2r is not None:
+            return self.ul2r.build(raw_dataset, Pos, KPos, tokenizer, key)
+        else:
+            return CausalLmDataset(raw_dataset, Pos, KPos, self.fcm_prob, key, ignore_index)
+
+
+@dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
+    task: TaskConfig = TaskConfig()
 
     # config related to continued pretraining
     initialize_from_hf: Union[bool, str] = False
@@ -39,8 +68,6 @@ class TrainLmConfig:
 
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
-
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
@@ -103,8 +130,13 @@ def main(config: TrainLmConfig):
         KeyPos = config.model.KeyPos
 
         eval_datasets = config.data.validation_sets(Pos.size)
-        train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+        train_dataset = config.task.build(
+            config.data.train_set(Pos.size),
+            Pos,
+            KeyPos,
+            tokenizer,
+            data_key,
+            config.data.ignore_token_id,
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -115,7 +147,10 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+        state = trainer.initial_state(
+            training_key,
+            model_init=lambda: config.model.build(Vocab, key=model_key),
+        )
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
@@ -142,8 +177,19 @@ def main(config: TrainLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+            eval_dataset_causal = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            trainer.add_eval_hook(eval_dataset_causal, name=name)
+
+            if config.task.ul2r is not None:
+                eval_dataset_ul2r = config.task.build(
+                    eval_dataset,
+                    Pos,
+                    KeyPos,
+                    tokenizer,
+                    data_key,
+                    config.data.ignore_token_id,
+                )
+                trainer.add_eval_hook(eval_dataset_ul2r, name=name + "_ul2r")
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
