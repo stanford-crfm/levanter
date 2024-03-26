@@ -11,7 +11,7 @@ second_hf_checkpoint: "openlm-research/open_llama_7b"
 
 trainer:
   wandb:
-    project: "levanter"
+    project: "trace"
     tags: ["wikitext"]
 
   mp: p=f32,c=bfloat16
