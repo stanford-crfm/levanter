@@ -85,7 +85,10 @@ def dot_product_attention(
                 prng=prng,
                 attention_dtype=attention_dtype,
             )
-        except ImportError:
+        except ImportError as e:
+            if "transformer_engine" not in str(e):
+                raise
+
             warnings.warn(
                 "transformer_engine is not installed. Please install it to use NVIDIA's optimized fused attention. "
                 "Falling back to the reference implementation."
@@ -171,13 +174,18 @@ def _te_flash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
 ):
-    from transformer_engine.jax.fused_attn import (  # noqa: F401
-        AttnBiasType,
-        AttnMaskType,
-        cross_fused_attn,
-        fused_attn,
-        self_fused_attn,
-    )
+    # try:
+    #     from transformer_engine.jax.fused_attn import fused_attn_kvpacked
+    # except ImportError:
+    #     from transformer_engine.jax.fused_attn import cross_fused_attn as fused_attn_kvpacked
+    #
+    # try:
+    #     from transformer_engine.jax.fused_attn import fused_attn_qkvpacked
+    # except ImportError:
+    #     from transformer_engine.jax.fused_attn import self_fused_attn as fused_attn_qkvpacked
+    #
+    from transformer_engine.jax.fused_attn import fused_attn  # noqa: F401
+    from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType  # noqa: F401
 
     attention_dtype = attention_dtype or query.dtype
     query = query.astype(attention_dtype)
@@ -223,48 +231,48 @@ def _te_flash_attention(
     if bias:
         raise NotImplementedError("Using bias with flash attention on GPU is not currently implemented.")
 
-    if q_.shape == k_.shape == v_.shape:
-        # can use self_fused_attn
-        qkv_ = jnp.stack((q_, k_, v_), axis=2)
-        attn_output = self_fused_attn(
-            qkv=qkv_,  # jnp.ndarray,
-            bias=fused_attn_bias,  # jnp.ndarray,
-            mask=fused_attn_mask,  # jnp.ndarray,
-            seed=prng,  # jnp.ndarray,
-            attn_bias_type=attn_bias_type,  # AttnBiasType,
-            attn_mask_type=attn_mask_type,  # AttnMaskType,
-            scaling_factor=scaling_factor,  # float,
-            dropout_probability=dropout,  # float,
-            is_training=is_training,  # bool,
-        )
-    elif k_.shape == v_.shape:
-        kv_ = jnp.stack((k_, v_), axis=2)
-        attn_output = cross_fused_attn(
-            q=q_,
-            kv=kv_,
-            bias=fused_attn_bias,
-            mask=fused_attn_mask,
-            seed=prng,
-            attn_bias_type=attn_bias_type,
-            attn_mask_type=attn_mask_type,
-            scaling_factor=scaling_factor,
-            dropout_probability=dropout,
-            is_training=is_training,
-        )
-    else:
-        attn_output = fused_attn(
-            q=q_,
-            k=k_,
-            v=v_,
-            bias=fused_attn_bias,
-            mask=fused_attn_mask,
-            seed=prng,
-            attn_bias_type=attn_bias_type,
-            attn_mask_type=attn_mask_type,
-            scaling_factor=scaling_factor,
-            dropout_probability=dropout,
-            is_training=is_training,
-        )
+    # if q_.shape == k_.shape == v_.shape:
+    #     # can use self_fused_attn
+    #     qkv_ = jnp.stack((q_, k_, v_), axis=2)
+    #     attn_output = (
+    #         qkv=qkv_,  # jnp.ndarray,
+    #         bias=fused_attn_bias,  # jnp.ndarray,
+    #         mask=fused_attn_mask,  # jnp.ndarray,
+    #         seed=prng,  # jnp.ndarray,
+    #         attn_bias_type=attn_bias_type,  # AttnBiasType,
+    #         attn_mask_type=attn_mask_type,  # AttnMaskType,
+    #         scaling_factor=scaling_factor,  # float,
+    #         dropout_probability=dropout,  # float,
+    #         is_training=is_training,  # bool,
+    #     )
+    # elif k_.shape == v_.shape:
+    #     kv_ = jnp.stack((k_, v_), axis=2)
+    #     attn_output = cross_fused_attn(
+    #         q=q_,
+    #         kv=kv_,
+    #         bias=fused_attn_bias,
+    #         mask=fused_attn_mask,
+    #         seed=prng,
+    #         attn_bias_type=attn_bias_type,
+    #         attn_mask_type=attn_mask_type,
+    #         scaling_factor=scaling_factor,
+    #         dropout_probability=dropout,
+    #         is_training=is_training,
+    #     )
+    # else:
+    attn_output = fused_attn(
+        q=q_,
+        k=k_,
+        v=v_,
+        bias=fused_attn_bias,
+        mask=fused_attn_mask,
+        seed=prng,
+        attn_bias_type=attn_bias_type,
+        attn_mask_type=attn_mask_type,
+        scaling_factor=scaling_factor,
+        dropout_probability=dropout,
+        is_training=is_training,
+    )
 
     # per the TE code, the output is BSHD. we can reshape it to match our axes
     # we have to ungroup the axes, then reshape them to match our expected output
