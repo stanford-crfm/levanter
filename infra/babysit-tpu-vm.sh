@@ -75,8 +75,8 @@ while true; do
     else
       # run the command
       echo "Running command on VM $VM_NAME"
-      echo "gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command='$CMD_ARGS_STR' --worker=all"
-      gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS_STR" --worker=all
+      echo "gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --project "hai-gcp-models" --command='$CMD_ARGS_STR' --worker=all"
+      gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --project "hai-gcp-models" --command="$CMD_ARGS_STR" --worker=all
       if [ $? -eq 0 ]; then
         echo "Command succeeded. Exiting"
         break

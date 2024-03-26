@@ -12,8 +12,10 @@ fi
 
 # Determine the correct gcloud command based on USE_ALPHA flag
 GCLOUD_CMD="gcloud compute"
+GCLOUD_ACTION="tpu-vm"
 if [ "$USE_ALPHA" = true ]; then
   GCLOUD_CMD="gcloud alpha compute"
+  GCLOUD_ACTION="queued-resources"
 fi
 
 # first delete if we're supposed to
@@ -36,11 +38,14 @@ fi
 # spin loop until we get a good error code
 echo "Creating VM $VM_NAME"
 # create the command. note that --preemptible doesn't accept a value, so just append it if we want it
-CMD="$GCLOUD_CMD tpus tpu-vm create $VM_NAME \
+CMD="$GCLOUD_CMD tpus $GCLOUD_ACTION create $VM_NAME \
+  --node-id=$VM_NAME \
   --zone=$ZONE \
   --accelerator-type=$TYPE \
-  --version=$VM_IMAGE \
-  --subnetwork=$SUBNETWORK"
+  --runtime-version=$VM_IMAGE \
+  --subnetwork=$SUBNETWORK \
+  --reserved"
+
 if [ "$PREEMPTIBLE" = true ]; then
   CMD="$CMD --preemptible"
 fi
