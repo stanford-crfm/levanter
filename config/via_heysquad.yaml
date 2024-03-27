@@ -1,0 +1,30 @@
+data:
+  id: WillHeld/HeySQuAD_distill
+  cache_dir: "gs://public_data_lev/processed/hs"
+  text_key: "response"
+  train_split: "train"
+  validation_split: "validation"
+  tokenizer: "WillHeld/via-7b"
+  processor: "openai/whisper-large-v3"
+model:
+  type: whisper
+initialize_from_hf: "WillHeld/via-7b"
+use_hf_model_config: true
+trainer:
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: [ "cv", "via"]
+
+  steps_per_eval: 140
+  mp: p=f32,c=bf16
+  model_axis_size: 1
+  per_device_parallelism: -1
+
+  train_batch_size: 512
+  num_train_steps: 1400
+optimizer:
+  learning_rate: 5E-4
+  weight_decay: 0.1
+via_init: True
+hf_save_steps: 140
