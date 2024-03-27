@@ -197,7 +197,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         )
         virtual_tokens = self.projection(virt_whisper_tokens)
         lm_logits = self.decoder.embeddings.unembed(virtual_tokens)
-        return lm_logits
+        return lm_logits["position", : input_ids.resolve_axis("position").size]
         # # Embed Real LLM Tokens
         # prefix = self.decoder.embeddings.embed(self.config.prefix)
         # suffix = self.decoder.embeddings.embed(self.config.suffix)
