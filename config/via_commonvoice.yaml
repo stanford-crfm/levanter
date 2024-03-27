@@ -1,6 +1,6 @@
 data:
   id: mozilla-foundation/common_voice_16_1
-  cache_dir: "gs://public_data_lev/processed/cv"
+  cache_dir: "gs://public_data_lev/processed/cv-375"
   name: "en"
   text_key: "sentence"
   train_split: "train"
