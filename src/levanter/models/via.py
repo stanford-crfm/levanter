@@ -178,7 +178,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         key=None,
     ) -> NamedArray:
         # Setup
-        InputPosition = input_ids.resolve_axis("position")
+        # InputPosition = input_ids.resolve_axis("position")
         OtherAxes = hax.axis.eliminate_axes(input_ids.axes, "position")
         causal_mask = AttentionMask.causal()
         if attn_mask is not None:
@@ -196,36 +196,37 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             key=k_connector,
         )
         virtual_tokens = self.projection(virt_whisper_tokens)
+        lm_logits = self.decoder.embeddings.unembed(virtual_tokens)
+        return lm_logits
+        # # Embed Real LLM Tokens
+        # prefix = self.decoder.embeddings.embed(self.config.prefix)
+        # suffix = self.decoder.embeddings.embed(self.config.suffix)
+        # embedded_tokens = self.decoder.embeddings.embed(input_ids)
 
-        # Embed Real LLM Tokens
-        prefix = self.decoder.embeddings.embed(self.config.prefix)
-        suffix = self.decoder.embeddings.embed(self.config.suffix)
-        embedded_tokens = self.decoder.embeddings.embed(input_ids)
+        # # Create Mixed Virtual and Real Input
+        # in_tokens = hax.concatenate(
+        #     "position",
+        #     [
+        #         prefix.broadcast_axis(OtherAxes),
+        #         virtual_tokens,
+        #         suffix.broadcast_axis(OtherAxes),
+        #     ],
+        # )
+        # tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
+        # llm_input = tokens_and_targets["position", : self.Pos.size]
 
-        # Create Mixed Virtual and Real Input
-        in_tokens = hax.concatenate(
-            "position",
-            [
-                prefix.broadcast_axis(OtherAxes),
-                virtual_tokens,
-                suffix.broadcast_axis(OtherAxes),
-            ],
-        )
-        tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
-        llm_input = tokens_and_targets["position", : self.Pos.size]
+        # # Create LLM Response
+        # in_tokens_size = in_tokens.resolve_axis("position").size
+        # x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
+        # target_x = x["position", in_tokens_size:]
+        # target_logits = self.decoder.lm_head(target_x, key=k_head)
 
-        # Create LLM Response
-        in_tokens_size = in_tokens.resolve_axis("position").size
-        x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
-        target_x = x["position", in_tokens_size:]
-        target_logits = self.decoder.lm_head(target_x, key=k_head)
-
-        # Reconstruct Padded Output Prediction with Input Predictions Removed
-        diff = InputPosition.size - target_logits.resolve_axis("position").size
-        OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
-        return hax.concatenate(
-            "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
-        )
+        # # Reconstruct Padded Output Prediction with Input Predictions Removed
+        # diff = InputPosition.size - target_logits.resolve_axis("position").size
+        # OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
+        # return hax.concatenate(
+        #     "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
+        # )
 
 
 class ViaASRModel(ViaModel, ASRMixin):
