@@ -1,5 +1,5 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  cache_dir: "gs://levanter-data/tokenized/uspto-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/uspto/{00..29}.jsonl.zst
   validation_urls:

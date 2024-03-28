@@ -7,7 +7,7 @@ datasets = [
 
 for dataset in datasets:
     yaml_content = f"""data:
-  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  cache_dir: "gs://levanter-data/tokenized/{dataset}-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/{dataset}/{{00..29}}.jsonl.zst
   validation_urls:

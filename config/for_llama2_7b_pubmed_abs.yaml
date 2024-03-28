@@ -1,5 +1,5 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  cache_dir: "gs://levanter-data/tokenized/pubmed_abs-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/pubmed_abs/{00..29}.jsonl.zst
   validation_urls:
