@@ -1,0 +1,28 @@
+data:
+  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  train_urls:
+    - gs://levanter-data/pile-domains/wiki_en/{00..29}.jsonl.zst
+  validation_urls:
+    - gs://levanter-data/pile-domains/wiki_en/val.jsonl.zst
+  tokenizer: "meta-llama/Llama-2-70b-hf"
+
+model:
+  type: llama
+  # TODO: uncomment this once we resolve the resource exhaustion issue
+  hf_checkpoint: "meta-llama/Llama-2-7b-hf"
+  second_hf_checkpoint: "openlm-research/open_llama_7b"
+
+trainer:
+  wandb:
+    project: "trace"
+    name: "llama2_7b-openllama-wiki_en"
+    tags: ["wiki_en"]
+  mp: p=f32,c=bfloat16
+  train_batch_size: 64 # set for v4-64 TPU
+  num_train_steps: 2
+  steps_per_eval: 1
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  per_device_eval_parallelism: -1
+  max_eval_batches: 1
