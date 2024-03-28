@@ -8,9 +8,9 @@ trainer:
     tags: ["redpajama", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 1024
-  per_device_parallelism: 4
-  num_train_steps: 1000
+  train_batch_size: 4096
+  per_device_parallelism: 8
+  num_train_steps: 178814 # 3,000,000,000,000 / 4096 / 4096
   steps_per_eval: 1000
   max_eval_batches: 50
   tensor_parallel_axes: ["mlp", "heads"]
