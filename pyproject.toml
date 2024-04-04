@@ -31,7 +31,7 @@ dependencies = [
     "transformers>=4.32.0",
     "optax>=0.1.9",
     "wandb",
-    "draccus>=0.7.1",
+    "draccus>=0.7.2",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
     "datasets==2.18.0",
@@ -39,9 +39,6 @@ dependencies = [
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
     "fsspec<2024.4.0",
-    # TODO: minimize and report an issue to tensorstore
-    # causes hangs when serializing to GCS
-#    "tensorstore==0.1.56",
     "tensorstore==0.1.56",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
