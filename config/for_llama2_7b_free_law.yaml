@@ -1,4 +1,4 @@
-data:
+ata:
   cache_dir: "gs://levanter-data/tokenized/free_law-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/free_law/{00..29}.jsonl.zst
