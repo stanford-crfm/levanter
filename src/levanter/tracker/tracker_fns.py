@@ -136,7 +136,8 @@ def set_global_tracker(tracker: Tracker):
 
 
 @typing.overload
-def current_tracker() -> "Tracker": ...
+def current_tracker() -> "Tracker":
+    ...
 
 
 @typing.overload
@@ -176,15 +177,18 @@ def current_tracker(
 
 
 @typing.overload
-def get_tracker(name: Literal["wandb"]) -> WandbTracker: ...
+def get_tracker(name: Literal["wandb"]) -> WandbTracker:
+    ...
 
 
 @typing.overload
-def get_tracker(name: Literal["tensorboard"]) -> TensorboardTracker: ...
+def get_tracker(name: Literal["tensorboard"]) -> TensorboardTracker:
+    ...
 
 
 @typing.overload
-def get_tracker(name: str) -> Tracker: ...
+def get_tracker(name: str) -> Tracker:
+    ...
 
 
 def get_tracker(name: str) -> Tracker:

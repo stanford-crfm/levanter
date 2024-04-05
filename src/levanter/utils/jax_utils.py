@@ -29,8 +29,18 @@ def jnp_to_python(a: jnp.ndarray):
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.local_devices(backend="cpu")[0]):
-        yield
+    cpu = jax.local_devices(backend="cpu")[0]
+    with jax.default_device(cpu):
+        yield cpu
+
+
+@contextlib.contextmanager
+def local_cpu_mesh():
+    """Temporarily sets the default device to CPU"""
+    cpu = jax.local_devices(backend="cpu")[0]
+    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    with use_cpu_device(), mesh:
+        yield mesh
 
 
 def is_inside_jit():
@@ -88,6 +98,26 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
 
     _sync_counter += 1
     return obj
+
+
+def barrier_sync(timeout: float = 200):
+    """
+    Uses jax's unpublished distributed api to wait for all processes to reach a barrier. This is useful for ensuring
+    that all processes have reached a certain point in the code before continuing.
+    """
+    global _sync_counter
+    if jax.process_count() == 1:
+        return
+    import jax._src.distributed as distributed
+    from jaxlib.xla_extension import DistributedRuntimeClient
+
+    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+
+    if client is None:
+        raise RuntimeError("barrier_sync requires jax distributed client to be initialized")
+
+    _sync_counter += 1
+    client.wait_at_barrier(f"levanter_barrier_sync_{_sync_counter}", timeout_in_ms=int(timeout * 1000.0))
 
 
 # from https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple
@@ -227,3 +257,25 @@ def best_effort_sharding(shape, devices=None):
         device_shape = (device_shape_i, gcd) + device_shape[1:]
     sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
     return sharding
+
+
+def estimated_free_device_memory(device) -> Optional[float]:
+    """
+    Returns free memory in GB. If the device doesn't support memory stats, returns None.
+    Args:
+        device:
+
+    Returns:
+
+    """
+    stats = device.memory_stats()
+    if stats is None:
+        return None
+    else:
+        limit = stats.get("bytes_limit", None)
+        if limit is None:
+            return None
+
+        in_use = stats.get("bytes_in_use", 0)
+
+        return (limit - in_use) // (1024.0**3)

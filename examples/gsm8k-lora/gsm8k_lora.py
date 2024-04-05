@@ -5,11 +5,11 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Union
 
+import equinox as eqx
 import jax
 import jax.random as jrandom
 import numpy as np
 import transformers
-import wandb
 
 import haliax as hax
 
@@ -25,7 +25,8 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -88,7 +89,7 @@ class SupervisedDataset(Dataset[LmExample]):
             else:
                 loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
 
-            yield LmExample(input_ids, loss_mask)
+            yield LmExample.causal(input_ids, loss_mask=loss_mask)
 
 
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
@@ -126,7 +127,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -147,13 +148,15 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with config.trainer.device_mesh:
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model: LmHeadModel = converter.load_pretrained(  # type: ignore
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+        )
 
         # Major difference from Alpaca: we loraize the model.
 
@@ -165,22 +168,20 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
-
-        # end major difference from Alpaca
-
-        trainer.add_default_hooks()
-        state = trainer.initial_state(training_key, model=model)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         # log some info about the model
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
+        levanter.tracker.log_summary(
+            {
+                "parameter_count": all_param_count,
+                "trainable_parameter_count": just_lora_params,
+                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+            }
+        )
+
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
@@ -191,7 +192,7 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        if state.step != 0:
+        if int(state.step) != 0:
             logger.info(f"Resuming training from step {state.step}")
             for i in range(state.step):
                 next(loader)  # type: ignore

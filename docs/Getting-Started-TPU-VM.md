@@ -45,13 +45,15 @@ the venv on each worker, and it will clone the repo to `~/levanter/`.
 **For Public Users**:
 
 ```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible]
+bash infra/spin-up-vm.sh <name> -z <zone> -t <type> -n <subnetwork> [--preemptible] [--use-alpha]
 ```
 
 Defaults are:
 - `zone`: `us-east1-d`
 - `type`: `v3-32`
+- `subnetwork`: `default` (set to custom VPC subnet, useful for tpuv4 configs)
 - `preemptible`: `false`
+- `use-alpha`: `false` (mark `true` for tpuv4s in alpha zones like `us-central2`)
 
 **Notes**:
 
@@ -60,19 +62,6 @@ path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 * The command will spam you with a lot of output, sorry.
 * If you use a preemptible instance, you probably want to use the ["babysitting" script](#babysitting-script) to
 the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
-
-
-
-**For Stanford CRFM Developers**:
-
-Stanford CRFM folks who are developing Levanter can pass a different setup script to `infra/spin-up-vm.sh` to get our NFS automounted:
-
-```bash
-bash infra/spin-up-vm.sh <name> -z <zone> -t <type> [--preemptible] -s infra/helpers/setup-tpu-vm-nfs.sh
-```
-
-In addition to creating the instance, it will also mount the `/files/` nfs share to all workers, which has a good
-venv and a copy of the repo.
 
 
 ## Useful commands

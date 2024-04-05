@@ -9,6 +9,7 @@ from jax import random
 
 import haliax as hax
 
+from levanter.models.attention import AttentionMask
 from levanter.models.mistral import MistralConfig, MistralLMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -46,7 +47,7 @@ def test_mistral_lm_head_model(num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = mistral_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, mistral_config.KeyPos)
+    mask = AttentionMask.causal()
 
     mistral_model = MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))
     out = mistral_model(input_ids, mask)
@@ -61,7 +62,7 @@ def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
     Vocab = hax.Axis("vocab", 1000)
     Pos = llama_config.Pos
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-    mask = hax.nn.attention.causal_mask(Pos, llama_config.KeyPos)
+    mask = AttentionMask.causal()
 
     llama_model = MistralLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
@@ -92,7 +93,7 @@ def test_mistral_roundtrip(num_kv_heads):
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    attn_mask = AttentionMask.causal()
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
     torch.random.manual_seed(0)
@@ -156,10 +157,11 @@ def test_mistral_configs(config_file):
 @pytest.mark.parametrize("num_kv_heads", [1, 2])
 def test_pass_different_length_seq(num_kv_heads):
     config = MistralConfig(
-        seq_len=32,
-        hidden_dim=16,
+        seq_len=64,
+        hidden_dim=32,
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(MistralLMHeadModel, config, 16)

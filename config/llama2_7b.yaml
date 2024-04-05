@@ -9,7 +9,8 @@ initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 second_model: "LLM360/Amber"
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: ["openwebtext", "llama", "llama2-amber"]
 

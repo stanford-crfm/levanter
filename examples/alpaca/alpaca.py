@@ -18,7 +18,8 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkp
 from levanter.data import Dataset
 from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.trainer import OptimizerConfig, Trainer, TrainerConfig
+from levanter.optim import OptimizerConfig
+from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle
@@ -193,7 +194,7 @@ def get_prompts(prompt_path) -> dict:
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -226,18 +227,15 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
-
-    with trainer.device_mesh:
+    with Trainer(config.trainer, optimizer) as trainer:
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        model: LmHeadModel = converter.load_pretrained(  # type: ignore
+            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
+        )
 
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
         model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
@@ -248,10 +246,9 @@ def train(config: TrainArgs):
         loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        trainer.add_default_hooks()
         state = trainer.initial_state(training_key, model=model)
 
-        if state.step != 0:
+        if int(state.step) != 0:
             logger.info(f"Resuming training from step {state.step}")
             for i in range(state.step):
                 next(loader)  # type: ignore

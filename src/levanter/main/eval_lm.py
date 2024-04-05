@@ -51,7 +51,8 @@ def main(config: EvalLmConfig):
     config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path[
         "model_name_or_path"
     ]
-    config.trainer.initialize(config)
+    # maybe redo
+    levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
@@ -61,7 +62,11 @@ def main(config: EvalLmConfig):
     if config.eval_on_train:
         raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
     else:
-        raw_dataset = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos)  # type: ignore
+        validation_set = config.data.validation_set(Pos.size)
+        if validation_set is None:
+            raise ValueError("Can't eval on validation_set b/c there isn't one!")
+
+        raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
     eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
     compute_axis_mapping = config.trainer.compute_axis_mapping
@@ -158,14 +163,10 @@ def main(config: EvalLmConfig):
             with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-                ckpt = load_checkpoint(model, None, config.checkpoint_path)
-
-            assert ckpt is not None
-            model, _, _ = ckpt
+                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
-            # TODO: switch to throwing instead of returning None
             loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
 
             del model

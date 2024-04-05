@@ -1,10 +1,12 @@
+import io
 import json
 import os
 import warnings
-from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, Tuple, TypeVar
 
 import datasets
 import fsspec
+import numpy as np
 
 from levanter.utils import fsspec_utils
 
@@ -147,9 +149,10 @@ class WrappedHFDataset(ShardedDataset[dict]):
     kwargs are passed to load_dataset
     """
 
-    def __init__(self, id, *, split, **kwargs):
+    def __init__(self, id, *, split, streaming: bool = True, **kwargs):
         self.id = id
         self.split = split
+        self.streaming = streaming
         self.kwargs = kwargs
         self._shard_names = self._compute_shard_names()
 
@@ -184,7 +187,7 @@ class WrappedHFDataset(ShardedDataset[dict]):
     def _load_dataset(self):
         # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing
         # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(self.id, split=self.split, **self.kwargs)
+        return datasets.load_dataset(self.id, split=self.split, streaming=self.streaming, **self.kwargs)
 
 
 class TextUrlDataset(ShardedDataset[str]):
@@ -223,6 +226,74 @@ class TextUrlDataset(ShardedDataset[str]):
                     data = json.load(f)
                     for doc in data[row:]:
                         yield doc[self.text_key]
+                case _:
+                    raise ValueError(f"Unknown format {format}")
+
+
+class AudioTextUrlDataset(ShardedDataset[Tuple[np.ndarray, int, str]]):
+    """
+    Dataset for various audio and text formats.
+    """
+
+    def __init__(self, urls, text_key="sentence", audio_key="audio", sampling_rate=16000):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        self.text_key = text_key
+        self.audio_key = audio_key
+        self.sampling_rate = sampling_rate
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    @staticmethod
+    def resolve_audio_pointer(audio_pointer, sampling_rate) -> dict[str, Any]:
+        import librosa  # noqa F401
+
+        def _load_audio_file(file_name, sampling_rate):
+            with fsspec.open(audio_pointer, "rb", compression="infer") as f:
+                array, sr = librosa.load(f, sr=sampling_rate)
+            return {"array": array, "sampling_rate": sr}
+
+        if isinstance(audio_pointer, dict):
+            # These are the 3 ways HuggingFace stores audio in it's Audio type
+            # https://huggingface.co/docs/datasets/v2.5.1/en/about_dataset_features#the-audio-type
+            if "array" in audio_pointer and "sampling_rate" in audio_pointer:
+                audio = audio_pointer
+            elif "bytes" in audio_pointer:
+                array, sr = librosa.load(io.BytesIO(audio_pointer["bytes"]), sr=sampling_rate)
+                audio = {"array": array, "sampling_rate": sr}
+            elif "path" in audio_pointer:
+                audio = _load_audio_file(audio_pointer["path"], sampling_rate)
+        elif isinstance(audio_pointer, str):
+            # This supports filename pointers to arbitrary audio types
+            audio = _load_audio_file(audio_pointer, sampling_rate)
+        else:
+            raise ValueError(f"Unsupported audio format {audio_pointer}")
+        return audio
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[Tuple[np.ndarray, int, str]]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            format = _sniff_format_for_dataset(url)
+            match format:
+                case ".jsonl":
+                    # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
+                    # which is not nothing, but not ideal.
+                    for line in f:
+                        if i >= row:
+                            mat_json = json.loads(line)
+                            audio_pointer = mat_json[self.audio_key]
+                            audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                            yield (audio["array"], audio["sampling_rate"], mat_json[self.text_key])
+                        i += 1
+                case ".json":
+                    data = json.load(f)
+                    for doc in data[row:]:
+                        audio_pointer = doc[self.audio_key]
+                        audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                        yield (audio["array"], audio["sampling_rate"], doc[self.text_key])
                 case _:
                     raise ValueError(f"Unknown format {format}")
 

@@ -1,24 +1,31 @@
+import os.path
 import tempfile
 
 import equinox as eqx
 import jax
 import numpy as np
+import optax
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
 
+from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import (
     LoraConfig,
     LoraLinear,
     lora_state_dict,
+    lora_trainable_params_filter,
     loraize,
     merge_lora_modules,
     save_merged_hf_model,
     save_peft_pretrained,
 )
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.trainer import StepInfo
+from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch
 
@@ -161,7 +168,7 @@ def test_lora_load_in_peft():
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
 
-    causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         from peft import PeftConfig, PeftModel
@@ -210,7 +217,7 @@ def test_lora_merged_load_in_hf():
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
     torch_input = torch.tensor(np.array(input.array), dtype=torch.long).reshape((1, -1))
 
-    causal_mask = hax.nn.attention.causal_mask(model.Pos, config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(model, f"{tmpdir}/model")
@@ -240,3 +247,37 @@ def test_lora_merged_load_in_hf():
 
         assert np.allclose(lev_lora_out, hf_lora_out, atol=1e-4)
         assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)
+
+
+def test_lora_works_with_checkpointer():
+    with tempfile.TemporaryDirectory() as tempdir:
+        k0 = jax.random.PRNGKey(0)
+        k1 = jax.random.PRNGKey(1)
+
+        class Module(eqx.Module):
+            first: hnn.Linear
+            second: hnn.Linear
+
+            def __call__(self, x):
+                return self.second(self.first(x))
+
+        module = Module(first=hnn.Linear.init(In, Mid, key=k0), second=hnn.Linear.init(Mid, Out, key=k1))
+
+        loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+        lora_filter = lora_trainable_params_filter(loraized)
+
+        optimizer = optax.adam(1e-3)
+
+        trainer_state = TrainerState.init(optimizer, loraized, key=k0, is_trainable=lora_filter)
+        info = StepInfo(trainer_state, 0.0, 0.0)
+
+        checkpointer = Checkpointer(tempdir, None, [])
+        checkpointer.save_checkpoint(info, "loraized")
+
+        checkpointer.wait_until_finished()
+
+        # check on disk that we didn't serialize the non-loraized parameters
+        if os.path.exists(f"{tempdir}/loraized/model/first/wrapped"):
+            assert False
+
+        assert os.path.exists(f"{tempdir}/loraized/model/first/lora/lora_A")

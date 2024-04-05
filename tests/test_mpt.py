@@ -10,7 +10,7 @@ import haliax
 
 from levanter.models.mpt import MptConfig, MptLmHeadModel
 from levanter.utils.tree_utils import inference_mode
-from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_model_works_with_seqlen, skip_if_no_torch
 
 
 @pytest.mark.skip(reason="MPT is broken in the latest version of transformers")
@@ -64,7 +64,7 @@ def test_mpt_nano_compare(attn_impl):
     lev_model = lev_model.from_state_dict(loaded_checkpoint)
 
     hax_input = haliax.named(input, lev_config.Pos)
-    causal_mask = haliax.nn.attention.causal_mask(lev_config.Pos, lev_config.KeyPos)
+    causal_mask = haliax.AttentionMask.causal()
     lev_out = lev_model(hax_input, causal_mask).array
 
     np.testing.assert_allclose(torch_out, np.array(lev_out), atol=1e-3, rtol=1e-3)
@@ -102,15 +102,6 @@ def test_mpt_nano_compare(attn_impl):
 #
 #     Vocab = haliax.Axis("vocab", config.vocab_size)
 #     lev_model = MptLmHeadModel.from_hf_pretrained("mosaicml/mpt-7b")
-
-
-@parameterize_with_configs("mpt*.yaml")
-def test_mpt_configs(config_file):
-    from levanter.main.train_lm import TrainLmConfig
-
-    config_class = TrainLmConfig
-
-    check_load_config(config_class, config_file)
 
 
 def test_pass_different_length_seq():

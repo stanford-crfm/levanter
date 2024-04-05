@@ -11,17 +11,20 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Uni
 
 import braceexpand
 import datasets
+import equinox as eqx
 import fsspec
 import jax
 import numpy as np
 import pyarrow as pa
+import regex
 from draccus import field
 from jaxtyping import PRNGKeyArray
+from tokenizers import normalizers
 
 import haliax as hax
 from haliax import Axis
 
-from levanter.data.mixture import MixtureDataset
+from levanter.data.mixture import MixtureDataset, StopStrategy
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -91,29 +94,32 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
     def __iter__(self) -> Iterator[LmExample]:
         key = self.key
-        for tokens in self.dataset:
-            with use_cpu_device():
-                example = self._create_lm_example(tokens, key)
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        with use_cpu_device():
+
+            @functools.partial(eqx.filter_jit, out_shardings=sharding)
+            def _create_lm_example(tokens, key):
+                tokens = hax.named(tokens, self.QPos)
+
+                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
+                if self.fcm_prob > 0:
+                    # masks for attention
+                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                    assert self.key is not None
+                    this_key, key = jax.random.split(key)
+                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                    attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+                    example = dataclasses.replace(example, attn_mask=attn_mask)
+
+                return example
+
+            for tokens in self.dataset:
+                example = _create_lm_example(tokens, key)
                 yield example
-
-    @functools.partial(jax.jit, static_argnums=(0))
-    def _create_lm_example(self, tokens, key):
-        tokens = hax.named(tokens, self.QPos)
-
-        example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
-
-        if self.fcm_prob > 0:
-            # masks for attention
-            # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-            # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-            # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-            assert self.key is not None
-            this_key, key = jax.random.split(key)
-            fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-            attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-            example = dataclasses.replace(example, attn_mask=attn_mask)
-
-        return example
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
@@ -306,36 +312,162 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
+LONG_STRING_WORKAROUND = 100_000
+
+
+ws = regex.compile(r"\s")
+
+
 class BatchTokenizer(BatchProcessor[str]):
     """
     A batch processor that tokenizes a batch of strings using a tokenizer.
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, enforce_eos=True, override_resources=None):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
+        enforce_eos=True,
+        *,
+        batch_size=128,
+        override_resources=None,
+        _workaround_len=LONG_STRING_WORKAROUND,
+        return_attention_mask=False,
+        padding=False,
+        max_length=None,
+    ):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
         self.override_resources = override_resources
+        self.return_attention_mask = return_attention_mask
+        self.padding = padding
+        if max_length is not None:
+            self.max_length = max_length
+        else:
+            self.max_length = self.tokenizer.model_max_length
 
-        # see if the tokenizer appends eos
+        # see if the tokenizer appends bos/eos
+        # if we don't have an eos/bos token in the tokenizer, skip
+        if tokenizer.bos_token_id is None:
+            enforce_bos = False
+        if tokenizer.eos_token_id is None:
+            enforce_eos = False
+
         # HF's BPE-based tokenizers do not, but the bert and roberta ones do
         # TODO: this doesn't necessarily ensure it, I guess, but eh
-        if enforce_eos:
+        if enforce_eos or enforce_bos:
             input_ids = tokenizer("hi there")["input_ids"]
-            should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+            should_append_eos = input_ids[-1] != tokenizer.eos_token_id and enforce_eos
+            should_append_bos = input_ids[0] == tokenizer.bos_token_id and enforce_bos
         else:
             should_append_eos = False
+            should_append_bos = False
+
+        self._batch_size = batch_size
 
         self._need_to_add_eos = should_append_eos
+        self._need_to_add_bos = should_append_bos
+        self._workaround_len = _workaround_len
 
     def __call__(self, batch: Sequence[str]) -> BatchEncoding:
+        orig_lengths = [len(d) for d in batch]
+        if self._need_to_add_bos:
+            batch = [self.tokenizer.bos_token + " " + d for d in batch]
+
         if self._need_to_add_eos:
-            encoding = self.tokenizer(
-                [d + " " + self.tokenizer.eos_token for d in batch], return_attention_mask=False, verbose=False
-            )
+            batch = [d + " " + self.tokenizer.eos_token for d in batch]
+
+        if self._needs_long_sequence_workaround:
+            # break any strings that are longer than 50K characters into smaller chunks
+            orig_batch = batch
+            batch = []
+            needs_merge = []
+            for i, d in enumerate(orig_batch):
+                needs_merge.append(False)
+                orig_len = orig_lengths[i]
+                while len(d) > self._workaround_len:
+                    # we'd rather break strings at whitespace, so find the first whitespace
+                    match = ws.search(d, self._workaround_len)
+                    # this is vanishingly unlikely, but if we can't find a whitespace, just break it at the limit
+                    if match is None:
+                        split = len(d)
+                    else:
+                        split = match.start()
+
+                    batch.append(d[:split])
+                    needs_merge.append(True)
+
+                    d = d[split:]
+                    orig_len -= split
+
+                batch.append(d)
         else:
-            encoding = self.tokenizer(batch, return_attention_mask=False, verbose=False)  # type: ignore
+            needs_merge = []
+
+        if self.padding is not False:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
+        else:
+            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
+
+        if needs_merge:
+            new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
+            encoding = BatchEncoding(new_encoding)
+
         return encoding
+
+    @staticmethod
+    def _merge_split_encodings(batch, encoding, needs_merge):
+        # merge the encodings back together
+        # we might need to merge multiple encodings together
+        # needs merge marks the first n-1 encodings that need to be merged for each document
+        new_encoding = {}
+        for k, v in encoding.items():
+            if len(v) == 0:
+                continue
+            if isinstance(v[0], np.ndarray):
+                assert len(v) == len(batch)
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        v_out.append(np.concatenate(vs_to_merge))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(np.concatenate(vs_to_merge))
+
+                new_encoding[k] = v_out
+            elif isinstance(v[0], list):
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        if len(vs_to_merge) > 0:
+                            v_out.append(list(chain(*vs_to_merge)))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(list(chain(*vs_to_merge)))
+                new_encoding[k] = v_out
+            else:
+                raise ValueError(f"Unknown type {type(v[0])}")
+        return new_encoding
+
+    # TODO remove this when it's resolved https://github.com/huggingface/tokenizers/issues/1449
+    @cached_property
+    def _needs_long_sequence_workaround(self):
+        if isinstance(self.tokenizer, PreTrainedTokenizerFast):
+            normalizer = self.tokenizer.backend_tokenizer.normalizer
+            if normalizer is None:
+                return False
+            # if there's a "Replace" normalizer, then we need to do the workaround
+            # inexplicably there's no way to see inside a Sequence so we also have to assume it needs it
+            return isinstance(normalizer, (normalizers.Replace, normalizers.Sequence))
+        else:
+            return False
 
     @property
     def num_cpus(self) -> int:
@@ -353,7 +485,7 @@ class BatchTokenizer(BatchProcessor[str]):
 
     @property
     def batch_size(self) -> int:
-        return 1024
+        return self._batch_size
 
 
 def concatenate_and_group_texts(
@@ -444,7 +576,15 @@ class LMDatasetSourceConfig:
 
     def get_shard_source(self, split) -> Optional[ShardedDataset[str]]:
         if self.id is not None:
-            ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+            try:
+                ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+            except ValueError as e:
+                # if the message starts with Bad split, then just return None
+                if str(e).startswith("Bad split"):
+                    logger.warning(f"Splits {split} not found for {self.id} {self.name}")
+                    return None
+                else:
+                    raise
 
             if len(ds.shard_names) == 0:
                 return None
@@ -642,6 +782,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
+    stop_strategy: str = field(default=StopStrategy.FIRST_STOP_STRATEGY)
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -658,7 +799,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> ShardableDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
-        return MixtureDataset(datasets=token_datasets, weights=self.train_weights)
+        return MixtureDataset(datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy)
 
     def training_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True

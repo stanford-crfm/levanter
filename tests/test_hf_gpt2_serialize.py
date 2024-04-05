@@ -15,11 +15,12 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.loss import next_token_loss
-from levanter.trainer import OptimizerConfig
+from levanter.optim import AdamConfig
 from levanter.utils.tree_utils import inference_mode
-from test_utils import skip_if_no_torch
+from test_utils import arrays_only, skip_if_no_torch
 
 
 @skip_if_no_torch
@@ -60,7 +61,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    attn_mask = AttentionMask.causal()
 
     def compute(input):
         out = model(input, key=None, attn_mask=attn_mask)
@@ -119,7 +120,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         return model(input_ids, labels=input_ids)[0]
 
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
-    causal_mask = hax.nn.attention.causal_mask(model.config.Pos, model.config.KeyPos)
+    causal_mask = AttentionMask.causal()
 
     def compute_loss(model, input_ids):
         pred_y = model(input_ids, key=None, attn_mask=causal_mask)
@@ -149,7 +150,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         assert onp.isclose(jax_g, torch_g.detach().cpu().numpy(), rtol=1e-2, atol=1e-2).all(), f"{jax_g} != {torch_g}"
 
     # now we also want to check that the optimizers do similar things
-    optimizer_config = OptimizerConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0, lr_schedule="constant")
+    optimizer_config = AdamConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0, lr_schedule="constant")
 
     if optimizer_config.max_grad_norm is not None:
         torch.nn.utils.clip_grad_norm_(torch_model.parameters(), optimizer_config.max_grad_norm)
@@ -164,7 +165,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_optimizer.step()
 
     jax_optimizer = optimizer_config.build(1000)
-    state = jax_optimizer.init(model)
+    state = jax_optimizer.init(arrays_only(model))
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 

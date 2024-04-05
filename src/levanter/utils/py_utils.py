@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
@@ -13,6 +14,22 @@ def logical_cpu_core_count():
         return os.cpu_count()
     except NotImplementedError:
         return 1
+
+
+def logical_cpu_memory_size():
+    """Returns the total amount of memory in GB available to the process or logical memory for SLURM."""
+    mem = os.getenv("SLURM_MEM_PER_NODE", None)
+    tasks = os.getenv("SLURM_NTASKS_PER_NODE", None)
+    if mem is not None and tasks is not None:
+        return float(mem) / int(tasks) / 1024.0  # MEM_PER_NODE is in MB
+
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total / (1024.0**3)
+    except ValueError:
+        import psutil
+
+        return psutil.virtual_memory().total / (1024.0**3)
 
 
 def non_caching_cycle(iterable):
@@ -142,3 +159,25 @@ def cached_classproperty(func: Callable[..., PropReturn]) -> PropReturn:
 
 
 cached_classproperty.__doc__ = _CachedClassProperty.__doc__
+
+
+def actual_sizeof(obj):
+    """similar to sys.getsizeof, but recurses into dicts and lists and other objects"""
+    seen = set()
+    size = 0
+    objects = [obj]
+    while objects:
+        need_to_see = []
+        for obj in objects:
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            size += sys.getsizeof(obj)
+            if isinstance(obj, dict):
+                need_to_see.extend(obj.values())
+            elif hasattr(obj, "__dict__"):
+                need_to_see.extend(obj.__dict__.values())
+            elif isinstance(obj, (list, tuple, set, frozenset)):
+                need_to_see.extend(obj)
+        objects = need_to_see
+    return size

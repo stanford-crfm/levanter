@@ -20,6 +20,8 @@ use_hf_model_config: true
 trainer:
   wandb:
     project: "locked"
+  tracker:
+    project: "levanter"
     tags: [ "openwebtext", "gpt2", "itest"]
 
   mp: p=f32,c=bfloat16

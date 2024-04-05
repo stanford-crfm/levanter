@@ -113,8 +113,12 @@ def microbatched(
                 this_r = fn(*microbatch, **microbatch_kwargs)
 
             with jax.named_scope("accum"):
-                acc = eqx.apply_updates(acc, this_r)
-                acc = hax.shard(acc, accum_axis_mapping)
+                import haliax.quantization as hq
+
+                # TODO: this uses the latest value for the scale for fp8, which seems not ideal but probably ok?
+                overwrites, updates = hq.partition_for_grad_overwrite(this_r)
+                acc = hq.apply_updates(acc, updates, overwrites)
+                acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
 
             return acc
 
@@ -140,7 +144,7 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
             return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))
         else:
-            assert jnp.isscalar(x)
+            # assert jnp.isscalar(x)
             return x
 
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)

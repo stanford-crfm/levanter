@@ -67,10 +67,8 @@ class Gpt2Config(HFCompatConfig):
 
     use_bias: bool = True
 
-    use_flash_attention: bool = (
-        False  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
-    )
-    flash_attention_block_size: int = 1024
+    use_flash_attention: bool = True  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    flash_attention_block_size: Optional[int] = None
 
     # Axes
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -241,7 +239,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(config: Gpt2Config, *, key) -> "Gpt2Block":
-        k_attn, k_cross, k_mlp = jrandom.split(key, 3)
+        k_attn, k_mlp = jrandom.split(key, 2)
 
         ln_1 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         attn = Gpt2Attention.init(config, key=k_attn)

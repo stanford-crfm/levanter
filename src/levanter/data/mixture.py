@@ -62,7 +62,7 @@ class MixtureDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded datasets"""
         sharded = {name: dset.shard(shard_id, num_shards) for name, dset in self.datasets.items()}
-        return MixtureDataset(sharded, self.weights)
+        return MixtureDataset(datasets=sharded, weights=self.weights, stop_strategy=self.stop_strategy)
 
     def __iter__(self) -> Iterator[np.ndarray]:
         iterators = {name: iter(dataset) for name, dataset in self.datasets.items()}

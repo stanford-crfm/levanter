@@ -5,7 +5,7 @@ import jax.random as jrandom
 import haliax as hax
 
 from levanter.models.gpt2 import Gpt2Config
-from levanter.trainer import OptimizerConfig
+from levanter.optim import AdamConfig
 
 
 def test_weight_decay_masking():
@@ -43,7 +43,7 @@ def test_weight_decay_masking():
     gpt_config = Gpt2Config()
     Vocab = hax.Axis("vocab", 100)
     model = gpt_config.build(Vocab, key=jrandom.PRNGKey(0))
-    string_list_config = OptimizerConfig(
+    string_list_config = AdamConfig(
         weight_decay_modules=[
             "attn.c_attn.weight",
             "attn.c_proj.weight",
@@ -53,7 +53,7 @@ def test_weight_decay_masking():
             "position_embeddings.weight",
         ]
     )
-    regex_config = OptimizerConfig(
+    regex_config = AdamConfig(
         weight_decay_modules=r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings",
     )
     # masking using `equinox.tree_at`

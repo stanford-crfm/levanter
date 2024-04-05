@@ -368,14 +368,14 @@ def save_peft_checkpoint_callback(
     If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
     any additional kwargs to the huggingface_hub.upload_folder function.
 
-    Args
-    base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
-               may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
-    config: the LoRA config to use
-    base_model_name_or_path: the name or path of the base model
-    tokenizer: If provided, will save the tokenizer to the checkpoint
-    upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
-    hf_upload_kwargs: kwargs to pass to the upload function
+    Args:
+        base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
+                   may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
+        config: the LoRA config to use
+        base_model_name_or_path: the name or path of the base model
+        tokenizer: If provided, will save the tokenizer to the checkpoint
+        upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
+        hf_upload_kwargs: kwargs to pass to the upload function
     """
 
     def cb(step: StepInfo):

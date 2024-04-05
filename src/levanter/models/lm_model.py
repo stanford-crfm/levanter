@@ -117,18 +117,22 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         key=None,
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
-    ) -> NamedArray:
+    ) -> jnp.ndarray | NamedArray:
         """
         Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
         across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
         logits = self(example.tokens, example.attn_mask, key=key)
+        # TODO: would be nice if we made the dtype configurable
+        logits = logits.astype(jnp.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        return cross_entropy_loss(
+        loss = cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
+
+        return loss
 
     @property
     def vocab_size(self) -> int:

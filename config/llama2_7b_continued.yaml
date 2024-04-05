@@ -6,14 +6,14 @@ model:
 initialize_from_hf: true
 use_hf_model_config: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: ["pile", "llama2"]
 
   mp: p=f32,c=bfloat16
 
   model_axis_size: 1
-  per_device_parallelism: 4
   per_device_eval_parallelism: 4
 
   train_batch_size: 1024

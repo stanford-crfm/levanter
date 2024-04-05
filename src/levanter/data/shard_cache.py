@@ -16,7 +16,6 @@ import jax
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
-import wandb
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
@@ -30,6 +29,8 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+
+import levanter.tracker
 
 from .. import logging
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
@@ -47,6 +48,8 @@ logger = pylogging.getLogger(__name__)
 DEFAULT_ROWS_PER_CHUNK = 8192
 DEFAULT_MAX_BYTES_PER_BATCH = 256 * 1024 * 1024  # 256 MB, this is pre-preprocessing python object size
 LEDGER_FILE_NAME = "cache_ledger.json"
+
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
 def build_cache(
@@ -161,7 +164,7 @@ class SerialCacheWriter(AbstractContextManager):
         self._current_chunk_writer: Optional[_ChunkWriter] = None
         self._is_closed = False
 
-    def __enter__(self):
+    def __enter__(self) -> "SerialCacheWriter":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -297,7 +300,7 @@ class _ShardMetadataWriter:
 
 # The difficulty is that we want parallelism and we want to control the order of chunks.
 # reading batches requires CPU and network. This means we should limit the number to roughly the number of nodes, maybe times 2.
-# We want to prioritize so that we read 1 chunks worth of batches from each shard before reading more from any shard.
+# We want to prioritize so that we read 1 chunks worth of batches from each shard before reading more from another shard.
 # We also want to prioritize reading earlier shards before later shards (within a chunk generation round).
 # Ray also seems to get upset about having too many processes, and we can't serialize the iterators over shards.
 
@@ -362,7 +365,7 @@ class PriorityWorkItem(Protocol):
 @ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
 class PriorityProcessorActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self._queue: list[PriorityWorkItem] = []  # heapq
         self._queue_lock = threading.Lock()
         self._shutdown_event = threading.Event()
@@ -386,7 +389,7 @@ class PriorityProcessorActor:
             if self._current_item is not None and self._current_item.spec == group:
                 return False
 
-            logger.info(f"Group {group.name} is finished.")
+            logger.debug(f"Group {group.name} is finished.")
 
             return True
 
@@ -443,9 +446,9 @@ class PriorityProcessorActor:
                 if not item_is_finished:
                     heapq.heappush(self._queue, item)
 
-        logger.info("Shutting down PriorityProcessorActor. Waiting for backpressure to drain.")
+        logger.debug("Shutting down PriorityProcessorActor. Waiting for backpressure to drain.")
         drain_backpressure_to(0)
-        logger.info("Backpressure drained. Shutting down PriorityProcessorActor.")
+        logger.debug("Backpressure drained. Shutting down PriorityProcessorActor.")
 
 
 @dataclass
@@ -459,6 +462,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
     processor_actor: ray.actor.ActorHandle  # BatchProcessorQueue
     batch_size: int
     num_rows_per_chunk: int
+    group_id: int
 
     def build(self) -> "PriorityWorkTaskGroup":
         return ShardGroupTaskGroup(self)
@@ -467,7 +471,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
 class ShardGroupTaskGroup(PriorityWorkTaskGroup):
     def __init__(self, spec: ShardGroupToBeProcessed):
         self.spec = spec
-        self.logger = pylogging.getLogger(f"shard_reader.{self.spec.name}")
+        self.logger = pylogging.getLogger(f"shard_reader.{spec.group_id}.{spec.name}")
 
         try:
             metadata: dict[str, ShardMetadata] = _initial_shard_metadatas(
@@ -543,6 +547,8 @@ class ShardReaderItem(PriorityWorkItem):
         total_chunk_rows = 0  # the total number of rows in the chunk
         batch_result_ref = None
 
+        self.group.logger.debug(f"Reading one chunk of shard {self.shard_name}: {self.chunk_idx}")
+
         try:
             while not chunk_filled:
                 batch = next(self.reader, None)
@@ -555,14 +561,20 @@ class ShardReaderItem(PriorityWorkItem):
 
                 if batch:
                     priority = self.spec.priority_fn(self.shard_idx, self.chunk_idx)
+                    # these times aren't exact because the times might be from different machines
+                    # but they're just for logging
+                    time_in = time.time()
                     batch_result_ref = ray.get(
-                        self.spec.processor_actor.submit.remote(priority=priority, batch=RefBox(ray.put(batch)))
+                        self.spec.processor_actor.submit.remote(
+                            priority=priority,
+                            desc=f"{self.shard_name}.{self.chunk_idx}.{chunk_batch_idx}",
+                            batch=RefBox(ray.put(batch)),
+                        )
                     )
                     writer.chunk_batch_finished.remote(
-                        self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref)
+                        self.shard_name, self.chunk_idx, chunk_batch_idx, RefBox(batch_result_ref), time_in
                     )
                     chunk_batch_idx += 1
-                    # enqueue_to_backpressure(batch, batch_result_ref)
                     del batch
 
                 if total_chunk_rows >= self.spec.num_rows_per_chunk or exhausted_shard:
@@ -577,7 +589,9 @@ class ShardReaderItem(PriorityWorkItem):
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.chunk_idx)
 
-            logger.debug(f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}")
+            self.group.logger.debug(
+                f"Finished reading one chunk of shard {self.shard_name}: {self.chunk_idx} {exhausted_shard}"
+            )
 
             return exhausted_shard, batch_result_ref
         except Exception as e:  # noqa
@@ -725,7 +739,7 @@ class LoggingMetricsMonitor(MetricsMonitor):
         self.last_metrics = metrics
         self.last_time = time.time()
 
-        wandb.log(to_log, commit=self.commit)
+        levanter.tracker.log_metrics(to_log, step=None, commit=self.commit)
 
 
 class LoggerMetricsMonitor(MetricsMonitor):
@@ -767,14 +781,49 @@ class _ShardStatus:
         return self.expected_num_chunks is not None and self.num_chunks_sent >= self.expected_num_chunks
 
 
+class WaitTimeReportingThread(threading.Thread):
+    def __init__(self, report, interval=60):
+        super().__init__()
+        self.report = report
+        self.interval = interval
+        self.shutdown_event = threading.Event()
+
+    def run(self):
+        total_waited = 0
+        while True:
+            if self.shutdown_event.wait(self.interval):
+                break
+            if total_waited > 0:
+                self.report(total_waited)
+            total_waited += self.interval
+
+    def shutdown(self):
+        self.shutdown_event.set()
+
+
 def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: List[T]) -> pa.RecordBatch:
-        pylogging.basicConfig(level=pylogging.INFO)
+    def process_task(desc, batch: List[T]) -> pa.RecordBatch:
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+        logger.debug(f"Processing batch {desc}")
         queue.task_running.remote()
-        result = processor(batch)
-        del batch
-        return as_record_batch(result)
+        # timer_thread = WaitTimeReportingThread(
+        #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
+        # )
+        # timer_thread.start()
+        try:
+            result = processor(batch)
+            del batch
+            result = as_record_batch(result)
+            logger.debug(f"Finished processing batch {desc}")
+            return result
+        except Exception as e:
+            logger.exception(f"Error while processing batch {desc}")
+            raise e
+        finally:
+            # timer_thread.shutdown()
+            # timer_thread.join()
+            pass
 
     return process_task
 
@@ -782,6 +831,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandl
 @dataclass(order=True, frozen=True)
 class _QueueItem:
     priority: float
+    desc: str
     batch: ray.ObjectRef = dataclasses.field(compare=False)
     task_id: int
     task_future: asyncio.Future = dataclasses.field(compare=False)
@@ -816,13 +866,13 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
     # we don't need/want to dereference the batch, so we wrap it in a RefBox
     # one virtue of doing things this way is that we can let Ray try to schedule the compute near the data.
-    async def submit(self, priority: float, batch: RefBox):
+    async def submit(self, priority: float, desc: str, batch: RefBox):
         """Returns a future that is set to the *ObjectRef* of the processed batch. The future is "complete" when the task
         starts, not when it finishes. You then call ray.get on the future's result to get the actual batch."""
         task_id = self._next_task_id
         self._next_task_id += 1
         f: asyncio.Future = asyncio.Future()
-        self.pqueue.put(_QueueItem(priority, batch.ref, task_id, f))
+        self.pqueue.put(_QueueItem(priority, desc, batch.ref, task_id, f))
         self._maybe_start_task()
         return await f
 
@@ -831,7 +881,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
             self.ready = False
             item = self.pqueue.get()
             batch = item.batch
-            item.task_future.set_result(self._task_processor.remote(batch))
+            item.task_future.set_result(self._task_processor.remote(item.desc, batch))
 
     def task_running(self):
         self.ready = True
@@ -843,7 +893,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 @ray.remote(num_cpus=0.0, scheduling_strategy="SPREAD")  # type: ignore
 class _GroupShardWriterWorker:
     def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.cache_dir = cache_dir
         self.shard_names = shard_names
         self.shard_writers: dict[str, _ShardWriterWorker] = {
@@ -853,10 +903,40 @@ class _GroupShardWriterWorker:
     def current_metadata(self, shard_name: str):
         return self.shard_writers[shard_name].current_metadata()
 
-    async def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox):
+    async def chunk_batch_finished(self, shard_name: str, chunk_id: int, batch_idx: int, batch: RefBox, time_in):
         # batch is a pa.RecordBatch ref box
         try:
-            batch = await batch.ref
+            time_mid = time.time()
+            logger.debug(
+                f"Received in progress batch {batch_idx} of chunk {chunk_id} of shard {shard_name} in"
+                f" {time_mid - time_in}"
+            )
+            # do a backoff loop until the batch is actually processed. log if it's been a while
+            timeout_interval = 20
+            total_time_waited = 0
+
+            while True:
+                try:
+                    # batch = await asyncio.wait_for(asyncio.shield(batch.ref), timeout_interval)
+                    batch = await batch.ref
+                    break
+                except asyncio.TimeoutError:
+                    # to keep to round numbers, we log how much we asked for rather than how much we got
+                    total_time_waited += timeout_interval
+                    timeout_interval = min(2 * timeout_interval, 100)
+                    logger.info(
+                        f"Waiting for {shard_name}.{chunk_id}.{batch_idx} to be processed. "
+                        f"Waited {total_time_waited} seconds."
+                    )
+
+            if logger.isEnabledFor(pylogging.DEBUG):
+                logger.debug(
+                    f"Received finished {shard_name}.{chunk_id}.{batch_idx} in {(time.time() - time_in):.2f} seconds."
+                )
+            elif total_time_waited > 40:
+                logger.info(
+                    f"Waited {total_time_waited} seconds for {shard_name}.{chunk_id}.{batch_idx} to be processed."
+                )
             return self.shard_writers[shard_name].chunk_batch_finished(chunk_id, batch_idx, batch)
         except Exception as e:
             print(f"Error while processing batch {batch_idx} of chunk {chunk_id} of shard {shard_name}", flush=True)
@@ -887,7 +967,7 @@ class _ShardWriterWorker:  # type: ignore
         cache_dir: str,
         shard_name: str,
     ):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.parent_ref = parent_ref
         self.cache_dir = cache_dir
         self.shard_name = shard_name
@@ -932,13 +1012,9 @@ class _ShardWriterWorker:  # type: ignore
         self.parent_ref.shard_failed.remote(self.shard_name, error)
 
     def _finished_chunk(self, idx: int, chunk: ChunkMetadata):
-        if idx < self.metadata_writer.num_chunks:
-            logger.error(f"Received chunk {idx} for {self.shard_name} but it's already finished")
-            error = RuntimeError(f"Received chunk {idx} for {self.shard_name} but it's already finished")
-            self.parent_ref.shard_failed.remote(self.shard_name, ser_exc_info(error))
-            raise error
-
-        if self._expected_num_chunks is not None and idx >= self._expected_num_chunks:
+        if (idx < self.metadata_writer.num_chunks) or (
+            self._expected_num_chunks is not None and idx >= self._expected_num_chunks
+        ):
             logger.error(f"Received chunk {idx} for {self.shard_name} but it's already finished")
             error = RuntimeError(f"Received chunk {idx} for {self.shard_name} but it's already finished")
             self.parent_ref.shard_failed.remote(self.shard_name, ser_exc_info(error))
@@ -959,6 +1035,8 @@ class _ShardWriterWorker:  # type: ignore
         chunks_committed = []
         while len(self.uncommited_chunks) > 0 and self.uncommited_chunks[0][0] == self.metadata_writer.num_chunks:
             _, chunk = heapq.heappop(self.uncommited_chunks)
+            chunk_number = self.metadata_writer.num_chunks
+            logger.debug(f"Committing chunk {chunk.name} of shard {self.shard_name}. It is chunk {chunk_number}")
             self.metadata_writer.commit_chunk(chunk)
             chunks_committed.append(chunk)
 
@@ -995,9 +1073,10 @@ class _ChunkCollator:
         self.chunk_writers: dict[int, _ChunkWriter] = {}  # chunk index -> writer
         self.batch_counts: dict[int, int] = {}  # chunk index -> number of batches written
         self.expected_totals: dict[int, int] = {}  # chunk index -> expected num batches.
-        self.chunk_partial_batches: dict[int, list[tuple[int, pa.RecordBatch]]] = (
-            {}
-        )  # chunk index -> heapq of (batch index, batch)
+        self.failed_chunks: dict[int, ExceptionInfo] = {}  # chunk index -> error
+        self.chunk_partial_batches: dict[
+            int, list[tuple[int, pa.RecordBatch]]
+        ] = {}  # chunk index -> heapq of (batch index, batch)
 
     def new_batch(self, chunk_id, batch_idx, batch) -> Optional[ChunkMetadata]:
         if chunk_id not in self.chunk_partial_batches:
@@ -1013,21 +1092,29 @@ class _ChunkCollator:
         return self._attempt_to_write_chunk_fragments(chunk_id)
 
     def chunk_failed(self, chunk_id, error: ExceptionInfo):
+        self.failed_chunks[chunk_id] = error
         if chunk_id in self.chunk_writers:
             self.chunk_writers[chunk_id].__exit__(*error.restore())
             del self.chunk_writers[chunk_id]
 
     def _attempt_to_write_chunk_fragments(self, chunk_id) -> Optional[ChunkMetadata]:
+        if chunk_id in self.failed_chunks:
+            logger.error(f"Chunk {chunk_id} of shard {self.shard_name} already failed, not writing more")
+            raise self.failed_chunks[chunk_id].restore()
 
         if chunk_id in self.chunk_partial_batches:
             chunk_batches = self.chunk_partial_batches[chunk_id]
 
-            while len(chunk_batches) > 0 and chunk_batches[0][0] == self.batch_counts[chunk_id]:
+            while len(chunk_batches) > 0:
+                batch_id, batch = chunk_batches[0]
+                if batch_id != self.batch_counts[chunk_id]:
+                    break
+
                 # we can write this batch
                 batch_id, batch = heapq.heappop(chunk_batches)
 
                 if chunk_id not in self.chunk_writers:
-                    assert batch_id == 0
+                    assert batch_id == 0, f"Expected batch 0 but got {batch_id}"
                     chunk_name = os.path.join(self.shard_name, f"chunk-{chunk_id}")
                     writer = _ChunkWriter(self.cache_dir, chunk_name, batch.schema)
                     writer.__enter__()
@@ -1072,7 +1159,7 @@ class ChunkCacheBuilder:
         processor: BatchProcessor[T],
         rows_per_chunk: int,
     ):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
         self.shard_status: Dict[str, _ShardStatus] = dict()
@@ -1093,19 +1180,24 @@ class ChunkCacheBuilder:
             self._processor_actors = []
 
             for shard_name in source.shard_names:
+                self._current_round_robin.append(shard_name)
                 self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
+            num_worker_groups = len(ray.nodes())
+            num_shard_groups = max(min(num_worker_groups, num_shards), 1)
 
-            def priority_fn(shard_idx, chunk_idx):
-                return chunk_idx * num_shards + shard_idx
-
-            num_shard_groups = max(min(len(ray.nodes()), num_shards), 1)
+            # if we have a bunch of caches to build with one shard, we don't want them all
+            # assigned to the same node, so we use an offset based on the hash of the name (for stability)
+            # in an attempt to spread them out
+            group_offset = int(hash(name) % num_worker_groups)
 
             shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
             for i, shard_name in enumerate(source.shard_names):
-                self._current_round_robin.append(shard_name)
                 shard_groups[i % num_shard_groups].append(shard_name)
+
+            def priority_fn(shard_idx, chunk_idx):
+                return chunk_idx * num_shards + shard_idx
 
             for group_id, shard_group in enumerate(shard_groups):
                 writer = _GroupShardWriterWorker.remote(self_ref, cache_dir, shard_group)  # type: ignore
@@ -1125,10 +1217,12 @@ class ChunkCacheBuilder:
                     processor_actor=processor_actor,
                     batch_size=processor.batch_size,
                     num_rows_per_chunk=rows_per_chunk,
+                    group_id=group_id,
                 )
 
                 # we want global names so that different tasks can coordinate priorities
-                priority_actor_name = f"priority_processor.{group_id}"
+                worker_to_assign = (group_id + group_offset) % num_worker_groups
+                priority_actor_name = f"priority_processor.{worker_to_assign}"
 
                 reader_actor = PriorityProcessorActor.options(  # type: ignore
                     name=priority_actor_name, get_if_exists=True
@@ -1136,17 +1230,6 @@ class ChunkCacheBuilder:
 
                 ray.get(reader_actor.add_work_group.remote(work_item))
 
-                # reader = _alternating_shard_reader.remote(
-                #     name,
-                #     self_ref,
-                #     writer,
-                #     source,
-                #     shard_group,
-                #     priority_fn,
-                #     processor_actor,
-                #     processor.batch_size,
-                #     rows_per_chunk,
-                # )
                 self._shard_readers.append(reader_actor)
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
@@ -1226,14 +1309,23 @@ class ChunkCacheBuilder:
             next_chunk = status.pop_chunk_to_send()
             if next_chunk is not None:
                 # we can send a chunk from this shard
-                logger.debug(f"Sending chunk from {name}")
                 self._current_round_robin.pop(0)
                 self._current_round_robin.append(name)
                 chunks_to_send.append(next_chunk)
                 continue
             else:
-                logger.debug(f"Shard {name} has no chunks to send and is not known to be finished")
                 # we can't send a chunk from this shard, so we can't send any additional chunks
+                if self.logger.level <= pylogging.DEBUG:
+                    chunks_waiting = [
+                        f"{n2} ({len(s2.current_buffer)})"
+                        for n2, s2 in self.shard_status.items()
+                        if len(s2.current_buffer) > 0
+                    ]
+                    msg = (
+                        f"Shard {name} has no chunks to send and is not known to be finished. We have this many queued"
+                        f" chunks: {chunks_waiting}"
+                    )
+                    self.logger.debug(msg)
                 break
 
         if len(chunks_to_send) > 0:
@@ -1255,7 +1347,7 @@ class ChunkCacheBroker:
     _finished_promise: asyncio.Future[None]
 
     def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.chunks = []
         self._reader_promises = {}
         self._is_finished = False
@@ -1267,6 +1359,9 @@ class ChunkCacheBroker:
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
         self._metrics_condition = asyncio.Condition()
+        path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
+        name = f"broker::{path_for_name}"
+        self.logger = pylogging.getLogger(f"{name}")
 
         # initialize writer task
         # first see if we need to do anything: check the ledger for is_finished
@@ -1278,7 +1373,6 @@ class ChunkCacheBroker:
         except FileNotFoundError:
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             # only use the last two components of the name since it gets kind of long
-            path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
             name = f"builder::{path_for_name}"
             self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, self._rows_per_chunk)  # type: ignore
 
@@ -1305,7 +1399,6 @@ class ChunkCacheBroker:
         elif self._is_finished:
             return None
         else:
-            # we don't have this chunk yet, so we need to wait
             if chunk_idx not in self._reader_promises:
                 self._reader_promises[chunk_idx] = asyncio.Future()
             return await self._reader_promises[chunk_idx]
@@ -1320,7 +1413,9 @@ class ChunkCacheBroker:
         for chunk in chunks:
             self.chunks.append(chunk)
             chunk_idx = len(self.chunks) - 1
+            self.logger.debug(f"Received chunk {chunk_idx}")
             if chunk_idx in self._reader_promises:
+                self.logger.debug(f"Resolving promise for chunk {chunk_idx}")
                 self._reader_promises[chunk_idx].set_result(chunk)
                 del self._reader_promises[chunk_idx]
 
@@ -1357,7 +1452,9 @@ class ChunkCacheBroker:
         _serialize_json_and_commit(os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks))
 
         self._reader_promises = {}
-        self._builder_actor = None
+        # TODO: For some reason this crashes other actors with weird reference counting assertion errors.
+        # pretty sure it's a ray bug
+        # self._builder_actor = None
         self._finished_promise.set_result(None)
 
         # notify metrics subscribers
@@ -1526,17 +1623,19 @@ class ShardCache(Iterable[pa.RecordBatch]):
         else:
             assert self._broker is not None
             time_in = time.time()
+            next_time = time_in
             # we want to also log if we're waiting for a long time, so we do this in a loop
-            while timeout is None or time.time() - time_in < timeout:
+            while timeout is None or next_time - time_in < timeout:
                 current_timeout = 20.0
                 if timeout is not None:
-                    current_timeout = min(current_timeout, timeout - (time.time() - time_in))
+                    current_timeout = min(current_timeout, timeout - (next_time - time_in))
                 try:
                     chunk = ray.get(self._broker.get_chunk.remote(mapped_index), timeout=current_timeout)
                 except GetTimeoutError:
-                    self.logger.warning(f"Waiting for chunk {mapped_index} for {int(time.time() - time_in)} seconds")
+                    self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
+                    next_time = time.time()
                     current_timeout *= 2
-                    current_timeout = min(current_timeout, 80)
+                    current_timeout = min(current_timeout, 100)
                     continue
 
                 if chunk is None:
@@ -1643,6 +1742,11 @@ class ShardCache(Iterable[pa.RecordBatch]):
         Gets the "base" shard cache that this shard cache is a shard of.
         """
         return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, 0, 1)
+
+    def with_batch_size(self, batch_size):
+        return ShardCache(
+            self.cache_dir, batch_size, self._ledger, self._broker, self._reader_offset, self._num_readers
+        )
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)

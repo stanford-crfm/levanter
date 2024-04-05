@@ -1,14 +1,13 @@
 import logging
 import os
-from dataclasses import dataclass
-
-import wandb
+from dataclasses import dataclass, field
 
 import levanter
 from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor, build_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
-from levanter.logging import init_logger
+from levanter.logging import init_logging
+from levanter.tracker import NoopConfig, TrackerConfig
 
 
 logger = logging.getLogger(__name__)
@@ -16,18 +15,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
-    pass
+    tracker: TrackerConfig = field(default_factory=NoopConfig)
 
 
 @levanter.config.main()
 def main(args: RayCachedLMDatasetConfig):
     """Caches two different kinds of datasets. It can cache a dataset from a list of urls, or a dataset from a hf dataset"""
-    init_logger("cache_dataset.log")
+    init_logging(".", "cache_dataset.log")
     args.initialize()
 
     tokenizer = args.the_tokenizer
-
-    wandb.init(mode="offline")
 
     for split in ["train", "validation"]:
         print(f"Caching {split} to {args.cache_dir}.")
@@ -49,6 +46,7 @@ def main(args: RayCachedLMDatasetConfig):
             rows_per_chunk=args.rows_per_chunk,
             await_finished=False,
             monitors=monitors,
+            batch_size=128,
         )
 
         cache.await_finished()
