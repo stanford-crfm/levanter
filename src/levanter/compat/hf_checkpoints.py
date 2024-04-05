@@ -550,12 +550,12 @@ class HFCheckpointConverter(Generic[LevConfig]):
             lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
             lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
 
-                # However, this might miss some buffers that don't get persisted in the state dict
-                # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
-                # again, this time keeping only the (missing) buffers, and then combine the two models.
-                lev_model = _patch_missing_buffers_for_deser(
-                    lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
-                )
+            # However, this might miss some buffers that don't get persisted in the state dict
+            # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
+            # again, this time keeping only the (missing) buffers, and then combine the two models.
+            lev_model = _patch_missing_buffers_for_deser(
+                lev_model, lm_model_cls, Vocab, config, PRNGKey(0), axis_mapping
+            )
 
             if Vocab.size != tokenizer_Vocab.size:
                 if resize_vocab_to_match_tokenizer:
