@@ -63,7 +63,7 @@ class LlamaConfig(HFCompatConfig):
     num_kv_heads: int = 32
     activation_function: str = "silu"
     initializer_range: float = 0.02
-    layer_norm_epsilon: float = 1e-5
+    layer_norm_epsilon: float = 1e-6
 
     # Attention-related config
     upcast_attn: bool = False

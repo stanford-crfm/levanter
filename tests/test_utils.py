@@ -11,7 +11,7 @@ from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
 from jax._src.random import PRNGKey
-from transformers import BatchEncoding
+from transformers import AutoTokenizer, BatchEncoding
 
 import haliax as hax
 
@@ -240,3 +240,6 @@ def check_model_works_with_seqlen(model_type, config, input_len):
     causal_mask = AttentionMask.causal()
     a1 = model(input_ids, key=key, attn_mask=causal_mask)
     assert a1.axis_size("position") == input_len
+
+
+gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2")
