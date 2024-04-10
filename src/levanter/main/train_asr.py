@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
@@ -148,10 +149,21 @@ def main(config: TrainASRConfig):
         else:
             logger.info("No checkpoint found. Starting from scratch.")
 
-            state = trainer.initial_state(
-                training_key,
-                model_init=lambda: config.model.build_asr(Vocab, key=model_key),
-            )
+        if int(state.step) == 0:
+            # TODO: I don't love that we init the model twice, but it's not a big deal i think?
+            if config.initialize_from_hf:
+                # initialize from an hf pretrained model
+                logger.info(
+                    "No training checkpoint found. Initializing model from HF checkpoint"
+                    f" '{converter.reference_checkpoint}'"
+                )
+                # this is a bit gross, but we want to free up the memory from the model we just built
+                state = dataclasses.replace(state, model=None)
+                model = converter.load_pretrained(config.model.asr_model_type, axis_mapping=parameter_axis_mapping)
+                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
+                state = dataclasses.replace(state, model=model)
+            else:
+                logger.info("No checkpoint found. Starting from scratch.")
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
