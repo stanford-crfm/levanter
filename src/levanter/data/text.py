@@ -620,7 +620,10 @@ class LMDatasetSourceConfig:
                 fs = fsspec.core.url_to_fs(url)[0]
                 globbed = fs.glob(url)
                 # have to append the fs prefix back on
-                return [f"{fs.protocol}://{path}" for path in globbed]
+                procotol, _ = fsspec.core.split_protocol(url)
+                if procotol is None:
+                    return globbed
+                return [f"{protocol}://{path}" for path in globbed]
             else:
                 return [url]
 
