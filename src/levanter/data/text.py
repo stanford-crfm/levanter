@@ -618,7 +618,12 @@ class LMDatasetSourceConfig:
         def fsspec_expand_glob(url):
             if "*" in url:
                 fs = fsspec.core.url_to_fs(url)[0]
-                return fs.glob(url)
+                globbed = fs.glob(url)
+                # have to append the fs prefix back on
+                protocol, _ = fsspec.core.split_protocol(url)
+                if protocol is None:
+                    return globbed
+                return [f"{protocol}://{path}" for path in globbed]
             else:
                 return [url]
 
