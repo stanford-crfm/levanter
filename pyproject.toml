@@ -51,7 +51,7 @@ dependencies = [
     "dataclasses-json~=0.6.4",
     "ray[default]~=2.10",
     "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
-    "rich~=13",
+    "rich~=13.0",
     "filelock~=3.13",
 ]
 
