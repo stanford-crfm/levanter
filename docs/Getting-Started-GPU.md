@@ -1,6 +1,8 @@
 # Getting Started on GPU
 
-**Note**: We only test on Ampere GPUs (e.g., A100s or 30xx series). If it works with JAX, it should work, though.
+
+!!! note
+    We only test on Ampere GPUs (e.g., A100s or 30xx series). If it works with JAX, it should work, though. We have done limited testing on H100 GPUs, but we do not have regular access to them.
 
 We have two installation options for Levanter:
 
@@ -192,7 +194,7 @@ python src/levanter/main/train_lm.py \
 
 ### Things to Watch Out For When Using Docker + Levanter
 
-1. To use the Levanter datasets available on google cloud within a Docker container, you need to install gcloud and login inside the docker container. See Google Cloud Setup instructions at the top of [Getting Started on TPU VMs](./Getting-Started-TPU-VM.md).
+1. To use the Levanter datasets available on Google cloud within a Docker container, you need to install gcloud and login inside the docker container. See Google Cloud Setup instructions at the top of [Getting Started on TPU VMs](./Getting-Started-TPU-VM.md).
 
 2. If you are using a Docker container on the Stanford NLP cluster, you need to check which GPUs have been allocated to you within your slurm job. Run `nvidia-smi` before you start your docker container and note the `Bus-Id` for each GPU. Then, after starting your docker container, run `nvidia-smi` again to discover the indices of the GPUs you've been allocated within the full node. The GPU index is listed to the left of the GPU name in the left most column. Run `export CUDA_VISIBLE_DEVICES=[YOUR GPU INDICES]` so the container will only use your allocated GPUs and not all the GPUs on the node. For example, if you are using GPUs `[2, 3, 4, 5]` you would run `export CUDA_VISIBLE_DEVICES=2,3,4,5`.
 
@@ -287,7 +289,7 @@ This will start a 4 node job where each node has 8 GPUs.
 When the above command is run on the coordinator node, it will block until all other processes connect to it. All the other nodes will connect to the coordinator node before they can begin training. All other training run arguments have the same meaning as with single node runs. We recommend thinking about increasing your `--trainer.train_batch_size` value when you scale from single node to multi-node training, as this is the global batch size for your training job and you've now increased your compute capacity.
 
 #### Launching a Multi-Node Slurm Job
-Here is an updated SLURM script example where we've added `#SBATCH --nodes=2`.
+Here is an updated Slurm script example where we've added `#SBATCH --nodes=2`.
 ***NOTE: This script hasn't been tested yet.***
 
 ```bash
@@ -308,10 +310,23 @@ TRAINING_COMMAND="python -m levanter.main.train_lm --config_path config/gpt2_7b.
 
 srun docker run --gpus=all --shm-size=16g --rm $CONTAINER_PATH $TRAINING_COMMAND
 ```
-If you're SLURM (and using Pyxis), you won't need to do provide the distributed arguments described in the previous section. JAX/Levanter will infer them for you.
+If you're Slurm (and using Pyxis), you won't need to do provide the distributed arguments described in the previous section. JAX/Levanter will infer them for you.
 
 ### Switching Between GPU and TPU
 In Levanter, you can switch between using TPUs and GPUs in the middle of a training run. See our tutorial on [Switching Hardware Mid-Training Run](Hardware-Agnostic-Training.md) to learn more.
+
+## FP8 Training
+
+On H100 GPUs, you can train with FP8 precision. To do this, you just need to add the following to your config:
+
+```yaml
+trainer:
+  # ...
+  fp8: true
+```
+
+For details on how it works, see the [Haliax FP8 docs](https://haliax.readthedocs.io/en/latest/fp8/) and
+Transformer Engine's [FP8 docs](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html).
 
 ## Miscellaneous Problems
 
@@ -324,3 +339,5 @@ See FAQ entry, but some variant of this should work:
 ```bash
 export PATH=$(echo $PATH | sed 's|:/usr/local/cuda/bin||')
 ```
+
+The issue is that the system-installed CUDA is being used instead of the CUDA installed by JAX.
