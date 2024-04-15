@@ -97,8 +97,18 @@ def main(config: EvalLmConfig):
             num_params = len(tree_util.tree_leaves(model1))
 
             return total_loss / num_params
+        
+        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        def l2_norm_sum(model1: LmHeadModel, model2: LmHeadModel):
+            def l2ns(x, y):
+                return hax.sum(x)
 
+            tree_diff = tree_util.tree_map(l2ns, model1, model2)
+            total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
+            num_params = len(tree_util.tree_leaves(model1))
 
+            return total_loss / num_params
+        
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
         def compute_logits_diff(logit_fn, model1: LmHeadModel, model2: LmHeadModel, batch: LmExample):
             logits1 = logit_fn(model1, batch)
@@ -194,12 +204,14 @@ def main(config: EvalLmConfig):
             jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
             l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
             logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
+            l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1, model_2)
             # Generate alphas from 0 to 1 with a step of 0.05
             
             wandb.log({"eval/logits_diff": logits_diff})
             wandb.log({"eval/l2_norm_diff": l2_norm_num})
             wandb.log({"eval/jsd": jsd})
-            alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
+            wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
+            alphas = [round(alpha * 0.1, 2) for alpha in range(10)]
 
             print(f"\n model 1: {model_1}")
             print(f"\n model 2: {model_2}")
