@@ -200,6 +200,8 @@ def main(config: EvalLmConfig):
             wandb.log({"eval/jsd": jsd})
             alphas = [round(alpha * 0.05, 2) for alpha in range(21)]
 
+            print(f"\n model 1: {model_1}")
+            print(f"\n model 2: {model_2}")
             for alpha in alphas:
                 print(f"alpha: {alpha}")
 
