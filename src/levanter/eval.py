@@ -12,6 +12,7 @@ import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import StepInfo
+from levanter.utils.tree_utils import inference_mode
 
 
 T = TypeVar("T")
@@ -26,37 +27,44 @@ class EvalResult:
     tag_micro_losses: dict[str, float]  # per tag total loss, for "parent" tags
 
 
-class DomainTaggedDataset(Dataset[tuple[T, np.ndarray]]):
+class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
     """Holds multiple datasets, each with its own domain tag. Also indexes the tags to enable easier aggregation."""
 
-    def __init__(self, datasets: Sequence[tuple[Dataset[T], set[str]]]):
+    @property
+    def tags(self):
+        return self.tag_to_index.keys()
+
+    def __init__(self, datasets: Sequence[tuple[Dataset[T], Sequence[str]]]):
         self.datasets = datasets
-        tag_index = {"__UNUSED__": 0, "__ALL__": 1}
-        max_tags_per_dataset = 0
+        tag_index = {"__ALL__": 0}
         for _, tags in datasets:
-            max_tags_per_dataset = max(max_tags_per_dataset, len(tags))
             for tag in tags:
                 if tag not in tag_index:
                     tag_index[tag] = len(tag_index)
 
         self.tag_to_index = tag_index
-        self.max_tags_per_dataset = max_tags_per_dataset + 1
+        self.Tag = hax.Axis("tag", len(self.tag_to_index))
 
     def __iter__(self):
         for dataset, tags in self.datasets:
-            indexed = [self.tag_to_index[tag] for tag in tags] + [1]
+            indexed = [self.tag_to_index[tag] for tag in tags] + [0]
             # tags = indexed + [0] * (self.max_tags_per_dataset - len(indexed))
             # tags = np.array(tags, dtype=np.int32)
-            tags = np.zeros(self.max_tags_per_dataset, dtype=np.int32)
-            tags[indexed] = 1
+            tags = np.zeros(len(self.tag_to_index), dtype=np.int32)
+            tags[
+                tuple(
+                    indexed,
+                )
+            ] = 1
+            tags = hax.named(tags, self.Tag)
 
             for example in dataset:
                 yield example, tags
 
 
-def tagged_lm_evaluate(
+def cb_tagged_lm_evaluate(
     EvalBatch: hax.Axis,
-    tagged_eval_sets: Sequence[tuple[Dataset[LmExample], set[str]]],
+    tagged_eval_sets: Sequence[tuple[Dataset[LmExample], Sequence[str]]],
     device_mesh: Optional[Mesh] = None,
     axis_mapping: ResourceMapping = None,
 ) -> Callable[[StepInfo], EvalResult]:
@@ -112,7 +120,6 @@ class TaggedEvaluator:
         self.loader = ReplicatedBatchLoader(
             self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
         )
-        self.Tag = hax.Axis("tag", self.dataset.max_tags_per_dataset)
 
         # tags are arranged hierarchically with "/" as separator. We want to log the average loss for each tag.
         hierarchy: dict[str, list[int]] = {}
@@ -129,14 +136,16 @@ class TaggedEvaluator:
 
         @hax.named_jit
         def accum_for_batch(m: LmHeadModel, state, batch: LmExample, tags: hax.NamedArray):
-            total_loss, total_tokens, losses_per_tag, total_tokens_per_tag = state
-            losses = m.compute_loss(batch, reduction=None, reduction_axis=())
-            mask = batch.loss_mask  # [Batch, Token]
-            # TODO: running mean?
-            total_loss += hax.einsum("->", losses, mask)  # to scalar
-            total_tokens += hax.einsum("->", mask)
-            losses_per_tag += hax.einsum("-> tag", losses, mask, tags)
-            total_tokens_per_tag += hax.einsum("-> tag", mask, tags)
+            m = inference_mode(m, True)
+            with hax.axis_mapping(axis_mapping):
+                total_loss, total_tokens, losses_per_tag, total_tokens_per_tag = state
+                losses = m.compute_loss(batch, reduction=None, reduction_axis=())
+                mask = batch.loss_mask  # [Batch, Token]
+                # TODO: running mean?
+                total_loss += hax.einsum("->", losses, mask)  # to scalar
+                total_tokens += hax.einsum("->", mask)
+                losses_per_tag += hax.einsum("-> tag", losses, mask, tags)
+                total_tokens_per_tag += hax.einsum("-> tag", mask, tags)
 
             return total_loss, total_tokens, losses_per_tag, total_tokens_per_tag
 
@@ -145,8 +154,8 @@ class TaggedEvaluator:
     def evaluate(self, m: LmHeadModel):
         total_loss = jnp.zeros(())
         total_tokens = 0
-        losses_per_tag = hax.zeros(self.Tag, dtype=np.float32)
-        total_tokens_per_tag = hax.zeros(self.Tag, dtype=np.int32)
+        losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
+        total_tokens_per_tag = hax.zeros(self.dataset.Tag, dtype=np.int32)
 
         state = (total_loss, total_tokens, losses_per_tag, total_tokens_per_tag)
         for batch, tags in self.loader:
@@ -166,10 +175,11 @@ class TaggedEvaluator:
 
         # add in the hierarchy
         for parent, children in self.hierarchy.items():
-            tag_macro_loss[parent] = np.sum(losses_per_tag.array, where=children) / np.sum(
-                total_tokens_per_tag, where=children
+            children = np.array(children)
+            tag_macro_loss[parent] = np.sum(losses_per_tag_cpu, where=children) / np.sum(
+                total_tokens_per_tag_cpu, where=children
             )
-            tag_micro_loss[parent] = np.mean(losses_per_tag.array, where=children)
+            tag_micro_loss[parent] = np.mean(losses_per_tag_cpu, where=children)
 
         for tag, index in self.dataset.tag_to_index.items():
             loss = losses_per_tag_cpu[index] / total_tokens_per_tag_cpu[index]
