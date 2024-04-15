@@ -211,7 +211,7 @@ def main(config: EvalLmConfig):
             wandb.log({"eval/l2_norm_diff": l2_norm_num})
             wandb.log({"eval/jsd": jsd})
             wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
-            alphas = [round(alpha * 0.1, 2) for alpha in range(10)]
+            alphas = [round(alpha * 0.1, 2) for alpha in range(11)]
 
             print(f"\n model 1: {model_1}")
             print(f"\n model 2: {model_2}")
