@@ -215,6 +215,8 @@ def main(config: EvalLmConfig):
 
             print(f"\n model 1: {model_1}")
             print(f"\n model 2: {model_2}")
+            print(f"\n l2_norm_num: {l2_norm_num}")
+            quit()
             for alpha in alphas:
                 print(f"alpha: {alpha}")
 
