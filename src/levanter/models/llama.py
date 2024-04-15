@@ -73,7 +73,7 @@ class LlamaConfig(HFCompatConfig):
 
     gradient_checkpointing: bool = True
     gradient_checkpointing_block_size: int = 5
-    scan_layers: bool = True
+    scan_layers: bool = False
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
