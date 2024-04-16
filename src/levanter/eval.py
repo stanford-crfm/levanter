@@ -3,6 +3,7 @@ from typing import Callable, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
 import numpy as np
+import tqdm
 from jax.sharding import Mesh
 
 import haliax as hax
@@ -13,6 +14,7 @@ from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.tree_utils import inference_mode
+
 
 
 T = TypeVar("T")
@@ -43,19 +45,14 @@ class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
                     tag_index[tag] = len(tag_index)
 
         self.tag_to_index = tag_index
+        print(self.tag_to_index, flush=True)
         self.Tag = hax.Axis("tag", len(self.tag_to_index))
 
     def __iter__(self):
         for dataset, tags in self.datasets:
             indexed = [self.tag_to_index[tag] for tag in tags] + [0]
-            # tags = indexed + [0] * (self.max_tags_per_dataset - len(indexed))
-            # tags = np.array(tags, dtype=np.int32)
-            tags = np.zeros(len(self.tag_to_index), dtype=np.int32)
-            tags[
-                tuple(
-                    indexed,
-                )
-            ] = 1
+            tags = np.zeros(self.Tag.size, dtype=np.int32)
+            tags[tuple(indexed,)] = 1
             tags = hax.named(tags, self.Tag)
 
             for example in dataset:
@@ -116,10 +113,15 @@ class TaggedEvaluator:
 
     def __init__(self, EvalBatch: hax.Axis, tagged_eval_sets, device_mesh=None, axis_mapping=None):
         self.EvalBatch = EvalBatch
+        print(tagged_eval_sets)
         self.dataset = DomainTaggedDataset(tagged_eval_sets)
         self.loader = ReplicatedBatchLoader(
             self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
         )
+
+        print(sum(1 for _ in self.dataset), flush=True)
+        print("Calculating length", flush=True)
+        print(sum(1 for _ in self.loader), flush=True)
 
         # tags are arranged hierarchically with "/" as separator. We want to log the average loss for each tag.
         hierarchy: dict[str, list[int]] = {}
@@ -139,13 +141,16 @@ class TaggedEvaluator:
             m = inference_mode(m, True)
             with hax.axis_mapping(axis_mapping):
                 total_loss, total_tokens, losses_per_tag, total_tokens_per_tag = state
-                losses = m.compute_loss(batch, reduction=None, reduction_axis=())
-                mask = batch.loss_mask  # [Batch, Token]
+                loss = m.compute_loss(batch)
+                total_loss += loss
+                return total_loss, total_tokens, losses_per_tag, total_tokens_per_tag
+                # losses = m.compute_loss(batch, reduction=None, reduction_axis=())
+                # mask = batch.loss_mask  # [Batch, Token]
                 # TODO: running mean?
-                total_loss += hax.einsum("->", losses, mask)  # to scalar
-                total_tokens += hax.einsum("->", mask)
-                losses_per_tag += hax.einsum("-> tag", losses, mask, tags)
-                total_tokens_per_tag += hax.einsum("-> tag", mask, tags)
+                # total_loss += hax.einsum("->", losses, mask)  # to scalar
+                # total_tokens += hax.einsum("->", mask)
+                # losses_per_tag += hax.einsum("-> tag", losses, mask, tags)
+                # total_tokens_per_tag += hax.einsum("-> tag", mask, tags)
 
             return total_loss, total_tokens, losses_per_tag, total_tokens_per_tag
 
@@ -158,7 +163,8 @@ class TaggedEvaluator:
         total_tokens_per_tag = hax.zeros(self.dataset.Tag, dtype=np.int32)
 
         state = (total_loss, total_tokens, losses_per_tag, total_tokens_per_tag)
-        for batch, tags in self.loader:
+
+        for batch, tags in tqdm.tqdm(self.loader, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
 
         total_loss, total_tokens, losses_per_tag, total_tokens_per_tag = state

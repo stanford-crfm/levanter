@@ -1,4 +1,5 @@
 data:
+  cache_dir: data_mix_cache
   configs:
     wikitext:
       id: dlwh/wikitext_103_detokenized
@@ -21,7 +22,7 @@ trainer:
       - every: 50
     save_interval: 5m
 
-  per_device_eval_parallelism: 1
+  per_device_eval_parallelism: 64
   train_batch_size: 32
 
   tensor_parallel_axes: ["mlp", "heads"]

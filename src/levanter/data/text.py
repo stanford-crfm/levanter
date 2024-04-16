@@ -667,13 +667,13 @@ class LMTaskConfig(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def configs(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
         pass
 
     def tagged_eval_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> list[Tuple[ShardableDataset[np.ndarray], List[str]]]:
-        tags = {name: config.tags or [] for name, config in self.configs.items()}
+        tags = {name: config.tags or [] for name, config in self.sources.items()}
         eval_sets = self.validation_sets(seq_len, monitors)
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
@@ -706,7 +706,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return {}
 
     @property
-    def configs(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
         return {"": self}
 
     @cached_property
@@ -870,3 +870,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             else:
                 caches[name] = cache
         return caches
+
+    @property
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+        return self.configs
