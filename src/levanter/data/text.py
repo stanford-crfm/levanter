@@ -673,7 +673,7 @@ class LMTaskConfig(abc.ABC):
     def tagged_eval_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> list[Tuple[ShardableDataset[np.ndarray], List[str]]]:
-        tags = {name: config.tags or [] for name, config in self.sources.items()}
+        tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
         eval_sets = self.validation_sets(seq_len, monitors)
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]

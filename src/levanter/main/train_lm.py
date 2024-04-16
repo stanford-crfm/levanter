@@ -145,9 +145,9 @@ def main(config: TrainLmConfig):
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
             ]
-            # tagged_eval_dataset = DomainTaggedDataset(tagged_eval_datasets)
+            max_eval_examples_per_ds = config.trainer.max_eval_batches * config.trainer.eval_batch_size
             cb = levanter.eval.cb_tagged_lm_evaluate(
-                EvalBatch, causal_datasets, trainer.device_mesh, compute_axis_mapping
+                EvalBatch, causal_datasets, trainer.device_mesh, compute_axis_mapping, max_eval_examples_per_ds
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
