@@ -210,7 +210,8 @@ class TaggedEvaluator:
         tag_avg_loss = losses_per_tag.mean
 
         # TODO: why do i have to jit this
-        print(tag_avg_loss.array.sharding, tag_avg_loss.array.sharding.is_fully_addressable)  # type: ignore
+        print(tag_avg_loss.array.sharding, tag_avg_loss.array.sharding.is_fully_addressable, flush=True)  # type: ignore
+        print("\n\n\n\n\n\nmkladfklamdl\n\n\n\n\n\n", flush=True)
         macro_avg_loss = hax.named_jit(lambda x: hax.mean(x).array)(tag_avg_loss).item()
 
         tag_macro_loss = {}
