@@ -1,5 +1,5 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/wiki_en-llama2/"
+  cache_dir: "gs://levanter-data/tokenized/wiki-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/wiki_en/{00..29}.jsonl.zst
   validation_urls:
