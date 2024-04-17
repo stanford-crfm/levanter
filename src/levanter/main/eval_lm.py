@@ -202,7 +202,7 @@ def main(config: EvalLmConfig):
             model_2 = converter.load_pretrained(model_config)
 
             jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
-            l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
+            l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1)
             logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
             l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1, model_2)
             # Generate alphas from 0 to 1 with a step of 0.05
