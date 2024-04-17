@@ -208,10 +208,9 @@ class TaggedEvaluator:
 
         micro_avg_loss = total_loss.mean.item()
         tag_avg_loss = losses_per_tag.mean
-        print(tag_avg_loss.array.sharding, flush=True)  # type: ignore
-        tag_avg_loss = hax.shard(tag_avg_loss, self.loader.axis_resources)
-        print(f"After sharding: {tag_avg_loss.array.sharding}", flush=True)  # type: ignore
-        macro_avg_loss = hax.mean(tag_avg_loss).item()
+
+        # TODO: why do i have to jit this
+        macro_avg_loss = hax.named_jit(lambda x: hax.mean(x).item())(tag_avg_loss)
 
         tag_macro_loss = {}
         tag_micro_loss = {}
