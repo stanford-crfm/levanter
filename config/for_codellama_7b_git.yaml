@@ -8,7 +8,7 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-hf_checkpoint: "meta-llama/Llama-2-7b-hf"
+hf_checkpoint: "meta-llama/CodeLlama-7b-hf"
 second_hf_checkpoint: "meta-llama/Llama-2-7b-hf"
 
 trainer:
