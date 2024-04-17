@@ -171,7 +171,7 @@ class TaggedEvaluator:
 
         self.hierarchy = hierarchy
 
-        @hax.named_jit
+        @hax.named_jit(axis_resources=axis_mapping)
         def accum_for_batch(
             m: LmHeadModel, state: tuple[RunningMean, RunningMean], batch: LmExample, tags: hax.NamedArray
         ):
