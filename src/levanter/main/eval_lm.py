@@ -106,7 +106,7 @@ def main(config: EvalLmConfig):
             tree_diff = tree_util.tree_map(l2ns, model1, model2)
             total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
             num_params = len(tree_util.tree_leaves(model1))
-
+            print(f"num_params: {num_params}", flush=True)
             return total_loss / num_params
         
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
