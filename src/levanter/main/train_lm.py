@@ -102,7 +102,7 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        eval_datasets = config.data.validation_sets(Pos.size)
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -138,12 +138,21 @@ def main(config: TrainLmConfig):
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
-        if len(eval_datasets) == 0:
+        if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
+        else:
+            causal_datasets = [
+                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
+                for ds, tags in tagged_eval_datasets
+            ]
+            max_eval_examples_per_ds = config.trainer.max_eval_batches
+            if max_eval_examples_per_ds is not None:
+                max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch, causal_datasets, trainer.device_mesh, compute_axis_mapping, max_eval_examples_per_ds
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.hf_save_path is not None:
