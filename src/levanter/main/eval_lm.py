@@ -99,11 +99,11 @@ def main(config: EvalLmConfig):
             return total_loss / num_params
         
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
-        def l2_norm_sum(model1: LmHeadModel, model2: LmHeadModel):
-            def l2ns(x, y):
-                return hax.sum(x)
+        def l2_norm_sum(model1: LmHeadModel):
+            def l2ns(x):
+                return hax.sum(x**2)  # Square each element for L2 norm
 
-            tree_diff = tree_util.tree_map(l2ns, model1, model2)
+            tree_diff = tree_util.tree_map(l2ns, model1)
             total_loss = tree_util.tree_reduce(lambda x, y: x + y, tree_diff, initializer=0.0)
             num_params = len(tree_util.tree_leaves(model1))
             print(f"num_params: {num_params}", flush=True)
