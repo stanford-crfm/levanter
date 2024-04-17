@@ -1,24 +1,24 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  cache_dir: "gs://levanter-data/tokenized/github-llama2/"
   train_urls:
     - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
   validation_urls:
     - gs://levanter-data/pile-domains/github/val.jsonl.zst
   tokenizer: "meta-llama/Llama-2-70b-hf"
+
 model:
   type: llama
-# TODO: uncomment this once we resolve the resource exhaustion issue
+  # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "EleutherAI/llemma_7b"
-second_hf_checkpoint: "EleutherAI/llemma_7b"
+second_hf_checkpoint: "openlm-research/open_llama_7b"
 
 trainer:
   wandb:
     project: "trace"
-    name: "codellama-lemma-github"
-    tags: [ "github"]
-
+    name: "lemma7b-openllama-github"
+    tags: ["github"]
   mp: p=f32,c=bfloat16
-  train_batch_size: 64  # set for v4-64 TPU
+  train_batch_size: 64 # set for v4-64 TPU
   num_train_steps: 2
   steps_per_eval: 1
   tensor_parallel_axes: ["mlp", "heads"]
