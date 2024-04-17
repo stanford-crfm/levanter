@@ -210,6 +210,7 @@ class TaggedEvaluator:
         tag_avg_loss = losses_per_tag.mean
         print(tag_avg_loss.array.sharding, flush=True)  # type: ignore
         tag_avg_loss = hax.shard(tag_avg_loss, self.loader.axis_resources)
+        print(f"After sharding: {tag_avg_loss.array.sharding}", flush=True)  # type: ignore
         macro_avg_loss = hax.mean(tag_avg_loss).item()
 
         tag_macro_loss = {}
