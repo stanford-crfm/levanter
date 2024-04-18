@@ -564,6 +564,9 @@ def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
 class LMDatasetSourceConfig:
     """This class represents a dataset source with URLs or hf name/id."""
 
+    tags: Optional[List[str]] = None
+    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
+
     id: Optional[str] = None  # id (or path) for hf dataset
     name: Optional[str] = None  # name for hf dataset
 
@@ -662,6 +665,19 @@ class LMTaskConfig(abc.ABC):
     ) -> Mapping[str, ShardableDataset[np.ndarray]]:
         pass
 
+    @property
+    @abc.abstractmethod
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+        pass
+
+    def tagged_eval_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> list[Tuple[ShardableDataset[np.ndarray], List[str]]]:
+        tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
+        eval_sets = self.validation_sets(seq_len, monitors)
+
+        return [(eval_sets[name], tags[name]) for name in eval_sets]
+
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
@@ -688,6 +704,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return {"": validation_set}
         else:
             return {}
+
+    @property
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+        return {"": self}
 
     @cached_property
     def _has_validation_set(self):
@@ -850,3 +870,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             else:
                 caches[name] = cache
         return caches
+
+    @property
+    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+        return self.configs

@@ -164,7 +164,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
-        max_capacity: Optional[int] = 10,
+        max_capacity: Optional[int] = 64,
         *,
         override_process_data_pos: Optional[int] = None,  # for testing
         override_process_data_groups: Optional[int] = None,  # for testing
@@ -241,7 +241,7 @@ class ReplicatedBatchLoader(BatchLoader[Ex]):
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
-        max_capacity: Optional[int] = 10,
+        max_capacity: Optional[int] = 64,
     ):
         assert item_dataset is not None
         self.item_dataset = item_dataset
