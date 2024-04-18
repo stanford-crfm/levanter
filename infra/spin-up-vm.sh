@@ -39,8 +39,8 @@ echo "Creating VM $VM_NAME"
 CMD="$GCLOUD_CMD tpus tpu-vm create $VM_NAME \
   --zone=$ZONE \
   --accelerator-type=$TYPE \
-  --version=$VM_IMAGE \
-  --subnetwork=$SUBNETWORK"
+  --version=$VM_IMAGE
+"
 if [ "$PREEMPTIBLE" = true ]; then
   CMD="$CMD --preemptible"
 fi
