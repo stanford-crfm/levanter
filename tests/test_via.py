@@ -25,7 +25,7 @@ def test_via_loss():
     merged_config = {
         "encoder": hf_enc_config.to_dict(),
         "decoder": hf_dec_config.to_dict(),
-        "time_dialation": 50,
+        "time_dialation": 4,
     }
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)
@@ -60,7 +60,7 @@ def test_basic_forward_via():
     merged_config = {
         "encoder": hf_enc_config.to_dict(),
         "decoder": hf_dec_config.to_dict(),
-        "time_dialation": 50,
+        "time_dialation": 4,
     }
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)

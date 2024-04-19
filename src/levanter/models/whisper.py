@@ -83,7 +83,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     SourcePos = property(lambda self: Axis(name="position", size=self.max_source_positions))
     Vocab = property(lambda self: Axis(name="vocab", size=self.vocab_size))
-    Embed = property(lambda self: Axis(name="embed_dim", size=self.d_model))
+    Embed = property(lambda self: Axis(name="embed", size=self.d_model))
     EncoderMlp = property(lambda self: Axis(name="mlp_dim", size=self.encoder_ffn_dim))
     EncoderHeads = property(lambda self: Axis(name="heads", size=self.encoder_attention_heads))
     EncoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.encoder_attention_heads))
@@ -445,7 +445,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed_dim", x, self.token_embeddings.weight)
+        return hax.dot("embed", x, self.token_embeddings.weight)
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)
