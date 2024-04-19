@@ -13,7 +13,7 @@ from haliax.jax_utils import maybe_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
 from levanter.logging import silence_transformer_nag
-from levanter.models.asr_model import ASRConfig, ASRMixin
+from levanter.models.asr_model import ASRConfig, ASRMixin, AudioTextExample
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmHeadModel
@@ -228,10 +228,42 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         # Reconstruct Padded Output Prediction with Input Predictions Removed
         diff = InputPosition.size - target_logits.resolve_axis("position").size
         OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
-        return hax.concatenate(
-            "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
+        return (
+            hax.concatenate(
+                "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
+            ),
+            virtual_tokens["position", : input_ids.resolve_axis("position").size],
         )
 
 
 class ViaASRModel(ViaModel, ASRMixin):
-    pass
+    def compute_loss(
+        self,
+        example: AudioTextExample,
+        *,
+        key=None,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> NamedArray:
+        logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
+        real_tokens = self.decoder.embeddings.embed(example.tokens)
+        diff = real_tokens - virt_tokens
+        loss = hax.dot(diff, diff, axis="embed")
+        loss = hax.where(example.loss_mask, loss, 0)
+        if reduction != None:
+            loss = reduction(loss, where=example.loss_mask, axis=reduction_axis) * 0.025
+        logits = logits.astype(jax.numpy.float32)
+        targets = example.tokens
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        if reduction == None:
+            return hnn.cross_entropy_loss(
+                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
+        loss = (
+            hnn.cross_entropy_loss(
+                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
+            + loss
+        )
+
+        return loss
