@@ -19,7 +19,7 @@ def visualize_log_probs(tokens: List[List[str]], log_probs: np.ndarray, output_p
                               of each token in each document.
     - output_path (str): The path to the output HTML file.
     """
-    probs = np.exp(log_probs)
+    probs = np.exp(-1 * log_probs)
 
     # We encode the log probabilities as a linear gradient
     norm = cm.colors.Normalize(vmin=-10.0, vmax=0.0)

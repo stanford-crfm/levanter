@@ -324,7 +324,7 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
     def compute_and_viz_log_probs(step: StepInfo):
         model = step.model
         os.makedirs(html_dir, exist_ok=True)
-        path = os.path.join(html_dir, f"step_{step}.html")
+        path = os.path.join(html_dir, f"step_{step.step}.html")
 
         viz_probs(path, model, tokenizer, log_prob_fn, test_data, max_docs=max_docs)
         # TODO: convert to generic logging
