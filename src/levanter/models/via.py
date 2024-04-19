@@ -222,7 +222,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             ],
         )
         tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
-        llm_input = tokens_and_targets["position", : self.Pos.size]
+        llm_input = tokens_and_targets["position", : self.decoder.Pos.size]
 
         # Create LLM Response
         in_tokens_size = in_tokens.resolve_axis("position").size
