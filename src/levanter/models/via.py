@@ -253,7 +253,7 @@ class ViaASRModel(ViaModel, ASRMixin):
         if reduction != None:
             loss = reduction(loss, where=example.loss_mask, axis=reduction_axis) * 0.025
         logits = logits.astype(jax.numpy.float32)
-        targets = example.tokens
+        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         if reduction == None:
             return hnn.cross_entropy_loss(
