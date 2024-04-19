@@ -126,10 +126,8 @@ def main(config: TrainASRConfig):
         # tokens: gpt-2 has 50257, for example. So we round up.
 
         vocab_size = len(tokenizer)
-        print(vocab_size)
-        sys.exit()
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
-        if vocab_size != Vocab.size:
+        if vocab_size != Vocab.size or True:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         if config.initialize_from_hf:
