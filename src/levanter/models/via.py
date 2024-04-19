@@ -83,9 +83,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     AudioPos = property(lambda self: [self.enc_config.Mels, self.enc_config.MelPos])
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     TimeGroup = property(lambda self: Axis(name="position", size=448))
-    GroupEmbed = property(
-        lambda self: Axis(name="group_embed", size=(self.enc_config.Embed.size * self.time_dialation))
-    )
+    GroupedEmbed = property(lambda self: Axis(name="embed", size=(self.enc_config.Embed.size * self.time_dialation)))
 
     @property
     def model_type(self) -> Type["ViaModel"]:
