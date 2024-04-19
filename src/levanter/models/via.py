@@ -83,7 +83,9 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     AudioPos = property(lambda self: [self.enc_config.Mels, self.enc_config.MelPos])
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     TimeGroup = property(lambda self: Axis(name="position", size=448))
-    GroupedEmbed = property(lambda self: Axis(name="embed", size=(self.enc_config.Embed.size * self.time_dialation)))
+    GroupedEmbed = property(
+        lambda self: Axis(name="embed_dim", size=(self.enc_config.Embed.size * self.time_dialation))
+    )
 
     @property
     def model_type(self) -> Type["ViaModel"]:
@@ -196,7 +198,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             causal_mask,
             key=k_connector,
         )
-        flat_encoder_outputs = hax.flatten_axes(virt_whisper_tokens, ("position", "embed"), "flat_embed")
+        flat_encoder_outputs = hax.flatten_axes(virt_whisper_tokens, ("position", "embed_dim"), "flat_embed")
         grouped_encoder_outputs = hax.unflatten_axis(
             flat_encoder_outputs,
             "flat_embed",
