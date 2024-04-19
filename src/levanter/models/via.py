@@ -263,7 +263,7 @@ class ViaASRModel(ViaModel, ASRMixin):
             hnn.cross_entropy_loss(
                 logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
-            + loss
+            # + loss
         )
 
         return loss
