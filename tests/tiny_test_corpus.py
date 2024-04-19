@@ -43,15 +43,18 @@ def tiny_asr_corpus_config(path):
 
 def construct_small_data_cache(
     path, num_shards=8, chunk_size=512, doc_len=128, vocab_size=1024
-) -> tuple[LMDatasetConfig, ShardCache]:
+) -> tuple[LMDatasetConfig, dict[str, ShardCache]]:
     from levanter.data.shard_cache import SerialCacheWriter
 
     rng = numpy.random.default_rng(0)
+
+    caches = {}
 
     for split in ["train", "validation"]:
         with SerialCacheWriter(f"{path}/cache/{split}", chunk_size) as writer:
             for shard in range(num_shards):
                 writer.write_batch({"input_ids": rng.integers(0, vocab_size, size=(chunk_size, doc_len))})
+        caches[split] = writer.result()
 
     config = LMDatasetConfig(
         train_urls=[f"file://{path}/train/docs.jsonl"],
@@ -61,4 +64,4 @@ def construct_small_data_cache(
         tokenizer="passthrough",
     )
 
-    return config, writer.result()
+    return config, caches

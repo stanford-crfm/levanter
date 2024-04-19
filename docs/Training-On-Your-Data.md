@@ -12,6 +12,8 @@ The basic steps are:
 - [ ] [Evaluate](#evaluation)
 - [ ] [Export your model to Huggingface](#huggingface-export)
 
+If you're training on data that isn't text (or [audio-to-text](./tutorials/Training-On-Audio-Data.md)), you'll need to
+write a custom cache. See the section on [Direct Cache Construction](#direct-cache-construction).
 
 ## Environment Setup
 
@@ -184,6 +186,34 @@ python -m levanter.main.cache_dataset \
     --start_workers false \
     --auto_start_cluster false
 ```
+
+### Direct Cache Construction
+
+As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
+have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.data.SerialCacheWriter][]
+to write batches directly. Here's an example:
+
+```python
+from levanter.data import SerialCacheWriter
+
+with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
+    for batch in process_batches():
+        writer.write_batch(batch)
+```
+
+`batch` can be a `list[dict]`, `dict[list]`, or `pyarrow.RecordBatch`. To work with `train_lm`, it should have an
+`input_ids` key that is a list of `int`s.
+
+To use a cache like this, you can use the `passthrough` tokenizer:
+
+```yaml
+data:
+  cache_dir: "gs://path/to/cache"
+  tokenizer: "passthrough"
+  vocab_size: 5567
+```
+
+(Basically, you just need to tell Levanter what the vocab size is.)
 
 ## Configuration
 
@@ -368,10 +398,6 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 ```bash
 gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
-
-### GPU
-
-TODO, but you can mostly follow the guide for [TPU](#tpu) above.
 
 ## Monitoring
 

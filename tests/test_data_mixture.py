@@ -1,45 +1,26 @@
 import tempfile
 
-import ray
-from transformers import BatchEncoding
-
+import tiny_test_corpus
 from levanter.data.mixture import MixtureDataset, StopStrategy
-from levanter.data.shard_cache import build_cache
-from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
-from levanter.utils.py_utils import logical_cpu_core_count
-from test_utils import IdentityProcessor, SingleShardDocumentSource
+from levanter.data.text import TokenSeqDataset
 
 
-def setup_module(module):
-    ray_designated_cores = max(1, logical_cpu_core_count())
-    ray.init("local", num_cpus=ray_designated_cores)
-
-
-def teardown_module(module):
-    ray.shutdown()
-
-
-def test_mixture_dataset():
+def test_stop_strategies():
     seq_len = 10
 
-    def doc_i(i: int):
-        return BatchEncoding(data=dict(input_ids=[list(range(seq_len * i, seq_len * (i + 1)))]))
-
     num_docs_1, num_docs_2 = 10, 20
-    docs_1 = [doc_i(j) for j in range(num_docs_1)]
-    docs_2 = [doc_i(j) for j in range(num_docs_1, num_docs_1 + num_docs_2)]
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        source_1 = SingleShardDocumentSource(docs_1)
-        build_cache(f"{tmpdir}/cache_1", source_1, IdentityProcessor())
-        cache_1 = TokenizedDocumentCache.load(f"{tmpdir}/cache_1", flatten_docs=False)
+        # source_1 = SingleShardDocumentSource(docs_1)
+        data_config, _ = tiny_test_corpus.construct_small_data_cache(
+            f"{tmpdir}/cache_1", num_shards=1, chunk_size=num_docs_1, doc_len=seq_len
+        )
 
-        source_2 = SingleShardDocumentSource(docs_2)
-        build_cache(f"{tmpdir}/cache_2", source_2, IdentityProcessor())
-        cache_2 = TokenizedDocumentCache.load(f"{tmpdir}/cache_2", flatten_docs=False)
+        data_config, _ = tiny_test_corpus.construct_small_data_cache(
+            f"{tmpdir}/cache_2", num_shards=1, chunk_size=num_docs_2, doc_len=seq_len
+        )
 
-        ds1 = TokenSeqDataset(cache_1, seq_len)
-        ds2 = TokenSeqDataset(cache_2, seq_len)
+        ds1 = TokenSeqDataset.load(seq_len, f"{tmpdir}/cache_1/cache/train")
+        ds2 = TokenSeqDataset.load(seq_len, f"{tmpdir}/cache_2/cache/train")
 
         # set reuseable config
         datasets = {"1": ds1, "2": ds2}
