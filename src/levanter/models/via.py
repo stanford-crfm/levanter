@@ -205,7 +205,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             causal_mask,
             key=k_connector,
         )
-        virtual_tokens = self.projection(virt_whisper_tokens)
+        virtual_tokens = self.straight_through_nn(self.projection(virt_whisper_tokens))
 
         # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
