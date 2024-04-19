@@ -163,7 +163,9 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
         connector = WhisperDecoder.init(config.enc_config, key=k_connector)
         query_tokens = hax.random.normal(k_query, (config.TimeGroup, config.enc_config.Embed)) * 0.02
-        projection = hnn.Linear.init(In=config.GroupedEmbed, Out=config.dec_config.Embed, key=key)
+        projection = hnn.Linear.init(
+            In=config.enc_config.Embed.alias("whisp_embed"), Out=config.dec_config.Embed, key=key
+        )
         decoder = dec_cls.init(Vocab, config.dec_config, key=k_dec)
 
         return cls(query_tokens, projection, encoder, connector, decoder, config)
@@ -198,16 +200,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             causal_mask,
             key=k_connector,
         )
-        flat_encoder_outputs = hax.flatten_axes(virt_whisper_tokens, ("position", "embed"), "flat_embed")
-        grouped_encoder_outputs = hax.unflatten_axis(
-            flat_encoder_outputs,
-            "flat_embed",
-            (
-                hax.Axis(name="position", size=virt_whisper_tokens.resolve_axis("position").size // 4),
-                self.config.GroupedEmbed,
-            ),
-        )
-        virtual_tokens = self.projection(grouped_encoder_outputs)
+        virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
 
         # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
