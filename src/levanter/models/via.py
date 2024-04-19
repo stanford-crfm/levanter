@@ -251,7 +251,7 @@ class ViaASRModel(ViaModel, ASRMixin):
         loss = hax.dot(diff, diff, axis="embed")
         loss = hax.where(example.loss_mask, loss, 0)
         if reduction != None:
-            loss = reduction(loss, where=example.loss_mask, axis=reduction_axis) * 0.025
+            loss = reduction(loss, where=hax.roll(example.loss_mask, 1, self.Pos), axis=reduction_axis) * 0.025
         logits = logits.astype(jax.numpy.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
