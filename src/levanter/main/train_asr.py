@@ -137,7 +137,7 @@ def main(config: TrainASRConfig):
             )
             model: ViaASRModel = converter.load_pretrained(
                 config.model.asr_model_type,
-                ref="WillHeld/via-base",
+                ref="WillHeld/via-llama",
                 axis_mapping=parameter_axis_mapping,
                 dtype=trainer.mp.compute_dtype,
             )
