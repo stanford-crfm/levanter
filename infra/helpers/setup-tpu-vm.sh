@@ -58,9 +58,22 @@ sudo patch -f -b /etc/environment << EOF
 > #LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
 EOF
 
+
+
 # don't complain if already applied
 retCode=$?
 [[ $retCode -le 1 ]] || exit $retCode
+
+
+# set these env variables b/c it makes tensorstore behave better
+if ! grep -q TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS /etc/environment; then
+  # need sudo
+  echo "TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60" | sudo tee -a /etc/environment > /dev/null
+fi
+
+if ! grep -q TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES /etc/environment; then
+  echo "TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=1024" | sudo tee -a /etc/environment > /dev/null
+fi
 
 # install python 3.10, latest git
 sudo systemctl stop unattended-upgrades  # this frequently holds the apt lock
@@ -97,7 +110,6 @@ retry pip install -U "jax[tpu]==0.4.21" -f https://storage.googleapis.com/jax-re
 
 # clone levanter
 git clone $REPO levanter
-
 echo $VENV > levanter/infra/venv_path.txt
 
 cd levanter
