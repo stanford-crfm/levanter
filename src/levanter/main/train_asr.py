@@ -204,6 +204,16 @@ def main(config: TrainASRConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
+        trainer.add_hook(
+            callbacks.compute_and_visualize_log_probs(
+                trainer.replicated_loader(hax_eval_dataset, EvalBatch),
+                tokenizer,
+                compute_log_probs,
+                os.path.join(config.trainer.log_dir, trainer.run_id, "log_probs"),
+            ),
+            every=config.trainer.steps_per_eval,
+        )
+
         # data loader. may need to seek to the right place if we're resuming
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
