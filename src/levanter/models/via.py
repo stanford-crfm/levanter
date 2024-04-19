@@ -116,7 +116,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/via-llama")
+        return HFCheckpointConverter(cls, "WillHeld/via-base")
 
 
 def connector_only(model):
@@ -172,13 +172,6 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
     def query_position_embeds(self) -> NamedArray:
         return self.connector.embeddings.position_embeddings.embed(hax.arange(self.config.TimeGroup))
 
-    def straight_through_nn(self, x):
-        grad_store = x - jax.lax.stop_gradient(x)
-        lm_logits = hax.sum(x**2, axis="embed") - (2 * hax.dot("embed", self.decoder.embeddings.token_embeddings, x))
-        nearest_neighbor = jax.lax.stop_gradient(hax.argmax(lm_logits, axis=self.Vocab))
-        nearest_neighbor_embed = self.decoder.embeddings.embed(nearest_neighbor)
-        return grad_store + jax.lax.stop_gradient(nearest_neighbor_embed)
-
     def __call__(
         self,
         mel: NamedArray,
@@ -205,7 +198,16 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             causal_mask,
             key=k_connector,
         )
-        virtual_tokens = self.straight_through_nn(self.projection(virt_whisper_tokens))
+        flat_encoder_outputs = hax.flatten_axes(virt_whisper_tokens, ("position", "embed"), "flat_embed")
+        grouped_encoder_outputs = hax.unflatten_axis(
+            flat_encoder_outputs,
+            "flat_embed",
+            (
+                hax.Axis(name="position", size=virt_whisper_tokens.resolve_axis("position").size // 4),
+                self.config.GroupedEmbed,
+            ),
+        )
+        virtual_tokens = self.projection(grouped_encoder_outputs)
 
         # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
