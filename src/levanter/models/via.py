@@ -35,45 +35,30 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     # Connector Config
     time_dialation: int = 4
     dialation_factor: int = 4
-    pre_audio_prompt: Sequence[int] = field(
-        default_factory=lambda: [
-            1,
-            518,
-            25580,
-            29962,
-            830,
-            11666,
-            9750,
-            271,
-            326,
-            825,
-            471,
-            1497,
-            297,
-            11839,
-            437,
-            451,
-            1827,
-            3099,
-            1683,
-            29889,
-            1938,
-            451,
-            1827,
-            1854,
-            29889,
-            518,
-            29914,
-            25580,
-            29962,
-        ]
-    )
+    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271, 1])
     pre_text_prompt: Sequence[int] = field(
         default_factory=lambda: [
-            518,
-            29914,
-            25580,
-            29962,
+            702,
+            39818,
+            2807,
+            55848,
+            1148,
+            574,
+            1071,
+            304,
+            17637,
+            323,
+            656,
+            539,
+            2019,
+            4205,
+            775,
+            13,
+            128009,
+            128006,
+            78191,
+            128007,
+            271,
         ]
     )
 
