@@ -234,7 +234,7 @@ class ViaASRModel(ViaModel, ASRMixin):
         real_tokens = self.decoder.embeddings.embed(example.tokens)
         diff = real_tokens - virt_tokens
         loss = hax.dot(diff, diff, axis="embed")
-        alignment_loss_mask = example.loss_mask * (1 - hax.nn.one_hot(-1, self.Pos, dtype=jnp.float32))
+        alignment_loss_mask = example.loss_mask * (1 - hax.nn.one_hot(-1, self.Pos, dtype=jax.numpy.float32))
         loss = hax.where(alignment_loss_mask, loss, 0)
         if reduction != None:
             loss = reduction(loss, where=hax.roll(example.loss_mask, 1, self.Pos), axis=reduction_axis) * 0.025
