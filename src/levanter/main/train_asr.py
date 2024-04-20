@@ -201,7 +201,7 @@ def main(config: TrainASRConfig):
             model = trainer.mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
-            logprobs = hax.roll(logprobs, 1, Pos)
+            # logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         trainer.add_hook(

@@ -207,7 +207,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         # Create LLM Response
         in_tokens_size = in_tokens.resolve_axis("position").size
         x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
-        target_x = x["position", in_tokens_size:]
+        target_x = x["position", in_tokens_size - 1 : -1]
         target_logits = self.decoder.lm_head(target_x, key=k_head)
 
         # Reconstruct Padded Output Prediction with Input Predictions Removed
@@ -234,11 +234,12 @@ class ViaASRModel(ViaModel, ASRMixin):
         real_tokens = self.decoder.embeddings.embed(example.tokens)
         diff = real_tokens - virt_tokens
         loss = hax.dot(diff, diff, axis="embed")
-        loss = hax.where(example.loss_mask, loss, 0)
+        alignment_loss_mask = example.loss_mask * (1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32))
+        loss = hax.where(alignment_loss_mask, loss, 0)
         if reduction != None:
             loss = reduction(loss, where=hax.roll(example.loss_mask, 1, self.Pos), axis=reduction_axis) * 0.025
         logits = logits.astype(jax.numpy.float32)
-        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
+        targets = example.tokens
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         if reduction == None:
             return hnn.cross_entropy_loss(
