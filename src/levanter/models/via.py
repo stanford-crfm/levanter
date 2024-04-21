@@ -187,6 +187,16 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         )
         virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
 
+        encoder_logits = -1 * (
+            (
+                hax.sum(self.decoder.embeddings.token_embeddings**2, axis="embed").broadcast_axis(
+                    hax.axis.eliminate_axes(virtual_tokens.axes, "embed")
+                )
+                + hax.sum(virtual_tokens**2, axis="embed")
+            )
+            - (2 * hax.dot("embed", self.decoder.embeddings.token_embeddings, virtual_tokens))
+        )
+
         # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
         suffix = self.decoder.embeddings.embed(self.config.suffix)
@@ -217,6 +227,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             hax.concatenate(
                 "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
             ),
+            encoder_logits,
             virtual_tokens["position", : input_ids.resolve_axis("position").size],
         )
 
@@ -230,12 +241,12 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
-        logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
+        logits, encoder_logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
         real_tokens = self.decoder.embeddings.embed(example.tokens)
         diff = real_tokens - virt_tokens
         loss = hax.dot(diff, diff, axis="embed")
         alignment_loss_mask = example.loss_mask * (1 - hax.nn.one_hot(-1, self.Pos, dtype=jax.numpy.float32))
-        loss = hax.where(alignment_loss_mask, loss, 0)
+        # loss = hax.where(alignment_loss_mask, loss, 0)
         if reduction != None:
             loss = reduction(loss, where=hax.roll(example.loss_mask, 1, self.Pos), axis=reduction_axis) * 0.025
         logits = logits.astype(jax.numpy.float32)
@@ -250,6 +261,9 @@ class ViaASRModel(ViaModel, ASRMixin):
                 logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
             + loss
+            + hnn.cross_entropy_loss(
+                encoder_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
         )
 
         return loss
