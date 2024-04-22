@@ -362,7 +362,7 @@ class PriorityWorkItem(Protocol):
             return self.priority <= other.priority
 
 
-@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
+@ray.remote(num_cpus=0.5, scheduling_strategy="SPREAD")
 class PriorityProcessorActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
