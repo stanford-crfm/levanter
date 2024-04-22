@@ -1,5 +1,7 @@
 data:
-  id: EleutherAI/pile
+  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
+  train_urls:
+    - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
   tokenizer: meta-llama/Llama-2-7b-hf
 model:
   type: llama
