@@ -1140,7 +1140,7 @@ class _ChunkCollator:
             return None
 
 
-@ray.remote(num_cpus=0.0)  # keep this small b/c it doesn't do a lot
+@ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder:
     """
     Actor that manages the in-progress global ordering on chunks. ChunkCacheWriter's job is to hold the list of all
@@ -1229,7 +1229,7 @@ class ChunkCacheBuilder:
                     name=priority_actor_name, get_if_exists=True
                 ).remote()
 
-                ray.get(reader_actor.add_work_group.remote(work_item))
+                reader_actor.add_work_group.remote(work_item)
 
                 self._shard_readers.append(reader_actor)
 
