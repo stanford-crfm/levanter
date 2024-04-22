@@ -200,7 +200,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
 
 
 def test_can_get_chunk_before_finished():
-    @ray.remote
+    @ray.remote(num_cpus=0)
     class Blocker:
         def __init__(self):
             self.future = asyncio.Future()
