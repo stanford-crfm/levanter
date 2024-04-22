@@ -13,7 +13,7 @@ from levanter.utils.py_utils import logical_cpu_core_count
 
 
 def setup_module(module):
-    ray.init("local", num_cpus=2 * logical_cpu_core_count())  # 2x cpu count is faster on my m1
+    ray.init("local", num_cpus=max(2 * logical_cpu_core_count(), 8))  # 2x cpu count is faster on my m1
 
 
 def teardown_module(module):
