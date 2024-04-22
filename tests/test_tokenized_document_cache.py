@@ -26,6 +26,7 @@ def teardown_module(module):
     ray.shutdown()
 
 
+@pytest.mark.ray
 def test_index_empty_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         empty_dataset = [""]
@@ -43,6 +44,7 @@ def test_index_empty_file():
             assert chunk["input_ids"].size == 0
 
 
+@pytest.mark.ray
 def test_index_no_files():
     with tempfile.TemporaryDirectory() as tmpdir:
         empty_dataset = []
@@ -60,6 +62,7 @@ def test_index_no_files():
             pytest.fail("Should not have any chunks")
 
 
+@pytest.mark.ray
 def test_doc_cache_reproduces_data_one_batch_per_shard():
     def doc_i(i: int):
         return BatchEncoding(data=dict(input_ids=[list(range(10 * i, 10 * (i + 1)))]))
@@ -96,6 +99,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
             assert as_listed == docs[i]
 
 
+@pytest.mark.ray
 @pytest.mark.parametrize("batch_size", list([1, 2, 3, 8]))
 def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
     def batch_docs(doc_ids):
@@ -130,6 +134,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
             assert found
 
 
+@pytest.mark.ray
 def test_doc_cache_sharding():
     def doc_i(i: int):
         return BatchEncoding(data=dict(input_ids=[list(range(10 * i, 10 * (i + 1)))]))
