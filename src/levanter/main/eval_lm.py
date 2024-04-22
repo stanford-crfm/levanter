@@ -99,8 +99,9 @@ def main(config: EvalLmConfig):
             return total_loss / num_params
         
         @fsdp(parameter_axis_mapping, compute_axis_mapping)
-        def l2_norm_sum(model1: LmHeadModel):
-            def l2ns(x):
+        def l2_norm_sum(model1: LmHeadModel, model2: LmHeadModel):
+            def l2ns(x, y):
+                diff = x - y
                 return hax.sum(x**2)  # Square each element for L2 norm
 
             tree_diff = tree_util.tree_map(l2ns, model1)
@@ -201,20 +202,19 @@ def main(config: EvalLmConfig):
             logger.info(f"Loading second model from {config.model}")
             model_2 = converter.load_pretrained(model_config)
 
-            # jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
-            # l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
-            # logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
-            # l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1)
-            # # Generate alphas from 0 to 1 with a step of 0.05
+            jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
+            l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
+            logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
+            l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1, model_2)
+            # Generate alphas from 0 to 1 with a step of 0.05
             
-            # wandb.log({"eval/logits_diff": logits_diff})
-            # wandb.log({"eval/l2_norm_diff": l2_norm_num})
-            # wandb.log({"eval/jsd": jsd})
-            # wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
+            wandb.log({"eval/logits_diff": logits_diff})
+            wandb.log({"eval/l2_norm_diff": l2_norm_num})
+            wandb.log({"eval/jsd": jsd})
+            wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
             alphas = [round(alpha * 0.1, 2) for alpha in range(11)]
 
-            print(f"\n model 1: {model_1}")
-            print(f"\n model 2: {model_2}")
+            
             #print(f"\n l2_norm_num: {l2_norm_num}")
             for alpha in alphas:
                 print(f"alpha: {alpha}")
