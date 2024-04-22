@@ -183,14 +183,18 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         # Convert to Virtual LLM Tokens
         virt_whisper_tokens = self.query_tokens
         for i in range(3):
-            virt_whisper_tokens = self.connector.transformer(
-                (virt_whisper_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
-                audio_features,
-                causal_mask,
-                key=k_connector,
+            virt_whisper_tokens = hax.roll(
+                self.connector.transformer(
+                    (virt_whisper_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
+                    audio_features,
+                    causal_mask,
+                    key=k_connector,
+                ),
+                1,
+                self.Pos,
             )
 
-        virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
+        virtual_tokens = hax.roll(self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"})), -1, self.Pos)
 
         encoder_logits = -1 * (
             (
