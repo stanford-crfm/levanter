@@ -18,9 +18,9 @@ trainer:
   mp: p=f32,c=bfloat16
 
   model_axis_size: 1
-  per_device_eval_parallelism: 4
+  per_device_eval_parallelism: -1
 
-  train_batch_size: 1024
+  train_batch_size: 128
   num_train_steps: 10000
   steps_per_eval: 500
 optimizer:
