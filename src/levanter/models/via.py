@@ -109,7 +109,7 @@ def connector_only(model):
     return eqx.tree_at(
         lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias, tree.connector),
         frozen_tree,
-        (True, True, True, False),
+        (True, True, True, True),
     )
 
 
@@ -181,15 +181,10 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
-        virt_whisper_tokens = hax.roll(
-            self.connector.transformer(
-                (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
-                audio_features,
-                causal_mask,
-                key=k_connector,
-            ),
-            -336,
-            self.Pos,
+        virt_whisper_tokens = self.connector.transformer(
+            (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
+            audio_features,
+            key=k_connector,
         )
 
         virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
