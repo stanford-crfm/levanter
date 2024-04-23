@@ -2,7 +2,7 @@ datasets = [
     "arxiv", "books2", "books3", "dm_math", "enron", "europarl", "free_law",
     "github", "hackernews", "nih", "opensubtitles", "owt2", "pg_19", "philpapers",
     "pile_cc", "pubmed_abs", "pubmed_central", "stack_exchange", "ubuntu_irc",
-    "uspto", "wiki_en", "youtube_subtitles"
+    "uspto", "wiki", "youtube_subtitles"
 ]
 
 for dataset in datasets:
@@ -17,13 +17,13 @@ for dataset in datasets:
 model:
   type: llama
   # TODO: uncomment this once we resolve the resource exhaustion issue
-hf_checkpoint: "meta-llama/Llama-2-7b-hf"
+hf_checkpoint: "EleutherAI/llemma_7b"
 second_hf_checkpoint: "openlm-research/open_llama_7b"
 
 trainer:
   wandb:
     project: "trace"
-    name: "llama2_7b-openllama-{dataset}"
+    name: "lemma7b-openllama-{dataset}"
     tags: ["{dataset}"]
   mp: p=f32,c=bfloat16
   train_batch_size: 64 # set for v4-64 TPU
@@ -36,6 +36,6 @@ trainer:
   max_eval_batches: 1
 """
 
-    yaml_filename = f"for_llama2_7b_{dataset}.yaml"
+    yaml_filename = f"for_lemma_7b_{dataset}.yaml"
     with open(yaml_filename, "w") as file:
         file.write(yaml_content)
