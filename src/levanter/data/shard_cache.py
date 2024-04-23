@@ -362,7 +362,7 @@ class PriorityWorkItem(Protocol):
             return self.priority <= other.priority
 
 
-@ray.remote(num_cpus=1, scheduling_strategy="SPREAD")
+@ray.remote(num_cpus=0.5, scheduling_strategy="SPREAD")
 class PriorityProcessorActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
@@ -1140,7 +1140,7 @@ class _ChunkCollator:
             return None
 
 
-@ray.remote(num_cpus=0.0)  # keep this small b/c it doesn't do a lot
+@ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder:
     """
     Actor that manages the in-progress global ordering on chunks. ChunkCacheWriter's job is to hold the list of all
@@ -1229,7 +1229,7 @@ class ChunkCacheBuilder:
                     name=priority_actor_name, get_if_exists=True
                 ).remote()
 
-                ray.get(reader_actor.add_work_group.remote(work_item))
+                reader_actor.add_work_group.remote(work_item)
 
                 self._shard_readers.append(reader_actor)
 
