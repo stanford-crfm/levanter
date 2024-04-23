@@ -25,8 +25,9 @@ trainer:
   train_batch_size: 512
   num_train_steps: 5000
 optimizer:
+  type: sophia-h
   learning_rate: 3E-4
-  weight_decay: 0.1
+  weight_decay: 0.0
   warmup: 0.01
 via_init: True
 hf_save_steps: 500

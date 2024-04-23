@@ -14,6 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
+from levanter.data.dataset import ShuffleDataset
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig
 from levanter.models.via import ViaASRModel, ViaConfig, connector_only
@@ -120,6 +121,7 @@ def main(config: TrainASRConfig):
             KeyPos,
             ignore_index=config.data.pad_token_id,
         )
+        train_dataset = shuffle_dataset = ShuffleDataset(dataset, jrandom.PRNGKey(42), 512)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
