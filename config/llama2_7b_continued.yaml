@@ -4,7 +4,7 @@ data:
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
-initialize_from_hf: true
+initialize_from_hf: false
 use_hf_model_config: true
 trainer:
   tracker:
@@ -22,5 +22,5 @@ trainer:
   num_train_steps: 10000
   steps_per_eval: 500
 optimizer:
-  learning_rate: 1.2e-4
+  learning_rate: 1.2e-5
   weight_decay: 0.0
