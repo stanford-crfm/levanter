@@ -6,7 +6,12 @@ model:
   type: llama
 initialize_from_hf: true
 use_hf_model_config: true
+
 trainer:
+  seed: 42
+  checkpointer:
+    keep:
+      - every: 10
   tracker:
     type: wandb
     project: "levanter"
