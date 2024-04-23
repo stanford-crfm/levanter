@@ -1,5 +1,6 @@
 /scratch
 sweep.sh
+config/sweep_yaml.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
