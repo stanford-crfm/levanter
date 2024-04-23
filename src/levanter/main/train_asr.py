@@ -121,7 +121,7 @@ def main(config: TrainASRConfig):
             KeyPos,
             ignore_index=config.data.pad_token_id,
         )
-        train_dataset = ShuffleDataset(dataset, jrandom.PRNGKey(42), 512)
+        train_dataset = ShuffleDataset(train_dataset, jrandom.PRNGKey(42), 512)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
