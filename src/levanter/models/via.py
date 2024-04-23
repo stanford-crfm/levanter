@@ -35,32 +35,8 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     # Connector Config
     time_dialation: int = 4
     dialation_factor: int = 4
-    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271, 1])
-    pre_text_prompt: Sequence[int] = field(
-        default_factory=lambda: [
-            702,
-            39818,
-            2807,
-            55848,
-            1148,
-            574,
-            1071,
-            304,
-            17637,
-            323,
-            656,
-            539,
-            2019,
-            4205,
-            775,
-            13,
-            128009,
-            128006,
-            78191,
-            128007,
-            271,
-        ]
-    )
+    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
+    pre_text_prompt: Sequence[int] = field(default_factory=lambda: [128009, 128006, 78191, 128007, 271])
 
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
     suffix = property(lambda self: hax.named(self.pre_text_prompt, axis="position"))
@@ -181,63 +157,42 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
-        virt_whisper_tokens = hax.roll(
-            self.connector.transformer(
-                (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
-                audio_features,
-                causal_mask,
-                key=k_connector,
-            ),
-            -12,
-            self.Pos,
+        virt_whisper_tokens = self.connector.transformer(
+            (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
+            audio_features,
+            causal_mask,
+            key=k_connector,
         )
 
         virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
 
-        encoder_logits = -1 * (
-            (
-                hax.sum(self.decoder.embeddings.token_embeddings**2, axis="embed").broadcast_axis(
-                    hax.axis.eliminate_axes(virtual_tokens.axes, "embed")
-                )
-                + hax.sum(virtual_tokens**2, axis="embed")
-            )
-            - (2 * hax.dot("embed", self.decoder.embeddings.token_embeddings, virtual_tokens))
+        # Embed Real LLM Tokens
+        prefix = self.decoder.embeddings.embed(self.config.prefix)
+        suffix = self.decoder.embeddings.embed(self.config.suffix)
+        embedded_tokens = self.decoder.embeddings.embed(input_ids)
+
+        # Create Mixed Virtual and Real Input
+        audio_tokens = hax.concatenate(
+            "position",
+            [
+                prefix.broadcast_axis(OtherAxes),
+                virtual_tokens,
+                suffix.broadcast_axis(OtherAxes),
+            ],
+        )
+        text_tokens = hax.concatenate(
+            "position",
+            [
+                prefix.broadcast_axis(OtherAxes),
+                embedded_tokens,
+                suffix.broadcast_axis(OtherAxes),
+            ],
         )
 
-        # # Embed Real LLM Tokens
-        # prefix = self.decoder.embeddings.embed(self.config.prefix)
-        # suffix = self.decoder.embeddings.embed(self.config.suffix)
-        # embedded_tokens = self.decoder.embeddings.embed(input_ids)
-
-        # # Create Mixed Virtual and Real Input
-        # in_tokens = hax.concatenate(
-        #     "position",
-        #     [
-        #         prefix.broadcast_axis(OtherAxes),
-        #         virtual_tokens,
-        #         suffix.broadcast_axis(OtherAxes),
-        #     ],
-        # )
-        # tokens_and_targets = hax.concatenate("position", [in_tokens, embedded_tokens])
-        # llm_input = tokens_and_targets["position", : self.decoder.Pos.size]
-
-        # # Create LLM Response
-        # in_tokens_size = in_tokens.resolve_axis("position").size
-        # x = self.decoder.transformer(llm_input, attn_mask=causal_mask, key=k_decoder)
-        # target_x = x["position", in_tokens_size - 1 : -1]
-        # target_logits = self.decoder.lm_head(target_x, key=k_head)
-
-        # # Reconstruct Padded Output Prediction with Input Predictions Removed
-        # diff = InputPosition.size - target_logits.resolve_axis("position").size
-        # OtherAxes = hax.axis.eliminate_axes(target_logits.axes, "position")
-        # return (
-        #     hax.concatenate(
-        #         "position", [target_logits, hax.zeros(InputPosition.resize(diff)).broadcast_axis(OtherAxes)]
-        #     ),
-        #     encoder_logits,
-        #     virtual_tokens["position", : input_ids.resolve_axis("position").size],
-        # )
-        return encoder_logits, virtual_tokens["position", : input_ids.resolve_axis("position").size]
+        # Create LLM Response
+        audio = self.decoder.transformer(audio_tokens, attn_mask=causal_mask, key=k_decoder)
+        text = self.decoder.transformer(text_tokens, attn_mask=causal_mask, key=k_decoder)
+        return audio["position", -1], text["position", -1]
 
 
 class ViaASRModel(ViaModel, ASRMixin):
@@ -250,28 +205,10 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
         # logits, encoder_logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
-        logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
-        real_tokens = self.decoder.embeddings.embed(example.tokens)
-        diff = real_tokens - virt_tokens
+        audio_pred, virt_pred = self(example.audio, example.tokens, example.attn_mask, key=key)
+        diff = audio_pred - virt_pred
         loss = hax.dot(diff, diff, axis="embed")
-        loss = hax.where(example.loss_mask, loss, 0)
-        if reduction != None:
-            loss = reduction(loss, axis=reduction_axis) * 0.025
-        logits = logits.astype(jax.numpy.float32)
-        targets = example.tokens
-        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         if reduction == None:
-            return hnn.cross_entropy_loss(
-                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-            )
-        loss = (
-            hnn.cross_entropy_loss(
-                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-            )
-            + loss
-            # + hnn.cross_entropy_loss(
-            #     encoder_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-            # )
-        )
-
-        return loss
+            return loss
+        else:
+            return reduction(loss, axis=reduction_axis)
