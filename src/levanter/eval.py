@@ -126,10 +126,11 @@ def cb_tagged_lm_evaluate(
             logger.info(f"{tag} macro loss: {loss:.3f}")
 
         for tag, loss in result.tag_micro_losses.items():
-            log_dict[_join_prefix(prefix, tag) + "/micro_loss"] = loss
             if tag in evaluator.dataset.tag_to_index:
+                log_dict[_join_prefix(prefix, tag) + "/loss"] = loss
                 logger.info(f"{tag} loss: {loss:.3f}")
             else:
+                log_dict[_join_prefix(prefix, tag) + "/micro_loss"] = loss
                 logger.info(f"{tag} micro loss: {loss:.3f}")
 
         levanter.tracker.log_metrics(log_dict, step=step.step)
@@ -167,7 +168,7 @@ class TaggedEvaluator:
                 assert parent != tag
                 if parent not in hierarchy:
                     hierarchy[parent] = []
-                hierarchy[parent].append(i)
+                hierarchy[parent].append(index)
 
         self.hierarchy = hierarchy
 
