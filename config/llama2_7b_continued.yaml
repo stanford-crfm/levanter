@@ -14,7 +14,7 @@ trainer:
       - every: 10
   tracker:
     type: wandb
-    project: "levanter"
+    project: "trace-train"
     tags: ["pile", "llama2"]
 
   mp: p=f32,c=bfloat16
