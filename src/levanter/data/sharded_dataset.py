@@ -151,6 +151,7 @@ class WrappedHFDataset(ShardedDataset[dict]):
 
     def __init__(self, id, *, split, streaming: bool = True, **kwargs):
         self.id = id
+        self.config = 'en'
         self.split = split
         self.streaming = streaming
         self.kwargs = kwargs
