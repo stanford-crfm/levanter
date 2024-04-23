@@ -184,7 +184,6 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             ],
         )
 
-        embedded_tokens = self.decoder.embeddings.embed(input_ids)
         text_tokens = hax.concatenate(
             "position",
             [
@@ -198,10 +197,11 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         text_tokens = text_tokens[
             {"batch": hax.arange(text_tokens.resolve_axis("batch")), "position": push_back_padding}
         ]
+        text_embeds = self.decoder.embeddings.embed(text_tokens)
 
         # Create LLM Response
         audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
-        text = self.decoder.transformer(text_tokens, attn_mask=causal_mask, key=k_decoder)
+        text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
         return (
             audio["position", -1],
             text[
