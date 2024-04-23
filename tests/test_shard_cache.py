@@ -13,7 +13,7 @@ from levanter.utils.py_utils import logical_cpu_core_count
 
 
 def setup_module(module):
-    ray.init("local", num_cpus=2 * logical_cpu_core_count())  # 2x cpu count is faster on my m1
+    ray.init("local", num_cpus=max(2 * logical_cpu_core_count(), 8))  # 2x cpu count is faster on my m1
 
 
 def teardown_module(module):
@@ -63,6 +63,7 @@ def simple_process(processor, source):
     return result
 
 
+@pytest.mark.ray
 def test_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
@@ -73,6 +74,7 @@ def test_cache_simple():
         assert list(ray_ds) == list(simple_processed)
 
 
+@pytest.mark.ray
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
@@ -101,6 +103,7 @@ class _CustomException(Exception):
     pass
 
 
+@pytest.mark.ray
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataset[List[int]]):
         def __init__(self, crash_point: int):
@@ -144,6 +147,7 @@ def test_cache_recover_from_crash():
         assert len(list(reader1)) == 40
 
 
+@pytest.mark.ray
 def test_no_hang_if_empty_shard_source():
     class EmptyShardSource(ShardedDataset[List[int]]):
         @property
@@ -158,6 +162,7 @@ def test_no_hang_if_empty_shard_source():
         assert list(reader) == []
 
 
+@pytest.mark.ray
 def test_chunk_ordering_is_correct_with_slow_shards():
     class SlowShardSource(ShardedDataset[List[int]]):
         @property
@@ -194,8 +199,11 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         assert chunk is None
 
 
+# @pytest.mark.ray
+# disable b/c ray is segfaulting in CI
+@pytest.mark.skip
 def test_can_get_chunk_before_finished():
-    @ray.remote
+    @ray.remote(num_cpus=0)
     class Blocker:
         def __init__(self):
             self.future = asyncio.Future()
@@ -241,10 +249,13 @@ def test_can_get_chunk_before_finished():
 
         assert [list(x) for x in chunk] == [[i] * 10 for i in range(10, 20)]
 
+        ray.get(blocker_to_wait_on_test.block.remote())
+
         # now wait until the cache is finished. mostly so that the tempdir cleanup works
         cache.await_finished(timeout=10)
 
 
+@pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(BatchProcessor[Sequence[int]]):
         def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
@@ -263,6 +274,7 @@ def test_shard_cache_crashes_if_processor_throws():
             build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
+@pytest.mark.ray
 def test_map_batches_and_map_shard_cache():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
@@ -289,6 +301,7 @@ def test_map_batches_and_map_shard_cache():
         assert ray_entries == list(simple_processed)
 
 
+@pytest.mark.ray
 def test_serial_cache_writer():
     with tempfile.TemporaryDirectory() as tmpdir1, tempfile.TemporaryDirectory() as tmpdir2:
         source = SimpleShardSource(num_shards=4)

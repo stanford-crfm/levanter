@@ -106,4 +106,5 @@ ignore_missing_imports = true
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
+    "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
