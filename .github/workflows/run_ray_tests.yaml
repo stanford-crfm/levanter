@@ -23,6 +23,6 @@ jobs:
           pip install flake8 pytest
           pip install . "jax[cpu]==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
           pip install soundfile librosa
-      - name: Run entry tests with pytest
+      - name: Run ray tests with pytest
         run: |
           XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=$(pwd)/tests:$(pwd)/src:$(pwd):. pytest tests -m ray

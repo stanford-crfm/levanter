@@ -199,7 +199,9 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         assert chunk is None
 
 
-@pytest.mark.ray
+# @pytest.mark.ray
+# disable b/c ray is segfaulting in CI
+@pytest.mark.skip
 def test_can_get_chunk_before_finished():
     @ray.remote(num_cpus=0)
     class Blocker:
