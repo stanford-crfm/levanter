@@ -1,9 +1,6 @@
 data:
-  cache_dir: "gs://levanter-data/tokenized/git-llama2/"
-  train_urls:
-    - gs://levanter-data/pile-domains/github/{00..29}.jsonl.zst
-  validation_urls:
-    - gs://levanter-data/pile-domains/github/val.jsonl.zst
+  id: allenai/c4
+  cache_dir: "gs://levanter-data/tokenized/llama2_c4/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
