@@ -27,6 +27,6 @@ trainer:
   num_train_steps: 10000
   steps_per_eval: 10
 optimizer:
-  learning_rate: 1.2E-5
+  learning_rate: 3.0E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
