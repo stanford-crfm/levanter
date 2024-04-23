@@ -1,10 +1,10 @@
 data:
-  id: JeanKaddour/minipile
-  cache_dir: "gs://levanter-data/tokenized/llama2_minipile/"
+  id: YeungNLP/firefly-train-1.1M
+  cache_dir: "gs://levanter-data/tokenized/llama2_firefly/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
-initialize_from_hf: false
+initialize_from_hf: true
 use_hf_model_config: true
 trainer:
   tracker:
@@ -22,5 +22,5 @@ trainer:
   num_train_steps: 10000
   steps_per_eval: 500
 optimizer:
-  learning_rate: 1.2e-5
+  learning_rate: 1.2E-5  # set low for fine-tuning
   weight_decay: 0.0
