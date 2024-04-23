@@ -157,11 +157,15 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
-        virt_whisper_tokens = self.connector.transformer(
-            (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
-            audio_features,
-            causal_mask,
-            key=k_connector,
+        virt_whisper_tokens = hax.roll(
+            self.connector.transformer(
+                (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
+                audio_features,
+                causal_mask,
+                key=k_connector,
+            ),
+            -4,
+            self.Pos,
         )
 
         virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
@@ -169,10 +173,9 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         # Embed Real LLM Tokens
         prefix = self.decoder.embeddings.embed(self.config.prefix)
         suffix = self.decoder.embeddings.embed(self.config.suffix)
-        embedded_tokens = self.decoder.embeddings.embed(input_ids)
 
         # Create Mixed Virtual and Real Input
-        audio_tokens = hax.concatenate(
+        audio_embeds = hax.concatenate(
             "position",
             [
                 prefix.broadcast_axis(OtherAxes),
@@ -180,19 +183,34 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
                 suffix.broadcast_axis(OtherAxes),
             ],
         )
+
+        embedded_tokens = self.decoder.embeddings.embed(input_ids)
         text_tokens = hax.concatenate(
             "position",
             [
-                prefix.broadcast_axis(OtherAxes),
-                embedded_tokens,
-                suffix.broadcast_axis(OtherAxes),
+                self.config.prefix.broadcast_axis(OtherAxes),
+                input_ids,
+                self.config.suffix.broadcast_axis(OtherAxes),
             ],
         )
+        push_back_padding = hax.argsort(text_tokens != 128002, "position")
+
+        text_tokens = text_tokens[
+            {"batch": hax.arange(text_tokens.resolve_axis("batch")), "position": push_back_padding}
+        ]
 
         # Create LLM Response
-        audio = self.decoder.transformer(audio_tokens, attn_mask=causal_mask, key=k_decoder)
+        audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
         text = self.decoder.transformer(text_tokens, attn_mask=causal_mask, key=k_decoder)
-        return audio["position", -1], text["position", -1]
+        return (
+            audio["position", -1],
+            text[
+                {
+                    "batch": hax.arange(text_tokens.resolve_axis("batch")),
+                    "position": hax.sum(text_tokens == 128002, "position") * -1,
+                }
+            ],
+        )
 
 
 class ViaASRModel(ViaModel, ASRMixin):
