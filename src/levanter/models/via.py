@@ -158,15 +158,11 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         audio_features = self.encoder(mel, key=k_encoder)
 
         # Convert to Virtual LLM Tokens
-        virt_whisper_tokens = hax.roll(
-            self.connector.transformer(
-                (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
-                audio_features,
-                causal_mask,
-                key=k_connector,
-            ),
-            -4,
-            self.Pos,
+        virt_whisper_tokens = self.connector.transformer(
+            (self.query_tokens + self.query_position_embeds).broadcast_axis(OtherAxes),
+            audio_features,
+            causal_mask,
+            key=k_connector,
         )
 
         virtual_tokens = self.projection(virt_whisper_tokens.rename({"embed": "whisp_embed"}))
@@ -180,7 +176,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             "position",
             [
                 prefix.broadcast_axis(OtherAxes),
-                virtual_tokens,
+                self.decoder.embeddings.embed(input_ids),
                 suffix.broadcast_axis(OtherAxes),
             ],
         )
@@ -200,7 +196,6 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         ]
 
         text_embeds = self.decoder.embeddings.embed(text_tokens)
-
         # Create LLM Response
         audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
         text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
