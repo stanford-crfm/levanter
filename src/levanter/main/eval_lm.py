@@ -184,7 +184,7 @@ def main(config: EvalLmConfig):
             del model
             print("Loss from Levanter model: ", loss)
 
-        if config.hf_checkpoint is not None:
+        elif config.hf_checkpoint is not None:
             # load the huggingface model
             model_config = config.model
             # if not hasattr(model_config, "hf_checkpoint_converter"):
