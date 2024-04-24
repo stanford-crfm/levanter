@@ -21,7 +21,7 @@ from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.models.llama import LlamaLMHeadModel
+from levanter.models.llama import LlamaLMHeadModel, LlamaConfig
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
@@ -38,7 +38,7 @@ class EvalLmConfig:
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = TrainerConfig()
     data: LMDatasetConfig = LMDatasetConfig()
-    model: LmConfig = Gpt2Config()
+    model: LmConfig = LlamaConfig()
     second_hf_checkpoint: Optional[RepoRef] = None
 
     compare_torch: bool = False
