@@ -21,7 +21,6 @@ from levanter.models.mistral import MistralLMHeadModel
 from levanter.models.whisper import WhisperConfig, WhisperDecoder, WhisperEncoder
 from levanter.utils.py_utils import cached_classproperty
 
-
 silence_transformer_nag()
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
@@ -198,7 +197,9 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         text_embeds = self.decoder.embeddings.embed(text_tokens)
         # Create LLM Response
         audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
+        audio_logits = self.decoder.lm_head(audio, key=k_head)
         text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
+        text_target = hax.argmax(self.decoder.lm_head(text, key=k_head), "vocab")
         return (
             audio["position", -1],
             text[
@@ -207,6 +208,13 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
                     "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
                 }
             ],
+            text_target[
+                {
+                    "batch": hax.arange(text_tokens.resolve_axis("batch")),
+                    "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
+                }
+            ],
+            audio_logits["position", -1],
         )
 
 
@@ -220,10 +228,14 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
         # logits, encoder_logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
-        audio_pred, virt_pred = self(example.audio, example.tokens, example.attn_mask, key=key)
-        diff = audio_pred - virt_pred
+        audio_pred, text_pred, text_target, audio_logits = self(
+            example.audio, example.tokens, example.attn_mask, key=key
+        )
+        diff = audio_pred - text_pred
         loss = hax.dot(diff, diff, axis="embed")
+        target_y = hax.nn.one_hot(text_target, self.Vocab, dtype=audio_logits.dtype)
+        loss2 = hax.nn.cross_entropy_loss(audio_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis)
         if reduction == None:
-            return loss
+            return loss + loss2
         else:
-            return reduction(loss, axis=reduction_axis)
+            return reduction(loss, axis=reduction_axis) + loss2
