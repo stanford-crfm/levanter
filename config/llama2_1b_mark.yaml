@@ -6,7 +6,7 @@ data:
   configs:
     fineweb:
       id: "HuggingFaceFW/fineweb"
-      stream: False
+      stream: True
     pile/arxiv:
       train_urls:
         - gs://levanter-data/pile-domains/arxiv/{00..29}.jsonl.zst
