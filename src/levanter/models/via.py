@@ -142,6 +142,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         mel: NamedArray,
         input_ids: NamedArray,
         attn_mask: Optional[AttentionMask | NamedArray] = None,
+        pad_token_id: int = 128002,
         *,
         key=None,
     ) -> NamedArray:
@@ -192,11 +193,12 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
                 self.config.suffix.broadcast_axis(OtherAxes),
             ],
         )
-        push_back_padding = hax.argsort(text_tokens != 128002, "position")
+        push_back_padding = hax.argsort(text_tokens == pad_token_id, "position")
 
         text_tokens = text_tokens[
             {"batch": hax.arange(text_tokens.resolve_axis("batch")), "position": push_back_padding}
         ]
+
         text_embeds = self.decoder.embeddings.embed(text_tokens)
 
         # Create LLM Response
@@ -207,7 +209,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             text[
                 {
                     "batch": hax.arange(text_tokens.resolve_axis("batch")),
-                    "position": hax.sum(text_tokens == 128002, "position") * -1,
+                    "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
                 }
             ],
         )
