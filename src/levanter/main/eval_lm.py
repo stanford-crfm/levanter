@@ -49,9 +49,10 @@ class EvalLmConfig:
 def main(config: EvalLmConfig):
     # HACK: This is a workaround for the fact that the config is not properly deserialized
     # TODO: send to david
-    config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path[
-        "model_name_or_path"
-    ]
+    # config.second_hf_checkpoint.model_name_or_path = config.second_hf_checkpoint.model_name_or_path[
+    #     "model_name_or_path"
+    # ]
+    #config.second_hf_checkpoint.model_name_or_path 
     # maybe redo
     levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
