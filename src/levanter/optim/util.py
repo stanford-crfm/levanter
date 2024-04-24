@@ -21,3 +21,16 @@ def tree_gaussian_like(key, tree):
     g = jax.tree_util.tree_unflatten(structure, g)
 
     return g
+
+def tree_rademacher_like(key, tree):
+    leaves, structure = jax.tree_util.tree_flatten(tree)
+    keys = jax.random.split(key, len(leaves))
+    # paper uses normal but we use rademacher
+    # see https://www.ethanepperly.com/index.php/2024/01/28/dont-use-gaussians-in-stochastic-trace-estimation/
+    g = jax.tree_util.tree_map(
+        lambda key, x: jax.random.rademacher(key, x.shape, dtype=jnp.float32),
+        list(keys),
+        leaves,
+    )
+    g = jax.tree_util.tree_unflatten(structure, g)
+    return g

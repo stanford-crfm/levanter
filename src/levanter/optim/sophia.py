@@ -13,7 +13,7 @@ from jaxtyping import PRNGKeyArray
 
 import levanter.tracker
 from levanter.optim.config import HessianOptConfig, OptimizerConfig
-from levanter.optim.util import hvp, tree_gaussian_like
+from levanter.optim.util import hvp, tree_gaussian_like, tree_rademacher_like
 from levanter.utils.jax_utils import parameter_count, tree_filter_like
 
 
@@ -199,9 +199,10 @@ class BaseSophiaConfig(HessianOptConfig):
 @dataclass
 class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
+    rand: str = "gaussian"
 
     def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
-        return stochastic_hessian_diagonal(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
+        return stochastic_hessian_diagonal(fn, model, *batch, **batch_kwargs, hess_key=hess_key, rand=self.rand)
 
 
 def sophia_h(
@@ -423,7 +424,7 @@ def stochastic_diag_gauss_newton(fn, model, *args, hess_key: PRNGKey, **kwargs):
 
 
 # Use this for Sophia-H
-def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
+def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, rand: str, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
 
     https://arxiv.org/pdf/2305.14342.pdf Algorithm 1
@@ -436,7 +437,10 @@ def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
     # cf https://arxiv.org/pdf/2006.00719.pdf eqn 9
     # https://www-users.cse.umn.edu/~saad/PDF/umsi-2005-082.pdf
     # https://arxiv.org/pdf/2208.03268.pdf
-    g = tree_gaussian_like(hess_key, model)
+    if rand == "rademacher":
+        g = tree_rademacher_like(hess_key, model)
+    else:
+        g = tree_gaussian_like(hess_key, model)
     # TODO: consider allowing for n > 1 gaussians?
     product = hvp(lambda m: fn(m, *args, **kwargs), model, g)
     hessian = jax.tree_util.tree_map(lambda grad, gaussian: grad * gaussian, product, g)
