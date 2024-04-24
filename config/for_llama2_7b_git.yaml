@@ -8,8 +8,8 @@ data:
 model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
-hf_checkpoint: "levanter-checkpoints/llama2-trace-1b-seed42/19zqlxdg/step-200/model"
-second_hf_checkpoint: "levanter-checkpoints/llama2-trace-1b-seed42/19zqlxdg/step-200/model"
+hf_checkpoint: "gs://levanter-checkpoints/llama2-trace-1b-seed42/19zqlxdg/step-200/model"
+second_hf_checkpoint: "gs://levanter-checkpoints/llama2-trace-1b-seed42/19zqlxdg/step-200/model"
 
 trainer:
   wandb:
