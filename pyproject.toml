@@ -52,6 +52,7 @@ dependencies = [
     "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
     "rich>=13",
     "filelock",
+    "torch>=2.0.0",
 ]
 
 [tool.hatch.build]
