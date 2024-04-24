@@ -1,5 +1,6 @@
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 
 from levanter.utils.jax_utils import is_inexact_arrayish
 
