@@ -204,8 +204,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
                     "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
                 }
             ]
-            == suffix["position", -1].broadcast_axis(OtherAxes),
-            "batch",
+            == self.config.suffix["position", -1].broadcast_axis(OtherAxes)
         )
         audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
         text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
