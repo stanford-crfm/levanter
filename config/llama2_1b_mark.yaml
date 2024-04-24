@@ -6,7 +6,7 @@ data:
   configs:
     fineweb:
       id: "HuggingFaceFW/fineweb"
-      stream: True
+      stream: False
     pile/arxiv:
       train_urls:
         - gs://levanter-data/pile-domains/arxiv/{00..29}.jsonl.zst
@@ -239,8 +239,8 @@ trainer:
   mp: p=f32,c=bfloat16
   train_batch_size: 256
   num_train_steps: 10000
-  steps_per_eval: 1000
-  max_eval_batches: 2
+  steps_per_eval: 10
+  max_eval_batches: 1
   per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
