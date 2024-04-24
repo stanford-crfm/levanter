@@ -227,15 +227,14 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
-        # logits, encoder_logits, virt_tokens = self(example.audio, example.tokens, example.attn_mask, key=key)
         audio_pred, text_pred, text_target, audio_logits = self(
             example.audio, example.tokens, example.attn_mask, key=key
         )
-        # diff = audio_pred - text_pred
-        # loss = hax.dot(diff, diff, axis="embed") ** 0.5
+        diff = audio_pred - text_pred
+        loss = (hax.dot(diff, diff, axis="embed") ** 0.5) / 10
         target_y = hax.nn.one_hot(text_target, self.Vocab, dtype=audio_logits.dtype)
-        loss = hax.nn.cross_entropy_loss(audio_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis)
+        loss2 = hax.nn.cross_entropy_loss(audio_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis)
         if reduction == None:
-            return loss
+            return loss + loss2
         else:
-            return reduction(loss, axis=reduction_axis)
+            return reduction(loss, axis=reduction_axis) + loss2
