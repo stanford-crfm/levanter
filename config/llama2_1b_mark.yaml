@@ -220,7 +220,7 @@ model:
   use_flash_attention: True
   flash_attention_block_size: 2048
 trainer:
-  seed: 42
+  seed: 0
   checkpointer:
     keep:
       - every: 1
