@@ -1,9 +1,9 @@
 data:
   cache_dir: "gs://levanter-data/tokenized/llama2-rand/"
   train_urls:
-    - gs://levanter-data/trace/random/random.jsonl.zst
+    - gs://levanter-data/trace/random/random_samples.jsonl.zst
   validation_urls:
-    - gs://levanter-data/trace/random/random.jsonl.zst
+    - gs://levanter-data/trace/random/random_samples.jsonl.zst
   tokenizer: "meta-llama/Llama-2-70b-hf"
   
 model:
