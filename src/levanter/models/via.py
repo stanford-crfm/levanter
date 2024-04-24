@@ -197,7 +197,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
 
         text_embeds = self.decoder.embeddings.embed(text_tokens)
         # Create LLM Response
-        assert text[
+        assert text_tokens[
             {
                 "batch": hax.arange(text_tokens.resolve_axis("batch")),
                 "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
