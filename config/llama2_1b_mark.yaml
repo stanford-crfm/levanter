@@ -237,10 +237,11 @@ trainer:
     tags: ["pile", "llama", "web_comparison"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 512
-  num_train_steps: 5000
+  train_batch_size: 256
+  num_train_steps: 10000
   steps_per_eval: 1000
-  per_device_eval_parallelism: 64
+  max_eval_batches: 2
+  per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
