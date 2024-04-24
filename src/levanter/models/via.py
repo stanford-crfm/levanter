@@ -176,7 +176,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
             "position",
             [
                 prefix.broadcast_axis(OtherAxes),
-                self.decoder.embeddings.embed(input_ids),
+                virtual_tokens["position", -10:],
                 suffix.broadcast_axis(OtherAxes),
             ],
         )
