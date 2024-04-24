@@ -26,8 +26,8 @@ trainer:
   num_train_steps: 5000
 optimizer:
   type: sophia-h
-  learning_rate: 1E-4
-  weight_decay: 0.0
-  warmup: 0.01
+  learning_rate: 1E-3
+  weight_decay: 0.1
+  warmup: 0.1
 via_init: True
 hf_save_steps: 500
