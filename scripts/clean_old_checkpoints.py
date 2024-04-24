@@ -4,8 +4,12 @@
 # python clean_old_checkpoints.py gs://my-bucket/my-dir | xargs -I {} gsutil -m rm -r {}
 import os
 import sys
+import time
+from datetime import datetime, timezone
 
 import fsspec
+
+AGE = 30  # days
 
 
 def is_dir_of_checkpoints(path):
@@ -45,16 +49,35 @@ def list_deletable_directories(base_dir):
 
         # Add all checkpoint directories except the ones we need to keep
         for path in checkpoint_paths:
-            if path != max_complete_checkpoint and path != max_000_checkpoint:
-                yield path
+            if path == max_complete_checkpoint or path == max_000_checkpoint:
+                continue
+
+            try:
+                new = False
+                for file in ["metadata.json", "worker-0.cert"]:
+                    details = fs.ls(f"{path}/{file}", detail=True)
+                    if details:
+                        mtime = details[0]["mtime"]
+                        age = (datetime.now(timezone.utc) - mtime).days
+                        if age < AGE:
+                            new = True
+                            break
+
+                if new:
+                    continue
+
+            except FileNotFoundError:
+                pass
+
+            yield path
+
 
 
 # Usage example:
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         print("Usage: python clean_old_checkpoints.py <base_dir>")
         sys.exit(1)
-    base_dir = sys.argv[1]
-
-    for path in list_deletable_directories(base_dir):
-        print(f"gs://{path}")
+    for base_dir in sys.argv[1:]:
+        for path in list_deletable_directories(base_dir):
+            print(f"gs://{path}")
