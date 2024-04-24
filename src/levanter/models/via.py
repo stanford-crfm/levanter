@@ -232,7 +232,7 @@ class ViaASRModel(ViaModel, ASRMixin):
             example.audio, example.tokens, example.attn_mask, key=key
         )
         diff = audio_pred - text_pred
-        loss = hax.dot(diff, diff, axis="embed")
+        loss = (hax.dot(diff, diff, axis="embed") ** 0.5) / diff.resolve_axis("embed").size
         target_y = hax.nn.one_hot(text_target, self.Vocab, dtype=audio_logits.dtype)
         loss2 = hax.nn.cross_entropy_loss(audio_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis)
         if reduction == None:
