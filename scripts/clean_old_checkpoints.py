@@ -4,10 +4,10 @@
 # python clean_old_checkpoints.py gs://my-bucket/my-dir | xargs -I {} gsutil -m rm -r {}
 import os
 import sys
-import time
 from datetime import datetime, timezone
 
 import fsspec
+
 
 AGE = 30  # days
 
@@ -70,7 +70,6 @@ def list_deletable_directories(base_dir):
                 pass
 
             yield path
-
 
 
 # Usage example:
