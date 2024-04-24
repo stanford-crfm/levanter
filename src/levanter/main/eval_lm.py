@@ -176,7 +176,8 @@ def main(config: EvalLmConfig):
             with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+                
+                model = load_checkpoint(model, "gs://levanter-checkpoints/llama2-trace-1b-seed42/19zqlxdg/step-200/model/", subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
