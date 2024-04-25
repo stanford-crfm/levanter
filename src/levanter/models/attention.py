@@ -6,7 +6,6 @@ from typing import Optional, Union, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
@@ -92,7 +91,7 @@ def dot_product_attention(
         if attention_out is not None:
             return attention_out
     elif accelerator_type == "tpu":
-        return _tpu_splash_attention(
+        attention_out = _tpu_splash_attention(
             QPos,
             KPos,
             Key,
@@ -108,6 +107,14 @@ def dot_product_attention(
             precision=precision,
             block_size=flash_block_size,
         )
+
+        if attention_out is not None:
+            return attention_out
+        else:
+            warnings.warn(
+                "Could not import splash attention. You need to update your JAX to at least 0.2.26. "
+                "Falling back to the reference implementation."
+            )
 
     from levanter.models.flash_attention import flash_attention
 
@@ -598,7 +605,11 @@ def _tpu_splash_attention(
     attention_dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
-) -> NamedArray:
+) -> Optional[NamedArray]:
+    try:
+        from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+    except ImportError:
+        return None
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
     if dropout != 0.0:
@@ -766,17 +777,3 @@ def _restore_named_axes(
     ).axes
     attn_output = attn_output.rearrange(output_axes)
     return attn_output
-
-
-class ExplicitMask(eqx.Module):
-    """
-    Represents an explicit mask for attention. This is a mask that is applied to the attention weights directly.
-    """
-
-    mask: NamedArray
-
-    def __init__(self, mask: NamedArray):
-        self.mask = mask
-
-    def materialize(self, QPos: Axis, KPos: Axis) -> NamedArray:
-        return self.mask
