@@ -226,7 +226,7 @@ trainer:
       - every: 1
         until: 20
       - every: 10
-        until: 20
+        until: 100
       - every: 100
         until: 1000
       - every: 1000
