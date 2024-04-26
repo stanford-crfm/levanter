@@ -755,6 +755,10 @@ def _tpu_splash_attention(
             mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
         )
 
+        # try upcasting to float32 to see if it fixes crash?
+        q = q.astype(jnp.float32)
+        k = k.astype(jnp.float32)
+        v = v.astype(jnp.float32)
         print(q.dtype, k.dtype, v.dtype)
         return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
 
