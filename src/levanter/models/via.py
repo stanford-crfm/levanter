@@ -146,6 +146,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         key=None,
     ) -> NamedArray:
         # Setup
+        Batch = input_ids.resolve_axis("batch")
         InputPosition = input_ids.resolve_axis("position")
         OtherAxes = hax.axis.eliminate_axes(input_ids.axes, "position")
         causal_mask = AttentionMask.causal()
@@ -190,31 +191,25 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         )
         push_back_padding = hax.argsort(text_tokens == pad_token_id, "position")
 
-        text_tokens = text_tokens[
-            {"batch": hax.arange(text_tokens.resolve_axis("batch")), "position": push_back_padding}
-        ]
+        text_tokens_left_pad = text_tokens[{"batch": hax.arange(Batch), "position": push_back_padding}]
 
-        text_embeds = self.decoder.embeddings.embed(text_tokens)
+        text_embeds = self.decoder.embeddings.embed(text_tokens_left_pad)
         # Create LLM Response
         audio = self.decoder.transformer(audio_embeds, attn_mask=causal_mask, key=k_decoder)
-        audio_logits = self.decoder.lm_head(audio, key=k_head)
         text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
-        text_target = hax.argmax(self.decoder.lm_head(text, key=k_head), "vocab")
+
+        push_forward_padding = hax.argsort(input_ids != pad_token_id, "position")
+        input_ids_right_pad = text_tokens[{"batch": hax.arange(Batch), "position": push_forward_padding}]
         return (
             audio["position", -1],
             text[
                 {
-                    "batch": hax.arange(text_tokens.resolve_axis("batch")),
+                    "batch": hax.arange(Batch),
                     "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
                 }
             ],
-            text_target[
-                {
-                    "batch": hax.arange(text_tokens.resolve_axis("batch")),
-                    "position": (hax.sum(text_tokens == pad_token_id, "position") * -1) - 1,
-                }
-            ],
-            audio_logits["position", -1],
+            virtual_tokens,
+            self.decoder.embeddings.embed(input_ids_right_pad),
         )
 
 
@@ -227,14 +222,24 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
-        audio_pred, text_pred, text_target, audio_logits = self(
+        # Compute Distillation Contrastive Loss
+        # Since the weight matrix is frozen, equivalent but faster than KL Div
+        audio_pred, text_pred, virtual_embeds, real_embeds = self(
             example.audio, example.tokens, example.attn_mask, key=key
         )
-        diff = audio_pred - text_pred
-        loss = (hax.dot(diff, diff, axis="embed") ** 0.5) / 10
-        # target_y = hax.nn.one_hot(text_target, self.Vocab, dtype=audio_logits.dtype)
-        # loss2 = hax.nn.cross_entropy_loss(audio_logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis)
+        diff_distill = audio_pred - text_pred
+        loss1 = hax.dot(diff_distill, diff_distill, axis="embed") ** 0.5
+
+        # Compute Contrastive Loss on Input
+        # Correct for Normal Autoregressive Loss Mask
+        corrected_loss_mask = hax.roll(example.loss_mask, 1, self.Pos) + hax.nn.one_hot(0, Pos, dtype=jnp.float32)
+        reversed_loss_mask = corrected_loss_mask["position", -1:0:-1]
+        diff_contrast = virtual_tokens - real_embeds
+        loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
+
         if reduction == None:
-            return loss
+            return loss1 + loss2
         else:
-            return reduction(loss, axis=reduction_axis)
+            return reduction(loss1, axis=reduction_axis) + reduction(
+                loss2, axis=reduction_axis, where=reversed_loss_mask
+            )
