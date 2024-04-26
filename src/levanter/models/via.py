@@ -232,7 +232,7 @@ class ViaASRModel(ViaModel, ASRMixin):
 
         # Compute Contrastive Loss on Input
         # Correct for Normal Autoregressive Loss Mask
-        corrected_loss_mask = hax.roll(example.loss_mask, 1, self.Pos) + hax.nn.one_hot(0, Pos, dtype=jnp.float32)
+        corrected_loss_mask = hax.roll(example.loss_mask, 1, self.Pos) + hax.nn.one_hot(0, self.Pos, dtype=jnp.float32)
         reversed_loss_mask = corrected_loss_mask["position", -1:0:-1]
         diff_contrast = virtual_tokens - real_embeds
         loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
