@@ -91,7 +91,7 @@ def dot_product_attention(
         if attention_out is not None:
             return attention_out
     elif accelerator_type == "tpu":
-        attention_out = _tpu_splash_attention(
+        attention_out = _try_tpu_splash_attention(
             QPos,
             KPos,
             Key,
@@ -110,11 +110,6 @@ def dot_product_attention(
 
         if attention_out is not None:
             return attention_out
-        else:
-            warnings.warn(
-                "Could not import splash attention. You need to update your JAX to at least 0.2.26. "
-                "Falling back to the reference implementation."
-            )
 
     from levanter.models.flash_attention import flash_attention
 
@@ -588,6 +583,62 @@ def materialize_mask(
 # TODO: sequence packing mask
 
 
+def _try_tpu_splash_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    dropout: float = 0.0,
+    inference: bool = False,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    block_size: Optional[int] = None,
+) -> Optional[NamedArray]:
+    if dropout != 0.0:
+        warnings.warn("Splash attention does not support. Falling back to the reference implementation.")
+        return None
+
+    if bias is not None:
+        warnings.warn("Splash attention does not support bias. Falling back to the reference implementation.")
+        return None
+
+    try:
+        return _tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            mask,
+            bias,
+            dropout,
+            inference,
+            prng=prng,
+            attention_dtype=attention_dtype,
+            precision=precision,
+            block_size=block_size,
+        )
+    except ImportError as e:
+        if "pallas" not in str(e):
+            raise
+        warnings.warn(
+            "Could not import splash attention. You need to update your JAX to at least 0.4.26. "
+            "Falling back to the reference implementation."
+        )
+        return None
+    except NotImplementedError as e:
+        message = str(e)
+        warnings.warn(f"Could not use splash attention: {message}. Falling back to the reference")
+        return None
+
+
 # CF https://github.com/google/maxtext/blob/db31dd4b0b686bca4cd7cf940917ec372faa183a/MaxText/layers/attentions.py#L179
 def _tpu_splash_attention(
     QPos: AxisSelector,
@@ -606,10 +657,8 @@ def _tpu_splash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
 ) -> Optional[NamedArray]:
-    try:
-        from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
-    except ImportError:
-        return None
+    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
     if dropout != 0.0:
