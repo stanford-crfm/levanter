@@ -3,11 +3,13 @@ import functools
 import equinox
 import jax.numpy as jnp
 import jax.random as jrandom
+import jax.sharding
 import pytest
 
 import haliax as hax
 import haliax.nn as hnn
 
+import levanter.models.attention
 from levanter.models.attention import AttentionMask, simple_attention_with_dropout
 from levanter.models.flash_attention import flash_attention
 
@@ -141,3 +143,26 @@ def test_fa_dropout_does_something():
     assert with_o.axes == without_o.axes
     mean = jnp.mean(jnp.isclose(with_o.array, without_o.array, atol=1e-3, rtol=1e-3))
     assert mean < 1e-2
+
+
+def test_tpu_flash_attention():
+    if jax.devices()[0].device_kind != "tpu":
+        pytest.skip("TPU-only test")
+
+    Key = hax.Axis("Key", 128)
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 4)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 4)
+    with jax.sharding.Mesh(jax.devices(), ("dp",)):
+        mask = AttentionMask.causal()
+
+        q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
+        k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
+        v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+
+        flash_out = levanter.models.attention._tpu_splash_attention(
+            QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE
+        )
+        hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+
+        assert hax_out.axes == flash_out.axes
+        assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
