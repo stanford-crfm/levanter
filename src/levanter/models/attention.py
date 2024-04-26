@@ -755,6 +755,7 @@ def _tpu_splash_attention(
             mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
         )
 
+        print(q.dtype, k.dtype, v.dtype)
         return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
 
     attn_output = wrap_flash_attention(q_, k_, v_)
