@@ -236,7 +236,7 @@ class ViaASRModel(ViaModel, ASRMixin):
             0, self.Pos, dtype=jax.numpy.float32
         )
         reversed_loss_mask = corrected_loss_mask["position", -1:0:-1]
-        diff_contrast = virtual_tokens - real_embeds
+        diff_contrast = virtual_embeds - real_embeds
         loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
 
         if reduction == None:
