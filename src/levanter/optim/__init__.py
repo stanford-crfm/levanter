@@ -5,3 +5,4 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,
     scale_by_sophia_g,
     scale_by_sophia_h,
 )
+from .schedulefree_sophia import ScheduleFreeSophiaHConfig
