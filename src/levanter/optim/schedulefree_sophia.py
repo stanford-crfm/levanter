@@ -193,7 +193,7 @@ def _sophia_gradient_transform(
         t = state.count
 
         # bias_correction2 = 1 - b2 ** (t + 1)
-        # learning_rate *= bias_correction2**0.5
+        # learning_rate = learning_rate * bias_correction2**0.5
 
         h_hat = state.h
         # track how often hessian is used
@@ -218,7 +218,9 @@ def _sophia_gradient_transform(
             unclipped_count = sum(
                 jnp.sum(jnp.abs(u) < clip_threshold).astype(jnp.float32) for u in jax.tree_util.tree_leaves(updates)
             )
-            updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
+            updates = jax.tree_util.tree_map(
+                lambda u, y: jnp.clip(u, -clip_threshold, clip_threshold) + weight_decay * y, updates, params
+            )
             stats["optim/unclipped_fraction"] = unclipped_count * 1.0 / float(parameter_count(updates))
 
         levanter.tracker.jit_log_metrics(stats, step=t)
