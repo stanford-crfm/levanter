@@ -1,4 +1,3 @@
-import abc
 import functools
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional, TypeVar
@@ -65,6 +64,7 @@ class ScheduleFreeSophiaHConfig(SophiaHConfig):
             initial_key=key,
             clip_threshold=self.clip_threshold,
         )
+
 
 # def sophia_h(
 #     lr: float = 0.85e-3,
@@ -178,7 +178,7 @@ def _sophia_gradient_transform(
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
 
     def init_fn(params):
-        z = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params) # schedule-free z
+        z = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)  # schedule-free z
         h = jax.tree_util.tree_map(jnp.zeros_like, params)  # Second moment
         return ScaleBySophiaState(
             count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), z=z, h=h, hess_key=initial_key
@@ -191,9 +191,9 @@ def _sophia_gradient_transform(
 
         z = state.z
         t = state.count
-        
-        bias_correction2 = 1 - b2 ** (t + 1)
-        learning_rate *= bias_correction2 ** 0.5
+
+        # bias_correction2 = 1 - b2 ** (t + 1)
+        # learning_rate *= bias_correction2**0.5
 
         h_hat = state.h
         # track how often hessian is used
@@ -208,7 +208,7 @@ def _sophia_gradient_transform(
 
         # with sophia-g the max(h, 0) is not needed but no harm
         updates = jax.tree_util.tree_map(
-            lambda g, h: m / jnp.maximum(gamma * h, eps),
+            lambda g, h: g / jnp.maximum(gamma * h, eps),
             updates,
             h_hat,
         )
@@ -228,19 +228,15 @@ def _sophia_gradient_transform(
 
         # update y
         new_y = jax.tree_util.tree_map(
-            lambda y, z, u: (1 - 1 / t) * y + (1 / t) * z + learning_rate * (b1 * (1 - 1 / t) = 1) * u,
-            params, z, updates
+            lambda y, z, u: (1 - 1 / t) * y + (1 / t) * z + learning_rate * (b1 * (1 - 1 / t) - 1) * u,
+            params,
+            z,
+            updates,
         )
         # update z
-        new_z = jax.tree_util.tree_map(
-            lambda z, u: z - learning_rate * u, 
-            z, updates
-        )
+        new_z = jax.tree_util.tree_map(lambda z, u: z - learning_rate * u, z, updates)
         # get actual updates for y
-        updates = jax.tree_map(
-            lambda new_y, y: new_y - y, 
-            new_y, params
-        )
+        updates = jax.tree_map(lambda new_y, y: new_y - y, new_y, params)
 
         state = ScaleBySophiaState(
             count=t + 1, hessian_count=state.hessian_count, z=new_z, h=h_hat, hess_key=state.hess_key
