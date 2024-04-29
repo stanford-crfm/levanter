@@ -228,6 +228,8 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             z = jax.tree_util.tree_util.tree_map(lambda t: t.astype(mu_dtype), z)
 
+        # update t
+        t += 1
         # update y
         new_y = jax.tree_util.tree_map(
             lambda y, z, u: (1 - 1 / t) * y + (1 / t) * z + learning_rate * (b1 * (1 - 1 / t) - 1) * u,
@@ -241,7 +243,7 @@ def _sophia_gradient_transform(
         updates = jax.tree_map(lambda new_y, y: new_y - y, new_y, params)
 
         state = ScaleBySophiaState(
-            count=t + 1, hessian_count=state.hessian_count, z=new_z, h=h_hat, hess_key=state.hess_key
+            count=t, hessian_count=state.hessian_count, z=new_z, h=h_hat, hess_key=state.hess_key
         )
         state = update_hessian(state, params, obj_fn=obj_fn, **kwargs)
         return updates, state
