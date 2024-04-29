@@ -11,13 +11,13 @@ from jaxtyping import PRNGKeyArray
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.compat.torch_serialization import (
     StateDict,
-    StateDictSerializationMixin,
     apply_prefix,
     flatten_linear_layers,
     stack_state_dict,
@@ -150,7 +150,7 @@ class LlamaConfig(HFCompatConfig):
         return LlamaLMHeadModel
 
 
-class LlamaMlp(eqx.Module, StateDictSerializationMixin):
+class LlamaMlp(eqx.Module, ModuleWithStateDictSerialization):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
     before down-proj.
@@ -222,7 +222,7 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class LlamaAttention(StateDictSerializationMixin, eqx.Module):
+class LlamaAttention(ModuleWithStateDictSerialization, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     q_proj: hnn.Linear  # projection from Embed to query
     k_proj: hnn.Linear  # projection from Embed to key
@@ -341,7 +341,7 @@ class LlamaRMSNorm(hnn.LayerNorm):
         return out
 
 
-class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
+class LlamaDecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     self_attn: LlamaAttention
     mlp: LlamaMlp
@@ -382,7 +382,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return output
 
 
-class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
+class LlamaTransformer(ModuleWithStateDictSerialization, eqx.Module):
     config: LlamaConfig = eqx.static_field()
     layers: BlockFoldable[LlamaDecoderLayer]
     norm: LlamaRMSNorm
@@ -429,7 +429,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
+class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     """Similar to GPT2 Embedding, except that:
     - Llama doesn't have position embedding in the Embedding layer.
     - Llama doesn't use dropout.
@@ -463,7 +463,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
-class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
+class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], ModuleWithStateDictSerialization):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear

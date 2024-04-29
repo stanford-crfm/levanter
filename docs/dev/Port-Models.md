@@ -113,7 +113,7 @@ If your module has exactly the same fields with the same names and same shapes a
 If for some reason you want to use different names from the HF implementation (e.g. because the names from HF aren't clear...), you can extend your class from  `StateDictSerializationMixin` and use `_state_dict_key_map` to rename keys. For instance, the `Gpt2Transformer` class has this method:
 
 ```python
-class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
+class Gpt2Transformer(ModuleWithStateDictSerialization, eqx.Module):
     ...
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:

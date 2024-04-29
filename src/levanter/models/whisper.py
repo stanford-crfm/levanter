@@ -12,13 +12,13 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
-    StateDictSerializationMixin,
     apply_prefix,
     flatten_linear_layers,
     stack_state_dict,
@@ -129,7 +129,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
         )
 
 
-class WhisperMlp(eqx.Module, StateDictSerializationMixin):
+class WhisperMlp(eqx.Module, ModuleWithStateDictSerialization):
     fc1: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     fc2: hnn.Linear  # projection from Intermediate to Embed
     act: Callable = eqx.static_field()
@@ -175,7 +175,7 @@ class WhisperMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class WhisperAttention(StateDictSerializationMixin, eqx.Module):
+class WhisperAttention(ModuleWithStateDictSerialization, eqx.Module):
     config: WhisperConfig = eqx.static_field()
 
     q_proj: hnn.Linear  # input projection from [embed] -> [q, heads, head_dim]
@@ -257,7 +257,7 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
 
 class WhisperLayer(
     eqx.Module,
-    StateDictSerializationMixin,
+    ModuleWithStateDictSerialization,
 ):
     self_attn: WhisperAttention
     attn_ln: hnn.LayerNorm
@@ -316,7 +316,7 @@ class WhisperLayer(
         }
 
 
-class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
+class WhisperTransformer(eqx.Module, ModuleWithStateDictSerialization):
     layers: Stacked[WhisperLayer]
     Layer: Axis
     layer_norm: hnn.LayerNorm
@@ -366,7 +366,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
+class WhisperEncoder(eqx.Module, ModuleWithStateDictSerialization):
     config: WhisperConfig = eqx.static_field()
     conv1: hnn.Conv
     conv2: hnn.Conv
@@ -458,7 +458,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return {"token_embeddings": "embed_tokens", "position_embeddings": "embed_positions"}
 
 
-class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
+class WhisperDecoder(eqx.Module, ModuleWithStateDictSerialization):
     transformer: WhisperTransformer
     embeddings: WhisperDecoderEmbeddings
 

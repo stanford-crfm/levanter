@@ -11,16 +11,11 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import named_call
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
+from levanter.compat.torch_serialization import StateDict, apply_prefix, flatten_linear_layers, unflatten_linear_layers
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
@@ -100,7 +95,7 @@ class BackpackConfig(Gpt2Config):
         )
 
 
-class BackpackMlp(eqx.Module, StateDictSerializationMixin):
+class BackpackMlp(eqx.Module, ModuleWithStateDictSerialization):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
     act: Callable = eqx.static_field()
@@ -156,7 +151,7 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
+class WeightsOnlyAttention(ModuleWithStateDictSerialization):
     """
     Changes from Gpt2Attention:
     1. No projection; it returns the attention weights
@@ -223,7 +218,7 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-class NoMixBlock(StateDictSerializationMixin, eqx.Module):
+class NoMixBlock(eqx.Module):
     ln_1: hnn.LayerNorm
     ln_2: hnn.LayerNorm
     mlp: BackpackMlp
@@ -263,7 +258,7 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         return hidden_states
 
 
-class BackpackSenses(StateDictSerializationMixin, eqx.Module):
+class BackpackSenses(eqx.Module):
     dropout: hnn.Dropout
     block: NoMixBlock
     ln: hnn.LayerNorm

@@ -30,9 +30,10 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.partitioning import ResourceMapping
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
+from levanter.compat.torch_serialization import save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -128,7 +129,7 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixin):
+class ModelWithHfSerializationMixin(Generic[MConfig], ModuleWithStateDictSerialization):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 

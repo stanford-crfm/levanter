@@ -8,16 +8,11 @@ import jax.random as jrandom
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import maybe_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
+from levanter.compat.torch_serialization import StateDict, apply_prefix, flatten_linear_layers, unflatten_linear_layers
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
@@ -138,7 +133,7 @@ class MistralConfig(LlamaConfig):
         return MistralLMHeadModel
 
 
-class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerializationMixin):
+class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], ModuleWithStateDictSerialization):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear

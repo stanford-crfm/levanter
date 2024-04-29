@@ -13,6 +13,7 @@ import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
@@ -20,7 +21,6 @@ import levanter.models.attention
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.compat.torch_serialization import (
     StateDict,
-    StateDictSerializationMixin,
     apply_prefix,
     flatten_linear_layers,
     stack_state_dict,
@@ -201,7 +201,7 @@ class MptConfig(HFCompatConfig):
         )
 
 
-class MptMlp(eqx.Module, StateDictSerializationMixin):
+class MptMlp(eqx.Module, ModuleWithStateDictSerialization):
     up_proj: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     down_proj: hnn.Linear  # projection from Intermediate to Embed
 
@@ -222,7 +222,7 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
 
 
 # Attention is the same as GPT-2 Attention, modulo alibi
-class MptAttention(StateDictSerializationMixin, eqx.Module):
+class MptAttention(ModuleWithStateDictSerialization, eqx.Module):
     Wqkv: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     out_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
 
@@ -349,7 +349,7 @@ class MptBlock(eqx.Module):
         return hidden_states
 
 
-class MptTransformer(StateDictSerializationMixin, eqx.Module):
+class MptTransformer(ModuleWithStateDictSerialization, eqx.Module):
     config: MptConfig = eqx.static_field()
     blocks: Stacked[MptBlock]
     norm_f: hnn.LayerNorm

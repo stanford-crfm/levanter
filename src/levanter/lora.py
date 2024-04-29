@@ -55,15 +55,11 @@ from jaxtyping import PyTree
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import shaped_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    save_state_dict,
-    to_numpy_state_dict,
-)
+from levanter.compat.torch_serialization import StateDict, save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
@@ -153,7 +149,7 @@ class LowRankLinear(eqx.Module):
         return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
 
 
-class LoraLinear(eqx.Module, StateDictSerializationMixin):
+class LoraLinear(ModuleWithStateDictSerialization):
     """
     Linear layer with LoRA transform.
     """
