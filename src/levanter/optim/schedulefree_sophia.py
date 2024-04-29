@@ -213,10 +213,7 @@ def _sophia_gradient_transform(
         t = state.count
         weight_sum = state.weight_sum
 
-        if t < warmup_steps:
-            sched = (t + 1) / warmup_steps
-        else:
-            sched = 1.0
+        sched = jnp.minimum((t + 1) / warmup_steps, 1.0)
 
         lr = learning_rate * sched
         weight = lr**weight_lr_power
