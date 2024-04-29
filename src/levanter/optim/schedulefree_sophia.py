@@ -28,6 +28,7 @@ class ScaleBySophiaState(NamedTuple):
     """State for Sophia and similar."""
 
     count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
+    weight_sum: jaxtyping.Array  # shape=(), dtype=jnp.float32
     hessian_count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
     z: optax.Params  # primary iterates in the sf algorithm. this replaces mu
     h: optax.Updates  # EMA of hessian diagonal
@@ -47,23 +48,35 @@ class ScaleBySophiaState(NamedTuple):
 @OptimizerConfig.register_subclass("sf-sophia-h")
 @dataclass
 class ScheduleFreeSophiaHConfig(SophiaHConfig):
+    weight_lr_power: float = 2.0
+
     def build(self, num_train_steps: int):
-        key = jax.random.PRNGKey(self.rng_seed)
+        def _optimizer(gamma) -> optax.GradientTransformation:
+            key = jax.random.PRNGKey(self.rng_seed)
+
+            return _sophia_gradient_transform(
+                sophia_hess_fn=self.compute_hessian,
+                update_interval=self.update_interval,
+                b1=self.beta1,
+                b2=self.beta2,
+                eps=self.epsilon,
+                gamma=gamma,
+                weight_decay=self.weight_decay,
+                learning_rate=self.learning_rate,
+                weight_lr_power=self.weight_lr_power,
+                warmup_steps=self._convert_warmup(num_train_steps),
+                initial_key=key,
+                clip_threshold=self.clip_threshold,
+            )
+
+        # Hong suggested using cosine decay for gamma
+        # gamma_decay_schedule = optax.cosine_decay_schedule(self.gamma, num_train_steps // 2, 0)  # type: ignore
+        constant_gamma_schedule = optax.constant_schedule(self.gamma)  # type: ignore
+        # gamma_schedule = optax.join_schedules([constant_gamma_schedule, gamma_decay_schedule], [num_train_steps // 2])
 
         # In schedule-free, learning rate and weight decay are applied internally
         # ignore self.lr_scheduler because it's schedule-free :)
-        return _sophia_gradient_transform(
-            sophia_hess_fn=self.compute_hessian,
-            update_interval=self.update_interval,
-            b1=self.beta1,
-            b2=self.beta2,
-            eps=self.epsilon,
-            gamma=self.gamma,
-            weight_decay=self.weight_decay,
-            learning_rate=self.learning_rate,
-            initial_key=key,
-            clip_threshold=self.clip_threshold,
-        )
+        return optax.inject_hyperparams(_optimizer)(gamma=constant_gamma_schedule)
 
 
 # def sophia_h(
@@ -171,6 +184,8 @@ def _sophia_gradient_transform(
     gamma: float,
     weight_decay: float,
     learning_rate: float,
+    weight_lr_power: float,
+    warmup_steps: int,
     clip_threshold: Optional[float],
     initial_key: PRNGKeyArray,
     mu_dtype: Optional[Any] = None,
@@ -181,7 +196,12 @@ def _sophia_gradient_transform(
         z = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)  # schedule-free z
         h = jax.tree_util.tree_map(jnp.zeros_like, params)  # Second moment
         return ScaleBySophiaState(
-            count=jnp.zeros([], jnp.int32), hessian_count=jnp.zeros([], jnp.int32), z=z, h=h, hess_key=initial_key
+            count=jnp.zeros([], jnp.int32),
+            weight_sum=jnp.zeros([], jnp.float32),
+            hessian_count=jnp.zeros([], jnp.int32),
+            z=z,
+            h=h,
+            hess_key=initial_key,
         )
 
     def update_fn(updates, state, params=None, *, obj_fn, **kwargs):
@@ -191,6 +211,21 @@ def _sophia_gradient_transform(
 
         z = state.z
         t = state.count
+        weight_sum = state.weight_sum
+
+        if t < warmup_steps:
+            sched = (t + 1) / warmup_steps
+        else:
+            sched = 1.0
+
+        lr = learning_rate * sched
+        weight = lr**weight_lr_power
+        new_weight_sum = weight_sum + weight
+
+        try:
+            ckp1 = weight / new_weight_sum  # converges to 1/t if no warmup
+        except ZeroDivisionError:
+            ckp1 = 0
 
         # bias_correction2 = 1 - b2 ** (t + 1)
         # learning_rate = learning_rate * bias_correction2**0.5
@@ -204,6 +239,7 @@ def _sophia_gradient_transform(
             "optim/param_norm": jnp.sqrt(sum(jnp.sum(p**2) for p in jax.tree_util.tree_leaves(params))),
             # "optim/momentum_norm": jnp.sqrt(sum(jnp.sum(m**2) for m in mu_leaves)),
             "optim/hessian_norm": jnp.sqrt(sum(jnp.sum(h**2) for h in h_leaves)),
+            "optim/learning_rate": lr,
         }
 
         # with sophia-g the max(h, 0) is not needed but no harm
@@ -228,22 +264,25 @@ def _sophia_gradient_transform(
         if mu_dtype is not None:
             z = jax.tree_util.tree_util.tree_map(lambda t: t.astype(mu_dtype), z)
 
-        # update t
-        t += 1
         # update y
         new_y = jax.tree_util.tree_map(
-            lambda y, z, u: (1 - 1 / t) * y + (1 / t) * z + learning_rate * (b1 * (1 - 1 / t) - 1) * u,
+            lambda y, z, u: (1 - ckp1) * y + ckp1 * z + lr * (b1 * (1 - ckp1) - 1) * u,
             params,
             z,
             updates,
         )
         # update z
-        new_z = jax.tree_util.tree_map(lambda z, u: z - learning_rate * u, z, updates)
+        new_z = jax.tree_util.tree_map(lambda z, u: z - lr * u, z, updates)
         # get actual updates for y
         updates = jax.tree_map(lambda new_y, y: new_y - y, new_y, params)
 
         state = ScaleBySophiaState(
-            count=t, hessian_count=state.hessian_count, z=new_z, h=h_hat, hess_key=state.hess_key
+            count=t + 1,
+            weight_sum=new_weight_sum,
+            hessian_count=state.hessian_count,
+            z=new_z,
+            h=h_hat,
+            hess_key=state.hess_key,
         )
         state = update_hessian(state, params, obj_fn=obj_fn, **kwargs)
         return updates, state
