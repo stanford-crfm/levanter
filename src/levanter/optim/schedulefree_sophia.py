@@ -193,7 +193,7 @@ def _sophia_gradient_transform(
     mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
 
     def init_fn(params):
-        z = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)  # schedule-free z
+        z = jax.tree_util.tree_map(jnp.copy, params)  # schedule-free z
         h = jax.tree_util.tree_map(jnp.zeros_like, params)  # Second moment
         return ScaleBySophiaState(
             count=jnp.zeros([], jnp.int32),
