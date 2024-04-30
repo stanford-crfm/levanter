@@ -294,7 +294,12 @@ def _sophia_gradient_transform(
             # EMAs of hessian
             nu = update_moment(new_hess, state.h, b2, 1)
             return ScaleBySophiaState(
-                count=state.count, hessian_count=state.hessian_count + 1, z=state.z, h=nu, hess_key=next_key
+                count=state.count,
+                weight_sum=state.weight_sum,
+                hessian_count=state.hessian_count + 1,
+                z=state.z,
+                h=nu,
+                hess_key=next_key,
             )
 
         def _dont_update():
