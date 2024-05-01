@@ -251,10 +251,10 @@ def _sophia_gradient_transform(
             unclipped_count = sum(
                 jnp.sum(jnp.abs(u) < clip_threshold).astype(jnp.float32) for u in jax.tree_util.tree_leaves(updates)
             )
-            updates = jax.tree_util.tree_map(
-                lambda u, y: jnp.clip(u, -clip_threshold, clip_threshold) + weight_decay * y, updates, params
-            )
+            updates = jax.tree_util.tree_map(lambda u: jnp.clip(u, -clip_threshold, clip_threshold), updates)
             stats["optim/unclipped_fraction"] = unclipped_count * 1.0 / float(parameter_count(updates))
+
+        updates = jax.tree_util.tree_map(lambda u, y: u + weight_decay * y, updates, params)
 
         levanter.tracker.jit_log_metrics(stats, step=t)
 
@@ -271,7 +271,7 @@ def _sophia_gradient_transform(
         # update z
         new_z = jax.tree_util.tree_map(lambda z, u: z - lr * u, z, updates)
         # get actual updates for y
-        updates = jax.tree_map(lambda new_y, y: new_y - y, new_y, params)
+        updates = jax.tree_util.tree_map(lambda new_y, y: new_y - y, new_y, params)
 
         state = ScaleBySophiaState(
             count=t + 1,
