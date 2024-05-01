@@ -155,7 +155,7 @@ def _adam_gradient_transform(
         # get actual updates for y
         updates = jax.tree_util.tree_map(lambda new_y, y: new_y - y, new_y, params)
 
-        return updates, ScaleByAdamState(count=t + 1, weight_sum=grad_normalized, z=new_z, nu=nu)
+        return updates, ScaleByAdamState(count=t + 1, weight_sum=new_weight_sum, z=new_z, nu=nu)
 
     return optax.GradientTransformation(init_fn, update_fn)
 
