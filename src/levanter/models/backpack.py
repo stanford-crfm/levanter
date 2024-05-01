@@ -11,11 +11,10 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
-from haliax._src.state_dict import ModuleWithStateDictSerialization
+from haliax._src.state_dict import ModuleWithStateDictSerialization, StateDict, apply_prefix
 from haliax.jax_utils import named_call
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import StateDict, apply_prefix, flatten_linear_layers, unflatten_linear_layers
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
@@ -126,30 +125,6 @@ class BackpackMlp(eqx.Module, ModuleWithStateDictSerialization):
         x = self.c_proj(x)
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
-        d = {}
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, out_dims_first_in_dict=False
-            )
-        )
-        d.update(
-            unflatten_linear_layers(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
-        )
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False)
-        )
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
-
-        state_dict.update(my_dict)
-        return state_dict
-
 
 class WeightsOnlyAttention(ModuleWithStateDictSerialization):
     """
@@ -199,23 +174,6 @@ class WeightsOnlyAttention(ModuleWithStateDictSerialization):
 
         attn_weights = self.dropout(attn_weights, key=key)
         return attn_weights
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        d = unflatten_linear_layers(
-            apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
-        )
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
-
-        state_dict.update(my_dict)
-        return state_dict
 
 
 class NoMixBlock(eqx.Module):

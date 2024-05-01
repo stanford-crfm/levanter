@@ -1,4 +1,5 @@
 import re
+import warnings
 from dataclasses import fields
 from typing import Any, Dict, List, Optional, TypeVar, cast, overload
 
@@ -12,6 +13,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
+import haliax._src.state_dict as hax_dict
 import haliax.nn as hnn
 import haliax.partitioning
 from haliax import NamedArray
@@ -42,19 +44,19 @@ def apply_prefix(prefix: None, leaf: Optional[str]) -> Optional[str]:
 
 
 def apply_prefix(prefix: Optional[str], leaf: Optional[str]) -> Optional[str]:
-    if prefix is None:
-        return leaf
-    elif leaf is None:
-        return prefix
-    else:
-        return f"{prefix}.{leaf}"
+    warnings.warn("This method has moved to `haliax.state_dict`.", DeprecationWarning)
+    return hax_dict.apply_prefix(prefix, leaf)
 
 
 Mod = TypeVar("Mod", bound=eqx.Module)
 
 
-class StateDictSerializationMixin:
-    """An eqx.Module that can be serialized to a torch-style state dict."""
+class StateDictSerializationMixin(hax_dict.ModuleWithStateDictSerialization):
+    def __init__(self):
+        warnings.warn(
+            "This class has been renamed to to `haliax.state_dict.ModuleWithStateDictSerialization`",
+            DeprecationWarning,
+        )
 
     def to_state_dict(self, prefix: Optional[str] = None) -> StateDict:
         return jax_tree_to_state_dict(self, prefix)

@@ -17,14 +17,6 @@ from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    apply_prefix,
-    flatten_linear_layers,
-    stack_state_dict,
-    unflatten_linear_layers,
-    unstack_state_dict,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionMask, dot_product_attention
@@ -129,7 +121,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
         )
 
 
-class WhisperMlp(eqx.Module, ModuleWithStateDictSerialization):
+class WhisperMlp(eqx.Module):
     fc1: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     fc2: hnn.Linear  # projection from Intermediate to Embed
     act: Callable = eqx.static_field()
@@ -153,29 +145,8 @@ class WhisperMlp(eqx.Module, ModuleWithStateDictSerialization):
         x = self.fc2(x, key=k2)
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        d = {}
-        d.update(
-            unflatten_linear_layers(apply_prefix(prefix, "fc1"), state_dict, self.fc1, out_dims_first_in_dict=True)
-        )
-        d.update(
-            unflatten_linear_layers(apply_prefix(prefix, "fc2"), state_dict, self.fc2, out_dims_first_in_dict=True)
-        )
 
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "fc1"), self.fc1, out_dims_first_in_dict=True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "fc2"), self.fc2, out_dims_first_in_dict=True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class WhisperAttention(ModuleWithStateDictSerialization, eqx.Module):
+class WhisperAttention(eqx.Module):
     config: WhisperConfig = eqx.static_field()
 
     q_proj: hnn.Linear  # input projection from [embed] -> [q, heads, head_dim]
@@ -231,34 +202,8 @@ class WhisperAttention(ModuleWithStateDictSerialization, eqx.Module):
 
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, True))
 
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of LlamaAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "out_proj"), self.out_proj, True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class WhisperLayer(
-    eqx.Module,
-    ModuleWithStateDictSerialization,
-):
+class WhisperLayer(ModuleWithStateDictSerialization, eqx.Module):
     self_attn: WhisperAttention
     attn_ln: hnn.LayerNorm
 
@@ -316,7 +261,7 @@ class WhisperLayer(
         }
 
 
-class WhisperTransformer(eqx.Module, ModuleWithStateDictSerialization):
+class WhisperTransformer(ModuleWithStateDictSerialization):
     layers: Stacked[WhisperLayer]
     Layer: Axis
     layer_norm: hnn.LayerNorm
@@ -351,22 +296,8 @@ class WhisperTransformer(eqx.Module, ModuleWithStateDictSerialization):
 
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
-        out = super().from_state_dict(stacked, prefix=prefix)
-        return out
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=prefix)
-
-        stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
-        state_dict.update(stacked_dict)
-
-        return state_dict
-
-
-class WhisperEncoder(eqx.Module, ModuleWithStateDictSerialization):
+class WhisperEncoder(ModuleWithStateDictSerialization):
     config: WhisperConfig = eqx.static_field()
     conv1: hnn.Conv
     conv2: hnn.Conv
@@ -383,8 +314,10 @@ class WhisperEncoder(eqx.Module, ModuleWithStateDictSerialization):
         conv1 = hnn.Conv.init(Len, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
         conv2 = hnn.Conv.init(Len, Mid, config.Embed, kernel_size=3, stride=2, padding=1, key=k_conv2)
         if isinstance(config.activation_function, str):
-            activation_fn = ACT2FN[config.activation_function]
-        act = activation_fn  # type: ignore
+            act = ACT2FN[config.activation_function]  # type: ignore
+        else:
+            act = config.activation_function
+
         transformer = WhisperTransformer.init(
             config.EncoderLayer,
             config.EncoderHeads,
@@ -458,7 +391,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return {"token_embeddings": "embed_tokens", "position_embeddings": "embed_positions"}
 
 
-class WhisperDecoder(eqx.Module, ModuleWithStateDictSerialization):
+class WhisperDecoder(ModuleWithStateDictSerialization):
     transformer: WhisperTransformer
     embeddings: WhisperDecoderEmbeddings
 
@@ -516,7 +449,7 @@ class WhisperDecoder(eqx.Module, ModuleWithStateDictSerialization):
         return {"transformer": None, "embeddings": None}
 
 
-class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
+class WhisperModel(ModelWithHfSerializationMixin[WhisperConfig]):
     encoder: WhisperEncoder
     decoder: WhisperDecoder
 

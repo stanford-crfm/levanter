@@ -2,7 +2,6 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Dict, Optional, Type, Union
 
-import equinox as eqx
 import jax.random as jrandom
 
 import haliax as hax
@@ -12,7 +11,6 @@ from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import maybe_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.compat.torch_serialization import StateDict, apply_prefix, flatten_linear_layers, unflatten_linear_layers
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
@@ -133,7 +131,7 @@ class MistralConfig(LlamaConfig):
         return MistralLMHeadModel
 
 
-class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], ModuleWithStateDictSerialization):
+class MistralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MistralConfig]):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear
@@ -190,24 +188,3 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], ModuleWithState
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of MistralMlp
-        d = state_dict.copy()
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
-            )
-        )
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
-        )
-
-        state_dict.update(my_dict)
-        return state_dict

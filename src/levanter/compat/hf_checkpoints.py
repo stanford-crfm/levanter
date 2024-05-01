@@ -30,11 +30,14 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
-from haliax._src.state_dict import ModuleWithStateDictSerialization, from_torch_compatible_state_dict, \
-    to_torch_compatible_state_dict
+from haliax._src.state_dict import (
+    ModuleWithStateDictSerialization,
+    from_torch_compatible_state_dict,
+    save_state_dict,
+    to_torch_compatible_state_dict,
+)
 from haliax.partitioning import ResourceMapping
 
-from levanter.compat.torch_serialization import save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -549,8 +552,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     break
 
         def load_from_state_dict(template, state_dict):
-            # lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
-            lev_model = from_torch_compatible_state_dict(template, state_dict)
+            lev_model = from_torch_compatible_state_dict(template, state_dict, prefix=ignore_prefix)
 
             # However, this might miss some buffers that don't get persisted in the state dict
             # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
@@ -578,7 +580,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
             cpu_device = jax.local_devices(backend="cpu")[0]
             with local_cpu_mesh():
                 lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(lev_model, state_dict)
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(
+                    lev_model, state_dict
+                )
 
             del state_dict
             # gotta move it to the accelerator now (assuming there is one!)
