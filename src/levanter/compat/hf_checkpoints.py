@@ -30,7 +30,8 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
-from haliax._src.state_dict import ModuleWithStateDictSerialization
+from haliax._src.state_dict import ModuleWithStateDictSerialization, from_torch_compatible_state_dict, \
+    to_torch_compatible_state_dict
 from haliax.partitioning import ResourceMapping
 
 from levanter.compat.torch_serialization import save_state_dict, to_numpy_state_dict
@@ -547,9 +548,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     ignore_prefix = self.ignore_prefix
                     break
 
-        def load_from_state_dict(state_dict):
-            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+        def load_from_state_dict(template, state_dict):
+            # lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+            lev_model = from_torch_compatible_state_dict(template, state_dict)
 
             # However, this might miss some buffers that don't get persisted in the state dict
             # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
@@ -576,7 +577,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if just_use_cpu:
             cpu_device = jax.local_devices(backend="cpu")[0]
             with local_cpu_mesh():
-                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
+                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(lev_model, state_dict)
 
             del state_dict
             # gotta move it to the accelerator now (assuming there is one!)
@@ -585,7 +587,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
             )
-            lev_model = load_from_state_dict(state_dict)
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = load_from_state_dict(lev_model, state_dict)
 
         # all_arrays: list[jax.Array] = get_backend().live_arrays()
         # total_size = sum(a.size * a.itemsize for a in all_arrays)
@@ -697,7 +700,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f)
 
         # Model
-        state_dict = to_numpy_state_dict(model)
+        state_dict = to_torch_compatible_state_dict(model)
         shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
         if index is None:
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
