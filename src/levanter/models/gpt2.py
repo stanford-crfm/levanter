@@ -17,7 +17,6 @@ from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import StateDict, apply_prefix, flatten_linear_layers, unflatten_linear_layers
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
@@ -141,7 +140,7 @@ class Gpt2Mlp(eqx.Module):
         return x
 
 
-class Gpt2Attention(ModuleWithStateDictSerialization, eqx.Module):
+class Gpt2Attention(eqx.Module):
     config: Gpt2Config = eqx.static_field()
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
@@ -195,31 +194,8 @@ class Gpt2Attention(ModuleWithStateDictSerialization, eqx.Module):
 
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, None))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, None))
 
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, None))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, None))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class Gpt2Block(ModuleWithStateDictSerialization, eqx.Module):
+class Gpt2Block(eqx.Module):
     ln_1: hnn.LayerNorm
     attn: Gpt2Attention
     ln_2: hnn.LayerNorm
