@@ -305,24 +305,27 @@ def _te_flash_attention(
     attn_output = haliax.named(attn_output, ("B", "S", "H", "D"))
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
     # we can reshape it to match our expected output
-    attn_output = _restore_named_axes(
-        attn_output,
+    # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
+    # we can reshape it to match our expected output
+    attn_output = _unflatten_bshd(attn_output, q_class, v_class)
+
+    reference_out_shape = eqx.filter_eval_shape(
+        simple_attention_with_dropout,
+        QPos,
         KPos,
         Key,
-        QPos,
-        attention_dtype,
-        bias,
-        dropout,
-        inference,
-        key,
-        mask,
-        precision,
-        prng,
-        q_class,
         query,
-        v_class,
+        key,
         value,
+        mask,
+        bias,
+        inference,
+        dropout,
+        attention_dtype,
+        precision,
+        prng=prng,
     )
+    attn_output = attn_output.rearrange(reference_out_shape.axes).astype(reference_out_shape.dtype)
 
     return attn_output
 
@@ -460,6 +463,14 @@ def _reshape_axes_for_bshd_bins(q, q_class, output_order=("B", "S", "H", "D")):
     q = _maybe_flatten(q, q_class["D"], "D")
     q = q.rearrange(output_order)
     return q
+
+
+def _unflatten_bshd(attn_output, q_class, v_class):
+    attn_output = attn_output.unflatten_axis("B", q_class["B"])
+    attn_output = attn_output.unflatten_axis("S", q_class["S"])
+    attn_output = attn_output.unflatten_axis("H", q_class["H"])
+    attn_output = attn_output.unflatten_axis("D", v_class["D"])
+    return attn_output
 
 
 class AttentionMask(eqx.Module):
@@ -673,9 +684,9 @@ def _tpu_splash_attention(
     k_ = _reshape_axes_for_bshd_bins(key, k_class, output_order=list("BHSD")).array
     v_ = _reshape_axes_for_bshd_bins(value, v_class, output_order=list("BHSD")).array
 
-    jax.debug.inspect_array_sharding(q_, callback=lambda sharding: print(f"q_: {sharding}"))
-    jax.debug.inspect_array_sharding(k_, callback=lambda sharding: print(f"k_: {sharding}"))
-    jax.debug.inspect_array_sharding(v_, callback=lambda sharding: print(f"v_: {sharding}"))
+    # jax.debug.inspect_array_sharding(q_, callback=lambda sharding: print(f"q_: {sharding}"))
+    # jax.debug.inspect_array_sharding(k_, callback=lambda sharding: print(f"k_: {sharding}"))
+    # jax.debug.inspect_array_sharding(v_, callback=lambda sharding: print(f"v_: {sharding}"))
 
     B, Hq, Sq, D = q_.shape
     Bk, Hk, Sk, Dk = k_.shape
@@ -759,60 +770,14 @@ def _tpu_splash_attention(
         q = q.astype(jnp.float32)
         k = k.astype(jnp.float32)
         v = v.astype(jnp.float32)
-        print(q.dtype, k.dtype, v.dtype)
         return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
 
     attn_output = wrap_flash_attention(q_, k_, v_)
 
     attn_output = haliax.named(attn_output, ("B", "H", "S", "D"))
-    attn_output = _restore_named_axes(
-        attn_output,
-        KPos,
-        Key,
-        QPos,
-        attention_dtype,
-        bias,
-        dropout,
-        inference,
-        key,
-        mask,
-        precision,
-        prng,
-        q_class,
-        query,
-        v_class,
-        value,
-    )
-
-    attn_output = haliax.shard(attn_output)
-
-    return attn_output
-
-
-def _restore_named_axes(
-    attn_output,
-    KPos,
-    Key,
-    QPos,
-    attention_dtype,
-    bias,
-    dropout,
-    inference,
-    key,
-    mask,
-    precision,
-    prng,
-    q_class,
-    query,
-    v_class,
-    value,
-):
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
     # we can reshape it to match our expected output
-    attn_output = attn_output.unflatten_axis("B", q_class["B"])
-    attn_output = attn_output.unflatten_axis("S", q_class["S"])
-    attn_output = attn_output.unflatten_axis("H", q_class["H"])
-    attn_output = attn_output.unflatten_axis("D", v_class["D"])
+    attn_output = _unflatten_bshd(attn_output, q_class, v_class)
     reference_out_shape = eqx.filter_eval_shape(
         simple_attention_with_dropout,
         QPos,
@@ -830,4 +795,7 @@ def _restore_named_axes(
         prng=prng,
     )
     attn_output = attn_output.rearrange(reference_out_shape.axes).astype(reference_out_shape.dtype)
+
+    attn_output = haliax.shard(attn_output)
+
     return attn_output
