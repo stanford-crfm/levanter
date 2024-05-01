@@ -98,7 +98,7 @@ def _adam_gradient_transform(
             nu=nu,
         )
 
-    def update_fn(updates, state, params=None):
+    def update_fn(updates, state, params=None, **kwargs):
         z = state.z
         t = state.count
         weight_sum = state.weight_sum
