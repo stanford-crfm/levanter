@@ -1,5 +1,4 @@
 import functools
-import math
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional, TypeVar
 
@@ -107,7 +106,7 @@ def _adam_gradient_transform(
 
         bias_correction2 = 1 - b2 ** (t + 1)
 
-        lr = learning_rate * sched * math.sqrt(bias_correction2)
+        lr = learning_rate * sched * jnp.sqrt(bias_correction2)
         weight = lr**weight_lr_power
         new_weight_sum = weight_sum + weight
 
