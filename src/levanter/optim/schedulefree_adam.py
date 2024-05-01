@@ -86,7 +86,7 @@ def _adam_gradient_transform(
       A `GradientTransformation` object.
     """
 
-    mu_dtype = jax.canonicalize_dtype(mu_dtype)
+    mu_dtype = jax.canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
 
     def init_fn(params):
         z = jax.tree_util.tree_map(jnp.copy, params)  # schedule-free z
