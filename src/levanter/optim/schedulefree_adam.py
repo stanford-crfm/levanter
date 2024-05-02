@@ -121,7 +121,7 @@ def _adam_gradient_transform(
         }
         levanter.tracker.jit_log_metrics(stats, step=t)
 
-        updates = jax.tree_util.tree_map(lambda grad, y: grad + weight_decay * y, updates, params)
+        # updates = jax.tree_util.tree_map(lambda grad, y: grad + weight_decay * y, updates, params)
         nu = jax.tree_util.tree_map(lambda nu, u: b2 * nu + (1 - b2) * u**2, state.nu, updates)
         # # this is from optax https://github.com/google-deepmind/optax/blob/main/optax/_src/transform.py#L317
         # if nesterov:
@@ -138,7 +138,9 @@ def _adam_gradient_transform(
         # nu_hat = otu.tree_bias_correction(nu, b2, count_inc)
 
         denom = jax.tree_util.tree_map(lambda nu: jnp.sqrt(nu) + eps, nu)
-        grad_normalized = jax.tree_util.tree_map(lambda grad, denom: grad / denom, updates, denom)
+        grad_normalized = jax.tree_util.tree_map(
+            lambda grad, denom, y: grad / denom + weight_decay * y, updates, denom, params
+        )
 
         if mu_dtype is not None:
             z = jax.tree_util.tree_util.tree_map(lambda t: t.astype(mu_dtype), z)
