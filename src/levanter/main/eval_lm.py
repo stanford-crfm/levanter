@@ -186,88 +186,88 @@ def main(config: EvalLmConfig):
             del model
             print("Loss from Levanter model: ", loss)
 
-        # elif config.hf_checkpoint is not None:
-        #     # load the huggingface model
-        #     model_config = config.model
-        #     # if not hasattr(model_config, "hf_checkpoint_converter"):
-        #     #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-        #     converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
-        #     converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
+        elif config.hf_checkpoint is not None:
+            # load the huggingface model
+            model_config = config.model
+            # if not hasattr(model_config, "hf_checkpoint_converter"):
+            #    raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
+            converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
+            converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
 
-        #     logger.info(f"Loading first model from {converter.reference_checkpoint}")
-        #     logger.info(f"Loading first model from {config.model}")
-        #     logger.info(f"model config {model_config}")
-        #     model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
+            logger.info(f"Loading first model from {converter.reference_checkpoint}")
+            logger.info(f"Loading first model from {config.model}")
+            logger.info(f"model config {model_config}")
+            model_1 = converter.load_pretrained(model_config, config.hf_checkpoint)
 
-        #     converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
-        #     logger.info(f"Loading second model from {converter.reference_checkpoint}")
-        #     logger.info(f"Loading second model from {config.model}")
-        #     model_2 = converter.load_pretrained(model_config)
+            converter = converter.replaced(reference_checkpoint=config.second_hf_checkpoint, tokenizer=tokenizer)
+            logger.info(f"Loading second model from {converter.reference_checkpoint}")
+            logger.info(f"Loading second model from {config.model}")
+            model_2 = converter.load_pretrained(model_config)
 
-        #     # jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
-        #     # l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
-        #     # logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
-        #     # l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1, model_2)
-        #     # # Generate alphas from 0 to 1 with a step of 0.05
+            # jsd = callbacks.jsd_loss_loop(compute_jsd_loss, model_1, model_2, eval_loader, max_batches=total)
+            # l2_norm_num = callbacks.l2_norm_diff_loop(l2_norm_diff, model_1, model_2)
+            # logits_diff = callbacks.logits_diff_loop(compute_logit, compute_logits_diff, model_1, model_2, eval_loader, max_batches=total)
+            l2_norm_sum_num = callbacks.l2_norm_diff_loop(l2_norm_sum, model_1, model_2)
+            # # Generate alphas from 0 to 1 with a step of 0.05
             
-        #     # wandb.log({"eval/logits_diff": logits_diff})
-        #     # wandb.log({"eval/l2_norm_diff": l2_norm_num})
-        #     # wandb.log({"eval/jsd": jsd})
-        #     # wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
-        #     alphas = [round(alpha * 0.1, 2) for alpha in range(11)]
+            # wandb.log({"eval/logits_diff": logits_diff})
+            # wandb.log({"eval/l2_norm_diff": l2_norm_num})
+            # wandb.log({"eval/jsd": jsd})
+            wandb.log({"eval/l2_norm_sum": l2_norm_sum_num})
+            alphas = [round(alpha * 0.1, 2) for alpha in range(11)]
 
             
-        #     #print(f"\n l2_norm_num: {l2_norm_num}")
-        #     for alpha in alphas:
-        #         print(f"alpha: {alpha}")
+            print(f"\n l2_norm_num: {l2_norm_num}")
+            for alpha in alphas:
+                print(f"alpha: {alpha}")
 
-        #         def add_floats(path, x, y):
-        #             print(path)
-        #             if is_inexact_arrayish(x) and is_inexact_arrayish(y):
-        #                 if x.shape != y.shape:
-        #                     raise ValueError(f"Shapes of x ({x.shape}) and y ({y.shape}) do not match at path: {path}")
-        #                 # Linearly interpolate between the two models
-        #                 minus_alpha = 1.0 - alpha
-        #                 return x * alpha + y * minus_alpha
-        #             else:
-        #                 return x
+                def add_floats(path, x, y):
+                    print(path)
+                    if is_inexact_arrayish(x) and is_inexact_arrayish(y):
+                        if x.shape != y.shape:
+                            raise ValueError(f"Shapes of x ({x.shape}) and y ({y.shape}) do not match at path: {path}")
+                        # Linearly interpolate between the two models
+                        minus_alpha = 1.0 - alpha
+                        return x * alpha + y * minus_alpha
+                    else:
+                        return x
 
-        #         # Use the rounded alpha for merging models
-        #         merged_model = named_jit(
-        #             lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False
-        #         )(model_1, model_2)
+                # Use the rounded alpha for merging models
+                merged_model = named_jit(
+                    lambda m1, m2: jax.tree_util.tree_map_with_path(add_floats, m1, m2), donate_args=False
+                )(model_1, model_2)
 
-        #         # Use the rounded alpha for merging models
-        #         # Evaluate the loss for the merged model
-        #         loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
+                # Use the rounded alpha for merging models
+                # Evaluate the loss for the merged model
+                loss = callbacks.eval_loss_loop(compute_loss, merged_model, eval_loader, max_batches=total)
 
-        #         # Log the rounded alpha and loss to W&B
-        #         wandb.log({"eval/loss": loss, "alpha": alpha})
+                # Log the rounded alpha and loss to W&B
+                wandb.log({"eval/loss": loss, "alpha": alpha})
 
-        #         print(f"Loss from merged model (alpha={alpha}): ", loss)
-        #         del merged_model
+                print(f"Loss from merged model (alpha={alpha}): ", loss)
+                del merged_model
 
-        #     if config.compare_torch:
-        #         import torch
-        #         from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
+            if config.compare_torch:
+                import torch
+                from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
 
-        #         torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(
-        #             config.hf_checkpoint.model_name_or_path, revision=config.hf_checkpoint.revision
-        #         )
-        #         torch_model.eval()
-        #         torch_model.to("cpu")
+                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(
+                    config.hf_checkpoint.model_name_or_path, revision=config.hf_checkpoint.revision
+                )
+                torch_model.eval()
+                torch_model.to("cpu")
 
-        #         loss = 0.0
-        #         n = 0
-        #         for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
-        #             torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
-        #             with torch.no_grad():
-        #                 loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
-        #             n += 1
-        #             if total is not None and n >= total:
-        #                 break
+                loss = 0.0
+                n = 0
+                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
+                    torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
+                    with torch.no_grad():
+                        loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
+                    n += 1
+                    if total is not None and n >= total:
+                        break
 
-        #         print("Loss from Torch model: ", loss / n)
+                print("Loss from Torch model: ", loss / n)
 
 
 if __name__ == "__main__":
