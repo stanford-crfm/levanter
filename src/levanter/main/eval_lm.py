@@ -217,7 +217,7 @@ def main(config: EvalLmConfig):
             alphas = [round(alpha * 0.1, 2) for alpha in range(11)]
 
             
-            print(f"\n l2_norm_num: {l2_norm_num}")
+            print(f"\n l2_norm_num: {l2_norm_sum_num}")
             for alpha in alphas:
                 print(f"alpha: {alpha}")
 
