@@ -1,3 +1,4 @@
+import functools
 import math
 import warnings
 from typing import Optional, Union, overload
@@ -5,12 +6,15 @@ from typing import Optional, Union, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray
 from haliax.jax_utils import named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
+from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
 
@@ -68,48 +72,44 @@ def dot_product_attention(
             QPos, KPos, Key, query, key, value, mask, bias, inference, dropout, attention_dtype, precision, prng=prng
         )
     elif accelerator_type == "gpu":
-        try:
-            return _te_flash_attention(
-                QPos,
-                KPos,
-                Key,
-                query,
-                key,
-                value,
-                block_size=flash_block_size,
-                mask=mask,
-                bias=bias,
-                dropout=dropout,
-                inference=inference,
-                precision=precision,
-                prng=prng,
-                attention_dtype=attention_dtype,
-            )
-        except ImportError as e:
-            if "transformer_engine" not in str(e):
-                raise
+        attention_out = _try_te_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            mask,
+            bias,
+            dropout,
+            inference,
+            prng=prng,
+            attention_dtype=attention_dtype,
+            precision=precision,
+            flash_block_size=flash_block_size,
+        )
+        if attention_out is not None:
+            return attention_out
+    elif accelerator_type == "tpu":
+        attention_out = _try_tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            mask,
+            bias,
+            dropout,
+            inference,
+            prng=prng,
+            attention_dtype=attention_dtype,
+            precision=precision,
+            block_size=flash_block_size,
+        )
 
-            warnings.warn(
-                "transformer_engine is not installed. Please install it to use NVIDIA's optimized fused attention. "
-                "Falling back to the reference implementation."
-            )
-        except NotImplementedError as e:
-            message = str(e)
-            warnings.warn(
-                f"Could not use transformer_engine for flash attention: {message}. Falling back to the reference"
-            )
-        except ValueError as e:
-            message = str(e)
-            if message.startswith("Unsupported backend="):
-                _dtype = attention_dtype or query.dtype
-                msg = "TE doesn't work with these arguments. Falling back to the reference implementation.\n"
-                "Check nvte_get_fused_attn_backend for supported configurations:\n"
-                "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/fused_attn/fused_attn.cpp#L71"
-                if _dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
-                    msg += f"In particular, TE doesn't support {_dtype} yet."
-                warnings.warn(msg)
-            else:
-                raise
+        if attention_out is not None:
+            return attention_out
 
     from levanter.models.flash_attention import flash_attention
 
@@ -157,6 +157,71 @@ def simple_attention_with_dropout(
     return haliax.dot(KPos, weights, value)
 
 
+def _try_te_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    dropout: float = 0.0,
+    inference: bool = False,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    flash_block_size: Optional[int] = None,
+):
+    try:
+        return _te_flash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            block_size=flash_block_size,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            precision=precision,
+            prng=prng,
+            attention_dtype=attention_dtype,
+        )
+    except ImportError as e:
+        if "transformer_engine" not in str(e):
+            raise
+
+        warnings.warn(
+            "transformer_engine is not installed. Please install it to use NVIDIA's optimized fused attention. "
+            "Falling back to the reference implementation."
+        )
+
+        return None
+    except NotImplementedError as e:
+        message = str(e)
+        warnings.warn(
+            f"Could not use transformer_engine for flash attention: {message}. Falling back to the reference"
+        )
+        return None
+    except ValueError as e:
+        message = str(e)
+        if message.startswith("Unsupported backend="):
+            _dtype = attention_dtype or query.dtype
+            msg = "TE doesn't work with these arguments. Falling back to the reference implementation.\n"
+            "Check nvte_get_fused_attn_backend for supported configurations:\n"
+            "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/fused_attn/fused_attn.cpp#L71"
+            if _dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
+                msg += f"In particular, TE doesn't support {_dtype} yet."
+            warnings.warn(msg)
+        else:
+            raise
+        return None
+
+
 def _te_flash_attention(
     QPos: AxisSelector,
     KPos: AxisSelection,
@@ -174,16 +239,6 @@ def _te_flash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
 ):
-    # try:
-    #     from transformer_engine.jax.fused_attn import fused_attn_kvpacked
-    # except ImportError:
-    #     from transformer_engine.jax.fused_attn import cross_fused_attn as fused_attn_kvpacked
-    #
-    # try:
-    #     from transformer_engine.jax.fused_attn import fused_attn_qkvpacked
-    # except ImportError:
-    #     from transformer_engine.jax.fused_attn import self_fused_attn as fused_attn_qkvpacked
-    #
     from transformer_engine.jax.fused_attn import fused_attn  # noqa: F401
     from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType  # noqa: F401
 
@@ -198,10 +253,10 @@ def _te_flash_attention(
     # references: https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/fused_attn.py#L31
     # https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/flax/transformer.py#L269
 
-    q_class, k_class, v_class = _te_bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
-    q_: jax.Array = _reshape_axes_for_te_bins(query, q_class).array
-    k_ = _reshape_axes_for_te_bins(key, k_class).array
-    v_ = _reshape_axes_for_te_bins(value, v_class).array
+    q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
+    q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class).array
+    k_ = _reshape_axes_for_bshd_bins(key, k_class).array
+    v_ = _reshape_axes_for_bshd_bins(value, v_class).array
 
     B, Sq, Hq, D = q_.shape
     Bk, Sk, Hk, Dk = k_.shape
@@ -231,35 +286,6 @@ def _te_flash_attention(
     if bias:
         raise NotImplementedError("Using bias with flash attention on GPU is not currently implemented.")
 
-    # if q_.shape == k_.shape == v_.shape:
-    #     # can use self_fused_attn
-    #     qkv_ = jnp.stack((q_, k_, v_), axis=2)
-    #     attn_output = (
-    #         qkv=qkv_,  # jnp.ndarray,
-    #         bias=fused_attn_bias,  # jnp.ndarray,
-    #         mask=fused_attn_mask,  # jnp.ndarray,
-    #         seed=prng,  # jnp.ndarray,
-    #         attn_bias_type=attn_bias_type,  # AttnBiasType,
-    #         attn_mask_type=attn_mask_type,  # AttnMaskType,
-    #         scaling_factor=scaling_factor,  # float,
-    #         dropout_probability=dropout,  # float,
-    #         is_training=is_training,  # bool,
-    #     )
-    # elif k_.shape == v_.shape:
-    #     kv_ = jnp.stack((k_, v_), axis=2)
-    #     attn_output = cross_fused_attn(
-    #         q=q_,
-    #         kv=kv_,
-    #         bias=fused_attn_bias,
-    #         mask=fused_attn_mask,
-    #         seed=prng,
-    #         attn_bias_type=attn_bias_type,
-    #         attn_mask_type=attn_mask_type,
-    #         scaling_factor=scaling_factor,
-    #         dropout_probability=dropout,
-    #         is_training=is_training,
-    #     )
-    # else:
     attn_output = fused_attn(
         q=q_,
         k=k_,
@@ -279,27 +305,24 @@ def _te_flash_attention(
     attn_output = haliax.named(attn_output, ("B", "S", "H", "D"))
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
     # we can reshape it to match our expected output
-    attn_output = attn_output.unflatten_axis("B", q_class["B"])
-    attn_output = attn_output.unflatten_axis("S", q_class["S"])
-    attn_output = attn_output.unflatten_axis("H", q_class["H"])
-    attn_output = attn_output.unflatten_axis("D", v_class["D"])
-    output_axes = eqx.filter_eval_shape(
-        simple_attention_with_dropout,
-        QPos,
+    attn_output = _restore_named_axes(
+        attn_output,
         KPos,
         Key,
-        query,
-        key,
-        value,
-        mask,
-        bias,
-        inference,
-        dropout,
+        QPos,
         attention_dtype,
+        bias,
+        dropout,
+        inference,
+        key,
+        mask,
         precision,
-        prng=prng,
-    ).axes
-    attn_output = attn_output.rearrange(output_axes)
+        prng,
+        q_class,
+        query,
+        v_class,
+        value,
+    )
 
     return attn_output
 
@@ -338,12 +361,13 @@ _DUMMY_HEAD = "__head__"
 _DUMMY_BATCH = "__batch__"
 
 
-def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
+def _bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     """
-    TransformerEngine's fused attention API is not as expressive as ours is, so we have to do some grouping
-    to make this work.
+    TE and the Splash Attention kernel require the Q, K, and V to be in a specific format. This function groups the axes
+    of Q, K, and V into the right bins to match that format.
 
-    TE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed). the size of the axes is a bit flexible,
+    TE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed), while Splash Attention requires BHSD
+     the size of the axes is a bit flexible,
     with the following conditions:
     - B must be the same for all (TODO: is this true?)
     - S must be the same for K and V. Q's S can be different
@@ -418,7 +442,7 @@ def _te_bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     return q_class, k_class, v_class
 
 
-def _reshape_axes_for_te_bins(q, q_class):
+def _reshape_axes_for_bshd_bins(q, q_class, output_order=("B", "S", "H", "D")):
     """
     Reshape the axes of a qkv as BSHD to match the bins in q_class
     """
@@ -434,7 +458,7 @@ def _reshape_axes_for_te_bins(q, q_class):
     q = _maybe_flatten(q, q_class["S"], "S")
     q = _maybe_flatten(q, q_class["H"], "H")
     q = _maybe_flatten(q, q_class["D"], "D")
-    q = q.rearrange(("B", "S", "H", "D"))
+    q = q.rearrange(output_order)
     return q
 
 
@@ -557,3 +581,253 @@ def materialize_mask(
 # TODO: padding mask
 # TODO: FCM mask?
 # TODO: sequence packing mask
+
+
+def _try_tpu_splash_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    dropout: float = 0.0,
+    inference: bool = False,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    block_size: Optional[int] = None,
+) -> Optional[NamedArray]:
+    if dropout != 0.0:
+        warnings.warn("Splash attention does not support. Falling back to the reference implementation.")
+        return None
+
+    if bias is not None:
+        warnings.warn("Splash attention does not support bias. Falling back to the reference implementation.")
+        return None
+
+    try:
+        return _tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            mask,
+            bias,
+            dropout,
+            inference,
+            prng=prng,
+            attention_dtype=attention_dtype,
+            precision=precision,
+            block_size=block_size,
+        )
+    except ImportError as e:
+        if "pallas" not in str(e):
+            raise
+        warnings.warn(
+            "Could not import splash attention. You need to update your JAX to at least 0.4.26. "
+            "Falling back to the reference implementation."
+        )
+        return None
+    except NotImplementedError as e:
+        message = str(e)
+        warnings.warn(f"Could not use splash attention: {message}. Falling back to the reference")
+        return None
+
+
+# CF https://github.com/google/maxtext/blob/db31dd4b0b686bca4cd7cf940917ec372faa183a/MaxText/layers/attentions.py#L179
+def _tpu_splash_attention(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
+    bias: Optional[NamedArray] = None,
+    dropout: float = 0.0,
+    inference: bool = False,
+    *,
+    prng: Optional[PRNGKeyArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    block_size: Optional[int] = None,
+) -> Optional[NamedArray]:
+    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+
+    # Splash attention requires BHSD format
+    # We need to reshape the input to match this format
+    if dropout != 0.0:
+        raise NotImplementedError("Splash attention does not support dropout")
+
+    if bias is not None:
+        raise NotImplementedError("Splash attention does not support bias")
+
+    q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
+
+    q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class, output_order=list("BHSD")).array
+    k_ = _reshape_axes_for_bshd_bins(key, k_class, output_order=list("BHSD")).array
+    v_ = _reshape_axes_for_bshd_bins(value, v_class, output_order=list("BHSD")).array
+
+    jax.debug.inspect_array_sharding(q_, callback=lambda sharding: print(f"q_: {sharding}"))
+    jax.debug.inspect_array_sharding(k_, callback=lambda sharding: print(f"k_: {sharding}"))
+    jax.debug.inspect_array_sharding(v_, callback=lambda sharding: print(f"v_: {sharding}"))
+
+    B, Hq, Sq, D = q_.shape
+    Bk, Hk, Sk, Dk = k_.shape
+
+    QPos = query.resolve_axis(QPos)
+    KPos = key.resolve_axis(KPos)
+
+    # TODO: must Dk == Dv?
+    if k_.shape != v_.shape:
+        raise ValueError("k and v must have the same axes")
+
+    # TODO: this isn't really necessary on TPU?
+    if B != Bk:
+        raise ValueError(f"Batch axes must be the same for q, k, and v: {q_class['B']} != {k_class['B']}")
+
+    if D != Dk:
+        raise ValueError(f"Embedding axes must be the same for q, k, and v: {q_class['D']} != {k_class['D']}")
+
+    def _physical_axis_for_binning(d):
+        b_out = tuple(ax for ax in pspec_for_axis(d["B"]) if ax is not None) or None
+        h_out = tuple(ax for ax in pspec_for_axis(d["H"]) if ax is not None) or None
+        s_out = tuple(ax for ax in pspec_for_axis(d["S"]) if ax is not None) or None
+        d_out = tuple(ax for ax in pspec_for_axis(d["D"]) if ax is not None) or None
+
+        return PartitionSpec(b_out, h_out, s_out, d_out)
+
+    # BHSD
+    physical_axes_q = _physical_axis_for_binning(q_class)
+    physical_axes_k = _physical_axis_for_binning(k_class)
+    physical_axes_v = _physical_axis_for_binning(v_class)
+
+    # MaxText uses a block size of 512
+    block_size = block_size or 512
+
+    # copied from MaxText
+    @functools.partial(
+        shard_map,
+        mesh=haliax.partitioning._get_mesh(),
+        in_specs=(
+            physical_axes_q,
+            physical_axes_k,
+            physical_axes_v,
+        ),
+        out_specs=physical_axes_q,
+        check_rep=False,
+    )
+    def wrap_flash_attention(q, k, v):
+        block_sizes = splash_attention_kernel.BlockSizes(
+            block_q=min(block_size, Sq),
+            block_kv_compute=min(block_size, Sk),
+            block_kv=min(block_size, Sk),
+            block_q_dkv=min(block_size, Sq),
+            block_kv_dkv=min(block_size, Sk),
+            block_kv_dkv_compute=min(block_size, Sq),
+            block_q_dq=min(block_size, Sq),
+            block_kv_dq=min(block_size, Sq),
+        )
+
+        if mask is None:
+            kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+        elif isinstance(mask, AttentionMask):
+            if mask.is_causal:
+                masks = [splash_attention_mask.CausalMask(shape=(Sq, Sq)) for i in range(Hq)]
+                kernel_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+            else:
+                kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+
+            if mask.explicit_mask is not None:
+                raise NotImplementedError("Explicit masks are not yet supported for splash attention")
+        elif isinstance(mask, NamedArray):
+            raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
+        else:
+            raise ValueError(f"Unknown mask type: {mask}")
+
+        # copied from MaxText
+        splash_kernel = splash_attention_kernel.make_splash_mha(
+            mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
+        )
+
+        # try upcasting to float32 to see if it fixes crash?
+        q = q.astype(jnp.float32)
+        k = k.astype(jnp.float32)
+        v = v.astype(jnp.float32)
+        print(q.dtype, k.dtype, v.dtype)
+        return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
+
+    attn_output = wrap_flash_attention(q_, k_, v_)
+
+    attn_output = haliax.named(attn_output, ("B", "H", "S", "D"))
+    attn_output = _restore_named_axes(
+        attn_output,
+        KPos,
+        Key,
+        QPos,
+        attention_dtype,
+        bias,
+        dropout,
+        inference,
+        key,
+        mask,
+        precision,
+        prng,
+        q_class,
+        query,
+        v_class,
+        value,
+    )
+
+    attn_output = haliax.shard(attn_output)
+
+    return attn_output
+
+
+def _restore_named_axes(
+    attn_output,
+    KPos,
+    Key,
+    QPos,
+    attention_dtype,
+    bias,
+    dropout,
+    inference,
+    key,
+    mask,
+    precision,
+    prng,
+    q_class,
+    query,
+    v_class,
+    value,
+):
+    # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
+    # we can reshape it to match our expected output
+    attn_output = attn_output.unflatten_axis("B", q_class["B"])
+    attn_output = attn_output.unflatten_axis("S", q_class["S"])
+    attn_output = attn_output.unflatten_axis("H", q_class["H"])
+    attn_output = attn_output.unflatten_axis("D", v_class["D"])
+    reference_out_shape = eqx.filter_eval_shape(
+        simple_attention_with_dropout,
+        QPos,
+        KPos,
+        Key,
+        query,
+        key,
+        value,
+        mask,
+        bias,
+        inference,
+        dropout,
+        attention_dtype,
+        precision,
+        prng=prng,
+    )
+    attn_output = attn_output.rearrange(reference_out_shape.axes).astype(reference_out_shape.dtype)
+    return attn_output
