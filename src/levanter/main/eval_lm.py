@@ -222,7 +222,6 @@ def main(config: EvalLmConfig):
                 print(f"alpha: {alpha}")
 
                 def add_floats(path, x, y):
-                    print(path)
                     if is_inexact_arrayish(x) and is_inexact_arrayish(y):
                         if x.shape != y.shape:
                             raise ValueError(f"Shapes of x ({x.shape}) and y ({y.shape}) do not match at path: {path}")
