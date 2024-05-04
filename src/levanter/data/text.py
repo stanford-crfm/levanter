@@ -83,6 +83,7 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         self.fcm_prob = fcm_prob
         self.key = key
         self.ignore_id = ignore_index
+        print(f" key is {key}", flush=True)
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")
