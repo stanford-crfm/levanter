@@ -30,16 +30,25 @@ class ScheduleFreeAdamConfig(AdamConfig):
     weight_lr_power: float = 2.0
 
     def build(self, num_train_steps: int):
+        components = []
 
-        return _adam_gradient_transform(
-            b1=self.beta1,
-            b2=self.beta2,
-            eps=self.epsilon,
-            weight_decay=self.weight_decay,
-            learning_rate=self.learning_rate,
-            weight_lr_power=self.weight_lr_power,
-            warmup_steps=self._convert_warmup(num_train_steps),
+        if self.max_grad_norm:
+            components.append(optax.clip_by_global_norm(self.max_grad_norm))
+
+        components.append(
+            _adam_gradient_transform(
+                b1=self.beta1,
+                b2=self.beta2,
+                eps=self.epsilon,
+                weight_decay=self.weight_decay,
+                learning_rate=self.learning_rate,
+                weight_lr_power=self.weight_lr_power,
+                warmup_steps=self._convert_warmup(num_train_steps),
+            )
         )
+
+        optimizer = optax.chain(*components)
+        return optimizer
 
 
 def _adam_gradient_transform(
