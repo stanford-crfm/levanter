@@ -11,8 +11,8 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
-from haliax._src.state_dict import ModuleWithStateDictSerialization, StateDict, apply_prefix
 from haliax.jax_utils import named_call
+from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, apply_prefix
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.logging import silence_transformer_nag

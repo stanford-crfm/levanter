@@ -11,9 +11,9 @@ from jaxtyping import PRNGKeyArray
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
-from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.logging import silence_transformer_nag

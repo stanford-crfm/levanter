@@ -12,9 +12,9 @@ import haliax as hax
 import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
-from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, ModelWithHfSerializationMixin
 from levanter.logging import silence_transformer_nag

@@ -13,9 +13,9 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
-import haliax._src.state_dict as hax_dict
 import haliax.nn as hnn
 import haliax.partitioning
+import haliax.state_dict as hax_dict
 from haliax import NamedArray
 from haliax._src.util import index_where
 from haliax.jax_utils import is_jax_array_like

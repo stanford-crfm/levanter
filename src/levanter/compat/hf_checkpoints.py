@@ -30,13 +30,13 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
-from haliax._src.state_dict import (
+from haliax.partitioning import ResourceMapping
+from haliax.state_dict import (
     ModuleWithStateDictSerialization,
     from_torch_compatible_state_dict,
     save_state_dict,
     to_torch_compatible_state_dict,
 )
-from haliax.partitioning import ResourceMapping
 
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRMixin

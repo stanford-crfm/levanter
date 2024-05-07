@@ -120,14 +120,16 @@ If your module has exactly the same fields with the same names and same shapes a
 If for some reason you want to use different names from the HF implementation (e.g. because the names from HF aren't clear...), you can extend your class from  `StateDictSerializationMixin` and use `_state_dict_key_map` to rename keys. For instance, the `Gpt2Transformer` class has this method:
 
 ```python
-class Gpt2Transformer(ModuleWithStateDictSerialization, eqx.Module):
+from haliax.state_dict import ModuleWithStateDictSerialization
+
+class Gpt2Transformer(ModuleWithStateDictSerialization):
     ...
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"blocks": "h"}
 ```
 
-This says that the field called `blocks` in this class should be (de)serialized as `h`, because the Hugging Face GPT-2 implementation uses `h`, which is not very clear. You can also "flatten" the submodules of a field by using `None` or even include `.s` in the name if needed.
+This says that the field called `blocks` in this class should be (de)serialized as `h`, because the Hugging Face GPT-2 implementation uses `h`, which is not very clear. You can also "flatten" the submodules of a field by using `None`.
 
 #### Hard Case: Custom Serialization
 
@@ -314,5 +316,3 @@ Check out [Training on Your Own Data](../Training-On-Your-Data.md) for more deta
 If you are interested in profiling the training throughput of your model, good news is that it comes for free with automatic job monitoring in Levanter, powered through Weights & Biases.
 
 Once you run a training job, on the corresponding job page on Weights & Biases, you will be able to find a section named "Throughput". It reports metrics like `examples_per_second` and `tokens_per_second` across the training time.
-
-

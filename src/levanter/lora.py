@@ -55,13 +55,13 @@ from jaxtyping import PyTree
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
-from haliax._src.state_dict import (
+from haliax.jax_utils import shaped_rng_split
+from haliax.state_dict import (
     ModuleWithStateDictSerialization,
     StateDict,
     save_state_dict,
     to_torch_compatible_state_dict,
 )
-from haliax.jax_utils import shaped_rng_split
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
 from levanter.logging import silence_transformer_nag
