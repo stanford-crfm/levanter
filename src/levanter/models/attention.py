@@ -764,7 +764,6 @@ def _tpu_splash_attention(
         jax.debug.inspect_array_sharding(v, callback=lambda sharding: print(f"v: {sharding}"))
         print(q.dtype, k.dtype, v.dtype)
         out = jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
-        jax.debug.inspect_array_sharding(out, callback=lambda sharding: print(f"out: {sharding}"))
         return out
 
     attn_output = wrap_flash_attention(q_, k_, v_)
@@ -790,6 +789,7 @@ def _tpu_splash_attention(
     )
 
     attn_output = haliax.shard(attn_output)
+    jax.debug.inspect_array_sharding(attn_output.array, callback=lambda sharding: print(f"out: {sharding}"))
 
     return attn_output
 
