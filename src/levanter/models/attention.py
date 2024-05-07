@@ -759,8 +759,13 @@ def _tpu_splash_attention(
         q = q.astype(jnp.float32)
         k = k.astype(jnp.float32)
         v = v.astype(jnp.float32)
+        jax.debug.inspect_array_sharding(q, callback=lambda sharding: print(f"q: {sharding}"))
+        jax.debug.inspect_array_sharding(k, callback=lambda sharding: print(f"k: {sharding}"))
+        jax.debug.inspect_array_sharding(v, callback=lambda sharding: print(f"v: {sharding}"))
         print(q.dtype, k.dtype, v.dtype)
-        return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
+        out = jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
+        jax.debug.inspect_array_sharding(out, callback=lambda sharding: print(f"out: {sharding}"))
+        return out
 
     attn_output = wrap_flash_attention(q_, k_, v_)
 
