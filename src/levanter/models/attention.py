@@ -678,6 +678,11 @@ def _tpu_splash_attention(
     if bias is not None:
         raise NotImplementedError("Splash attention does not support bias")
 
+    if attention_dtype is not None and attention_dtype != jnp.float32:
+        warnings.warn("Splash attention only supports float32. Switching to float32.")
+
+    attention_dtype = jnp.float32
+
     q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
 
     q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class, output_order=list("BHSD")).array
@@ -766,10 +771,9 @@ def _tpu_splash_attention(
             mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
         )
 
-        # try upcasting to float32 to see if it fixes crash?
-        q = q.astype(jnp.float32)
-        k = k.astype(jnp.float32)
-        v = v.astype(jnp.float32)
+        q = q.astype(attention_dtype)
+        k = k.astype(attention_dtype)
+        v = v.astype(attention_dtype)
         return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
 
     attn_output = wrap_flash_attention(q_, k_, v_)
@@ -794,6 +798,7 @@ def _tpu_splash_attention(
         precision,
         prng=prng,
     )
+    print(reference_out_shape.dtype, attn_output.dtype)
     attn_output = attn_output.rearrange(reference_out_shape.axes).astype(reference_out_shape.dtype)
 
     attn_output = haliax.shard(attn_output)
