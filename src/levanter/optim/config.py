@@ -20,7 +20,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
     min_lr_ratio: float = 0.1
     warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
-    """The lr scheduler operates on x stages: [warmup] - [stable] - [decay] - [cooldown]"""
+    """The lr scheduler operates on 4 stages: [warmup] - [stable] - [decay] - [cooldown]"""
     warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
     stable: float = 0.00
