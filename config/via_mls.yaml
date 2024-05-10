@@ -1,0 +1,31 @@
+data:
+  id: WillHeld/MLS_Full_En
+  cache_dir: "gs://audio-via/processed/mls-l3"
+  text_key: "text"
+  train_split: "train"
+  validation_split: "valid"
+  tokenizer: "WillHeld/via-llama"
+  processor: "openai/whisper-large-v3"
+model:
+  type: whisper
+initialize_from_hf: "WillHeld/via-llama"
+use_hf_model_config: true
+trainer:
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: [ "cv", "via"]
+
+  steps_per_eval: 500
+  mp: p=f32,c=bf16
+  model_axis_size: 1
+  per_device_parallelism: -1
+
+  train_batch_size: 512
+  num_train_steps: 21484
+optimizer:
+  learning_rate: 3E-4
+  weight_decay: 0.1
+  warmup: 0.01
+via_init: True
+hf_save_steps: 500
