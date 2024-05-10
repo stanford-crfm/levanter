@@ -283,6 +283,8 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
         )
 
         attn_output = self.out_proj(attn_output, key=k_out)
+        attn_output = attn_output.astype(hidden_states.dtype)
+
         return attn_output
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
