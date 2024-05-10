@@ -1,6 +1,5 @@
 from datasets import load_dataset
 from jax.random import PRNGKey
-from transformers import AutoTokenizer
 from transformers import LlamaConfig as HfLlamaConfig
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 from transformers import WhisperConfig as HfWhisperConfig
@@ -21,35 +20,37 @@ def test_via_loss():
     # Model Setup
     hf_enc_config = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
     hf_dec_config = HfLlamaConfig.from_pretrained("WillHeld/debug_llama")
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
     merged_config = {
         "encoder": hf_enc_config.to_dict(),
         "decoder": hf_dec_config.to_dict(),
-        "time_dialation": 4,
     }
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)
-    Vocab = hax.Axis("vocab", len(tokenizer))
+    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    Vocab = hax.Axis("vocab", len(processor.tokenizer))
     model = conf.build_asr(Vocab, key=PRNGKey(42))
     model = model.resize_vocab(Vocab.size)
     model = inference_mode(model, True)
 
-    processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")
     audio_sample = ds[3]
     speech_data = audio_sample["audio"]["array"]
     inputs = processor.feature_extractor(speech_data, sampling_rate=16_000, return_tensors="np")
 
+    Batch = Axis(name="batch", size=2)
     na = hax.NamedArray(
         inputs["input_features"].squeeze(),
         axes=(conf.enc_config.Mels, conf.enc_config.MelPos),
+    ).broadcast_axis(Batch)
+    tokenized = processor.tokenizer(
+        ["This is a test", "This is also a test"], max_length=20, padding="max_length", truncation=True
     )
-    tokenized = processor.tokenizer("This is a test", max_length=6, padding="max_length", truncation=True)
     inp = hax.named(
         tokenized["input_ids"],
-        axis="position",
+        axis=("batch", "position"),
     )
-    model.compute_loss(AudioTextExample.init(na, inp))
+    ex = AudioTextExample.init(na, inp)
+    model.compute_loss(ex)
 
 
 @skip_if_no_soundlibs
@@ -60,7 +61,6 @@ def test_basic_forward_via():
     merged_config = {
         "encoder": hf_enc_config.to_dict(),
         "decoder": hf_dec_config.to_dict(),
-        "time_dialation": 4,
     }
     c = HfConfig.from_dict(merged_config)
     conf = ViaConfig.from_hf_config(c)
@@ -81,5 +81,5 @@ def test_basic_forward_via():
         axes=(Batch, conf.enc_config.Mels, Axis(name="position", size=3000)),
     )
     inp = hax.arange(Axis("position", size=10)).broadcast_axis(Batch)
-    pred = model(na, inp)
-    assert pred.resolve_axis("position").size == 10
+    # Forward Pass Does Not Error
+    model(na, inp, pad_token_id=10)

@@ -87,6 +87,11 @@ while true; do
   else
     echo "VM $VM_NAME not found, creating it"
     bash "$SCRIPT_DIR"/spin-up-vm.sh "${CREATION_ARGS[@]}"
+    gcloud compute tpus tpu-vm ssh tpu-vm --zone us-central2-b --worker=all --command "source venv310/bin/activate; pip install librosa soundfile"
+    gcloud compute tpus tpu-vm ssh tpu-vm --zone us-central2-b --worker=all --command "source venv310/bin/activate; pip install \"pyyaml-include<=1.4.1\""
+    gcloud compute tpus tpu-vm ssh tpu-vm --zone us-central2-b --worker=all --command "source venv310/bin/activate; pip install scipy==1.12.0"
+    gcloud compute tpus tpu-vm ssh tpu-vm --zone us-central2-b --worker=all --command "source venv310/bin/activate; huggingface-cli login --token=\"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\""
+    gcloud compute tpus tpu-vm ssh tpu-vm --zone us-central2-b --worker=all --command "source venv310/bin/activate; cd levanter; git remote add mine https://github.com/Helw150/levanter.git; git checkout -b will/distill; git pull mine will/distill; git reset mine/will/distill --hard"
   fi
   echo "Sleeping for 10s"
   sleep 10

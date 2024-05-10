@@ -21,6 +21,7 @@ from levanter.models.mistral import MistralLMHeadModel
 from levanter.models.whisper import WhisperConfig, WhisperDecoder, WhisperEncoder
 from levanter.utils.py_utils import cached_classproperty
 
+
 silence_transformer_nag()
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
@@ -32,8 +33,6 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     dec_config: LlamaConfig = field(default_factory=LlamaConfig)
 
     # Connector Config
-    time_dialation: int = 4
-    dialation_factor: int = 4
     pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
     pre_text_prompt: Sequence[int] = field(default_factory=lambda: [128009, 128006, 78191, 128007, 271])
 
@@ -42,10 +41,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     Pos = property(lambda self: Axis(name="position", size=448))
     AudioPos = property(lambda self: [self.enc_config.Mels, self.enc_config.MelPos])
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
-    TimeGroup = property(lambda self: Axis(name="position", size=448))
-    GroupedEmbed = property(
-        lambda self: Axis(name="embed_dim", size=(self.enc_config.Embed.size * self.time_dialation))
-    )
+    QueryPos = property(lambda self: Axis(name="position", size=448))
 
     @property
     def model_type(self) -> Type["ViaModel"]:
@@ -61,7 +57,6 @@ class ViaConfig(HFCompatConfig, ASRConfig):
         merged_config = {
             "encoder": hf_enc_config.to_dict(),
             "decoder": hf_dec_config.to_dict(),
-            "time_dialation": self.time_dialation,
         }
         return HfConfig.from_dict(merged_config)
 
@@ -72,7 +67,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
         hf_dec_config = HfConfig.from_dict(config_dict["decoder"])
         enc_config = WhisperConfig.from_hf_config(hf_enc_config)
         dec_config = LlamaConfig.from_hf_config(hf_dec_config)
-        return ViaConfig(enc_config, dec_config, config_dict["time_dialation"])
+        return ViaConfig(enc_config, dec_config)
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
@@ -124,7 +119,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
         k_query, k_projection, k_enc, k_connector, k_dec = maybe_rng_split(key, 5)
         encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
         connector = WhisperDecoder.init(config.enc_config, key=k_connector)
-        query_tokens = hax.random.normal(k_query, (config.TimeGroup, config.enc_config.Embed)) * 0.02
+        query_tokens = hax.random.normal(k_query, (config.QueryPos, config.enc_config.Embed)) * 0.02
         projection = hnn.Linear.init(
             In=config.enc_config.Embed.alias("whisp_embed"), Out=config.dec_config.Embed, key=key
         )
@@ -134,7 +129,7 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
 
     @property
     def query_position_embeds(self) -> NamedArray:
-        return self.connector.embeddings.position_embeddings.embed(hax.arange(self.config.TimeGroup))
+        return self.connector.embeddings.position_embeddings.embed(hax.arange(self.config.QueryPos))
 
     def __call__(
         self,
@@ -147,7 +142,6 @@ class ViaModel(eqx.Module, ModelWithHfSerializationMixin[ViaConfig]):
     ) -> NamedArray:
         # Setup
         Batch = input_ids.resolve_axis("batch")
-        InputPosition = input_ids.resolve_axis("position")
         OtherAxes = hax.axis.eliminate_axes(input_ids.axes, "position")
         causal_mask = AttentionMask.causal()
         if attn_mask is not None:
@@ -222,6 +216,7 @@ class ViaASRModel(ViaModel, ASRMixin):
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> NamedArray:
+        LocalPos = example.tokens.resolve_axis("position")
         # Compute Distillation Contrastive Loss
         # Since the weight matrix is frozen, equivalent but faster than KL Div
         audio_pred, text_pred, virtual_embeds, real_embeds = self(
@@ -232,15 +227,16 @@ class ViaASRModel(ViaModel, ASRMixin):
 
         # Compute Contrastive Loss on Input
         # Correct for Normal Autoregressive Loss Mask
-        corrected_loss_mask = hax.roll(example.loss_mask, 1, self.Pos) + hax.nn.one_hot(
-            0, self.Pos, dtype=jax.numpy.float32
+        corrected_loss_mask = hax.roll(example.loss_mask, 1, LocalPos) + hax.nn.one_hot(
+            0, LocalPos, dtype=jax.numpy.float32
         )
+        # Mask Final Tokens So That Initial Tokens can be used for extra computation
         reversed_loss_mask = corrected_loss_mask["position", -1::-1]
         diff_contrast = virtual_embeds - real_embeds
         loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
 
-        if reduction == None:
-            return loss1 + loss2
+        if reduction is None:
+            return loss2
         else:
             return reduction(loss1, axis=reduction_axis) + reduction(
                 loss2, axis=reduction_axis, where=reversed_loss_mask
