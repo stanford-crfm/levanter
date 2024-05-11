@@ -78,6 +78,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
             case "inv_sqrt":
                 schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
+            case "inv":
+                schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
             case _:
                 raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -118,6 +120,14 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
     def schedule(count):
         decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
+        return jnp.maximum(lr * decay, min_lr)
+
+    return schedule
+
+
+def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
+    def schedule(count):
+        decay = jnp.minimum(1.0, 1.0 / ((lr / min_lr - 1) * jnp.maximum(count, 1) / decay_steps + 1))
         return jnp.maximum(lr * decay, min_lr)
 
     return schedule
