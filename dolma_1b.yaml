@@ -2423,8 +2423,6 @@ data:
         - gs://levanter-data/markweb/dolma-v1.7/tulu_flan-0065.json.gz
         - gs://levanter-data/markweb/dolma-v1.7/wiki-0000.json.gz
         - gs://levanter-data/markweb/dolma-v1.7/wiki-0001.json.gz
-      validation_urls:
-        - gs://levanter-data/markweb/dolma-v1.7/arxiv-0009.json.gz # placeholder
     # these are just for eval
     "paloma/4chan":
       validation_urls:
@@ -2507,7 +2505,7 @@ model:
 trainer:
   tracker:
     type: wandb
-    project: "markweb"
+    project: "marin"
     tags: ["dolma", "llama"]
 
   mp: p=f32,c=bfloat16
