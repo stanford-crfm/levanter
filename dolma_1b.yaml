@@ -14,13 +14,12 @@ data:
     dolma-c4:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/c4-{0000..0170}.json.gz
-Path not in full_paths: gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-0153.json.gz
     dolma-cc:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/cc_en_head-{0000..0274}.json.gz
-        - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0000..0238}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0000..0238}.json.gz  # 239 is missing
         - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0240..0379}.json.gz
-        - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0000..0152}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0000..0152}.json.gz    # 153 is missing
         - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0154..0444}.json.gz
     dolma-cc-news:
       train_urls:
