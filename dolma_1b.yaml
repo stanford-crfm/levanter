@@ -140,7 +140,7 @@ model:
   hidden_dim: 2048
   intermediate_dim: 4096
   num_layers: 24
-  num_heads: 32
+  num_heads: 16
   num_kv_heads: 32
   use_flash_attention: True
   flash_attention_block_size: 1024
