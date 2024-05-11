@@ -14,11 +14,14 @@ data:
     dolma-c4:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/c4-{0000..0170}.json.gz
+Path not in full_paths: gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-0153.json.gz
     dolma-cc:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/cc_en_head-{0000..0274}.json.gz
-        - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0000..0379}.json.gz
-        - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0000..0444}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0000..0238}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_middle-{0240..0379}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0000..0152}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0154..0444}.json.gz
     dolma-cc-news:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/cc_news-{0000..0004}.json.gz
@@ -141,7 +144,7 @@ model:
   intermediate_dim: 4096
   num_layers: 24
   num_heads: 16
-  num_kv_heads: 32
+  num_kv_heads: 16
   use_flash_attention: True
   flash_attention_block_size: 1024
 trainer:
