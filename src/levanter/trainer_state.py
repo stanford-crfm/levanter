@@ -48,6 +48,7 @@ class TrainerState(eqx.Module, Generic[M]):
 
     step: IntScalar = eqx.field(converter=_ensure_int_is_array)
     model: M
+    ema_model: M
     optimizer: GradientTransformation = eqx.field(static=True)
     opt_state: OptState
     training_key: PRNGKeyArray
@@ -65,6 +66,9 @@ class TrainerState(eqx.Module, Generic[M]):
     @property
     def trainable_model(self) -> M:
         return trainables_only(self.model, self.is_trainable)
+
+    def trainable_ema_model(self) -> M:
+        return trainables_only(self.ema_model, self.is_trainable)
 
     @property
     def saveable_state(self) -> FilterTree:
@@ -89,21 +93,23 @@ class TrainerState(eqx.Module, Generic[M]):
 
         if fp8 is not None:
             model = fp8_linear_layers(model, fp8)
+        ema_model = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), model)
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
-        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
+        return cls(0, model, ema_model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
 
     def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> S:
         assert isinstance(self, TrainerState)  # make mypy happy
-        model, opt_state = take_train_step(
+        model, ema_model, opt_state = take_train_step(
             self.optimizer,
             self.model,
+            self.ema_model,
             self.opt_state,
             grads,
             obj_fun=obj_fun,
             is_trainable=self.is_trainable,
         )
-        return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
+        return dataclasses.replace(self, model=model, ema_model=ema_model, opt_state=opt_state, step=self.step + 1)
 
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
@@ -169,22 +175,31 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     return saveable_state  # type: ignore
 
 
+def update_moment(updates, moments, decay):
+
+    """Compute the exponential moving average of the `order`-th moment."""
+
+    return jax.tree_util.tree_map(lambda g, t: (1 - decay) * g + decay * t, updates, moments)
+
+
 def take_train_step(
     optimizer,
     model: M,
+    ema_model: M,
     opt_state,
     grads,
     *,
     obj_fun: Optional[Callable[[M], Scalar]] = None,
     is_trainable: FilterTree = True,
-) -> Tuple[M, OptState]:
+) -> Tuple[M, M, OptState]:
     train_grads = trainables_only(grads, is_trainable)
     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
     model = apply_updates(model, updates, overwrites)
+    ema_model = update_moment(model, ema_model, 0.995)
 
-    return model, opt_state
+    return model, ema_model, opt_state
 
 
 def make_floating_point_trainable_filter(is_trainable: FilterTree) -> FilterTree:

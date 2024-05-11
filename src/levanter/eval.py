@@ -111,7 +111,7 @@ def cb_tagged_lm_evaluate(
     evaluator = TaggedEvaluator(EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset)
 
     def eval_callback(step: StepInfo):
-        result = evaluator.evaluate(step.model)
+        result = evaluator.evaluate(step.ema_model)
         log_dict = {
             # log micro average as just "loss"
             _join_prefix(prefix, "loss"): result.micro_avg_loss,
