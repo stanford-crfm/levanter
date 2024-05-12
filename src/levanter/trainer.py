@@ -634,10 +634,12 @@ class TrainerConfig:
             devices = mesh_utils.create_hybrid_device_mesh(
                 (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
                 (self.replica_dcn_axis_size, self.data_dcn_axis_size, self.model_dcn_axis_size),
+                allow_split_physical_axes=True,
             )
         else:
             devices = mesh_utils.create_device_mesh(
-                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size)
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
+                allow_split_physical_axes=True,
             )
         return Mesh(devices, ("replica", ResourceAxis.DATA, ResourceAxis.MODEL))
 
