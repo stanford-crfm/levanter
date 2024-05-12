@@ -648,7 +648,7 @@ class TrainerConfig:
     @property
     def num_slices(self):
         """number of nodes"""
-        return getattr(jax.device_count()[-1], "slice_index", 1)
+        return getattr(jax.devices()[-1], "slice_index", 1)
 
     @property
     def num_local_devices(self):
