@@ -19,7 +19,7 @@ trainer:
     tags: [ "openwebtext", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  model_axis_size: 1
+  model_ici_axis_size: 1
 optimizer:
   type: sophia-h
   learning_rate: 2E-4

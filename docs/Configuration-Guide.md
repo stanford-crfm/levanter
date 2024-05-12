@@ -41,7 +41,7 @@ trainer:
     tags: [ "openwebtext", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  model_axis_size: 1
+  model_ici_axis_size: 1
   per_device_parallelism: 4
 
   train_batch_size: 512
@@ -100,7 +100,7 @@ The following table lists some of the parameters that you might want to change.
 | `seed`                         | The random seed                                                     | 0                                                         |
 | `num_train_steps`              | The number of training steps to run                                 | 400,000                                                   |
 | `train_batch_size`             | The batch size                                                      | 32                                                        |
-| `per_device_train_parallelism` | Number of examples to process on each device during training        | `train_batch_size / (num_accelerators * model_axis_size)` |
+| `per_device_train_parallelism` | Number of examples to process on each device during training        | `train_batch_size / (num_accelerators * model_ici_axis_size)` |
 | `per_device_eval_parallelism`  | Number of examples to process on each device during eval            | `per_device_train_parallelism`                            |
 | `steps_per_eval`               | How often to evaluate the model during training                     | 1,000                                                     |
 | `max_eval_batches`             | How many batches to evaluate during each evaluation                 | `None` (meaning all)                                      |
@@ -133,7 +133,7 @@ reasonable defaults and an "advanced" mode that gives you more control.
 | `batch_axis`           | The axis to shard the batch over, for distributed data parallelism           | `"batch"` |
 | `fsdp_axis`            | The axis or axes to shard the model over, for Fully Sharded Data Parallelism | `"embed"` |
 | `tensor_parallel_axes` | The axis or axes to shard the model over, for Tensor Parallelism             | `None`    |
-| `model_axis_size`      | How many devices for tensor parallelism                                      | `1`       |
+| `model_ici_axis_size`      | How many devices for tensor parallelism                                      | `1`       |
 
 #### Advanced Mode
 
@@ -142,7 +142,7 @@ reasonable defaults and an "advanced" mode that gives you more control.
 | `axis_resources`           | Mapping from logical axis to physical axis shared by both mappings   | --      |
 | `parameter_axis_resources` | Mapping from logical axis to physical axis for the parameter mapping | --      |
 | `compute_axis_resources`   | Mapping from logical axis to physical axis for the compute mapping   | --      |
-| `model_axis_size`          | How many devices for tensor parallelism                              | `1`     |
+| `model_ici_axis_size`          | How many devices for tensor parallelism                              | `1`     |
 
 ### Checkpointing and Initialization
 

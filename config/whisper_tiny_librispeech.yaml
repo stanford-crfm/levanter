@@ -15,7 +15,7 @@ trainer:
       tags: [ "librispeech", "whisper"]
 
   mp: p=f32,c=bf16
-  model_axis_size: 1
+  model_ici_axis_size: 1
   per_device_parallelism: -1
 
   train_batch_size: 128
