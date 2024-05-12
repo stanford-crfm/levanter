@@ -16,7 +16,7 @@ import jax
 import jmp
 import numpy as np
 from draccus import field
-from jax.experimental import multihost_utils
+from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation
@@ -629,22 +629,22 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        # is_multislice = hasattr(jax.devices()[0], "slice_index")
-        # if is_multislice:
-        #     devices = mesh_utils.create_hybrid_device_mesh(
-        #         (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
-        #         (self.replica_dcn_axis_size, self.data_dcn_axis_size, self.model_dcn_axis_size),
-        #         allow_split_physical_axes=True,
-        #     )
-        # else:
-        #     devices = mesh_utils.create_device_mesh(
-        #         (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
-        #         allow_split_physical_axes=True,
-        #     )
-        devices = jax.devices()
-        devices = np.array(devices).reshape(
-            self.replica_axis_size, self.data_axis_size // self.replica_axis_size, self.model_axis_size
-        )
+        is_multislice = hasattr(jax.devices()[0], "slice_index")
+        if is_multislice:
+            devices = mesh_utils.create_hybrid_device_mesh(
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
+                (self.replica_dcn_axis_size, self.data_dcn_axis_size, self.model_dcn_axis_size),
+                allow_split_physical_axes=True,
+            )
+        else:
+            devices = mesh_utils.create_device_mesh(
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
+                allow_split_physical_axes=True,
+            )
+        # devices = jax.devices()
+        # devices = np.array(devices).reshape(
+        #     self.replica_axis_size, self.data_axis_size // self.replica_axis_size, self.model_axis_size
+        # )
         print(devices)
         return Mesh(devices, ("replica", ResourceAxis.DATA, ResourceAxis.MODEL))
 
