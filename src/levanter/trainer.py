@@ -670,7 +670,9 @@ class TrainerConfig:
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
-        return self.data_dcn_axis_size * self.data_ici_axis_size
+        return (
+            self.data_dcn_axis_size * self.data_ici_axis_size * self.replica_dcn_axis_size * self.replica_ici_axis_size
+        )
 
     @property
     def replica_axis_size(self):
