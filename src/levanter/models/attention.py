@@ -729,7 +729,7 @@ def _tpu_splash_attention(
     physical_axes_q = _physical_axis_for_binning(q_class)
     physical_axes_k = _physical_axis_for_binning(k_class)
     physical_axes_v = _physical_axis_for_binning(v_class)
-    print("DEBUG!!!", physical_axes_q, physical_axes_k, physical_axes_v)
+
     # MaxText uses a block size of 512
     block_size = block_size or 512
 
