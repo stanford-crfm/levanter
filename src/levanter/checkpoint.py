@@ -547,7 +547,7 @@ class CheckpointerConfig:
     # TODO: I'd like to write this, but it's not supported by draccus
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
     keep: List[dict] = field(
-        default_factory=lambda: [dict(every=10000)]
+        default_factory=lambda: [dict(every=10000, until=None)]
     )  # list of dicts with two keys: every and until
 
     def expanded_path(self, run_id) -> str:
