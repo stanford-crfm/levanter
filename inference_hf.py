@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, LlamaForCausalLM, AutoModelForCausalLM
 
 path = "allenai/OLMo-1B" # "stanford-crfm/llama-1b-dolma"  "llama_1b_hf" "allenai/OLMo-1B"
 if "OLMo" in path:
-    model = AutoModelForCausalLM.from_pretrained(path)
+    model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True)
 else:
     model = LlamaForCausalLM.from_pretrained(path)
 tokenizer = AutoTokenizer.from_pretrained(path)
