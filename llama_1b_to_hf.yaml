@@ -1,0 +1,16 @@
+checkpoint_path: gs://levanter-checkpoints/marin/run-dolma-weighted-1b-splash-attn-0511/eo4403930dononews120511/step-120000/
+output_dir: hf_model
+upload_to_hf: stanford-crfm/llama-1b-dolma
+model:
+  # 1B class model
+  type: llama
+  seq_len: 2048
+  hidden_dim: 2048
+  intermediate_dim: 4096
+  num_layers: 24
+  num_heads: 16
+  num_kv_heads: 16
+  use_flash_attention: True
+  flash_attention_block_size: 1024
+save_tokenizer: True
+tokenizer: "meta-llama/Llama-2-7b-hf"
