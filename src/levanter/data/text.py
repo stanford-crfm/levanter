@@ -230,7 +230,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         cache_dir,
         source: ShardedDataset[str],
         tokenizer: PreTrainedTokenizerBase,
+        *,
         flatten_docs=True,
+        enforce_bos=True,
         enforce_eos=True,
         batch_size=128,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
@@ -238,7 +240,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         await_finished=True,
         override_resources=None,
     ) -> "TokenizedDocumentCache":
-        bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos, override_resources=override_resources)
+        bt = BatchTokenizer(
+            tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, override_resources=override_resources
+        )
         monitors = monitors or []
         cache = build_cache(
             cache_dir,
