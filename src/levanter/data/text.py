@@ -354,7 +354,7 @@ class BatchTokenizer(BatchProcessor[str]):
         if enforce_eos or enforce_bos:
             input_ids = tokenizer("hi there")["input_ids"]
             should_append_eos = input_ids[-1] != tokenizer.eos_token_id and enforce_eos
-            should_append_bos = input_ids[0] == tokenizer.bos_token_id and enforce_bos
+            should_append_bos = input_ids[0] != tokenizer.bos_token_id and enforce_bos
         else:
             should_append_eos = False
             should_append_bos = False
