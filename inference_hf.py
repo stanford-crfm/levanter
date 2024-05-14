@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer, LlamaForCausalLM
 
 
-PATH = "stanford-crfm/llama-1b-dolma"  # "llama_1b_hf"  # "meta-llama/Llama-2-7b-hf"
+PATH = "allenai/OLMo-1B" # "stanford-crfm/llama-1b-dolma"  "llama_1b_hf" "allenai/OLMo-1B"
 model = LlamaForCausalLM.from_pretrained(PATH)
 tokenizer = AutoTokenizer.from_pretrained(PATH)
 
