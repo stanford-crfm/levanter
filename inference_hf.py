@@ -1,9 +1,12 @@
-from transformers import AutoTokenizer, LlamaForCausalLM
+from transformers import AutoTokenizer, LlamaForCausalLM, AutoModelForCausalLM
 
 
-PATH = "allenai/OLMo-1B" # "stanford-crfm/llama-1b-dolma"  "llama_1b_hf" "allenai/OLMo-1B"
-model = LlamaForCausalLM.from_pretrained(PATH)
-tokenizer = AutoTokenizer.from_pretrained(PATH)
+path = "allenai/OLMo-1B" # "stanford-crfm/llama-1b-dolma"  "llama_1b_hf" "allenai/OLMo-1B"
+if "OLMo" in path:
+    model = AutoModelForCausalLM.from_pretrained(path)
+else:
+    model = LlamaForCausalLM.from_pretrained(path)
+tokenizer = AutoTokenizer.from_pretrained(path)
 
 prompt = "Hey, are you conscious? Can you talk to me?"
 inputs = tokenizer(prompt, return_tensors="pt")
