@@ -93,7 +93,7 @@ class StepInfo(Generic[S]):
 
 @dataclass
 class _Hook:
-    fn: Callable[[StepInfo], None]
+    fn: Union[Callable[[StepInfo], None], Callable[[StepInfo, Any], None]]
     every: int
 
 
@@ -106,10 +106,18 @@ class TrainerHooks:
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
-                hook.fn(info)
+                if hasattr(hook.fn, "__name__") and hook.fn.__name__ == "on_step":  # only for checkpointer.on_step
+                    hook.fn(info, force)  # type: ignore
+                else:
+                    hook.fn(info)  # type: ignore
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
-        def decorator(fn: Callable[[StepInfo], None]):
+    def add_hook(
+        self,
+        fn: Optional[Union[Callable[[StepInfo], None], Callable[[StepInfo, Any], None]]] = None,
+        *,
+        every: int = 1,
+    ):
+        def decorator(fn: Union[Callable[[StepInfo], None], Callable[[StepInfo, Any], None]]):
             self.hooks.append(_Hook(fn, every))
 
         if fn is None:
@@ -218,14 +226,19 @@ class Trainer:
         return self.config.num_train_steps
 
     @typing.overload
-    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
+    def add_hook(self, fn: Callable[[StepInfo], Any] | Callable[[StepInfo, Any], Any], *, every: int = 1):
         ...
 
     @typing.overload
     def add_hook(self, *, every: int = 1):
         ...
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any]] = None, *, every: int = 1):
+    def add_hook(
+        self,
+        fn: Optional[Union[Callable[[StepInfo], None], Callable[[StepInfo, Any], None]]] = None,
+        *,
+        every: int = 1,
+    ):
         return self.hooks.add_hook(fn, every=every)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
