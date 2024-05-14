@@ -19,7 +19,6 @@ import pyarrow as pa
 import regex
 from draccus import field
 from jaxtyping import PRNGKeyArray
-from tokenizers import normalizers
 
 import haliax as hax
 from haliax import Axis
@@ -366,7 +365,6 @@ class BatchTokenizer(BatchProcessor[str]):
         self._need_to_add_bos = should_append_bos
 
     def __call__(self, batch: Sequence[str]) -> BatchEncoding:
-        orig_lengths = [len(d) for d in batch]
         if self._need_to_add_bos:
             batch = [self.tokenizer.bos_token + " " + d for d in batch]
 
