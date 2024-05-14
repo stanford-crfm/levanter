@@ -1,6 +1,7 @@
 data:
   cache_dir: "gs://levanter-data/tokenized/dolma/"
   tokenizer: "meta-llama/Llama-2-7b-hf"
+  stop_strategy: all_exhausted
   configs:
     dolma-algebraic-stack:
       train_urls:
@@ -23,9 +24,9 @@ data:
         - gs://levanter-data/markweb/dolma-v1.7/cc_en_tail-{0154..0444}.json.gz
     dolma-cc-news:
       train_urls:
-        - gs://levanter-data/markweb/dolma-v1.7/cc_news-{0000..0004}.json.gz
-        - gs://levanter-data/markweb/dolma-v1.7/cc_news-{0000..0002}.json.gz.1
-        - gs://levanter-data/markweb/dolma-v1.7/cc_news-0000.json.gz.2
+        - gs://levanter-data/markweb/dolma-v1.7/cc_news_head-{0000..0004}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_news_middle-{0000..0002}.json.gz
+        - gs://levanter-data/markweb/dolma-v1.7/cc_news_tail-0000.json.gz
     dolma-falcon:
       train_urls:
         - gs://levanter-data/markweb/dolma-v1.7/falcon-{0000..0499}.json.gz
@@ -102,23 +103,22 @@ data:
     "paloma/wikitext_103":
       validation_urls:
         - gs://levanter-data/paloma/wikitext_103/val/val*.jsonl.gz
-
   train_weights:
-    dolma-algebraic-stack: 1.0
-    dolma-arxiv: 1.0
-    dolma-gutenberg: 1.0
-    dolma-c4: 0.5
-    dolma-cc: 0.5
-    dolma-cc-news: 1.0
-    dolma-falcon: 1.0  # not seen in the table
-    dolma-megawika: 1.0 
-    dolma-owmath: 1.0
-    dolma-pes2o: 1.0
-    dolma-reddit: 1.0
-    dolma-stackexchange: 1.0
-    dolma-starcoder: 1.0
-    dolma-flan: 1.0
-    dolma-wiki: 2.0
+    dolma-algebraic-stack: 12.6 # 1.0
+    dolma-arxiv: 28.0 # 1.0
+    dolma-gutenberg: 5.3 # 1.0
+    dolma-c4: 69.2 # 138.4 * 0.5
+    dolma-cc: 597.75 # 1,195.5 * 0.5
+    dolma-cc-news: 14.3 # 1.0
+    dolma-falcon: 456.4 # 1.0, refined web
+    dolma-megawika: 4.6 # 1.0 
+    dolma-owmath: 12.6 # 1.0
+    dolma-pes2o: 57.2 # 1.0
+    dolma-reddit: 79.9 # 1.0
+    dolma-stackexchange: 19.6 # 1.0
+    dolma-starcoder: 263.8 # 1.0
+    dolma-flan: 16.5 # 1.0
+    dolma-wiki: 7.4 # 3.7 * 2.0 
     paloma/4chan: 0.0
     paloma/c4_100_domains: 0.0
     paloma/c4_en: 0.0
