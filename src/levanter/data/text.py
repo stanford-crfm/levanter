@@ -230,7 +230,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         cache_dir,
         source: ShardedDataset[str],
         tokenizer: PreTrainedTokenizerBase,
+        *,
         flatten_docs=True,
+        enforce_bos=True,
         enforce_eos=True,
         batch_size=128,
         rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
@@ -238,7 +240,9 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
         await_finished=True,
         override_resources=None,
     ) -> "TokenizedDocumentCache":
-        bt = BatchTokenizer(tokenizer, enforce_eos=enforce_eos, override_resources=override_resources)
+        bt = BatchTokenizer(
+            tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, override_resources=override_resources
+        )
         monitors = monitors or []
         cache = build_cache(
             cache_dir,
@@ -354,7 +358,7 @@ class BatchTokenizer(BatchProcessor[str]):
         if enforce_eos or enforce_bos:
             input_ids = tokenizer("hi there")["input_ids"]
             should_append_eos = input_ids[-1] != tokenizer.eos_token_id and enforce_eos
-            should_append_bos = input_ids[0] == tokenizer.bos_token_id and enforce_bos
+            should_append_bos = input_ids[0] != tokenizer.bos_token_id and enforce_bos
         else:
             should_append_eos = False
             should_append_bos = False
