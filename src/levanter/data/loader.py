@@ -177,8 +177,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         )  # levanter.mesh.process_mesh_position(mesh)[0]
         num_data_process_groups = (
             override_process_data_groups
-            or jax.device_count()
-            // jax.process_count()  # levanter.mesh.process_mesh_size(mesh)[0] * levanter.mesh.process_mesh_size(mesh)[1]
+            or jax.process_count()  # levanter.mesh.process_mesh_size(mesh)[0] * levanter.mesh.process_mesh_size(mesh)[1]
         )
 
         if not override_process_data_groups:
