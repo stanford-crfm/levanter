@@ -16,7 +16,7 @@ from haliax import NamedArray
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
-import levanter.mesh
+# import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -177,7 +177,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         )  # levanter.mesh.process_mesh_position(mesh)[0]
         num_data_process_groups = (
             override_process_data_groups
-            or levanter.mesh.process_mesh_size(mesh)[0] * levanter.mesh.process_mesh_size(mesh)[1]
+            or jax.device_count()
+            // jax.process_count()  # levanter.mesh.process_mesh_size(mesh)[0] * levanter.mesh.process_mesh_size(mesh)[1]
         )
 
         if not override_process_data_groups:
