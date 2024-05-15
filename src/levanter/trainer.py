@@ -645,7 +645,6 @@ class TrainerConfig:
         # devices = np.array(devices).reshape(
         #     self.replica_axis_size, self.data_axis_size // self.replica_axis_size, self.model_axis_size
         # )
-        print(devices)
         return Mesh(devices, ("replica", ResourceAxis.DATA, ResourceAxis.MODEL))
 
     @property
