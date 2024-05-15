@@ -218,13 +218,13 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
 @functools.partial(jax.jit, static_argnums=(0,))
 def _stack_tree(batch_name, individual_datums):
-    def _stack_leaves_unchecked(*leaves):
+    def _stack_leaves_unchecked(leaves):
         if is_named_array(leaves[0]):
             return hax.stack(batch_name, leaves)
         else:
             return jnp.stack(leaves)
 
-    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+    return jax.tree_map(_stack_leaves_unchecked, individual_datums, is_leaf=is_named_array)
 
 
 class ReplicatedBatchLoader(BatchLoader[Ex]):
