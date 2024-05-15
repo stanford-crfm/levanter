@@ -16,13 +16,18 @@ def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> tu
     return my_device_pos.nonzero()
 
 
+def get_local_mesh(mesh: Mesh, process_index: Optional[int] = None) -> Mesh:
+    local_device_pos = local_device_grid_positions(mesh, process_index)
+    return Mesh(mesh[local_device_pos], mesh.axis_names)
+
+
 def process_mesh_position(mesh, process_index: Optional[int] = None) -> tuple[int, ...]:
     """
     If we envision each process as a subgrid of the mesh for its devices, this is the position of the process
     in the coarsened process-level mesh
     """
     upper_left_position = np.array([np.min(axis) for axis in local_device_grid_positions(mesh, process_index)])
-    local_mesh_size = mesh.local_mesh.devices.shape
+    local_mesh_size = get_local_mesh(mesh, process_index).devices.shape
     pos = upper_left_position // local_mesh_size
     return pos
 
@@ -32,5 +37,5 @@ def process_mesh_size(mesh: Mesh) -> tuple[int, ...]:
     If we envision each process as a subgrid of the mesh for its devices, then there is a process grid that
     is a coarsened version of the mesh. This is the size of the process grid.
     """
-    local_mesh_size = mesh.local_mesh.devices.shape
+    local_mesh_size = get_local_mesh(mesh).devices.shape
     return tuple(mesh.devices.shape[i] // local_mesh_size[i] for i in range(len(local_mesh_size)))
