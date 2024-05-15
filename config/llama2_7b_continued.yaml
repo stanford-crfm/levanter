@@ -10,7 +10,6 @@ use_hf_model_config: true
 trainer:
   seed: 42
   checkpointer:
-  base_path: gs://levanter-checkpoints/llama2_7b_trace_lev/
       - every: 5
   tracker:
     type: wandb
