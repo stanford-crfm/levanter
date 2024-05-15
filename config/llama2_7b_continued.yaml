@@ -30,3 +30,6 @@ optimizer:
   learning_rate: 1.2E-5
   weight_decay: 0.1
   min_lr_ratio: 0.1
+
+hf_save_steps: 10000
+hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
