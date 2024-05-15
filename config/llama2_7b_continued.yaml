@@ -11,7 +11,7 @@ trainer:
   seed: 42
   checkpointer:
     keep:
-      - every: 10
+      - every: 5
   tracker:
     type: wandb
     project: "trace-train"
@@ -31,5 +31,5 @@ optimizer:
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
-hf_save_steps: 10000
-hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
+# hf_save_steps: 10000
+# hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
