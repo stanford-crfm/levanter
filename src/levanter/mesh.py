@@ -18,7 +18,7 @@ def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> tu
 
 def get_local_mesh(mesh: Mesh, process_index: Optional[int] = None) -> Mesh:
     local_device_pos = local_device_grid_positions(mesh, process_index)
-    return Mesh(mesh[local_device_pos], mesh.axis_names)
+    return Mesh(mesh.devices[local_device_pos], mesh.axis_names)
 
 
 def process_mesh_position(mesh, process_index: Optional[int] = None) -> tuple[int, ...]:
