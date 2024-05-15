@@ -10,7 +10,7 @@ use_hf_model_config: true
 trainer:
   seed: 42
   checkpointer:
-    keep:
+  base_path: gs://levanter-checkpoints/llama2_7b_trace_lev/
       - every: 5
   tracker:
     type: wandb
@@ -22,7 +22,6 @@ trainer:
   model_axis_size: 1
   per_device_eval_parallelism: -1
   max_eval_batches: 2
-
   train_batch_size: 256
   num_train_steps: 10000
   steps_per_eval: 10
@@ -31,5 +30,5 @@ optimizer:
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
-# hf_save_steps: 10000
-# hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
+hf_save_steps: 10000
+hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
