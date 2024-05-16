@@ -1,4 +1,4 @@
-checkpoint_path: gs://levanter-checkpoints/marin/run-dolma-weighted-1b-splash-attn-0511/eo4403930dononews120511/step-120000/
+checkpoint_path: gs://levanter-checkpoints/marin/run-dolma-weighted-1b-splash-attn-0511/eo4403930dononews120511/step-250000
 output_dir: llama_1b_hf
 upload_to_hf: stanford-crfm/llama-1b-dolma
 model:
