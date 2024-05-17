@@ -66,7 +66,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         warmup_steps = self._convert_warmup(num_train_steps)
         stable_steps = _convert_ratio_or_steps(self.stable, num_train_steps)
         cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - stable_steps - cooldown_steps
+        lr_decay_steps = num_train_steps - warmup_steps - stable_steps - cooldown_steps - 12500
         min_lr = self.learning_rate * self.min_lr_ratio
 
         match self.lr_schedule:
