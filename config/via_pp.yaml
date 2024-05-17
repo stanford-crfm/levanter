@@ -1,6 +1,6 @@
 data:
-  id: WillHeld/MLS_Full_En
-  cache_dir: "gs://audio-via/processed/mls-l3"
+  id: WillHeld/PeoplesSpeech_Shuffled_Processed
+  cache_dir: "gs://audio-via/processed/pp-l3"
   text_key: "text"
   train_split: "train"
   validation_split: "valid"
@@ -8,7 +8,7 @@ data:
   processor: "openai/whisper-large-v3"
 model:
   type: whisper
-initialize_from_hf: "WillHeld/via-llama"
+initialize_from_hf: "WillHeld/via-llama3-mls"
 use_hf_model_config: true
 trainer:
   tracker:
@@ -22,14 +22,14 @@ trainer:
   per_device_parallelism: -1
 
   train_batch_size: 512
-  num_train_steps: 21484
+  num_train_steps: 2930
   checkpointer:
-    base_path: gs://audio-via/levanter-tpu-via-mls/lev_checkpoints
+    base_path: gs://audio-via/levanter-tpu-via-pp/lev_checkpoints
     keep:
       - every: 10
     save_interval: 30m
 optimizer:
-  learning_rate: 3E-4
+  learning_rate: 5E-5
   weight_decay: 0.1
   warmup: 0.01
 via_init: True
