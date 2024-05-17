@@ -85,10 +85,10 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
         schedules = []
         boundaries = []
-        schedules.append(optax.constant_schedule(0.0))
+        schedules.append(optax.constant_schedule(self.learning_rate * self.min_lr_ratio))
         boundaries.append(12500)
         if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
+            warmup = optax.linear_schedule(self.learning_rate * self.min_lr_ratio, self.learning_rate, warmup_steps)
             schedules.append(warmup)
             boundaries.append(12500 + warmup_steps)
 
