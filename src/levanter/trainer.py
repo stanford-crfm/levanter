@@ -645,7 +645,7 @@ class TrainerConfig:
         # devices = np.array(devices).reshape(
         #     self.replica_axis_size, self.data_axis_size // self.replica_axis_size, self.model_axis_size
         # )
-        return Mesh(devices, ("replica", ResourceAxis.DATA, ResourceAxis.MODEL))
+        return Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
 
     @property
     def eval_batch_size(self):
@@ -702,7 +702,7 @@ class TrainerConfig:
             axes_to_return[axis] = ResourceAxis.MODEL
 
         if self.batch_axis is not None:
-            axes_to_return[self.batch_axis] = ("replica", ResourceAxis.DATA)
+            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)
 
         return axes_to_return
 
