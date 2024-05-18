@@ -66,7 +66,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         warmup_steps = self._convert_warmup(num_train_steps)
         stable_steps = _convert_ratio_or_steps(self.stable, num_train_steps)
         cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - stable_steps - cooldown_steps - 12500
+        lr_decay_steps = num_train_steps - warmup_steps - stable_steps - cooldown_steps
         min_lr = self.learning_rate * self.min_lr_ratio
 
         match self.lr_schedule:
@@ -85,12 +85,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
         schedules = []
         boundaries = []
-        schedules.append(optax.constant_schedule(self.learning_rate * self.min_lr_ratio))
-        boundaries.append(12500)
+
         if warmup_steps != 0:
             warmup = optax.linear_schedule(self.learning_rate * self.min_lr_ratio, self.learning_rate, warmup_steps)
             schedules.append(warmup)
-            boundaries.append(12500 + warmup_steps)
+            boundaries.append(warmup_steps)
 
         if stable_steps != 0:
             stable = optax.constant_schedule(self.learning_rate)
