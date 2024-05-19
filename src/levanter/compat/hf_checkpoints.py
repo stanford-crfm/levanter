@@ -883,7 +883,7 @@ def arbitrary_load_from_hf(
         fs.get(path, local_cache_dir, recursive=True)
         base_path = os.path.basename(path)
         joined_path = os.path.join(local_cache_dir, base_path)
-        print(f"Loading from {joined_path}")
+        print(f"\n Loading from {joined_path} \n")
         return from_pretrained_lambda(joined_path, trust_remote_code=trust_remote_code)
     else:
         return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
