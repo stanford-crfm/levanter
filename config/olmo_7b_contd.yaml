@@ -18,12 +18,12 @@ data:
     - "gs://levanter-data/paloma/redpajama/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/twitterAAE_HELM_fixed/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/wikitext_103/val/val*.jsonl.gz"
-  cache_dir: "gs://levanter-data/tokenized/markweb_llama/"
-  tokenizer: "meta-llama/Llama-2-7b-hf"
+  cache_dir: "gs://levanter-data/tokenized/markweb_olmo/"
+  tokenizer: "allenai/OLMo-7B"
 
 model:
-  type: llama
-initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+  type: olmo
+initialize_from_hf: "allenai/OLMo-7B"
 use_hf_model_config: true
 
 trainer:
@@ -41,7 +41,7 @@ trainer:
   tracker:
     type: wandb
     project: "trace-train"
-    tags: ["pile", "llama", "web_comparison"]
+    tags: ["pile", "olmo", "web_comparison"]
   mp: p=f32,c=bfloat16
   model_axis_size: 1
   per_device_eval_parallelism: -1
@@ -54,7 +54,8 @@ trainer:
   batch_axis: "batch"
 
 optimizer:
-  learning_rate: 1.2E-5
+# lr from code llama paper
+  learning_rate: 1.2E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
