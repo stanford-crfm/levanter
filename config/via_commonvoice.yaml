@@ -5,11 +5,11 @@ data:
   text_key: "sentence"
   train_split: "train"
   validation_split: "validation"
-  tokenizer: "WillHeld/via-llama"
+  tokenizer: "WillHeld/via-llama3-ps"
   processor: "openai/whisper-large-v3"
 model:
   type: whisper
-initialize_from_hf: "WillHeld/via-llama"
+initialize_from_hf: "WillHeld/via-llama3-ps"
 use_hf_model_config: true
 trainer:
   tracker:
@@ -23,9 +23,9 @@ trainer:
   per_device_parallelism: -1
 
   train_batch_size: 512
-  num_train_steps: 5000
+  num_train_steps: 2150
 optimizer:
-  learning_rate: 3E-4
+  learning_rate: 1E-5
   weight_decay: 0.1
   warmup: 0.01
 via_init: True

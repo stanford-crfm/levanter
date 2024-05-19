@@ -71,7 +71,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/via-llama3-mls")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama3-ps")
 
 
 def connector_only(model):
