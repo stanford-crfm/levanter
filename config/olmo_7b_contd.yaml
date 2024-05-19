@@ -23,8 +23,8 @@ data:
 
 model:
   type: llama
-  initialize_from_hf: "meta-llama/Llama-2-7b-hf"
-  use_hf_model_config: true
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+use_hf_model_config: true
 
 trainer:
   seed: 42
