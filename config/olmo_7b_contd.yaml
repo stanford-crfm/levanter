@@ -1,0 +1,62 @@
+data:
+  train_urls:
+    - "gs://levanter-data/markweb/fineweb/data/CC-MAIN-2024-10/{0..143}_html_markdown.parquet.gz"
+  validation_urls:
+    - "gs://levanter-data/paloma/4chan_meta_sep/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/c4_100_domains/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/c4_en/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/dolma-v1_5/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/dolma_100_programing_languages/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/dolma_100_subreddits/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/falcon-refinedweb/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/gab/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/m2d2_s2orc_unsplit/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/m2d2_wikipedia_unsplit/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/manosphere_meta_sep/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/mc4/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/ptb/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/redpajama/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/twitterAAE_HELM_fixed/val/val*.jsonl.gz"
+    - "gs://levanter-data/paloma/wikitext_103/val/val*.jsonl.gz"
+  cache_dir: "gs://levanter-data/tokenized/markweb_llama/"
+  tokenizer: "meta-llama/Llama-2-7b-hf"
+
+model:
+  type: llama
+  initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+  use_hf_model_config: true
+
+trainer:
+  seed: 42
+  checkpointer:
+    keep:
+      - every: 1
+        until: 10
+      - every: 10
+        until: 20
+      - every: 100
+        until: 1000
+      - every: 1000
+        until: 5000
+  tracker:
+    type: wandb
+    project: "trace-train"
+    tags: ["pile", "llama", "web_comparison"]
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_eval_parallelism: -1
+  max_eval_batches: 2
+  train_batch_size: 256
+  num_train_steps: 10000
+  steps_per_eval: 10
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+
+optimizer:
+  learning_rate: 1.2E-5
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
+
+hf_save_steps: 10000
+hf_save_path: "gs://levanter-checkpoints/olmo_trace_hf/"  # TODO
