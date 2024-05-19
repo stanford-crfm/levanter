@@ -141,8 +141,8 @@ model:
   type: llama
   seq_len: 2048
   hidden_dim: 2048
-  intermediate_dim: 4096
-  num_layers: 24
+  intermediate_dim: 8192
+  num_layers: 16
   num_heads: 16
   num_kv_heads: 16
   use_flash_attention: True
@@ -164,3 +164,4 @@ optimizer:
   learning_rate: 4E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
+  warmup: 5000
