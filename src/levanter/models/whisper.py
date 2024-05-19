@@ -447,7 +447,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed_dim", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed_dim")
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)

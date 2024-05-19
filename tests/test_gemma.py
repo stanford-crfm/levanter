@@ -181,31 +181,32 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
     torch_out = torch_out.logits[0].detach().cpu().numpy()
     torch_out = jax.nn.softmax(torch_out, axis=-1)
 
-    tmpdir = tempfile.mkdtemp()
-    torch_model.save_pretrained(f"{tmpdir}/torch_model")
-    print(f"Saved to {tmpdir}/torch_model")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
-    model = converter.load_pretrained(GemmaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False)
+        model = converter.load_pretrained(
+            GemmaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+        )
 
-    def compute(input):
-        model_output = model(input, attn_mask=attn_mask)
-        return hax.nn.softmax(model_output, axis=model.Vocab)
+        def compute(input):
+            model_output = model(input, attn_mask=attn_mask)
+            return hax.nn.softmax(model_output, axis=model.Vocab)
 
-    compute = jax.jit(compute)
-    jax_out = compute(input).array
+        compute = jax.jit(compute)
+        jax_out = compute(input).array
 
-    assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-    assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out} != {jax_out}"
 
-    converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
-    torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
-    torch_model2.eval()
+        converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+        torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+        torch_model2.eval()
 
-    torch_out2 = torch_model2(input_torch)
-    torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-    torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
-    assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-    assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+        torch_out2 = torch_model2(input_torch)
+        torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
+        assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out2} != {jax_out}"
 
 
 def _get_gemma_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConfig:

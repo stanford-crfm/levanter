@@ -340,7 +340,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte", "position_embeddings": "wpe"}
