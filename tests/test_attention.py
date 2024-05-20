@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import pytest
+from chex import assert_trees_all_close
 
 import haliax as hax
 
@@ -155,7 +156,7 @@ def test_llama_attention_uses_te(q_heads):
         attention_dtype=jnp.bfloat16,
     )
 
-    assert jnp.allclose(out.array, 0.0)
+    assert_trees_all_close(out.array, 0.0)
 
 
 @skip_if_module_missing("transformer_engine")
@@ -181,4 +182,4 @@ def test_gpt2_attention_uses_te():
         mask,
         attention_dtype=jnp.bfloat16,
     )
-    assert jnp.allclose(out.array, 0.0)
+    assert_trees_all_close(out.array, 0.0)

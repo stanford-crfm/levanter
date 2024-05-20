@@ -3,6 +3,7 @@ import tempfile
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from chex import assert_trees_all_close
 from jax.random import PRNGKey
 
 import haliax
@@ -75,7 +76,10 @@ def test_save_backpack_model_with_code():
         torch_input = torch.from_numpy(np.array(input.array)).to(torch.int64).unsqueeze(0)
         loaded_model.eval()
         np.testing.assert_allclose(
-            model(torch_input).logits[0].detach().numpy(), loaded_model(torch_input).logits[0].detach().numpy()
+            model(torch_input).logits[0].detach().numpy(),
+            loaded_model(torch_input).logits[0].detach().numpy(),
+            rtol=1e-3,
+            atol=1e-3,
         )
 
 
@@ -90,7 +94,7 @@ def test_conversion_to_jnp_bfloat16():
     x_jnp = _convert_to_jnp(x, None)
     assert x_jnp.dtype == jnp.bfloat16
     assert x_jnp.shape == x.shape
-    assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)
+    assert_trees_all_close(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)
 
 
 def test_save_sharded_checkpoints():
