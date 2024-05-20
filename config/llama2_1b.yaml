@@ -1,0 +1,33 @@
+data:
+  cache_dir: "gs://levanter-data/tokenized/pile_llama/"
+  tokenizer: "NousResearch/Llama-2-7b-hf"
+model:
+  # 100M class model
+  type: llama
+  seq_len: 4096
+  hidden_dim: 2048
+  intermediate_dim: 8192
+  num_layers: 16
+  num_heads: 32
+  num_kv_heads: 32
+  use_flash_attention: True
+  flash_attention_block_size: 1024
+trainer:
+  tracker:
+    type: wandb
+    entity: "understanding-sam"
+    project: "levanter"
+    tags: ["pile", "llama"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 1024
+  num_train_steps: 50000
+  steps_per_eval: 1000
+  per_device_eval_parallelism: 64
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  learning_rate: 4E-4
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
