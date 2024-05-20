@@ -21,6 +21,16 @@ def get_local_mesh(mesh: Mesh, process_index: Optional[int] = None) -> Mesh:
     return Mesh(mesh.devices[local_device_pos], mesh.axis_names)
 
 
+def get_local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -> dict[int, int]:
+    local_device_pos = local_device_grid_positions(mesh, process_index)[:2]  # first 2 axes are DP axes.
+    result = {}
+    for i in range(len(local_device_pos[0])):
+        key = local_device_pos[0] * mesh.devices.shape[1] + local_device_pos[1]
+        if key not in result:
+            result[key] = i  # in case of TP=2, local device 0 and 2 will be mapped to same i.
+    return result
+
+
 def process_mesh_position(mesh, process_index: Optional[int] = None) -> tuple[int, ...]:
     """
     If we envision each process as a subgrid of the mesh for its devices, this is the position of the process

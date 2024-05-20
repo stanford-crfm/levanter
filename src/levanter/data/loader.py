@@ -20,6 +20,7 @@ from haliax.util import is_named_array
 # import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
+from levanter.mesh import get_local_devices_mapping
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
 from levanter.utils.py_utils import non_caching_cycle
@@ -71,7 +72,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
     def batch_size(self) -> int:
         return self.Batch.size
 
-    def _construct_global_array_for_tree(self, item_exemplar: PyTree, get_batch_items: Callable[[int, int], PyTree]):
+    def _construct_global_array_for_tree(self, item_exemplar: PyTree, get_batch_items: Callable[[int], PyTree]):
         # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
         # the relevant data for each process.
         # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
@@ -88,7 +89,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
             if key in stacked_local_batch:
                 return stacked_local_batch[key]
 
-            individual_datums = get_batch_items(begin, end)
+            individual_datums = get_batch_items(begin)
 
             device_batch = _stack_tree(self.Batch.name, individual_datums)
             batch_leaves = jtu.tree_leaves(device_batch)
@@ -197,14 +198,25 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def _produce_batches(self) -> Iterator[PyTree]:
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
+        local_devices_mapping = get_local_devices_mapping(self.mesh)  # uid for DP/FSDP
+        per_device_batch_size = self.batch_size // jax.device_count()
+
+        def batch_callback(global_begin):
+            # global_begin is uid for DP/FSDP
+            # DP_id * per_device_bs = global_begin
+            device_pos = global_begin // per_device_batch_size
+
+            begin = local_devices_mapping[device_pos] * per_device_batch_size
+            end = begin + per_device_batch_size
+
+            return local_batch[begin:end]
 
         while True:
-            batch_offset = self.process_data_pos * self.local_batch_size
             local_batch: List[PyTree] = next(batched)
 
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
-                get_batch_items=lambda begin, end: local_batch[(begin - batch_offset) : (end - batch_offset)],
+                get_batch_items=batch_callback,
             )
 
             yield batch
