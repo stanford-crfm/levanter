@@ -128,7 +128,6 @@ if [[ "$GIT_BRANCH" =~ ^[0-9a-f]{7,40}$ ]]; then
   if [ -z "$BRANCHES" ]; then
     >&2 echo "Warning: commit $GIT_BRANCH not found on remote $GIT_REPO"
   fi
-  exit 0
 else
   # get the remote branch name
   REMOTE_BRANCH=$(git ls-remote --heads origin "$GIT_BRANCH" | awk '{print $2}' | sed 's/refs\/heads\///g')
