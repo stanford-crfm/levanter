@@ -7,14 +7,13 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Ty
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
-import numpy as np
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import Array, PyTree
 
 import haliax as hax
 from haliax import NamedArray
-from haliax.partitioning import ResourceAxis, ResourceMapping
+from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
 # import levanter.mesh
@@ -110,12 +109,9 @@ class BatchLoader(Iterable[Ex], abc.ABC):
                 return leaf[(..., *indices[1:])]
 
         def make_global_array_for_leaf(leaf_index, item_leaf_shape: Union[ShapeSpec, NamedShapeSpec]):
-            devices = jax.devices()
-            devices = np.array(devices).reshape(*self.mesh.devices.shape)
-            contiguous_mesh = jax.sharding.Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
             raw_array = jax.make_array_from_callback(
                 to_raw_shape(item_leaf_shape),
-                jax.sharding.NamedSharding(contiguous_mesh, self._pspec_for(item_leaf_shape)),
+                jax.sharding.NamedSharding(self.mesh, self._pspec_for(item_leaf_shape)),
                 lambda indices: get_local_data_for_leaf(indices, leaf_index),
             )
             if isinstance(item_leaf_shape, NamedShapeSpec):
