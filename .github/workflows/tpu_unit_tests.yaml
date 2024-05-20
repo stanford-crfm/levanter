@@ -6,7 +6,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      TPU_ZONE: "us-central1-b"
+      TPU_ZONE: "us-central2-b"
 
     steps:
       - name: Checkout code

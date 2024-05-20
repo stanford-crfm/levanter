@@ -1,10 +1,16 @@
+import jax
 import jax.numpy as jnp
 import pytest
 from chex import assert_trees_all_close
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask, _bin_and_group_axes_by_function, _te_flash_attention
+from levanter.models.attention import (
+    AttentionMask,
+    _bin_and_group_axes_by_function,
+    _te_flash_attention,
+    _tpu_splash_attention,
+)
 from test_utils import skip_if_module_missing
 
 
@@ -183,3 +189,25 @@ def test_gpt2_attention_uses_te():
         attention_dtype=jnp.bfloat16,
     )
     assert_trees_all_close(out.array, 0.0)
+
+
+def test_tpu_splash_attention():
+    if jax.default_backend() != "tpu":
+        pytest.skip("TPU only")
+
+    BLOCK_SIZE = 512
+
+    Head = hax.Axis("Head", 8)
+    Key = hax.Axis("Key", 128)  # splash only supports 128
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Head, Key))
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Head, Key))
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Head, Key))
+
+    flash_out = _tpu_splash_attention(QPos, KPos, Key, q, k, v, inference=True)
+    hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v)
+
+    assert hax_out.axes == flash_out.axes
+    assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
