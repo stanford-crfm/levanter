@@ -104,17 +104,16 @@ class OlmoConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
-        print(f"\n hf_config: {hf_config}\n")
         return OlmoConfig(
-            seq_len=hf_config.max_position_embeddings,
-            hidden_dim=hf_config.hidden_size,
-            intermediate_dim=hf_config.intermediate_size,
-            num_layers=hf_config.num_hidden_layers,
-            num_heads=hf_config.num_attention_heads,
-            num_kv_heads=hf_config.num_key_value_heads,
-            activation_function=hf_config.hidden_act,
-            initializer_range=hf_config.initializer_range,
-            layer_norm_epsilon=hf_config.rms_norm_eps,
+            seq_len=hf_config.max_sequence_length,
+            hidden_dim=hf_config.d_model,
+            intermediate_dim=hf_config.mlp_hidden_size,
+            num_layers=hf_config.n_layers,
+            num_heads=hf_config.n_heads,
+            num_kv_heads=hf_config.n_kv_heads,
+            activation_function=hf_config.activation_type,
+            initializer_range=hf_config.init_std,
+            layer_norm_epsilon=hf_config.layer_norm_epsilon,
             rope_scaling=hf_config.rope_scaling,
         )
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfOlmoConfig:
