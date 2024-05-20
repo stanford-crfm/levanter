@@ -30,5 +30,7 @@ jobs:
       - name: Create VM and Run Script
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -- \
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/google_compute_engine
+          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} -- \
             bash levanter/infra/run.sh pytest tests
