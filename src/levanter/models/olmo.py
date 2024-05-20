@@ -86,7 +86,10 @@ class OlmoConfig(HFCompatConfig):
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
     def __post_init__(self):
-        print(f"\nnum_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
+        # Inside your training loop or wherever you want to print the worker information
+        worker_id = jax.process_index()
+        print(f"Worker: {worker_id}")
+        print(f"\n num_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
         assert (
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
