@@ -89,7 +89,9 @@ class OlmoConfig(HFCompatConfig):
         # Inside your training loop or wherever you want to print the worker information
         worker_id = jax.process_index()
         print(f"Worker: {worker_id}")
+        print(f" \n {self.num_heads} \n {self.num_kv_heads}")
         print(f" {dir(self)}")
+        self = dataclasses.replace(self, num_kv_heads=32, num_heads=32)
         self.num_kv_heads = 32
         self.num_heads = 32
         
