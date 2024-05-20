@@ -32,4 +32,4 @@ jobs:
           export TPU_NAME=ci-run-${{ github.run_id }}
           eval "$(ssh-agent -s)"
           infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 3 -- \
-            bash levanter/infra/run.sh pytest tests
+            bash levanter/infra/run.sh pytest levanter/tests
