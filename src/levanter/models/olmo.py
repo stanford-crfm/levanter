@@ -92,6 +92,7 @@ class OlmoConfig(HFCompatConfig):
         self.num_kv_heads = 32
         self.num_heads = 32
         print(f"Worker: {worker_id}")
+        print(f" {dir(self)}")
         print(f"\n num_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
         assert (
             self.num_heads % self.num_kv_heads == 0
