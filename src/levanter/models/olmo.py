@@ -52,7 +52,6 @@ class OlmoConfig(HFCompatConfig):
             Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
             Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
-        rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
     seq_len: int = 2048
@@ -75,7 +74,6 @@ class OlmoConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
-    rope_scaling: Optional[dict] = None
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -114,7 +112,6 @@ class OlmoConfig(HFCompatConfig):
             num_kv_heads=hf_config.n_kv_heads,
             activation_function=hf_config.activation_type,
             initializer_range=hf_config.init_std,
-            rope_scaling=hf_config.rope_scaling,
         )
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfOlmoConfig:
         """Convert to HuggingFace's OlmoConfig
@@ -139,7 +136,6 @@ class OlmoConfig(HFCompatConfig):
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
             layer_norm_epsilon=self.layer_norm_epsilon,
-            rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
             **config_overrides,
         )
