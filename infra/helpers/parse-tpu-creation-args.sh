@@ -121,19 +121,27 @@ done
 
 # check if the branch we chose has been pushed to the remote
 # if not, warn
-
-# get the remote branch name
-REMOTE_BRANCH=$(git ls-remote --heads origin "$GIT_BRANCH" | awk '{print $2}' | sed 's/refs\/heads\///g')
-# if it's empty, warn
-if [ -z "$REMOTE_BRANCH" ]; then
-  >&2 echo "Warning: branch $GIT_BRANCH not found on remote $GIT_REPO"
+# if it's a commit sha/short-sha (or something that looks like one), check if it's in the remote
+if [[ "$GIT_BRANCH" =~ ^[0-9a-f]{7,40}$ ]]; then
+  # if it's a commit, check if it's in the remote
+  BRANCHES=$(git branch -r --contains "$GIT_BRANCH")
+  if [ -z "$BRANCHES" ]; then
+    >&2 echo "Warning: commit $GIT_BRANCH not found on remote $GIT_REPO"
+  fi
+  exit 0
 else
+  # get the remote branch name
+  REMOTE_BRANCH=$(git ls-remote --heads origin "$GIT_BRANCH" | awk '{print $2}' | sed 's/refs\/heads\///g')
+  # if it's empty, warn
+  if [ -z "$REMOTE_BRANCH" ]; then
+    >&2 echo "Warning: branch $GIT_BRANCH not found on remote $GIT_REPO"
+  else
+    # make sure it's pushed
+    LOCAL_COMMIT=$(git rev-parse --short "$GIT_BRANCH")
+    REMOTE_COMMIT=$(git rev-parse --short "origin/$REMOTE_BRANCH")
 
-  # make sure it's pushed
-  LOCAL_COMMIT=$(git rev-parse --short "$GIT_BRANCH")
-  REMOTE_COMMIT=$(git rev-parse --short "origin/$REMOTE_BRANCH")
-
-  if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
-   >&2 echo "Warning: branch $GIT_BRANCH not pushed to remote $GIT_REPO. Local commit: $LOCAL_COMMIT, remote commit: $REMOTE_COMMIT"
+    if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+     >&2 echo "Warning: branch $GIT_BRANCH not pushed to remote $GIT_REPO. Local commit: $LOCAL_COMMIT, remote commit: $REMOTE_COMMIT"
+    fi
   fi
 fi
