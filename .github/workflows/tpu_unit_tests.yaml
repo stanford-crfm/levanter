@@ -1,6 +1,6 @@
 name: CI with GCP TPU
 
-on: [push, pull_request]
+on: [push]
 
 jobs:
   test:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Authenticate Google Cloud
         run: |
-          echo ${{ secrets.GCP_SA_KEY }} > ${HOME}/gcloud-service-key.json
+          printf "%s" "${{ secrets.GCP_SA_KEY }}" > ${HOME}/gcloud-service-key.json
           gcloud auth activate-service-account --key-file=${HOME}/gcloud-service-key.json
           gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
 
