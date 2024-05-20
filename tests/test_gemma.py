@@ -17,6 +17,7 @@ from test_utils import check_load_config, check_model_works_with_seqlen, paramet
 
 # N.B. Gemma uses LLamaAttention directly so we skip tests for attention and rotary embeddings.
 
+
 @skip_if_no_torch
 def test_gemma_config():
     # load HF config and convert to levanter config
