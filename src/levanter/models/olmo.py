@@ -92,8 +92,6 @@ class OlmoConfig(HFCompatConfig):
         print(f" \n {self.num_heads} \n {self.num_kv_heads}")
         print(f" {dir(self)}")
         self = dataclasses.replace(self, num_kv_heads=32, num_heads=32)
-        self.num_kv_heads = 32
-        self.num_heads = 32
         
         print(f"\n num_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
         assert (
