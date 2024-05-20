@@ -88,6 +88,9 @@ class OlmoConfig(HFCompatConfig):
     def __post_init__(self):
         # Inside your training loop or wherever you want to print the worker information
         worker_id = jax.process_index()
+        
+        self.num_kv_heads = 32
+        self.num_heads = 32
         print(f"Worker: {worker_id}")
         print(f"\n num_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
         assert (
