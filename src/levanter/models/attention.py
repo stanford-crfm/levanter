@@ -211,7 +211,7 @@ def simple_attention_with_dropout(
         Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
     )
     weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-    return haliax.dot(KPos, weights, value)
+    return haliax.dot(weights, value, axis=KPos)
 
 
 def _try_te_attention(

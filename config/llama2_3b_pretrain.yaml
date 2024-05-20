@@ -9,7 +9,8 @@ model:
   attn_backend: jax_flash
   flash_attention_block_size: 2048
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: ["redpajama", "llama"]
 

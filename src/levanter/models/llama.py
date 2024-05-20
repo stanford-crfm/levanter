@@ -441,9 +441,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        k_wte = jrandom.split(key, 1)
-
-        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
+        token_embeddings = hax.random.normal(key, (Vocab, config.Embed))
         return LlamaEmbedding(Vocab, config, token_embeddings)
 
     @named_call
@@ -453,7 +451,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
+        return hax.dot(x, self.token_embeddings, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "model.embed_tokens.weight"}

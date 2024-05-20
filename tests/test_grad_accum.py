@@ -28,9 +28,9 @@ class Mlp(eqx.Module):
         return Mlp(w_in, w_out, In, Out, Mid)
 
     def __call__(self, x):
-        x = hax.dot(self.In, self.w_in, x)
+        x = hax.dot(self.w_in, x, axis=self.In)
         x = hnn.relu(x)
-        x = hax.dot(self.Mid, self.w_out, x)
+        x = hax.dot(self.w_out, x, axis=self.Mid)
         return x
 
 

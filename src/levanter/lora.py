@@ -150,7 +150,7 @@ class LowRankLinear(eqx.Module):
         return LowRankLinear(lora_A, lora_B, dropout, alpha / r)
 
     def merge(self) -> hax.NamedArray:
-        return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
+        return hax.dot(self.lora_A.weight, self.lora_B.weight, axis=LORA_R) * self.scale
 
 
 class LoraLinear(eqx.Module, StateDictSerializationMixin):
