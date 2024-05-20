@@ -1,6 +1,6 @@
 name: CI with GCP TPU
 
-on: [push, pull_request]
+on: [pull_request]
 
 jobs:
   test:
@@ -30,6 +30,5 @@ jobs:
       - name: Create VM and Run Script
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          cd levanter
           infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -- \
             bash levanter/infra/run.sh pytest tests
