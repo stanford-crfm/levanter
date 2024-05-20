@@ -104,6 +104,7 @@ class OlmoConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        print()
         return OlmoConfig(
             seq_len=hf_config.max_sequence_length,
             hidden_dim=hf_config.d_model,
@@ -113,7 +114,6 @@ class OlmoConfig(HFCompatConfig):
             num_kv_heads=hf_config.n_kv_heads,
             activation_function=hf_config.activation_type,
             initializer_range=hf_config.init_std,
-            layer_norm_epsilon=hf_config.layer_norm_epsilon,
             rope_scaling=hf_config.rope_scaling,
         )
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfOlmoConfig:
@@ -348,8 +348,8 @@ class OlmoDecoderLayer(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = NonParametricLayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = NonParametricLayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = NonParametricLayerNorm.init(config.Embed,  use_bias=config.use_bias)
+        ln_2 = NonParametricLayerNorm.init(config.Embed,  use_bias=config.use_bias)
 
         return OlmoDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -387,7 +387,7 @@ class OlmoTransformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = NonParametricLayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_f = NonParametricLayerNorm.init(config.Embed, use_bias=config.use_bias)
 
         return OlmoTransformer(config, layers, ln_f)
 
