@@ -23,6 +23,7 @@ AUTODELETE=true
 SETUP_SCRIPT="$SCRIPT_DIR/helpers/setup-tpu-vm.sh"
 SUBNETWORK="default"
 USE_ALPHA=false
+RETRIES=-1  # how many times babysit-tpu-vm.sh should retry before giving up. -1 means infinite
 
 if [ -z "$GIT_BRANCH" ]; then
     GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -85,6 +86,11 @@ while [[ $# -gt 0 ]]; do
     --use_alpha|--use-alpha)
       USE_ALPHA="true"
       shift # past argument
+      ;;
+    --retries)
+      RETRIES="$2"
+      shift # past argument
+      shift # past value
       ;;
     *)    # unknown option, assume it's the vm name if it doesn't start with a dash
       if [[ $1 == -* ]]; then

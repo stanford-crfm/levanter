@@ -59,6 +59,8 @@ CMD_ARGS_STR=$(printf ' %s' "${CMD_ARGS[@]}")
 CMD_ARGS_STR=${CMD_ARGS_STR:1}
 CMD_ARGS_STR="RUN_ID=${RUN_ID} ${CMD_ARGS_STR}"
 
+TRIES=0
+
 # check if the VM is running
 # if not, spin it up
 # if it is, just run the command
@@ -82,6 +84,13 @@ while true; do
         break
       else
         echo "Command failed"
+        TRIES=$((TRIES+1))
+        if [ $RETRIES -ge 0 ]; then
+          if [ $TRIES -ge $RETRIES ]; then
+            echo "Command failed $TRIES times, exiting"
+            break
+          fi
+        fi
       fi
     fi
   else
