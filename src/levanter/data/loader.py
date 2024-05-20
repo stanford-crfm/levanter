@@ -1,5 +1,4 @@
 import abc
-import functools
 import logging
 from collections import defaultdict
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
@@ -21,6 +20,7 @@ from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
+from levanter.utils.jax_utils import stack_tree
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -89,7 +89,7 @@ class BatchLoader(Iterable[Ex], abc.ABC):
 
             individual_datums = get_batch_items(begin, end)
 
-            device_batch = _stack_tree(self.Batch.name, individual_datums)
+            device_batch = stack_tree(self.Batch, individual_datums, pad_to_batch_size=False)
             batch_leaves = jtu.tree_leaves(device_batch)
 
             stacked_local_batch[key] = batch_leaves
@@ -209,17 +209,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     def local_batch_size(self) -> int:
         """Returns the 'local' batch size: the number of examples in a batch on this host"""
         return self.batch_size // self.num_data_process_groups
-
-
-@functools.partial(jax.jit, static_argnums=(0,))
-def _stack_tree(batch_name, individual_datums):
-    def _stack_leaves_unchecked(*leaves):
-        if is_named_array(leaves[0]):
-            return hax.stack(batch_name, leaves)
-        else:
-            return jnp.stack(leaves)
-
-    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
 
 
 class ReplicatedBatchLoader(BatchLoader[Ex]):

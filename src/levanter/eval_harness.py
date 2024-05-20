@@ -1,0 +1,287 @@
+# Code for running https://github.com/EleutherAI/lm-evaluation-harness inside Levanter runs
+# References:
+# https://github.com/kingoflolz/mesh-transformer-jax/blob/master/eval_harness.py
+# https://github.com/kingoflolz/mesh-transformer-jax/blob/f8315e3003033b23f21d78361b288953064e0e76/mesh_transformer/TPU_cluster.py#L6
+import dataclasses
+import enum
+import logging
+import warnings
+from dataclasses import dataclass
+from functools import cached_property
+from typing import List, Tuple
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import transformers
+from jax.experimental.multihost_utils import broadcast_one_to_all
+from lm_eval.api.instance import Instance
+from lm_eval.api.model import LM
+from lm_eval import evaluator, tasks
+
+import haliax as hax
+import levanter.config
+from haliax.nn import cross_entropy_loss
+from haliax.partitioning import fsdp, round_axis_for_partitioning
+from levanter.checkpoint import load_checkpoint
+from levanter.data import batched
+
+from levanter.models.lm_model import LmConfig, LmHeadModel, LmExample
+from levanter.trainer import TrainerConfig
+from levanter.utils.jax_utils import stack_tree, use_cpu_device
+from levanter.utils.tree_utils import inference_mode
+
+logger = logging.getLogger(__name__)
+
+
+# Ok this is a bit complicated to do because it's distributed systems and that's always hard.
+# The idea is that we want to pass an LM adaptor to the harness, and then the harness will call the LM adaptor
+# with a request, which we'll format, shard, and send to the model. The model will then return the result to the harness
+# which will then return the result to the user.
+
+# As we so often do, we will coordinate execution through JAX itself.
+
+# Process 0 will:
+# - Pass an adaptor to the eval harness
+# - The eval harness will call the adaptor with a request
+# - When a request comes in, it will call broadcast_one_to_all with a (REQUEST_TYPE, request) to send the request
+# - It then invokes the model with the request and returns the result to the eval harness
+# - When finished, it will call broadcast_one_to_all with a (FINISHED_TYPE, result) to send the result
+
+# Process 1..n will:
+# - Wait for a (REQUEST_TYPE, request) broadcast
+# - if FINISHED_TYPE, break
+# - Invoke the model with the request
+# - loop
+
+
+class RequestType:
+    LOG_LIKELIHOOD = 0
+    GENERATE_UNTIL = 1
+    LOG_LIKELIHOOD_ROLLING = 2
+    FINISHED = 3
+
+
+class InternalLMAdaptor:
+
+    def __init__(self, EvalBatch: hax.Axis, model: LmHeadModel):
+        self.EvalBatch = EvalBatch
+        self.model = model
+
+        self.dummy_example: LmExample = LmExample.causal(
+            tokens=hax.zeros(model.Pos, dtype=jnp.int32),
+        )
+
+        def _eval_loglikelihood(model: LmHeadModel, example: LmExample):
+            logits = model(example.tokens)
+
+            targets = hax.roll(example.tokens, -1, axis=model.Pos.name)
+            target_y = hax.nn.one_hot(targets, model.Vocab, dtype=logits.dtype)
+            loss = cross_entropy_loss(logits, model.Vocab, target_y, where=example.loss_mask, reduction_axis=model.Pos)
+            # to tell if we got the right answer, we want to check that argmax(logits) == tokens wherever loss_mask is 1
+            pred_targets = hax.argmax(logits, axis=model.Vocab)
+            correct = hax.all(hax.equal(pred_targets, targets) | (not example.loss_mask), axis=model.Pos)
+
+            return loss, correct
+
+        # no sharded outputs
+        self._jit_loglikelihood = hax.named_jit(_eval_loglikelihood, out_axis_resources={})
+
+    def loglikelihood(self, examples: LmExample) -> tuple[hax.NamedArray, hax.NamedArray]:
+        return self._jit_loglikelihood(self.model, examples)
+
+    def do_request(self, request_type, example):
+        if request_type == RequestType.LOG_LIKELIHOOD:
+            return self.loglikelihood(example)
+        elif request_type == RequestType.GENERATE_UNTIL:
+            raise NotImplementedError()
+        elif request_type == RequestType.LOG_LIKELIHOOD_ROLLING:
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Invalid request type {request_type}")
+
+    def worker_loop(self):
+        dummy_example = self.dummy_example
+        while True:
+            request_type, request = broadcast_one_to_all((RequestType.FINISHED, dummy_example), is_source=False)
+
+            if request_type == RequestType.FINISHED:
+                break
+
+            result = self.do_request(request_type, request)
+            del result
+
+    def finish(self):
+        assert jax.process_index() == 0
+        broadcast_one_to_all((RequestType.FINISHED, self.dummy_example), is_source=True)
+
+
+class LevanterHarnessLM(LM):
+
+    def __init__(self, adaptor: InternalLMAdaptor, tokenizer):
+        super().__init__()
+        self.adaptor = adaptor
+        self.tokenizer = tokenizer
+
+        def _stack_batch(examples):
+            return stack_tree(self.adaptor.EvalBatch, examples, pad_to_batch_size=True)
+
+        self._stack_batch_jit = hax.named_jit(_stack_batch)
+
+    def _stack_batch(self, examples):
+        with use_cpu_device():
+            return self._stack_batch_jit(examples)
+
+    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
+        """
+        Compute log-likelihood of generating a continuation from a context.
+        Downstream tasks should attempt to use loglikelihood instead of other
+        LM calls whenever possible.
+        Args:
+            requests:
+
+        Returns:
+
+        """
+
+        Pos = self.adaptor.model.Pos
+
+        contexts = self.tokenizer([req.args[0] for req in requests])["input_ids"]
+        completions = self.tokenizer([req.args[1] for req in requests])["input_ids"]
+
+        examples: list[LmExample] = []
+        with use_cpu_device():
+            for context, completion in zip(contexts, completions):
+                context, completion = self._truncate_or_pad(context, completion)
+                context, completion = hax.named(context, Pos.name), hax.named(completion, Pos.name)
+                example = LmExample.from_prompt_and_completion(context, completion, ignore_id=self.tokenizer.pad_token_id)
+                examples.append(example)
+
+        result = []
+        for batch in batched(examples, self.adaptor.EvalBatch.size):
+            batch_example = self._stack_batch(batch)
+            out_lls, out_correct = self._dispatch(RequestType.LOG_LIKELIHOOD, batch_example)
+            result.extend(zip(out_lls, out_correct))
+
+        # skip padding
+        result = result[:len(examples)]
+
+        print(contexts)
+        print(completions)
+
+        return result
+
+
+    def _truncate_or_pad(self, context, completion):
+        max_len = self.adaptor.model.Pos.size
+        if len(completion) > max_len:
+            warnings.warn(f"Completion is longer than max length {max_len}. Truncating.")
+            completion = completion[:max_len]
+        pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+
+        if len(context) + len(completion) > max_len:
+            context = context[-(max_len - len(completion)):]
+        else:
+            # right pad with padding token
+            context = context + [pad_token_id] * (max_len - len(context) - len(completion))
+
+        return context, completion
+
+    def _dispatch(self, request_type, request):
+        broadcast_one_to_all((request_type, request), is_source=True)
+        return self.adaptor.do_request(request_type, request)
+
+
+    def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
+        raise NotImplementedError()
+
+    def generate_until(self, requests) -> List[str]:
+        raise NotImplementedError()
+
+
+
+def run_lm_eval_harness(model, tokenizer, EvalBatch, max_examples=None):
+    adaptor = InternalLMAdaptor(EvalBatch, model)
+    harness = LevanterHarnessLM(adaptor, tokenizer)
+    tasks_to_run = tasks.get_task_dict([
+        # "lambada",
+                                         # "piqa",
+                                         "hellaswag",
+                                         # "winogrande",
+                                         # "mathqa",
+                                         # "pubmedqa",
+                                         # "boolq",
+                                         # "cb",
+                                         # "copa",
+                                         # "multirc",
+                                         # "record",
+                                         # "wic",
+                                         # "wsc",
+                                         ])
+    if jax.process_index() == 0:
+        try:
+            outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples)
+        finally:
+            adaptor.finish()
+    else:
+        adaptor.worker_loop()
+        outputs = {}
+
+    return outputs
+
+@dataclass
+class EvalHarnessConfig:
+    tokenizer: str
+    checkpoint_path: str
+    trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
+    model: LmConfig = dataclasses.field(default_factory=LmConfig)
+
+    @property
+    def EvalBatch(self):
+        return self.trainer.EvalBatch
+
+    @cached_property
+    def the_tokenizer(self):
+        return transformers.AutoTokenizer.from_pretrained(self.tokenizer)
+
+
+@levanter.config.main
+def run_eval_harness_main(config: EvalHarnessConfig):
+    config.trainer.initialize()
+    tokenizer = config.the_tokenizer
+
+    compute_axis_mapping = config.trainer.compute_axis_mapping
+    parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+        key = jax.random.PRNGKey(0)
+
+        vocab_size = len(tokenizer)
+        Vocab = round_axis_for_partitioning(hax.Axis("vocab", vocab_size), compute_axis_mapping)
+        if vocab_size != Vocab.size:
+            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
+
+        total = config.trainer.max_eval_batches
+
+        if total is not None:
+            total = total * config.trainer.EvalBatch.size
+
+        # initialize the model
+        if config.checkpoint_path is not None:
+            # initialize the model
+            with use_cpu_device():
+                model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+                # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
+                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+                model = inference_mode(model, True)
+
+            model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+
+            logger.info(f"Running LM eval harness....")
+            run_lm_eval_harness(model, tokenizer, config.EvalBatch, max_examples=total)
+        else:
+            raise ValueError("No checkpoint path provided")
+
+
+if __name__ == '__main__':
+    run_eval_harness_main()

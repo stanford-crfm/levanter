@@ -46,6 +46,33 @@ class LmExample(eqx.Module):
         attn_mask = AttentionMask.causal()
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
+    @staticmethod
+    def from_prompt_and_completion(prompt: hax.NamedArray, completion: hax.NamedArray, *, ignore_id: Optional[int] = None,
+                                   all_causal: bool = True) -> "LmExample":
+        Pos = prompt.axes[0]
+        tokens = hax.concatenate(Pos.name, [prompt, completion])
+        tokens_Pos = tokens.resolve_axis(Pos.name)
+
+        # mask out the prompt tokens
+        loss_mask = hax.arange(tokens_Pos) >= Pos.size
+        # also mask out the last token
+        loss_mask *= (1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32))
+
+        if ignore_id is not None:
+            ignore_mask = tokens != ignore_id
+            loss_mask *= ignore_mask
+
+        if all_causal:
+            attn_mask = AttentionMask.causal()
+        else:
+            # causal just for the completion part. We don't have a special structured mask for this, so we just
+            raise NotImplementedError("Not implemented yet")
+
+        return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+
+
+
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
 class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
