@@ -7,13 +7,14 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis
 
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs
 
 
 @pytest.mark.parametrize("num_blocks", [1, 4, 12])
-def test_gradient_checkpointing(num_blocks):
+@pytest.mark.parametrize("attn_backend", [AttentionBackend.JAX_FLASH, AttentionBackend.VANILLA])
+def test_gradient_checkpointing(num_blocks, attn_backend):
     # ensure that gradient checkpointing doesn't change the output
     # (this is a regression test for a bug that caused the output to change)
     config = Gpt2Config(
@@ -22,7 +23,8 @@ def test_gradient_checkpointing(num_blocks):
         num_layers=num_blocks,
         num_heads=8,
         gradient_checkpointing=False,
-        use_flash_attention=True,
+        # use_flash_attention=True,
+        attn_backend=attn_backend,
     )
     config_checkpoint = dataclasses.replace(config, gradient_checkpointing=True)
     key = PRNGKey(0)
