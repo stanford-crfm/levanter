@@ -27,12 +27,23 @@ jobs:
         run: |
           gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Create VM and Run Script
+      - name: Create VM
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
           eval "$(ssh-agent -s)"
-          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 3 -- \
-            PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests
+          bash infra/spin-up-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }}
+#          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 1 -- \
+#            PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m "not entry"
+
+      - name: Run most tests
+        run: |
+          export TPU_NAME=ci-run-${{ github.run_id }}
+          gcloud tpu tpu-vm ssh $TPU_NAME --zone ${{ matrix.tpu-zone }} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m 'not entry'"
+
+      - name: Run forked tests
+        run: |
+          export TPU_NAME=ci-run-${{ github.run_id }}
+          gcloud tpu tpu-vm ssh $TPU_NAME --zone ${{ matrix.tpu-zone }} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest --forked levanter/tests -m 'entry'"
 
       - name: Cleanup
         if: ${{ always() }}
