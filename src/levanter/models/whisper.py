@@ -27,7 +27,7 @@ from levanter.compat.torch_serialization import (
 )
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -63,6 +63,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     # Attention-related config
     upcast_attn: bool = True
     use_flash_attention: bool = False
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     @property
