@@ -87,14 +87,9 @@ class OlmoConfig(HFCompatConfig):
 
     def __post_init__(self):
         # Inside your training loop or wherever you want to print the worker information
-        worker_id = jax.process_index()
-        print(f"Worker: {worker_id}")
-        print(f" \n {self.num_heads} \n {self.num_kv_heads}")
-        print(f" {dir(self)}")
         if self.num_heads is None or self.num_kv_heads is None:
             self = dataclasses.replace(self, num_kv_heads=32, num_heads=32)
         
-        print(f"\n num_heads={self.num_heads},\n num_kv_heads={self.num_kv_heads}\n")
         assert (
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
