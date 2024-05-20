@@ -104,6 +104,8 @@ class OlmoConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        if not hasattr(hf_config, 'max_position_embeddings'):
+            raise AttributeError("hf_config does not have the attribute 'max_position_embeddings'")
         return OlmoConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
