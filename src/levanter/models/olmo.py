@@ -138,7 +138,7 @@ class OlmoConfig(HFCompatConfig):
             num_key_value_heads=self.num_kv_heads,
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
-            rms_norm_eps=self.layer_norm_epsilon,
+            layer_norm_epsilon=self.layer_norm_epsilon,
             rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
             **config_overrides,
