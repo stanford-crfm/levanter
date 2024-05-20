@@ -48,4 +48,5 @@ jobs:
         if: ${{ always() }}
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          yes | gcloud compute tpus tpu-vm delete $TPU_NAME --zone ${TPU_ZONE} --quiet
+          echo gcloud compute tpus tpu-vm delete $TPU_NAME --zone ${TPU_ZONE} --quiet
+          gcloud compute tpus tpu-vm delete $TPU_NAME --zone ${TPU_ZONE} --quiet
