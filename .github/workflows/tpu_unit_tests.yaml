@@ -5,9 +5,8 @@ on: [pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        tpu-zone: ["us-central2-b"]
+    env:
+      TPU_ZONE: "us-central1-b"
 
     steps:
       - name: Checkout code
@@ -31,21 +30,21 @@ jobs:
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
           eval "$(ssh-agent -s)"
-          bash infra/spin-up-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }}
-#          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ matrix.tpu-zone }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 1 -- \
+          bash infra/spin-up-vm.sh $TPU_NAME -z ${TPU_ZONE} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }}
+#          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ TPU_ZONE }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 1 -- \
 #            PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m "not entry"
 
       - name: Run most tests
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone ${{ matrix.tpu-zone }} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m 'not entry'"
+          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone ${TPU_ZONE} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m 'not entry'"
 
       - name: Run forked tests
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone ${{ matrix.tpu-zone }} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest --forked levanter/tests -m 'entry'"
+          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone ${TPU_ZONE} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest --forked levanter/tests -m 'entry'"
 
       - name: Cleanup
         if: ${{ always() }}
         run: |
-          yes | gcloud compute tpus tpu-vm delete $TPU_NAME --zone ${{ matrix.tpu-zone }} --quiet
+          yes | gcloud compute tpus tpu-vm delete $TPU_NAME --zone ${TPU_ZONE} --quiet
