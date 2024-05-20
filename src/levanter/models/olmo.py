@@ -104,6 +104,7 @@ class OlmoConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        print(f"\n hf_config: {hf_config}\n")
         return OlmoConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
