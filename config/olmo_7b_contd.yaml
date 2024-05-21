@@ -19,11 +19,11 @@ data:
     - "gs://levanter-data/paloma/twitterAAE_HELM_fixed/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/wikitext_103/val/val*.jsonl.gz"
   cache_dir: "gs://levanter-data/tokenized/markweb_olmo/"
-  tokenizer: "allenai/OLMo-1B"
+  tokenizer: "allenai/OLMo-7B-hf"
 
 model:
   type: olmo
-initialize_from_hf: "allenai/OLMo-7B"
+initialize_from_hf: "allenai/OLMo-7B-hf"
 use_hf_model_config: true
 
 trainer:
