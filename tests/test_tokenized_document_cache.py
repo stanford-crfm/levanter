@@ -36,6 +36,7 @@ def test_index_empty_file():
             source,
             tokenizer,
             flatten_docs=True,
+            enforce_bos=False,
             enforce_eos=False,
             override_resources={"num_cpus": 1},
         )

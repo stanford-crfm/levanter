@@ -1399,6 +1399,8 @@ class ChunkCacheBroker:
             return self.chunks[chunk_idx]
         elif self._is_finished:
             return None
+        elif self._finished_promise.exception() is not None:
+            raise self._finished_promise.exception()  # type: ignore
         else:
             if chunk_idx not in self._reader_promises:
                 self._reader_promises[chunk_idx] = asyncio.Future()
