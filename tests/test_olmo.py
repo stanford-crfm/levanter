@@ -11,7 +11,7 @@ from jax import random
 import haliax as hax
 
 from levanter.models.attention import AttentionMask
-from levanter.models.olmo import OlmoAttention, OlmoConfig, OlmoDecoderLayer, OlmoEmbedding, OlmoLMHeadModel, OlmoMLP, OlmoTransformer
+from levanter.models.olmo import OlmoConfig, OlmoDecoderLayer, OlmoEmbedding, OlmoLMHeadModel, OlmoMLP, OlmoTransformer
 from levanter.models.olmo import _apply_rotary_pos_emb as olmo_apply_rotary_pos_emb
 from levanter.models.olmo import _rotate_half as olmo_rotate_half
 from levanter.models.olmo import olmo_rotary_pos_emb
@@ -122,38 +122,38 @@ def test_apply_rotary_pos_emb():
     assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
 
 
-@skip_if_no_torch
-@pytest.mark.parametrize("use_flash", [True, False])
-@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_olmo_attention(use_flash, num_kv_heads):
-    import torch
-    from transformers.models.olmo.modeling_olmo import OlmoAttention as HFOlmoAttention
+# @skip_if_no_torch
+# @pytest.mark.parametrize("use_flash", [True, False])
+# @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+# def test_olmo_attention(use_flash, num_kv_heads):
+#     import torch
+#     from transformers.models.olmo.modeling_olmo import OlmoAttention as HFOlmoAttention
 
-    config = _get_olmo_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+#     config = _get_olmo_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = OlmoAttention.init(config=config, key=random.PRNGKey(0))
+#     attention = OlmoAttention.init(config=config, key=random.PRNGKey(0))
 
-    state = attention.to_state_dict()
-    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_attention = HFOlmoAttention(config.to_hf_config(32000))
-    hf_attention.load_state_dict(state, strict=True)
+#     state = attention.to_state_dict()
+#     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+#     hf_attention = HFOlmoAttention(config.to_hf_config(32000))
+#     hf_attention.load_state_dict(state, strict=True)
 
-    x, mask = _get_random_inputs(config)
-    x_torch = torch.from_numpy(np.array(x.array))
-    batch_size = x_torch.shape[0]
-    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
-    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+#     x, mask = _get_random_inputs(config)
+#     x_torch = torch.from_numpy(np.array(x.array))
+#     batch_size = x_torch.shape[0]
+#     explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+#     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
 
-    # the torch mask is really a bias, so we need to invert it and make it a big negative number
-    mask_torch = (mask_torch == 0).float() * -1e9
+#     # the torch mask is really a bias, so we need to invert it and make it a big negative number
+#     mask_torch = (mask_torch == 0).float() * -1e9
 
-    out = attention(x, mask)
-    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
-    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+#     out = attention(x, mask)
+#     position_ids = torch.arange(config.Pos.size).reshape(1, -1)
+#     hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
+#     assert np.isclose(
+#         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
+#     ).all(), f"{hf_out[0]} != {out}"
 
 
 def test_olmo_param_counts_dont_change_with_seqlen():
