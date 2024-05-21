@@ -276,7 +276,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
 
-        import ipdb; ipdb.set_trace()
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
 
