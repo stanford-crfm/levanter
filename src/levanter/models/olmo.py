@@ -90,8 +90,8 @@ class OlmoConfig(HFCompatConfig):
     def __post_init__(self):
         # Inside your training loop or wherever you want to print the worker information
         if self.num_heads is None or self.num_kv_heads is None:
-            self.__setattr__(self, 'num_heads', 32)
-            self.__setattr__(self, 'num_kv_heads', 32)
+            self.__setattr__('num_heads', 32)
+            self.__setattr__('num_kv_heads', 32)
             #self = dataclasses.replace(self, num_kv_heads=32, num_heads=32)
         
         assert (
