@@ -9,8 +9,6 @@ use_hf_model_config: true
 
 trainer:
   seed: 42
-  checkpointer:
-      - every: 5
   tracker:
     type: wandb
     project: "trace-train"
