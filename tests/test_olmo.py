@@ -23,7 +23,7 @@ import transformers
 @skip_if_no_torch
 def test_olmo_config():
     # load HF config and convert to levanter config
-    hf_config = transformers.OlmoConfig.from_pretrained("allenai/OLMo-7B")
+    hf_config = transformers.OlmoConfig.from_pretrained("allenai/OLMo-7B-hf")
     olmo_config = OlmoConfig.from_hf_config(hf_config)
 
     # convert back to HF config
