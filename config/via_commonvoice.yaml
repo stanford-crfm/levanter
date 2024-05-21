@@ -1,10 +1,9 @@
 data:
-  id: mozilla-foundation/common_voice_16_1
-  cache_dir: "gs://audio-via/processed/cv-l3"
-  name: "en"
-  text_key: "sentence"
+  id: WillHeld/CommonVoice_Shuffled_Processed
+  cache_dir: "gs://audio-via/processed/cv-l3-shuf"
+  text_key: "text"
   train_split: "train"
-  validation_split: "validation"
+  validation_split: "valid"
   tokenizer: "WillHeld/via-llama3-ps"
   processor: "openai/whisper-large-v3"
 model:
@@ -21,11 +20,15 @@ trainer:
   mp: p=f32,c=bf16
   model_axis_size: 1
   per_device_parallelism: -1
-
   train_batch_size: 512
-  num_train_steps: 2150
+  num_train_steps: 4300
+  checkpointer:
+    base_path: gs://audio-via/levanter-tpu-via-cv/lev_checkpoints
+    keep:
+      - every: 10
+    save_interval: 60m
 optimizer:
-  learning_rate: 1E-5
+  learning_rate: 2.5E-5
   weight_decay: 0.1
   warmup: 0.01
 via_init: True
