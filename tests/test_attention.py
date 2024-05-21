@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 import pytest
 from chex import assert_trees_all_close
 
