@@ -31,6 +31,8 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.py_utils import cached_classproperty
 
+from levanter.models.llama import LlamaAttention
+
 
 silence_transformer_nag()
 from transformers import OlmoConfig as HfOlmoConfig  # noqa: E402
@@ -221,85 +223,85 @@ class OlmoMLP(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class OlmoAttention(StateDictSerializationMixin, eqx.Module):
-    config: OlmoConfig = eqx.static_field()
-    q_proj: hnn.Linear  # projection from Embed to query
-    k_proj: hnn.Linear  # projection from Embed to key
-    v_proj: hnn.Linear  # projection from Embed to value
-    o_proj: hnn.Linear  # projection from Heads to output
+# class OlmoAttention(StateDictSerializationMixin, eqx.Module):
+#     config: OlmoConfig = eqx.static_field()
+#     q_proj: hnn.Linear  # projection from Embed to query
+#     k_proj: hnn.Linear  # projection from Embed to key
+#     v_proj: hnn.Linear  # projection from Embed to value
+#     o_proj: hnn.Linear  # projection from Heads to output
 
-    @staticmethod
-    def init(config: OlmoConfig, *, key) -> "OlmoAttention":
-        use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", 32 // 32)
+#     @staticmethod
+#     def init(config: OlmoConfig, *, key) -> "OlmoAttention":
+#         use_bias = config.use_bias
+#         Embed = config.Embed
+#         QHeadsPerGroup = hax.Axis("q_heads_per_group", 32 // 32)
 
-        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
-        )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
-        o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
-        return OlmoAttention(config, q_proj, k_proj, v_proj, o_proj)
+#         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
+#         q_proj = hnn.Linear.init(
+#             In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+#         )
+#         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
+#         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
+#         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
+#         return OlmoAttention(config, q_proj, k_proj, v_proj, o_proj)
 
-    @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
-        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+#     @named_call
+#     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+#         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
-        # reorder heads and position for better training throughput
-        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
-        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
+#         # reorder heads and position for better training throughput
+#         q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+#         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
+#         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = olmo_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
+#         cos, sin = olmo_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
+#         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
+#         k = k.rename({"position": "key_position"})
+#         v = v.rename({"position": "key_position"})
 
-        c = self.config
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            use_flash=c.use_flash_attention,
-            flash_block_size=c.flash_attention_block_size,
-        )
+#         c = self.config
+#         attn_output = dot_product_attention(
+#             "position",
+#             "key_position",
+#             "head_size",
+#             q,
+#             k,
+#             v,
+#             mask,
+#             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+#             use_flash=c.use_flash_attention,
+#             flash_block_size=c.flash_attention_block_size,
+#         )
 
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-        attn_output = attn_output.astype(x.dtype)
-        import ipdb; ipdb.set_trace()
-        attn_output = self.o_proj(attn_output, key=key_o)
-        return attn_output
+#         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+#         attn_output = attn_output.astype(x.dtype)
+#         import ipdb; ipdb.set_trace()
+#         attn_output = self.o_proj(attn_output, key=key_o)
+#         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of OlmoAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
+#     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+#         # unflatten the linear layers of HF state_dict to match the shape of OlmoAttention
+#         d = {}
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
 
-        return super().from_state_dict(d, prefix)
+#         return super().from_state_dict(d, prefix)
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of OlmoAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
+#     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+#         # flatten the linear layers of OlmoAttention to match the shape of HF state_dict
+#         my_dict: StateDict = {}
+#         super().update_state_dict(my_dict, prefix)
 
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
 
-        state_dict.update(my_dict)
-        return state_dict
+#         state_dict.update(my_dict)
+#         return state_dict
 
 
 class NonParametricLayerNorm(hnn.LayerNorm):
@@ -331,7 +333,7 @@ class NonParametricLayerNorm(hnn.LayerNorm):
 
 class OlmoDecoderLayer(StateDictSerializationMixin, eqx.Module):
     config: OlmoConfig = eqx.static_field()
-    self_attn: OlmoAttention
+    self_attn: LlamaAttention
     mlp: OlmoMLP
     input_layernorm: NonParametricLayerNorm
     post_attention_layernorm: NonParametricLayerNorm
@@ -340,7 +342,7 @@ class OlmoDecoderLayer(StateDictSerializationMixin, eqx.Module):
     def init(config: OlmoConfig, *, key) -> "OlmoDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = OlmoAttention.init(config, key=k_attn)
+        attn = LlamaAttention.init(config, key=k_attn)
         mlp = OlmoMLP.init(
             config.Embed,
             config.Mlp,
