@@ -18,7 +18,7 @@ from levanter.models.olmo import _rotate_half as olmo_rotate_half
 from levanter.models.olmo import olmo_rotary_pos_emb
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
-
+import transformers
 
 @skip_if_no_torch
 def test_olmo_config():
