@@ -290,16 +290,11 @@ def test_olmo_roundtrip(scan_layers, num_kv_heads):
 
 
 def _get_olmo_config(use_flash=False, num_kv_heads=4, seq_len=128) -> OlmoConfig:
-    rope_scaling = {
-        "type": "linear",
-        "factor": 2.0,
-    }
     return OlmoConfig(
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,

@@ -348,8 +348,8 @@ class OlmoDecoderLayer(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = NonParametricLayerNorm.init(config.Embed,  use_bias=config.use_bias)
-        ln_2 = NonParametricLayerNorm.init(config.Embed,  use_bias=config.use_bias)
+        ln_1 = NonParametricLayerNorm.init(config.Embed)
+        ln_2 = NonParametricLayerNorm.init(config.Embed)
 
         return OlmoDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
