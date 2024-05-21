@@ -45,8 +45,12 @@ def test_flash_attention_causal_mask():
     k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
     v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
-    flash_out = flash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
-    hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+    flash_out = flash_attention(
+        QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE, precision="highest"
+    )
+    hax_out = hnn.attention.dot_product_attention(
+        KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos), precision="highest"
+    )
 
     assert hax_out.axes == flash_out.axes
     assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)

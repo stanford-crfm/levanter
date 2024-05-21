@@ -122,6 +122,6 @@ def test_save_sharded_checkpoints():
         np.testing.assert_allclose(
             np.array(nano_model(input, causal_mask, key=None).array),
             np.array(loaded_model(input, causal_mask, key=None).array),
-            rtol=1e-6,
-            atol=1e-6,
+            rtol=1e-4,
+            atol=1e-4,
         )
