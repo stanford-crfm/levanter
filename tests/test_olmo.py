@@ -24,6 +24,7 @@ import transformers
 def test_olmo_config():
     # load HF config and convert to levanter config
     hf_config = transformers.OlmoConfig.from_pretrained("allenai/OLMo-7B-hf")
+    import ipdb; ipdb.set_trace()
     olmo_config = OlmoConfig.from_hf_config(hf_config)
 
     # convert back to HF config
