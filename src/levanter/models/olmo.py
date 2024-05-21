@@ -387,7 +387,7 @@ class OlmoTransformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = NonParametricLayerNorm.init(config.Embed, use_bias=config.use_bias)
+        ln_f = NonParametricLayerNorm.init(config.Embed)
 
         return OlmoTransformer(config, layers, ln_f)
 
