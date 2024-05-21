@@ -73,7 +73,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             case "constant":
                 schedule = optax.constant_schedule(self.learning_rate)
             case "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+                schedule = optax.cosine_decay_schedule(self.learning_rate, 1, self.min_lr_ratio)
             case "linear":
                 schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
             case "inv_sqrt":
