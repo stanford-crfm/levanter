@@ -1,6 +1,6 @@
 data:
   train_urls:
-    - "gs://levanter-data/pile-domains/owt2/{0...29}.jsonl.zst"
+    - "gs://levanter-data/pile-domains/owt2/00.jsonl.zst"
   validation_urls:
     - "gs://levanter-data/paloma/4chan_meta_sep/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/c4_100_domains/val/val*.jsonl.gz"
