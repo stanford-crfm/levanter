@@ -209,8 +209,8 @@ def test_tpu_splash_attention():
 
     mask = AttentionMask.causal()
 
-    flash_out = _tpu_splash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
-    hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
-
-    assert hax_out.axes == flash_out.axes
-    assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+    with jax.sharding.Mesh(jax.devices(), ("dp",)):
+        flash_out = _tpu_splash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
+        hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+        assert hax_out.axes == flash_out.axes
+        assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
