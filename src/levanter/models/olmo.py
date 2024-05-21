@@ -232,7 +232,7 @@ class OlmoAttention(StateDictSerializationMixin, eqx.Module):
     def init(config: OlmoConfig, *, key) -> "OlmoAttention":
         use_bias = config.use_bias
         Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
+        QHeadsPerGroup = hax.Axis("q_heads_per_group", 32 // 32)
 
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
