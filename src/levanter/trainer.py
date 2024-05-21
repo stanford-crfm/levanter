@@ -107,7 +107,8 @@ class TrainerHooks:
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 if hasattr(hook.fn, "__name__") and hook.fn.__name__ == "on_step":  # only for checkpointer.on_step
-                    hook.fn(info, force)  # type: ignore
+                    continue
+                    # hook.fn(info, force)  # type: ignore
                 else:
                     hook.fn(info)  # type: ignore
 
@@ -416,6 +417,8 @@ class Trainer:
         """
         for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
             pass
+
+        info = StepInfo(state, 0.0, 0.0)
 
         if run_hooks:
             # force hooks to run at the end
