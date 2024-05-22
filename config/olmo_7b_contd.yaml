@@ -23,7 +23,7 @@ data:
 
 model:
   type: olmo
-initialize_from_hf: "allenai/OLMo-7B"
+initialize_from_hf: "allenai/OLMo-7B-hf@step1000-tokens4B"
 use_hf_model_config: true
 
 trainer:
