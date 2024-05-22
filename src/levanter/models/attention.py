@@ -22,7 +22,7 @@ from haliax.types import PrecisionLike
 class AttentionBackend(Enum):
     DEFAULT = "default"  # use the default attention type for the accelerator
     NVTE = "nvte"  # with Transformer Engine on NVIDIA GPUs
-    SPLASH = "splash"  # on TPU. disabled by default (even with DEFAULT)
+    SPLASH = "splash"  # on TPU.
     JAX_FLASH = "jax_flash"  # Use the JAX reference implementation
     VANILLA = "vanilla"  # regular dot product attention
 
@@ -31,9 +31,8 @@ def default_attention_type() -> AttentionBackend:
     accelerator_type = jax.local_devices()[0].platform
     if accelerator_type == "gpu":
         return AttentionBackend.NVTE
-    # TODO: re-enable splash attention once we figure out the issues
-    # elif accelerator_type == "tpu":
-    #     return AttentionType.SPLASH
+    elif accelerator_type == "tpu":
+        return AttentionBackend.SPLASH
     else:
         return AttentionBackend.JAX_FLASH
 
@@ -127,7 +126,6 @@ def dot_product_attention(
                 flash_block_size=flash_block_size,
             )
         case AttentionBackend.SPLASH:
-            warnings.warn("There's something wrong with splash attention. Please check results carefully.")
             attention_out = _try_tpu_splash_attention(
                 QPos,
                 KPos,
