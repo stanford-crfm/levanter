@@ -88,11 +88,17 @@ def dot_product_attention(
     if QPos == KPos:
         raise ValueError("QPos and KPos must have different names")
 
-    if use_flash is not None and attn_backend is not None:
-        if attn_backend != AttentionBackend.VANILLA and not use_flash:
-            raise ValueError("use_flash is False, but flash_backend is not VANILLA")
-        elif attn_backend == AttentionBackend.VANILLA and use_flash:
-            raise ValueError("use_flash is True, but flash_backend is VANILLA")
+    if use_flash is not None:
+        if attn_backend is None:
+            if not use_flash:
+                attn_backend = AttentionBackend.VANILLA
+            else:
+                attn_backend = AttentionBackend.DEFAULT
+        else:
+            if attn_backend != AttentionBackend.VANILLA and not use_flash:
+                raise ValueError("use_flash is False, but flash_backend is not VANILLA")
+            elif attn_backend == AttentionBackend.VANILLA and use_flash:
+                raise ValueError("use_flash is True, but flash_backend is VANILLA")
 
     if attn_backend is None or attn_backend == AttentionBackend.DEFAULT:
         was_default = True
