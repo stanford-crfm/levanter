@@ -1,0 +1,34 @@
+data:
+  id: WillHeld/emotive_formatted_audio
+  cache_dir: "gs://audio-via/processed/emote-l3"
+  text_key: "formatted"
+  train_split: "train"
+  validation_split: "valid"
+  tokenizer: "WillHeld/llama3-via_no-emote"
+  processor: "openai/whisper-large-v3"
+model:
+  type: whisper
+initialize_from_hf: "WillHeld/llama3-via_no-emote"
+use_hf_model_config: true
+trainer:
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: [ "cv", "via"]
+
+  steps_per_eval: 10
+  mp: p=f32,c=bf16
+  model_axis_size: 1
+  per_device_parallelism: -1
+  train_batch_size: 512
+  num_train_steps: 50
+  checkpointer:
+    base_path: gs://audio-via/levanter-tpu-via-emote/lev_checkpoints
+    keep:
+      - every: 10
+    save_interval: 60m
+optimizer:
+  learning_rate: 1E-5
+  weight_decay: 0.0
+  warmup: 0.5
+via_init: True

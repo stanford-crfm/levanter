@@ -33,7 +33,8 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     dec_config: LlamaConfig = field(default_factory=LlamaConfig)
 
     # Connector Config
-    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
+    # pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
+    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000])
     pre_text_prompt: Sequence[int] = field(default_factory=lambda: [128009, 128006, 78191, 128007, 271])
 
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
@@ -71,7 +72,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/via-llama3-ps")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama")
 
 
 def connector_only(model):
@@ -79,7 +80,7 @@ def connector_only(model):
     return eqx.tree_at(
         lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias, tree.connector),
         frozen_tree,
-        (True, True, True, True),
+        (True, True, True, False),
     )
 
 
@@ -223,21 +224,21 @@ class ViaASRModel(ViaModel, ASRMixin):
             example.audio, example.tokens, example.attn_mask, key=key
         )
         diff_distill = audio_pred - text_pred
-        loss1 = hax.dot(diff_distill, diff_distill, axis="embed") ** 0.5
+        kl_proxy_loss = hax.dot(diff_distill, diff_distill, axis="embed") ** 0.5
 
-        # Compute Contrastive Loss on Input
-        # Correct for Normal Autoregressive Loss Mask
-        corrected_loss_mask = hax.roll(example.loss_mask, 1, LocalPos) + hax.nn.one_hot(
-            0, LocalPos, dtype=jax.numpy.float32
-        )
-        # Mask Final Tokens So That Initial Tokens can be used for extra computation
-        reversed_loss_mask = corrected_loss_mask["position", -1::-1]
-        diff_contrast = virtual_embeds - real_embeds
-        loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
+        # # Compute Contrastive Loss on Input
+        # # Correct for Normal Autoregressive Loss Mask
+        # corrected_loss_mask = hax.roll(example.loss_mask, 1, LocalPos) + hax.nn.one_hot(
+        #     0, LocalPos, dtype=jax.numpy.float32
+        # )
+        # # Mask Final Tokens So That Initial Tokens can be used for extra computation
+        # reversed_loss_mask = corrected_loss_mask["position", -1::-1]
+        # diff_contrast = virtual_embeds - real_embeds
+        # loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
 
         if reduction is None:
-            return loss2
+            return kl_proxy_loss
         else:
-            return reduction(loss1, axis=reduction_axis) + reduction(
-                loss2, axis=reduction_axis, where=reversed_loss_mask
-            )
+            return reduction(kl_proxy_loss, axis=reduction_axis)  # + reduction(
+            #     loss2, axis=reduction_axis, where=reversed_loss_mask
+            # )
