@@ -46,7 +46,7 @@ trainer:
   model_axis_size: 1
   per_device_eval_parallelism: -1
   max_eval_batches: 2
-  train_batch_size: 32
+  train_batch_size: 64
   num_train_steps: 10000
   steps_per_eval: 10
   tensor_parallel_axes: ["mlp", "heads"]
@@ -55,7 +55,7 @@ trainer:
 
 optimizer:
 # lr from code llama paper
-  learning_rate: 1.2E-4
+  learning_rate: 1.2E-5
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
