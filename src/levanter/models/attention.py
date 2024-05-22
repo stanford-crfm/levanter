@@ -86,25 +86,19 @@ def dot_product_attention(
         NamedArray of shape (value.axes - KPos + QPos)
     """
     if QPos == KPos:
-        raise ValueError("QPos and KPos must be different")
+        raise ValueError("QPos and KPos must have different names")
 
-    was_default = attn_backend is None
-
-    if use_flash is not None:
-        # warnings.warn("use_flash is deprecated. Please use flash_backend instead.")
-        if attn_backend is None:
-            if use_flash:
-                attn_backend = default_attention_type()
-            else:
-                attn_backend = AttentionBackend.VANILLA
-        else:
-            if attn_backend != AttentionBackend.VANILLA and not use_flash:
-                raise ValueError("use_flash is False, but flash_backend is not VANILLA")
-            elif attn_backend == AttentionBackend.VANILLA and use_flash:
-                raise ValueError("use_flash is True, but flash_backend is VANILLA")
+    if use_flash is not None and attn_backend is not None:
+        if attn_backend != AttentionBackend.VANILLA and not use_flash:
+            raise ValueError("use_flash is False, but flash_backend is not VANILLA")
+        elif attn_backend == AttentionBackend.VANILLA and use_flash:
+            raise ValueError("use_flash is True, but flash_backend is VANILLA")
 
     if attn_backend is None or attn_backend == AttentionBackend.DEFAULT:
+        was_default = True
         attn_backend = default_attention_type()
+    else:
+        was_default = False
 
     match attn_backend:
         case AttentionBackend.NVTE:
@@ -766,6 +760,9 @@ def _tpu_splash_attention(
 
     B, Hq, Sq, D = q_.shape
     Bk, Hk, Sk, Dk = k_.shape
+
+    if Sk % 128 != 0:
+        raise NotImplementedError("Splash attention requires KPos to be a multiple of 128")
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
