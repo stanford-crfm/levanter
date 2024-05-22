@@ -12,7 +12,7 @@ from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
-from haliax import Axis, AxisSelection, AxisSelector, NamedArray
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.partitioning import pspec_for_axis
@@ -85,7 +85,7 @@ def dot_product_attention(
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
-    if QPos == KPos:
+    if axis_name(QPos) == axis_name(KPos):
         raise ValueError("QPos and KPos must have different names")
 
     if use_flash is not None:
@@ -99,6 +99,14 @@ def dot_product_attention(
                 raise ValueError("use_flash is False, but flash_backend is not VANILLA")
             elif attn_backend == AttentionBackend.VANILLA and use_flash:
                 raise ValueError("use_flash is True, but flash_backend is VANILLA")
+    elif use_flash is None and attn_backend is None:
+        # if the block_size doesn't divide the seq lens, we can't use flash. Previously default was use_flash=False
+        if flash_block_size is not None:
+            qlen = query.axis_size(QPos)
+            klen = key.axis_size(KPos)
+            if qlen % flash_block_size != 0 or klen % flash_block_size != 0:
+                use_flash = False
+                attn_backend = AttentionBackend.VANILLA
 
     if attn_backend is None or attn_backend == AttentionBackend.DEFAULT:
         was_default = True
@@ -767,8 +775,12 @@ def _tpu_splash_attention(
     B, Hq, Sq, D = q_.shape
     Bk, Hk, Sk, Dk = k_.shape
 
+    # number
     if Sk % 128 != 0:
         raise NotImplementedError("Splash attention requires KPos to be a multiple of 128")
+
+    if block_size is not None and block_size % 128 != 0:
+        raise NotImplementedError(f"Splash attention requires block_size to be a multiple of 128, got {block_size}")
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
