@@ -41,9 +41,9 @@ def test_flash_attention_causal_mask():
 
     mask = AttentionMask.causal()
 
-    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
-    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
-    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key)) * 0.02
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key)) * 0.02
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key)) * 0.02
 
     flash_out = flash_attention(
         QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE, precision="highest"

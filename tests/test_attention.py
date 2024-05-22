@@ -203,9 +203,9 @@ def test_tpu_splash_attention():
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Head, Key))
-    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Head, Key))
-    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Head, Key))
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Head, Key)) * 0.02
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Head, Key)) * 0.02
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Head, Key)) * 0.02
 
     mask = AttentionMask.causal()
 

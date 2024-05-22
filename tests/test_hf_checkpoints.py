@@ -1,9 +1,10 @@
 import tempfile
 
 import jax.numpy as jnp
+import jmp
 import numpy as np
 import pytest
-from chex import assert_trees_all_close
+from chex import assert_trees_all_close, assert_trees_all_equal
 from jax.random import PRNGKey
 
 import haliax
@@ -104,6 +105,9 @@ def test_save_sharded_checkpoints():
 
     nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
+    mp = jmp.get_policy("f32")
+    nano_model = mp.cast_to_param(nano_model)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(nano_model, tmpdir, max_shard_size=1024)
 
@@ -112,16 +116,12 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir)
+        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir, dtype=mp.param_dtype)
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab
 
-        input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
-        causal_mask = AttentionMask.causal()
-        assert_trees_all_close(
-            nano_model(input, causal_mask, key=None),
-            loaded_model(input, causal_mask, key=None),
-            rtol=1e-4,
-            atol=1e-4,
+        assert_trees_all_equal(
+            nano_model,
+            loaded_model,
         )
