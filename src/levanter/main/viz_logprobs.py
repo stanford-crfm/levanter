@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import equinox as eqx
 import jax
@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 class VizGpt2Config:
     checkpoint_path: str
     path: str = "logprobs.html"
-    trainer: TrainerConfig = TrainerConfig()
-    data: LMDatasetConfig = LMDatasetConfig()
-    model: LmConfig = Gpt2Config()
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
 
     num_docs: int = 256
 

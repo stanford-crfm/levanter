@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from chex import assert_trees_all_close
 
 import haliax as hax
 from haliax import Axis
@@ -32,8 +33,8 @@ def test_causal_sliding_window_attention_simple():
         # we should be able to attend to the previous W positions for each position (including current), so 6-10 can't attend
         # to 0-4 and can't get the 100.0 key
         result = result.rearrange((Pos, Head)).array
-        assert jnp.allclose(result[0:W, 1], 300)
-        assert jnp.allclose(result[W:, 1], 0)
+        assert_trees_all_close(result[0:W, 1], 300)
+        assert_trees_all_close(result[W:, 1], 0)
 
 
 def test_sliding_window_attention_fancier():
@@ -64,7 +65,7 @@ def test_sliding_window_attention_fancier():
 
         expected = expected.rearrange((Pos, Head)).array
 
-        assert jnp.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        assert_trees_all_close(result, expected, atol=1e-3, rtol=1e-3)
 
 
 def test_longformer_alibi_bias_pos_invariance():

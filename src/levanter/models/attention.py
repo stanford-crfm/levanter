@@ -1,6 +1,7 @@
 import functools
 import math
 import warnings
+from enum import Enum
 from typing import Optional, Union, overload
 
 import equinox as eqx
@@ -11,11 +12,29 @@ from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
-from haliax import Axis, AxisSelection, AxisSelector, NamedArray
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+
+
+class AttentionBackend(Enum):
+    DEFAULT = "default"  # use the default attention type for the accelerator
+    NVTE = "nvte"  # with Transformer Engine on NVIDIA GPUs
+    SPLASH = "splash"  # on TPU.
+    JAX_FLASH = "jax_flash"  # Use the JAX reference implementation
+    VANILLA = "vanilla"  # regular dot product attention
+
+
+def default_attention_type() -> AttentionBackend:
+    accelerator_type = jax.local_devices()[0].platform
+    if accelerator_type == "gpu":
+        return AttentionBackend.NVTE
+    elif accelerator_type == "tpu":
+        return AttentionBackend.SPLASH
+    else:
+        return AttentionBackend.JAX_FLASH
 
 
 @named_call
@@ -30,7 +49,8 @@ def dot_product_attention(
     bias: Optional[NamedArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
-    use_flash: bool = False,
+    use_flash: Optional[bool] = None,
+    attn_backend: Optional[AttentionBackend] = None,
     flash_block_size: Optional[int] = None,
     dropout: float = 0.0,
     *,
@@ -38,9 +58,12 @@ def dot_product_attention(
     prng: Optional[PRNGKeyArray] = None,
 ):
     """
-    This method is similar to [haliax.nn.attention.dot_product_attention][] but uses the [AttentionMask][] class,
-    which we might move to haliax.nn.attention in the future.
+    This method is similar to [haliax.nn.attention.dot_product_attention][] but it can use different backends for
+    attention. In particular, it can use the Transformer Engine for NVIDIA GPUs, the Splash Attention kernel for TPUs,
+    or a pure JAX reference flash attention 2 implementation for other platforms, or it can fall back to regular dot
+    product attention.
 
+    It also uses the [AttentionMask][] class, which we might move to haliax.nn.attention in the future.
     Unlike the Haliax version, it requires that the QPos and KPos already be different.
 
     Args:
@@ -62,73 +85,113 @@ def dot_product_attention(
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
-    if QPos == KPos:
-        raise ValueError("QPos and KPos must be different")
+    if axis_name(QPos) == axis_name(KPos):
+        raise ValueError("QPos and KPos must have different names")
 
-    accelerator_type = jax.local_devices()[0].platform
+    if use_flash is not None:
+        if attn_backend is None:
+            if not use_flash:
+                attn_backend = AttentionBackend.VANILLA
+            else:
+                attn_backend = AttentionBackend.DEFAULT
+        else:
+            if attn_backend != AttentionBackend.VANILLA and not use_flash:
+                raise ValueError("use_flash is False, but flash_backend is not VANILLA")
+            elif attn_backend == AttentionBackend.VANILLA and use_flash:
+                raise ValueError("use_flash is True, but flash_backend is VANILLA")
+    elif use_flash is None and attn_backend is None:
+        # if the block_size doesn't divide the seq lens, we can't use flash. Previously default was use_flash=False
+        if flash_block_size is not None:
+            qlen = query.axis_size(QPos)
+            klen = key.axis_size(KPos)
+            if qlen % flash_block_size != 0 or klen % flash_block_size != 0:
+                use_flash = False
+                attn_backend = AttentionBackend.VANILLA
 
-    if not use_flash:
-        return simple_attention_with_dropout(
-            QPos, KPos, Key, query, key, value, mask, bias, inference, dropout, attention_dtype, precision, prng=prng
-        )
-    elif accelerator_type == "gpu":
-        attention_out = _try_te_attention(
+    if attn_backend is None or attn_backend == AttentionBackend.DEFAULT:
+        was_default = True
+        attn_backend = default_attention_type()
+    else:
+        was_default = False
+
+    match attn_backend:
+        case AttentionBackend.NVTE:
+            attention_out = _try_te_attention(
+                QPos,
+                KPos,
+                Key,
+                query,
+                key,
+                value,
+                mask,
+                bias,
+                dropout,
+                inference,
+                force_te=not was_default,
+                prng=prng,
+                attention_dtype=attention_dtype,
+                precision=precision,
+                flash_block_size=flash_block_size,
+            )
+        case AttentionBackend.SPLASH:
+            attention_out = _try_tpu_splash_attention(
+                QPos,
+                KPos,
+                Key,
+                query,
+                key,
+                value,
+                mask,
+                bias,
+                dropout,
+                inference,
+                force_flash=not was_default,
+                prng=prng,
+                attention_dtype=attention_dtype,
+                precision=precision,
+                block_size=flash_block_size,
+            )
+        case AttentionBackend.VANILLA:
+            attention_out = simple_attention_with_dropout(
+                QPos,
+                KPos,
+                Key,
+                query,
+                key,
+                value,
+                mask,
+                bias,
+                inference,
+                dropout,
+                attention_dtype,
+                precision,
+                prng=prng,
+            )
+        case _:
+            attention_out = None
+
+    if attention_out is not None:
+        return attention_out
+    else:
+        # local import to avoid circular imports
+        from levanter.models.flash_attention import flash_attention
+
+        return flash_attention(
             QPos,
             KPos,
             Key,
             query,
             key,
             value,
-            mask,
-            bias,
-            dropout,
-            inference,
-            prng=prng,
-            attention_dtype=attention_dtype,
-            precision=precision,
-            flash_block_size=flash_block_size,
-        )
-        if attention_out is not None:
-            return attention_out
-    elif accelerator_type == "tpu":
-        attention_out = _try_tpu_splash_attention(
-            QPos,
-            KPos,
-            Key,
-            query,
-            key,
-            value,
-            mask,
-            bias,
-            dropout,
-            inference,
-            prng=prng,
-            attention_dtype=attention_dtype,
-            precision=precision,
             block_size=flash_block_size,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            key=prng,
+            dtype=attention_dtype,
+            precision=precision,
         )
-
-        if attention_out is not None:
-            return attention_out
-
-    from levanter.models.flash_attention import flash_attention
-
-    return flash_attention(
-        QPos,
-        KPos,
-        Key,
-        query,
-        key,
-        value,
-        block_size=flash_block_size,
-        mask=mask,
-        bias=bias,
-        dropout=dropout,
-        inference=inference,
-        key=prng,
-        dtype=attention_dtype,
-        precision=precision,
-    )
 
 
 def simple_attention_with_dropout(
@@ -154,7 +217,7 @@ def simple_attention_with_dropout(
         Key, KPos, query, key, mask=m, bias=bias, attention_dtype=attention_dtype, precision=precision
     )
     weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-    return haliax.dot(KPos, weights, value)
+    return haliax.dot(weights, value, axis=KPos)
 
 
 def _try_te_attention(
@@ -173,6 +236,7 @@ def _try_te_attention(
     attention_dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
     flash_block_size: Optional[int] = None,
+    force_te: bool,
 ):
     try:
         return _te_flash_attention(
@@ -195,27 +259,34 @@ def _try_te_attention(
         if "transformer_engine" not in str(e):
             raise
 
-        warnings.warn(
-            "transformer_engine is not installed. Please install it to use NVIDIA's optimized fused attention. "
-            "Falling back to the reference implementation."
-        )
+        msg = "transformer_engine is not installed. Please install it to use NVIDIA's optimized fused attention."
+        if force_te:
+            raise ImportError(msg)
+
+        warnings.warn(f"{msg}. Falling back to the reference implementation.")
 
         return None
     except NotImplementedError as e:
-        message = str(e)
-        warnings.warn(
-            f"Could not use transformer_engine for flash attention: {message}. Falling back to the reference"
-        )
+        message = f"Could not use transformer_engine for flash attention: {str(e)}."
+        if force_te:
+            raise NotImplementedError(message)
+
+        warnings.warn(f"{message}. Falling back to the reference implementation.")
+
         return None
     except ValueError as e:
         message = str(e)
         if message.startswith("Unsupported backend="):
             _dtype = attention_dtype or query.dtype
-            msg = "TE doesn't work with these arguments. Falling back to the reference implementation.\n"
+            msg = "NVTE doesn't work with these arguments. Falling back to the reference implementation.\n"
             "Check nvte_get_fused_attn_backend for supported configurations:\n"
             "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/fused_attn/fused_attn.cpp#L71"
             if _dtype not in (jnp.float16, jnp.bfloat16, jnp.float8_e5m2, jnp.float8_e4m3fn):
-                msg += f"In particular, TE doesn't support {_dtype} yet."
+                msg += f"In particular, NVTE doesn't support {_dtype} yet."
+
+            if force_te:
+                raise NotImplementedError(msg)
+
             warnings.warn(msg)
         else:
             raise
@@ -248,7 +319,7 @@ def _te_flash_attention(
     value = value.astype(attention_dtype)
 
     if precision is not None:
-        warnings.warn("precision is not supported for TE fused attention. Ignoring.")
+        warnings.warn("precision is not supported for NVTE fused attention. Ignoring.")
 
     # references: https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/fused_attn.py#L31
     # https://github.com/NVIDIA/TransformerEngine/blob/8255f87f3ee8076db21777795ce15b6ddf8754c0/transformer_engine/jax/flax/transformer.py#L269
@@ -300,7 +371,7 @@ def _te_flash_attention(
         is_training=is_training,
     )
 
-    # per the TE code, the output is BSHD. we can reshape it to match our axes
+    # per the NVTE code, the output is BSHD. we can reshape it to match our axes
     # we have to ungroup the axes, then reshape them to match our expected output
     attn_output = haliax.named(attn_output, ("B", "S", "H", "D"))
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
@@ -366,10 +437,10 @@ _DUMMY_BATCH = "__batch__"
 
 def _bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     """
-    TE and the Splash Attention kernel require the Q, K, and V to be in a specific format. This function groups the axes
+    NVTE and the Splash Attention kernel require the Q, K, and V to be in a specific format. This function groups the axes
     of Q, K, and V into the right bins to match that format.
 
-    TE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed), while Splash Attention requires BHSD
+    NVTE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed), while Splash Attention requires BHSD
      the size of the axes is a bit flexible,
     with the following conditions:
     - B must be the same for all (TODO: is this true?)
@@ -377,7 +448,7 @@ def _bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     - H: Q's H must be a multiple of K's H (for GQA or MQA)
     - D must be the same for all (TODO: is this true? possibly V can be different)
 
-    We can thus classify the axes in q, k, v by their function and populate the TE axes in the right order
+    We can thus classify the axes in q, k, v by their function and populate the NVTE axes in the right order
     - Key is D. ATM we're assuming this is a single axis.
     - QPos and KPos are always S
     - the latest other axis that is present in all three is H. If there are no other axes, we'll add a dummy axis
@@ -606,16 +677,21 @@ def _try_tpu_splash_attention(
     dropout: float = 0.0,
     inference: bool = False,
     *,
+    force_flash: bool,
     prng: Optional[PRNGKeyArray] = None,
     attention_dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
 ) -> Optional[NamedArray]:
     if dropout != 0.0:
+        if force_flash:
+            raise NotImplementedError("Splash attention does not support dropout.")
         warnings.warn("Splash attention does not support. Falling back to the reference implementation.")
         return None
 
     if bias is not None:
+        if force_flash:
+            raise NotImplementedError("Splash attention does not support bias.")
         warnings.warn("Splash attention does not support bias. Falling back to the reference implementation.")
         return None
 
@@ -639,6 +715,8 @@ def _try_tpu_splash_attention(
     except ImportError as e:
         if "pallas" not in str(e):
             raise
+        if force_flash:
+            raise ImportError("Could not import splash attention. You need to update your JAX to at least 0.4.26.")
         warnings.warn(
             "Could not import splash attention. You need to update your JAX to at least 0.4.26. "
             "Falling back to the reference implementation."
@@ -646,6 +724,8 @@ def _try_tpu_splash_attention(
         return None
     except NotImplementedError as e:
         message = str(e)
+        if force_flash:
+            raise NotImplementedError(f"Could not use splash attention: {message}")
         warnings.warn(f"Could not use splash attention: {message}. Falling back to the reference")
         return None
 
@@ -685,12 +765,22 @@ def _tpu_splash_attention(
 
     q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
 
+    # pre-divide q_ by sqrt(d) to match the reference implementation
+    query = query / jnp.sqrt(query.resolve_axis(Key).size)
+
     q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class, output_order=list("BHSD")).array
     k_ = _reshape_axes_for_bshd_bins(key, k_class, output_order=list("BHSD")).array
     v_ = _reshape_axes_for_bshd_bins(value, v_class, output_order=list("BHSD")).array
 
     B, Hq, Sq, D = q_.shape
     Bk, Hk, Sk, Dk = k_.shape
+
+    # number
+    if Sk % 128 != 0:
+        raise NotImplementedError("Splash attention requires KPos to be a multiple of 128")
+
+    if block_size is not None and block_size % 128 != 0:
+        raise NotImplementedError(f"Splash attention requires block_size to be a multiple of 128, got {block_size}")
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
