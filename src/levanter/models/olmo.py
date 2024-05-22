@@ -80,7 +80,7 @@ class OlmoConfig(HFCompatConfig):
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
-    Embed = property(lambda self: Axis(name="em bed", size=self.hidden_dim))
+    Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
     Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
