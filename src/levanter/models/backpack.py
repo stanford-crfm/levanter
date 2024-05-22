@@ -342,7 +342,7 @@ class BackpackGpt2Embeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
+        return hax.dot(x, self.token_embeddings, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
@@ -416,7 +416,9 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
+        hidden_states = hax.dot(
+            contextualization_weights, sense_vectors, axis=self.config.KeyPos
+        )  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
 
         # Rescale - this is important for large num_senses

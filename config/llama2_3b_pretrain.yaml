@@ -6,10 +6,11 @@ model:
   intermediate_dim: 8640
   num_layers: 26
   num_heads: 32
-  use_flash_attention: True
+  attn_backend: jax_flash
   flash_attention_block_size: 2048
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: ["redpajama", "llama"]
 

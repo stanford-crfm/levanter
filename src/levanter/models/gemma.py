@@ -5,7 +5,6 @@ from typing import Dict, Optional, Type, Union
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
-from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
@@ -22,12 +21,12 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.llama import (
+from levanter.models.attention import AttentionBackend, AttentionMask
+from levanter.models.llama import (  # Gemma attention and MLP is identical to LLama
     LlamaAttention,
     LlamaEmbedding,
     LlamaMlp,
-)  # Gemma attention and MLP is identical to LLama
-from levanter.models.attention import AttentionMask
+)
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.py_utils import cached_classproperty
@@ -36,6 +35,7 @@ from levanter.utils.py_utils import cached_classproperty
 silence_transformer_nag()
 from transformers import GemmaConfig as HfGemmaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
+
 
 # Gemma is... very similar to Llama, so we use much of the same modeling code.
 #
@@ -85,7 +85,8 @@ class GemmaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = True
+    use_flash_attention: Optional[bool] = None
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
@@ -226,7 +227,7 @@ class GemmaDecoderLayer(StateDictSerializationMixin, eqx.Module):
     def init(config: GemmaConfig, *, key) -> "GemmaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = LlamaAttention.init(config, key=k_attn)
+        attn = LlamaAttention.init(config, key=k_attn)  # type: ignore
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,

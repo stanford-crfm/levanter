@@ -62,7 +62,7 @@ def test_llama_rotary_embedding():
 
     levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
-    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1), seq_len=seq_len)
+    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
 
     for jax_out, torch_out in zip(levanter_output, hf_output):
         torch_out = torch_out.numpy()
@@ -295,7 +295,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         jax_out = compute(input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -305,7 +305,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out2} != {jax_out}"
 
 
 def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
