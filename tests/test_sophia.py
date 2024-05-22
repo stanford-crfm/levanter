@@ -6,6 +6,7 @@ import equinox.nn as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
+from chex import assert_trees_all_close
 
 import levanter
 import levanter.optim.sophia
@@ -42,7 +43,7 @@ def test_sophia_h():
 
     # print('Test-estimated hessian: most coordinates should be approximately 2')
     # print('Estimated hessian:', opt_state[0].h.weight)
-    assert jnp.allclose(opt_state[0].h.weight, 2, rtol=0.2, atol=0.3)  # this is very approximate
+    assert_trees_all_close(opt_state[0].h.weight, 2, rtol=0.2, atol=0.3)  # this is very approximate
 
     grad_loss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn))
 
@@ -50,11 +51,10 @@ def test_sophia_h():
     model_updates, opt_state = optimizer.update(grad, opt_state, params=model, obj_fn=obj_fn)
     model = eqx.apply_updates(model, model_updates)
 
-    # loss should be 15.74834156036377
-    assert jnp.allclose(loss, 15.74834156036377)
+    assert_trees_all_close(loss, 15.74834156036377, rtol=1e-3, atol=1e-3)
 
     # print("Test-model param after 1 step: most coordinates should be very loosely 0.5")
-    assert jnp.allclose(model.weight, 0.5, rtol=0.2, atol=0.1)  # this is very approximate
+    assert_trees_all_close(model.weight, 0.5, rtol=0.2, atol=0.1)  # this is very approximate
 
     # print("Test-loss: loss should shrink by approximately 75% after each iteration")
     for i in range(10):

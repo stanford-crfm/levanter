@@ -759,6 +759,9 @@ def _tpu_splash_attention(
 
     q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
 
+    # pre-divide q_ by sqrt(d) to match the reference implementation
+    query = query / jnp.sqrt(query.resolve_axis(Key).size)
+
     q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class, output_order=list("BHSD")).array
     k_ = _reshape_axes_for_bshd_bins(key, k_class, output_order=list("BHSD")).array
     v_ = _reshape_axes_for_bshd_bins(value, v_class, output_order=list("BHSD")).array

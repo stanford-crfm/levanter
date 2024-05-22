@@ -37,7 +37,7 @@ def main(args: RayCachedLMDatasetConfig):
             logger.warning(f"Skipping {split} because it is empty.")
             continue
 
-        monitors = [RichMetricsMonitor(source.num_shards)]
+        monitors: list = [RichMetricsMonitor(source.num_shards)]
         if not isinstance(args.tracker, NoopConfig):
             monitors.append(LoggingMetricsMonitor("preprocess/" + split, commit=True))
 
