@@ -46,7 +46,7 @@ trainer:
   model_axis_size: 1
   per_device_eval_parallelism: -1
   max_eval_batches: 2
-  train_batch_size: 256
+  train_batch_size: 128
   num_train_steps: 10000
   steps_per_eval: 10
   tensor_parallel_axes: ["mlp", "heads"]
