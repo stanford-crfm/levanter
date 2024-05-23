@@ -1770,12 +1770,12 @@ class ShardCache(Iterable[pa.RecordBatch]):
             self.cache_dir, batch_size, self._ledger, self._broker, self._reader_offset, self._num_readers
         )
 
-    def _scan_chunk(self, chunk):
+    def _scan_chunk(self, chunk: ChunkMetadata):
         num_batches = (chunk.num_rows + self._batch_size - 1) // self._batch_size
         resume_row_index = self.get_resume_row()
         for i in range(num_batches):
             # Seek To Correct Row
-            if i < resume_row_index:
+            if resume_row_index is not None and i < resume_row_index:
                 continue
             # Increment Row Marker
             self.set_resume_information(resume_row_index=i + 1)
@@ -1783,12 +1783,12 @@ class ShardCache(Iterable[pa.RecordBatch]):
         # Reset Row Marker
         self.set_resume_information(resume_row_index=0)
 
-    def _read_chunk(self, chunk):
+    def _read_chunk(self, chunk: ChunkMetadata):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
         resume_row_index = self.get_resume_row()
         for i, batch in enumerate(reader):
             # Seek To Correct Row
-            if i < resume_row_index:
+            if resume_row_index is not None and i < resume_row_index:
                 continue
             # Increment Row Marker
             self.set_resume_information(resume_row_index=i + 1)
