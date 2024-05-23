@@ -264,7 +264,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
 
     def __iter__(self):
         shard_index, row_index = self.chunk_cache.get_resume_information()
-        logger.info(f"Starting Real Iterator at Shard {shard_index}, Row {row_index}.")
+        logger.debug(f"Starting Real Iterator at Shard {shard_index}, Row {row_index}.")
         for batch in self._chunks():
             unarrow = dict_from_record_batch(batch)
             # Flatten Singleton Batch Dimension
