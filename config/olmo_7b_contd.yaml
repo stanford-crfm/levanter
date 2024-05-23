@@ -1,6 +1,24 @@
 data:
   train_urls:
-    - "gs://levanter-data/pile-domains/owt2/00.jsonl.zst"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/0_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/100_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/101_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/102_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/103_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/104_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/105_processed_html.jsonl.gz
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/106_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/107_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/108_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/109_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/10_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/110_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/111_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/112_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/113_processed_html.jsonl.gz"
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/114_processed_html.jsonl.gz"
+    
+    
   validation_urls:
     - "gs://levanter-data/paloma/4chan_meta_sep/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/c4_100_domains/val/val*.jsonl.gz"
@@ -18,7 +36,7 @@ data:
     - "gs://levanter-data/paloma/redpajama/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/twitterAAE_HELM_fixed/val/val*.jsonl.gz"
     - "gs://levanter-data/paloma/wikitext_103/val/val*.jsonl.gz"
-  cache_dir: "gs://levanter-data/tokenized/markweb_olmo/"
+  cache_dir: "gs://levanter-data/trace/olmo7b_fineweb/"
   tokenizer: "allenai/OLMo-7B-hf"
 
 model:
