@@ -209,8 +209,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         while True:
             local_batch: List[PyTree] = next(batched)
             if flag:
-                first_el = [b[0] for b in local_batch]
-                logger.info(first_el)
+                tmp = [b[100] for b in local_batch]
+                logger.info(tmp)
                 flag = False
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
