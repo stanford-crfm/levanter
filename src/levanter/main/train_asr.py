@@ -221,8 +221,9 @@ def main(config: TrainASRConfig):
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
+            seeker = train_loader.seek()
             for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader.seek())
+                next(seeker)
             train_loader = iter(train_loader)
         ## OK, actually run training!
         trainer.train(state, train_loader)

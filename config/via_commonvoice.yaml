@@ -24,8 +24,6 @@ trainer:
   num_train_steps: 4300
   checkpointer:
     base_path: gs://audio-via/levanter-tpu-via-cv/lev_checkpoints
-    keep:
-      - every: 10
     save_interval: 60m
 optimizer:
   learning_rate: 2.5E-5
