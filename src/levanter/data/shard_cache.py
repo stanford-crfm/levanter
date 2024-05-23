@@ -1783,7 +1783,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-        for batch in enumerate(reader):
+
+        for i, batch in enumerate(reader):
             # Seek To Correct Row
             if i < self._start_row_index:
                 continue
