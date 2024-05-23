@@ -6,7 +6,7 @@ data:
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/102_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/103_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/104_processed_html.jsonl.gz"
-    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/105_processed_html.jsonl.gz
+    - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/105_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/106_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/107_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/108_processed_html.jsonl.gz"
@@ -17,7 +17,6 @@ data:
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/112_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/113_processed_html.jsonl.gz"
     - "gs://marin-data/processed/fineweb/fw-v1.0/CC-MAIN-2023-50/000_00000/114_processed_html.jsonl.gz"
-    
     
   validation_urls:
     - "gs://levanter-data/paloma/4chan_meta_sep/val/val*.jsonl.gz"
