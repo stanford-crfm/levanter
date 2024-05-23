@@ -178,15 +178,17 @@ def main(config: TrainASRConfig):
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
+        train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
 
+            seeker = train_loader.seek()
             for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader.seek())
+                next(seeker)
+            train_loader = iter(train_loader)
         ## OK, actually run training!
         trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)

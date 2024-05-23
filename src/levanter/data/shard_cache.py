@@ -1698,8 +1698,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     # Set Chunk Marker For Shard
                     self._start_shard_index = i
                     yield from yield_lambda(chunk)
-                    # Reset the Row Marker
-                    self._start_row_index = 0
 
                 if not loop:
                     break
@@ -1716,8 +1714,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     self._start_shard_index = i
                     i += self._num_readers
                     yield from yield_lambda(chunk)
-                    # Reset the Row Marker
-                    self._start_row_index = 0
                 except IndexError:
                     if loop:
                         num_chunks = ray.get(self._broker.final_chunk_count.remote())
@@ -1772,24 +1768,29 @@ class ShardCache(Iterable[pa.RecordBatch]):
         )
 
     def _scan_chunk(self, chunk):
-        num_batches = (chunk.num_rows + self.batch_size - 1) // self.batch_size
+        num_batches = (chunk.num_rows + self._batch_size - 1) // self._batch_size
         for i in range(num_batches):
             # Seek To Correct Row
             if i < self._start_row_index:
                 continue
             # Increment Row Marker
-            self.start_row_index = i + 1
+            self._start_row_index = i + 1
             yield i
+        # Reset Row Marker
+        self._start_row_index = 0
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+
         for i, batch in enumerate(reader):
             # Seek To Correct Row
             if i < self._start_row_index:
                 continue
             # Increment Row Marker
-            self.start_row_index = i + 1
+            self._start_row_index = i + 1
             yield batch
+        # Reset Row Marker
+        self._start_row_index = 0
 
     def await_finished(self, timeout: Optional[float] = None):
         return ray.get(self.finished_sentinel(), timeout=timeout)
