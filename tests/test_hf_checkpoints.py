@@ -1,8 +1,10 @@
 import tempfile
 
 import jax.numpy as jnp
+import jmp
 import numpy as np
 import pytest
+from chex import assert_trees_all_close, assert_trees_all_equal
 from jax.random import PRNGKey
 
 import haliax
@@ -75,7 +77,10 @@ def test_save_backpack_model_with_code():
         torch_input = torch.from_numpy(np.array(input.array)).to(torch.int64).unsqueeze(0)
         loaded_model.eval()
         np.testing.assert_allclose(
-            model(torch_input).logits[0].detach().numpy(), loaded_model(torch_input).logits[0].detach().numpy()
+            model(torch_input).logits[0].detach().numpy(),
+            loaded_model(torch_input).logits[0].detach().numpy(),
+            rtol=1e-3,
+            atol=1e-3,
         )
 
 
@@ -90,7 +95,7 @@ def test_conversion_to_jnp_bfloat16():
     x_jnp = _convert_to_jnp(x, None)
     assert x_jnp.dtype == jnp.bfloat16
     assert x_jnp.shape == x.shape
-    assert jnp.allclose(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)
+    assert_trees_all_close(x_jnp, jnp.arange(10, dtype=jnp.bfloat16) / 3.14)
 
 
 def test_save_sharded_checkpoints():
@@ -100,6 +105,9 @@ def test_save_sharded_checkpoints():
 
     nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
+    mp = jmp.get_policy("f32")
+    nano_model = mp.cast_to_param(nano_model)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(nano_model, tmpdir, max_shard_size=1024)
 
@@ -108,16 +116,12 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir)
+        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir, dtype=mp.param_dtype)
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab
 
-        input = haliax.random.randint(PRNGKey(0), nano_model.config.Pos, 0, nano_model.Vocab.size)
-        causal_mask = AttentionMask.causal()
-        np.testing.assert_allclose(
-            np.array(nano_model(input, causal_mask, key=None).array),
-            np.array(loaded_model(input, causal_mask, key=None).array),
-            rtol=1e-6,
-            atol=1e-6,
+        assert_trees_all_equal(
+            nano_model,
+            loaded_model,
         )

@@ -12,7 +12,7 @@ from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
-from haliax import Axis, AxisSelection, AxisSelector, NamedArray
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.partitioning import pspec_for_axis
@@ -22,7 +22,7 @@ from haliax.types import PrecisionLike
 class AttentionBackend(Enum):
     DEFAULT = "default"  # use the default attention type for the accelerator
     NVTE = "nvte"  # with Transformer Engine on NVIDIA GPUs
-    SPLASH = "splash"  # on TPU. disabled by default (even with DEFAULT)
+    SPLASH = "splash"  # on TPU.
     JAX_FLASH = "jax_flash"  # Use the JAX reference implementation
     VANILLA = "vanilla"  # regular dot product attention
 
@@ -31,9 +31,8 @@ def default_attention_type() -> AttentionBackend:
     accelerator_type = jax.local_devices()[0].platform
     if accelerator_type == "gpu":
         return AttentionBackend.NVTE
-    # TODO: re-enable splash attention once we figure out the issues
-    # elif accelerator_type == "tpu":
-    #     return AttentionType.SPLASH
+    elif accelerator_type == "tpu":
+        return AttentionBackend.SPLASH
     else:
         return AttentionBackend.JAX_FLASH
 
@@ -86,26 +85,34 @@ def dot_product_attention(
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
-    if QPos == KPos:
-        raise ValueError("QPos and KPos must be different")
-
-    was_default = attn_backend is None
+    if axis_name(QPos) == axis_name(KPos):
+        raise ValueError("QPos and KPos must have different names")
 
     if use_flash is not None:
-        # warnings.warn("use_flash is deprecated. Please use flash_backend instead.")
         if attn_backend is None:
-            if use_flash:
-                attn_backend = default_attention_type()
-            else:
+            if not use_flash:
                 attn_backend = AttentionBackend.VANILLA
+            else:
+                attn_backend = AttentionBackend.DEFAULT
         else:
             if attn_backend != AttentionBackend.VANILLA and not use_flash:
                 raise ValueError("use_flash is False, but flash_backend is not VANILLA")
             elif attn_backend == AttentionBackend.VANILLA and use_flash:
                 raise ValueError("use_flash is True, but flash_backend is VANILLA")
+    elif use_flash is None and attn_backend is None:
+        # if the block_size doesn't divide the seq lens, we can't use flash. Previously default was use_flash=False
+        if flash_block_size is not None:
+            qlen = query.axis_size(QPos)
+            klen = key.axis_size(KPos)
+            if qlen % flash_block_size != 0 or klen % flash_block_size != 0:
+                use_flash = False
+                attn_backend = AttentionBackend.VANILLA
 
     if attn_backend is None or attn_backend == AttentionBackend.DEFAULT:
+        was_default = True
         attn_backend = default_attention_type()
+    else:
+        was_default = False
 
     match attn_backend:
         case AttentionBackend.NVTE:
@@ -127,7 +134,6 @@ def dot_product_attention(
                 flash_block_size=flash_block_size,
             )
         case AttentionBackend.SPLASH:
-            warnings.warn("There's something wrong with splash attention. Please check results carefully.")
             attention_out = _try_tpu_splash_attention(
                 QPos,
                 KPos,
@@ -759,12 +765,22 @@ def _tpu_splash_attention(
 
     q_class, k_class, v_class = _bin_and_group_axes_by_function(query, key, value, QPos, KPos, Key)
 
+    # pre-divide q_ by sqrt(d) to match the reference implementation
+    query = query / jnp.sqrt(query.resolve_axis(Key).size)
+
     q_: jax.Array = _reshape_axes_for_bshd_bins(query, q_class, output_order=list("BHSD")).array
     k_ = _reshape_axes_for_bshd_bins(key, k_class, output_order=list("BHSD")).array
     v_ = _reshape_axes_for_bshd_bins(value, v_class, output_order=list("BHSD")).array
 
     B, Hq, Sq, D = q_.shape
     Bk, Hk, Sk, Dk = k_.shape
+
+    # number
+    if Sk % 128 != 0:
+        raise NotImplementedError("Splash attention requires KPos to be a multiple of 128")
+
+    if block_size is not None and block_size % 128 != 0:
+        raise NotImplementedError(f"Splash attention requires block_size to be a multiple of 128, got {block_size}")
 
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)

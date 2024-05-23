@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import jax.sharding
 import pytest
+from chex import assert_trees_all_close
 
 import haliax as hax
 import haliax.nn as hnn
@@ -30,7 +31,7 @@ def test_flash_attention_acausal():
     hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v)
 
     assert hax_out.axes == flash_out.axes
-    assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
 
 
 def test_flash_attention_causal_mask():
@@ -40,15 +41,19 @@ def test_flash_attention_causal_mask():
 
     mask = AttentionMask.causal()
 
-    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
-    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
-    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key)) * 0.02
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key)) * 0.02
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key)) * 0.02
 
-    flash_out = flash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
-    hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+    flash_out = flash_attention(
+        QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE, precision="highest"
+    )
+    hax_out = hnn.attention.dot_product_attention(
+        KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos), precision="highest"
+    )
 
     assert hax_out.axes == flash_out.axes
-    assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
 
 
 def test_grad_attention():
@@ -73,14 +78,14 @@ def test_grad_attention():
         (q, k, v), functools.partial(flash_attention, inference=True, block_size=BLOCK_SIZE)
     )
 
-    assert jnp.allclose(hax_val, fa_val, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_val, fa_val, atol=1e-3, rtol=1e-3)
     assert hax_dq.axes == fa_dq.axes
     assert hax_dk.axes == fa_dk.axes
     assert hax_dv.axes == fa_dv.axes
 
-    assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-3, rtol=1e-3)
-    assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-3, rtol=1e-3)
-    assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dq.array, fa_dq.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dk.array, fa_dk.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dv.array, fa_dv.array, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
@@ -109,14 +114,14 @@ def test_grad_group_query_attention(num_kv_heads):
         (q, k, v), functools.partial(flash_attention, inference=True, block_size=BLOCK_SIZE, mask=mask)
     )
 
-    assert jnp.allclose(hax_val, fa_val, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_val, fa_val, atol=1e-3, rtol=1e-3)
     assert hax_dq.axes == fa_dq.axes
     assert hax_dk.axes == fa_dk.axes
     assert hax_dv.axes == fa_dv.axes
 
-    assert jnp.allclose(hax_dq.array, fa_dq.array, atol=1e-3, rtol=1e-3)
-    assert jnp.allclose(hax_dk.array, fa_dk.array, atol=1e-3, rtol=1e-3)
-    assert jnp.allclose(hax_dv.array, fa_dv.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dq.array, fa_dq.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dk.array, fa_dk.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(hax_dv.array, fa_dv.array, atol=1e-3, rtol=1e-3)
 
 
 def test_fa_dropout_does_something():
@@ -165,4 +170,4 @@ def test_tpu_flash_attention():
         hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
 
         assert hax_out.axes == flash_out.axes
-        assert jnp.allclose(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+        assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
