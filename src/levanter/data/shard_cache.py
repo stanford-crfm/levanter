@@ -1772,7 +1772,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         )
 
     def _scan_chunk(self, chunk):
-        num_batches = (chunk.num_rows + self.batch_size - 1) // self.batch_size
+        num_batches = (chunk.num_rows + self._batch_size - 1) // self._batch_size
         for i in range(num_batches):
             # Seek To Correct Row
             if i < self._start_row_index:
