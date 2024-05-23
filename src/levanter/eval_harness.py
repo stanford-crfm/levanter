@@ -15,9 +15,18 @@ import jax
 import jax.numpy as jnp
 import transformers
 from jax.experimental.multihost_utils import broadcast_one_to_all
-from lm_eval import evaluator, tasks
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
+
+
+try:
+    from lm_eval import evaluator, tasks
+    from lm_eval.api.instance import Instance
+    from lm_eval.api.model import LM
+except ImportError:
+    LM = object
+    Instance = object
+    evaluator = object
+    tasks = object
+
 from tqdm import tqdm
 
 import haliax as hax
