@@ -1676,11 +1676,17 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def get_resume_row(self) -> Optional[int]:
         return self._resume_row_index
 
-    def set_resume_information(self, resume_chunk_index: Optional[int] = None, resume_row_index: Optional[int] = None):
-        if resume_chunk_index is not None:
-            self._resume_chunk_index = resume_chunk_index
-        if resume_row_index is not None:
-            self._resume_row_index = resume_row_index
+    def set_resume_information(
+        self, resume_chunk_index: Optional[int] = None, resume_row_index: Optional[int] = None, reset: bool = False
+    ):
+        if reset:
+            self._resume_chunk_index = None
+            self._resume_row_index = None
+        else:
+            if resume_chunk_index is not None:
+                self._resume_chunk_index = resume_chunk_index
+            if resume_row_index is not None:
+                self._resume_row_index = resume_row_index
 
     def _iter_over_chunks(self, yield_lambda, loop, should_resume):
         resume_chunk_index = self.get_resume_shard()
@@ -1728,6 +1734,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 except Exception as e:
                     self.logger.exception("Error while reading from shard cache.")
                     raise e
+        self.set_resume_information(reset=True)
 
     def iter_batches_from_chunks(self, loop: bool = False, should_resume: bool = False):
         return self._iter_over_chunks(self._read_chunk, loop, should_resume)
