@@ -1567,8 +1567,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         self._num_readers = num_readers
         self._reader_offset = reader_offset
-        self._start_shard_index: Optional[int] = None
-        self._start_row_index: Optional[int] = None
+        self._resume_chunk_index: Optional[int] = None
+        self._resume_row_index: Optional[int] = None
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"ShardCache.{name}")
 
@@ -1670,24 +1670,34 @@ class ShardCache(Iterable[pa.RecordBatch]):
             assert self._broker is not None
             return ray.get(self._broker.final_chunk_count.remote())
 
-    def get_cache_location(self) -> tuple[Optional[int], Optional[int]]:
-        return (self._start_shard_index, self._start_row_index)
+    def get_resume_shard(self) -> Optional[int]:
+        return self._resume_chunk_index
 
-    def set_cache_location(self, start_shard: int, start_row: int):
-        self._start_shard_index = start_shard
-        self._start_row_index = start_row
+    def get_resume_row(self) -> Optional[int]:
+        return self._resume_row_index
 
-    def iter_over_chunks(self, yield_lambda, loop: bool = False):
-        if self._start_shard_index is not None and self._start_row_index is not None:
-            shard_offset = self._start_shard_index
+    def set_resume_information(
+        self, resume_chunk_index: Optional[int] = None, resume_row_index: Optional[int] = None, reset: bool = False
+    ):
+        if reset:
+            self._resume_chunk_index = None
+            self._resume_row_index = None
+        else:
+            if resume_chunk_index is not None:
+                self._resume_chunk_index = resume_chunk_index
+            if resume_row_index is not None:
+                self._resume_row_index = resume_row_index
+
+    def _iter_over_chunks(self, yield_lambda, loop, should_resume):
+        resume_chunk_index = self.get_resume_shard()
+        if resume_chunk_index and should_resume:
+            shard_offset = resume_chunk_index
         else:
             shard_offset = self._reader_offset
-            self._start_shard_index = shard_offset
-            self._start_row_index = 0
+            self.set_resume_information(shard_offset, 0)
 
         if self._ledger is not None:
             num_chunks = len(self._ledger.chunks)
-
             if num_chunks == 0:
                 return
 
@@ -1695,8 +1705,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 i = 0
                 for i in range(shard_offset, num_chunks, self._num_readers):
                     chunk = self._ledger.chunks[i]
-                    # Set Chunk Marker For Shard
-                    self._start_shard_index = i
+                    self.set_resume_information(resume_chunk_index=i)
                     yield from yield_lambda(chunk)
 
                 if not loop:
@@ -1710,8 +1719,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 try:
                     self.logger.debug(f"Reading chunk {i}")
                     chunk = self._get_chunk_unmapped(i)
-                    # Set Chunk Marker For Shard
-                    self._start_shard_index = i
+                    self.set_resume_information(resume_chunk_index=i)
                     i += self._num_readers
                     yield from yield_lambda(chunk)
                 except IndexError:
@@ -1720,17 +1728,19 @@ class ShardCache(Iterable[pa.RecordBatch]):
                         assert num_chunks is not None
 
                         i = i % num_chunks
+
                     else:
                         break
                 except Exception as e:
                     self.logger.exception("Error while reading from shard cache.")
                     raise e
+        self.set_resume_information(reset=True)
 
-    def iter_batches_from_chunks(self, loop: bool = False):
-        return self.iter_over_chunks(self._read_chunk, loop)
+    def iter_batches_from_chunks(self, loop: bool = False, should_resume: bool = False):
+        return self._iter_over_chunks(self._read_chunk, loop, should_resume)
 
-    def scan_batches_from_chunks(self, loop: bool = False):
-        return self.iter_over_chunks(self._scan_chunk, loop)
+    def scan_batches_from_chunks(self, loop: bool = False, should_resume: bool = False):
+        return self._iter_over_chunks(self._scan_chunk, loop, should_resume)
 
     def __iter__(self):
         return self.iter_batches_from_chunks()
@@ -1767,30 +1777,32 @@ class ShardCache(Iterable[pa.RecordBatch]):
             self.cache_dir, batch_size, self._ledger, self._broker, self._reader_offset, self._num_readers
         )
 
-    def _scan_chunk(self, chunk):
+    def _scan_chunk(self, chunk: ChunkMetadata):
         num_batches = (chunk.num_rows + self._batch_size - 1) // self._batch_size
+        resume_row_index = self.get_resume_row()
+
         for i in range(num_batches):
             # Seek To Correct Row
-            if i < self._start_row_index:
+            if resume_row_index is not None and i < resume_row_index:
                 continue
             # Increment Row Marker
-            self._start_row_index = i + 1
+            self.set_resume_information(resume_row_index=i + 1)
             yield i
         # Reset Row Marker
-        self._start_row_index = 0
+        self.set_resume_information(resume_row_index=0)
 
-    def _read_chunk(self, chunk):
+    def _read_chunk(self, chunk: ChunkMetadata):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-
+        resume_row_index = self.get_resume_row()
         for i, batch in enumerate(reader):
             # Seek To Correct Row
-            if i < self._start_row_index:
+            if resume_row_index is not None and i < resume_row_index:
                 continue
             # Increment Row Marker
-            self._start_row_index = i + 1
+            self.set_resume_information(resume_row_index=i + 1)
             yield batch
         # Reset Row Marker
-        self._start_row_index = 0
+        self.set_resume_information(resume_row_index=0)
 
     def await_finished(self, timeout: Optional[float] = None):
         return ray.get(self.finished_sentinel(), timeout=timeout)
