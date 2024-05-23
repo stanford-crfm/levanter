@@ -23,7 +23,7 @@ data:
 
 model:
   type: olmo
-initialize_from_hf: "ahmedsqrd/olmo-7b-hf-4b"
+initialize_from_hf: "ahmedsqrd/olmo-7b-hf-step0"
 use_hf_model_config: true
 
 trainer:
