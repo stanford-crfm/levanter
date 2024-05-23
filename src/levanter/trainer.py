@@ -752,6 +752,9 @@ class TrainerConfig:
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
+        if self.model_axis_size > 4:
+            raise ValueError(f"model axis size ({self.model_axis_size}) should not be greater than 4")
+
         if jax.device_count() % self.model_axis_size != 0:
             raise ValueError(
                 f"num_devices ({jax.device_count()}) is not divisible by model_axis_size ({self.model_axis_size})"

@@ -173,13 +173,10 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.mesh = mesh
         self.Batch = Batch
 
-        process_data_pos = (
-            override_process_data_pos or jax.process_index()
-        )  # levanter.mesh.process_mesh_position(mesh)[0]
+        process_data_pos = override_process_data_pos or jax.process_index()
         num_data_process_groups = (
-            override_process_data_groups
-            or jax.process_count()  # levanter.mesh.process_mesh_size(mesh)[0] * levanter.mesh.process_mesh_size(mesh)[1]
-        )
+            override_process_data_groups or jax.process_count()
+        )  # this is safe as long as TP <= 4 and devices within process belong to same DP/FSDP group
 
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
@@ -188,22 +185,23 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
+        self.local_devices_mapping = get_local_devices_mapping(self.mesh)
+        self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
+
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
         super().__init__(max_capacity, axis_resources)
 
     def _produce_batches(self) -> Iterator[PyTree]:
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
-        local_devices_mapping = get_local_devices_mapping(self.mesh)  # uid for DP/FSDP
-        per_device_batch_size = self.batch_size // jax.device_count()
 
-        def batch_callback(global_begin, global_end):
+        def batch_callback(global_begin, _):
             # global_begin is uid for DP/FSDP
             # DP_id * per_device_bs = global_begin
-            device_pos = global_begin // per_device_batch_size
+            device_pos = global_begin // self.per_device_batch_size
 
-            begin = local_devices_mapping[device_pos] * per_device_batch_size
-            end = begin + per_device_batch_size
+            begin = self.local_devices_mapping[device_pos] * self.per_device_batch_size
+            end = begin + self.per_device_batch_size
 
             return local_batch[begin:end]
 
