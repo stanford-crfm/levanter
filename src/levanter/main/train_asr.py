@@ -214,7 +214,7 @@ def main(config: TrainASRConfig):
         # )
 
         # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
+        train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         if int(state.step) > 0:
             # step is after the batch, so we need to seek to step
@@ -223,6 +223,7 @@ def main(config: TrainASRConfig):
 
             for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
                 next(train_loader.seek())
+            train_loader = iter(train_loader)
         ## OK, actually run training!
         trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
