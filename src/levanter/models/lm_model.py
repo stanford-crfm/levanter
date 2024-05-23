@@ -47,16 +47,17 @@ class LmExample(eqx.Module):
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
     @staticmethod
-    def from_prompt_and_completion(prompt: hax.NamedArray, completion: hax.NamedArray, *, ignore_id: Optional[int] = None,
-                                   all_causal: bool = True) -> "LmExample":
-        Pos = prompt.axes[0]
-        tokens = hax.concatenate(Pos.name, [prompt, completion])
-        tokens_Pos = tokens.resolve_axis(Pos.name)
+    def from_prompt_and_completion(
+        prompt: hax.NamedArray, completion: hax.NamedArray, *, ignore_id: Optional[int] = None, all_causal: bool = True
+    ) -> "LmExample":
+        prompt_Pos = prompt.axes[0]
+        tokens = hax.concatenate(prompt_Pos.name, [prompt, completion])
+        tokens_Pos = tokens.resolve_axis(prompt_Pos.name)
 
         # mask out the prompt tokens
-        loss_mask = hax.arange(tokens_Pos) >= Pos.size
+        loss_mask = hax.arange(tokens_Pos) >= prompt_Pos.size
         # also mask out the last token
-        loss_mask *= (1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32))
+        loss_mask *= 1 - hax.nn.one_hot(-1, tokens_Pos, dtype=jnp.float32)
 
         if ignore_id is not None:
             ignore_mask = tokens != ignore_id
@@ -69,9 +70,6 @@ class LmExample(eqx.Module):
             raise NotImplementedError("Not implemented yet")
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
-
-
-
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?

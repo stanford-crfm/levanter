@@ -14,7 +14,6 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 import haliax as hax
 from haliax import AxisSelector, is_named_array
-
 from haliax.jax_utils import is_jax_array_like
 
 
@@ -304,10 +303,12 @@ def stack_tree(batch: AxisSelector, individual_datums: list[X], *, pad_to_batch_
 
         def _stack_leaves_unchecked(*leaves):
             if is_named_array(leaves[0]):
-                 return hax.stack(batch.name, leaves + [hax.zeros_like(leaves[0]) for _ in range(missing_count)])
+                return hax.stack(batch.name, leaves + tuple(hax.zeros_like(leaves[0]) for _ in range(missing_count)))
             else:
-                return jnp.stack(leaves + [jnp.zeros_like(leaves[0]) for _ in range(missing_count)])
+                return jnp.stack(leaves + tuple(jnp.zeros_like(leaves[0]) for _ in range(missing_count)))
+
     else:
+
         def _stack_leaves_unchecked(*leaves):
             if is_named_array(leaves[0]):
                 return hax.stack(hax.axis_name(batch), leaves)
