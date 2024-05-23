@@ -1774,19 +1774,22 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def _scan_chunk(self, chunk):
         num_batches = (chunk.num_rows + self.batch_size - 1) // self.batch_size
         for i in range(num_batches):
-            # Seek To Correct Row for Resume
-            if i >= self._start_row_index:
-                self._start_row_index = i + 1
-                yield i
+            # Seek To Correct Row
+            if i < self._start_row_index:
+                continue
+            # Increment Row Marker
+            self.start_row_index = i + 1
+            yield i
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-        i = 0
-        for batch in reader:
-            if i >= self._start_row_index:
-                self._start_row_index = i + 1
-                yield batch
-            i += 1
+        for batch in enumerate(reader):
+            # Seek To Correct Row
+            if i < self._start_row_index:
+                continue
+            # Increment Row Marker
+            self.start_row_index = i + 1
+            yield batch
 
     def await_finished(self, timeout: Optional[float] = None):
         return ray.get(self.finished_sentinel(), timeout=timeout)
