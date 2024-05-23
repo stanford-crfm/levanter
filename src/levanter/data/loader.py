@@ -187,7 +187,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
         self.local_devices_mapping = get_local_devices_mapping(self.mesh)
         self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
-
+        logger.info(self.local_devices_mapping)
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
         super().__init__(max_capacity, axis_resources)
 
@@ -202,7 +202,13 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
             begin = self.local_devices_mapping[device_pos] * self.per_device_batch_size
             end = begin + self.per_device_batch_size
-
+            if end > len(local_batch):
+                logger.info(self.mesh)
+                logger.info(global_begin)
+                logger.info(device_pos)
+                logger.info(self.per_device_batch_size)
+                logger.info(begin)
+                assert False
             return local_batch[begin:end]
 
         flag = True
