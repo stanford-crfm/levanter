@@ -186,8 +186,7 @@ def main(config: TrainASRConfig):
             import tqdm
 
             for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
-
+                next(train_loader.seek())
         ## OK, actually run training!
         trainer.train(state, train_loader)
         # checkpointer.on_step(last_step, force=True)
