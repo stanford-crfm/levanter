@@ -13,6 +13,12 @@ class Dataset(Iterable[T], ABC):
     def __iter__(self) -> Iterator[T]:
         raise NotImplementedError
 
+    def seek(self):
+        # Note(will): Only Audio Datasets Have A True Seek Method right now.
+        # This allows calling seek, but falls back to just the default iterator
+        # for datasets without a true seek implementation
+        yield from self.__iter__()
+
 
 class ShardableDataset(Dataset[T], ABC):
     @abstractmethod

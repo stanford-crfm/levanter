@@ -185,6 +185,14 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
         super().__init__(max_capacity, axis_resources)
 
+    def seek(self):
+        one_item_generator = non_caching_cycle(self.item_dataset.seek())
+        batched = _batched(one_item_generator, self.local_batch_size)
+        while True:
+            local_batch: List[int] = next(batched)
+
+            yield local_batch
+
     def _produce_batches(self) -> Iterator[PyTree]:
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
