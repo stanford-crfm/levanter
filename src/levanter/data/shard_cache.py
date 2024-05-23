@@ -1567,7 +1567,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         self._num_readers = num_readers
         self._reader_offset = reader_offset
-        self._resume_shard_index: Optional[int] = None
+        self._resume_chunk_index: Optional[int] = None
         self._resume_row_index: Optional[int] = None
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"ShardCache.{name}")
@@ -1671,21 +1671,21 @@ class ShardCache(Iterable[pa.RecordBatch]):
             return ray.get(self._broker.final_chunk_count.remote())
 
     def get_resume_shard(self) -> Optional[int]:
-        return self._resume_shard_index
+        return self._resume_chunk_index
 
     def get_resume_row(self) -> Optional[int]:
         return self._resume_row_index
 
-    def set_resume_information(self, resume_shard_index: Optional[int] = None, resume_row_index: Optional[int] = None):
-        if resume_shard_index is not None:
-            self._resume_shard_index = resume_shard_index
+    def set_resume_information(self, resume_chunk_index: Optional[int] = None, resume_row_index: Optional[int] = None):
+        if resume_chunk_index is not None:
+            self._resume_chunk_index = resume_chunk_index
         if resume_row_index is not None:
             self._resume_row_index = resume_row_index
 
     def _iter_over_chunks(self, yield_lambda, loop, should_resume):
-        resume_shard = self.get_resume_shard()
-        if resume_shard and should_resume:
-            shard_offset = resume_shard
+        resume_chunk_index = self.get_resume_shard()
+        if resume_chunk_index and should_resume:
+            shard_offset = resume_chunk_index
         else:
             shard_offset = self._reader_offset
             self.set_resume_information(shard_offset, 0)
@@ -1699,7 +1699,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 i = 0
                 for i in range(shard_offset, num_chunks, self._num_readers):
                     chunk = self._ledger.chunks[i]
-                    self.set_resume_information(resume_shard_index=i)
+                    self.set_resume_information(resume_chunk_index=i)
                     yield from yield_lambda(chunk)
 
                 if not loop:
@@ -1713,7 +1713,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 try:
                     self.logger.debug(f"Reading chunk {i}")
                     chunk = self._get_chunk_unmapped(i)
-                    self.set_resume_information(resume_shard_index=i)
+                    self.set_resume_information(resume_chunk_index=i)
                     i += self._num_readers
                     yield from yield_lambda(chunk)
                 except IndexError:
