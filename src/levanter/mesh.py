@@ -24,10 +24,12 @@ def get_local_mesh(mesh: Mesh, process_index: Optional[int] = None) -> Mesh:
 def get_local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -> dict[int, int]:
     local_device_pos = local_device_grid_positions(mesh, process_index)[:2]  # first 2 axes are DP axes.
     result = {}
+    j = 0
     for i in range(len(local_device_pos[0])):
         key = local_device_pos[0][i] * mesh.devices.shape[1] + local_device_pos[1][i]
         if key not in result:
-            result[key] = i  # in case of TP=2, local device 0 and 2 will be mapped to same i.
+            result[key] = j  # in case of TP=2, local device 0 and 2 will be mapped to same key.
+            j += 1
     return result
 
 
