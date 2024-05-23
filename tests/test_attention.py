@@ -1,9 +1,17 @@
+import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 import pytest
+from chex import assert_trees_all_close
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask, _te_bin_and_group_axes_by_function, _te_flash_attention
+from levanter.models.attention import (
+    AttentionMask,
+    _bin_and_group_axes_by_function,
+    _te_flash_attention,
+    _tpu_splash_attention,
+)
 from test_utils import skip_if_module_missing
 
 
@@ -55,7 +63,7 @@ def test_te_bin_and_group_axes_by_function():
     k = hax.zeros((B, KPos, H, D))
     v = hax.zeros((B, KPos, H, D))
 
-    q_c, k_c, v_c = _te_bin_and_group_axes_by_function(q, k, v, "QPos", "KPos", "D")
+    q_c, k_c, v_c = _bin_and_group_axes_by_function(q, k, v, "QPos", "KPos", "D")
     assert q_c["B"] == [B]
     assert k_c["B"] == [B]
     assert v_c["B"] == [B]
@@ -73,21 +81,21 @@ def test_te_bin_and_group_axes_by_function():
     assert v_c["D"] == [D]
 
     gq = hax.zeros((B, QPos, H, G, D))
-    q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, k, v, "QPos", "KPos", "D")
+    q_c, k_c, v_c = _bin_and_group_axes_by_function(gq, k, v, "QPos", "KPos", "D")
     assert q_c["H"] == [H, G]
     assert k_c["H"] == [H]
     assert v_c["H"] == [H]
 
     gk = hax.zeros((B, KPos, G, H, D))
     with pytest.raises(ValueError):
-        _te_bin_and_group_axes_by_function(q, gk, v, "QPos", "KPos", "D")
+        _bin_and_group_axes_by_function(q, gk, v, "QPos", "KPos", "D")
 
     with pytest.raises(ValueError):
-        _te_bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
+        _bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
 
     for gk_axes in [(B, KPos, G, H, D), (B, KPos, G, H, D), (G, B, KPos, H, D)]:
         gk = hax.zeros(gk_axes)
-        q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, gk, gk, "QPos", "KPos", "D")
+        q_c, k_c, v_c = _bin_and_group_axes_by_function(gq, gk, gk, "QPos", "KPos", "D")
         assert q_c["H"] == [H, G]
         assert k_c["H"] == [H, G]
         assert v_c["H"] == [H, G]
@@ -96,7 +104,7 @@ def test_te_bin_and_group_axes_by_function():
     gq = hax.zeros((G, B, QPos, H, D))
     for gk_axes in [(B, KPos, H, G, D), (B, KPos, G, H, D), (G, B, KPos, H, D)]:
         gk = hax.zeros(gk_axes)
-        q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, gk, gk, "QPos", "KPos", "D")
+        q_c, k_c, v_c = _bin_and_group_axes_by_function(gq, gk, gk, "QPos", "KPos", "D")
         assert q_c["H"] == [H]
         assert k_c["H"] == [H]
         assert v_c["H"] == [H]
@@ -117,7 +125,7 @@ def test_mqa_te_bin_and_group_axes_by_function():
     k = hax.zeros((B, KPos, D))
     v = hax.zeros((B, KPos, D))
 
-    q_c, k_c, v_c = _te_bin_and_group_axes_by_function(gq, k, v, "QPos", "KPos", "D")
+    q_c, k_c, v_c = _bin_and_group_axes_by_function(gq, k, v, "QPos", "KPos", "D")
     assert q_c["H"] == [G]
     assert k_c["H"] == []
     assert v_c["H"] == []
@@ -125,7 +133,7 @@ def test_mqa_te_bin_and_group_axes_by_function():
     gk = hax.zeros((B, KPos, G, D))
     with pytest.raises(ValueError):
         # don't currently handle dim in Q and K but not V
-        _te_bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
+        _bin_and_group_axes_by_function(gq, gk, v, "QPos", "KPos", "D")
 
 
 @skip_if_module_missing("transformer_engine")
@@ -155,7 +163,7 @@ def test_llama_attention_uses_te(q_heads):
         attention_dtype=jnp.bfloat16,
     )
 
-    assert jnp.allclose(out.array, 0.0)
+    assert_trees_all_close(out.array, 0.0)
 
 
 @skip_if_module_missing("transformer_engine")
@@ -181,4 +189,28 @@ def test_gpt2_attention_uses_te():
         mask,
         attention_dtype=jnp.bfloat16,
     )
-    assert jnp.allclose(out.array, 0.0)
+    assert_trees_all_close(out.array, 0.0)
+
+
+def test_tpu_splash_attention():
+    if jax.default_backend() != "tpu":
+        pytest.skip("TPU only")
+
+    BLOCK_SIZE = 512
+
+    Head = hax.Axis("Head", 8)
+    Key = hax.Axis("Key", 128)  # splash only supports 128
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Head, Key)) * 0.02
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Head, Key)) * 0.02
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Head, Key)) * 0.02
+
+    mask = AttentionMask.causal()
+
+    with jax.sharding.Mesh(jax.devices(), ("dp",)):
+        flash_out = _tpu_splash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
+        hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+        assert hax_out.axes == flash_out.axes
+        assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)

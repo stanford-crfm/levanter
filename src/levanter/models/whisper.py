@@ -27,7 +27,7 @@ from levanter.compat.torch_serialization import (
 )
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -63,6 +63,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     # Attention-related config
     upcast_attn: bool = True
     use_flash_attention: bool = False
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     @property
@@ -225,10 +226,9 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
-        attn_output = self.out_proj(attn_output, key=k_out)
 
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.out_proj(attn_output, key=k_out)
 
         return attn_output
 
@@ -445,7 +445,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed")
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)

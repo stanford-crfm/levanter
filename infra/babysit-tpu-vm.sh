@@ -59,6 +59,8 @@ CMD_ARGS_STR=$(printf ' %s' "${CMD_ARGS[@]}")
 CMD_ARGS_STR=${CMD_ARGS_STR:1}
 CMD_ARGS_STR="RUN_ID=${RUN_ID} ${CMD_ARGS_STR}"
 
+TRIES=0
+
 # check if the VM is running
 # if not, spin it up
 # if it is, just run the command
@@ -77,11 +79,19 @@ while true; do
       echo "Running command on VM $VM_NAME"
       echo "gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command='$CMD_ARGS_STR' --worker=all"
       gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS_STR" --worker=all
-      if [ $? -eq 0 ]; then
+      EXIT_CODE=$?
+      if [ $EXIT_CODE -eq 0 ]; then
         echo "Command succeeded. Exiting"
         break
       else
         echo "Command failed"
+        TRIES=$((TRIES+1))
+        if [ "$RETRIES" -ge 0 ]; then
+          if [ $TRIES -ge "$RETRIES" ]; then
+            echo "Command failed $TRIES times, exiting with $EXIT_CODE"
+            break
+          fi
+        fi
       fi
     fi
   else
@@ -97,7 +107,12 @@ while true; do
   sleep 10
 done
 
-echo "Job finished!"
+# exit code is the exit code of the command
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "Command succeeded"
+else
+  echo "Command failed too many times, ending with exit code $EXIT_CODE"
+fi
 
 # delete the VM when we're done
 gcloud compute tpus tpu-vm describe --zone $ZONE $VM_NAME &> /dev/null
@@ -105,3 +120,5 @@ if [ $? -eq 0 ]; then
   echo "Deleting VM $VM_NAME"
   yes | gcloud compute tpus tpu-vm delete --zone $ZONE $VM_NAME
 fi
+
+exit $EXIT_CODE

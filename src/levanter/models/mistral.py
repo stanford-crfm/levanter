@@ -19,7 +19,7 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.py_utils import cached_classproperty
@@ -61,7 +61,8 @@ class MistralConfig(LlamaConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = True
+    use_flash_attention: Optional[bool] = True
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
