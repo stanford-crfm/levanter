@@ -9,7 +9,7 @@ model:  # 1B class model
   num_kv_heads: 16
   use_flash_attention: True
   flash_attention_block_size: 1024
-  # attn_backend: "splash" - to be tested
+  attn_backend: splash
 trainer:
   tracker:
     type: wandb
