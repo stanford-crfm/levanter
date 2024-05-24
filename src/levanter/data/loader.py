@@ -19,7 +19,7 @@ from haliax.util import is_named_array
 # import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
-from levanter.mesh import get_local_devices_mapping
+from levanter.mesh import local_devices_mapping, process_mesh_mapping
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
 from levanter.utils.py_utils import non_caching_cycle
@@ -173,10 +173,11 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.mesh = mesh
         self.Batch = Batch
 
-        process_data_pos = override_process_data_pos or jax.process_index()
-        num_data_process_groups = (
-            override_process_data_groups or jax.process_count()
-        )  # this is safe as long as TP <= 4 and devices within process belong to same DP/FSDP group
+        process_mesh_map = process_mesh_mapping(self.mesh)
+        local_devices_map = local_devices_mapping(self.mesh)
+        logger.info(process_mesh_map, local_devices_map)
+        process_data_pos = override_process_data_pos or process_mesh_map[jax.process_index()]
+        num_data_process_groups = override_process_data_groups or max(process_mesh_map.values()) + 1
 
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
@@ -185,7 +186,8 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
-        self.local_devices_mapping = get_local_devices_mapping(self.mesh)
+        self.process_mesh_map = process_mesh_map
+        self.local_devices_map = local_devices_map
         self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
 
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
@@ -200,11 +202,12 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             # DP_id * per_device_bs = global_begin
             device_pos = global_begin // self.per_device_batch_size
 
-            begin = self.local_devices_mapping[device_pos] * self.per_device_batch_size
+            begin = self.local_devices_map[device_pos] * self.per_device_batch_size
             end = begin + self.per_device_batch_size
             if end > len(local_batch):
                 logger.info(self.mesh.devices)
-                logger.info(self.local_devices_mapping)
+                logger.info(self.process_mesh_map)
+                logger.info(self.local_devices_map)
                 logger.info(global_begin)
                 logger.info(device_pos)
                 logger.info(begin)

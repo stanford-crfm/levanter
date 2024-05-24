@@ -16,12 +16,8 @@ def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> tu
     return my_device_pos.nonzero()
 
 
-def get_local_mesh(mesh: Mesh, process_index: Optional[int] = None) -> Mesh:
-    local_device_pos = local_device_grid_positions(mesh, process_index)
-    return Mesh(mesh.devices[local_device_pos], mesh.axis_names)
-
-
-def get_local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -> dict[int, int]:
+def local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -> dict[int, int]:
+    """Returns a mapping from local devices' DP/FSDP group index in global mesh to local indices"""
     local_device_pos = local_device_grid_positions(mesh, process_index)[:2]  # first 2 axes are DP axes.
     result = {}
     j = 0
@@ -33,21 +29,25 @@ def get_local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -
     return result
 
 
-def process_mesh_position(mesh, process_index: Optional[int] = None) -> tuple[int, ...]:
+def process_mesh_mapping(mesh) -> dict[int, int]:
     """
     If we envision each process as a subgrid of the mesh for its devices, this is the position of the process
     in the coarsened process-level mesh
     """
-    upper_left_position = np.array([np.min(axis) for axis in local_device_grid_positions(mesh, process_index)])
-    local_mesh_size = get_local_mesh(mesh, process_index).devices.shape
-    pos = upper_left_position // local_mesh_size
-    return pos
+    devices = mesh.devices
+    result = {}  # maps process index to leftmost process index in DP/FSDP group
+    i = 0
+    leftmost2uid = {}
 
+    for i in jax.process_count():
+        upper_left_position = np.array([np.min(axis) for axis in local_device_grid_positions(mesh, i)])
+        upper_left_position[2] = 0  # we want the device with TP group index 0 in the same DP/FSDP group
+        upper_left_process = devices[upper_left_position].process_index
+        # assign uid to each process that has a device with TP group index 0
+        if upper_left_process not in leftmost2uid:
+            leftmost2uid[upper_left_position] = i
+            i += 1
+        uid = leftmost2uid[upper_left_position]
+        result[i] = uid
 
-def process_mesh_size(mesh: Mesh) -> tuple[int, ...]:
-    """
-    If we envision each process as a subgrid of the mesh for its devices, then there is a process grid that
-    is a coarsened version of the mesh. This is the size of the process grid.
-    """
-    local_mesh_size = get_local_mesh(mesh).devices.shape
-    return tuple(mesh.devices.shape[i] // local_mesh_size[i] for i in range(len(local_mesh_size)))
+    return result
