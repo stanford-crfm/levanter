@@ -112,14 +112,14 @@ train_weights:
   dolma-cc: 597.75 # 1,195.5 * 0.5
   dolma-cc-news: 14.3 # 1.0
   dolma-falcon: 456.4 # 1.0, refined web
-  dolma-megawika: 4.6 # 1.0 
+  dolma-megawika: 4.6 # 1.0
   dolma-owmath: 12.6 # 1.0
   dolma-pes2o: 57.2 # 1.0
   dolma-reddit: 79.9 # 1.0
   dolma-stackexchange: 19.6 # 1.0
   dolma-starcoder: 263.8 # 1.0
   dolma-flan: 16.5 # 6.5 * 1.0
-  dolma-wiki: 7.4 # 3.7 * 2.0 
+  dolma-wiki: 7.4 # 3.7 * 2.0
   paloma/4chan: 0.0
   paloma/c4_100_domains: 0.0
   paloma/c4_en: 0.0
