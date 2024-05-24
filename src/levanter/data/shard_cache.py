@@ -1641,7 +1641,9 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     current_timeout = min(current_timeout, 100)
                     continue
                 except asyncio.exceptions.InvalidStateError:
-                    self.logger.warning(f"Invalid state waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
+                    self.logger.warning(
+                        f"Invalid state waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds"
+                    )
                     next_time = time.time()
                     current_timeout *= 2
                     current_timeout = min(current_timeout, 100)
