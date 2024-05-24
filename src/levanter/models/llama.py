@@ -25,7 +25,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
@@ -67,7 +67,8 @@ class LlamaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = True
+    use_flash_attention: Optional[bool] = True
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
@@ -270,13 +271,12 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
             mask,
             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
             use_flash=c.use_flash_attention,
+            attn_backend=self.config.attn_backend,
             flash_block_size=c.flash_attention_block_size,
         )
 
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
@@ -441,9 +441,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        k_wte = jrandom.split(key, 1)
-
-        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
+        token_embeddings = hax.random.normal(key, (Vocab, config.Embed))
         return LlamaEmbedding(Vocab, config, token_embeddings)
 
     @named_call
@@ -453,7 +451,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
+        return hax.dot(x, self.token_embeddings, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "model.embed_tokens.weight"}

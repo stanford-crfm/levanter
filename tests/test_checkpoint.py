@@ -10,7 +10,7 @@ import jax
 import jax.tree_util as jtu
 import numpy as np
 import optax
-from chex import assert_trees_all_equal
+from chex import assert_trees_all_close, assert_trees_all_equal
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 
@@ -331,7 +331,8 @@ def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
 
         assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
         # should be the same as model1
-        assert_trees_all_equal(
+        # on TPU, there's a very slight difference for some reason
+        assert_trees_all_close(
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )

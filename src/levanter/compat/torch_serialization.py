@@ -247,7 +247,7 @@ def flatten_linear_layers(prefix: Optional[str], tree: PyTree, out_dims_first_in
         return ret_dict
 
     tree_prefixes = leaf_key_paths(tree, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True)
-    jax.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
+    jax.tree_util.tree_map(_flatten_linear, tree, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 
@@ -318,7 +318,7 @@ def unflatten_linear_layers(
     tree_prefixes = leaf_key_paths(
         layer, prefix, is_leaf=lambda x: isinstance(x, hnn.Linear), use_state_dict_keys=True
     )
-    jax.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
+    jax.tree_util.tree_map(_unflatten_linear, layer, tree_prefixes, is_leaf=lambda x: isinstance(x, hnn.Linear))
     return ret_dict
 
 

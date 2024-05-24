@@ -20,8 +20,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
     min_lr_ratio: float = 0.1
     warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
+    """The lr scheduler operates on 4 stages: [warmup] - [stable] - [decay] - [cooldown]"""
     warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
+    stable: float = 0.00
+    """fraction of training steps to use as stable, or steps to use. 0.0 means no stable"""
     cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
@@ -61,8 +64,9 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
     def lr_scheduler(self, num_train_steps):
         warmup_steps = self._convert_warmup(num_train_steps)
+        stable_steps = _convert_ratio_or_steps(self.stable, num_train_steps)
         cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
+        lr_decay_steps = num_train_steps - warmup_steps - stable_steps - cooldown_steps
         min_lr = self.learning_rate * self.min_lr_ratio
 
         match self.lr_schedule:
@@ -71,7 +75,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             case "cosine":
                 schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
             case "linear":
-                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
+                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
             case "inv_sqrt":
                 schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
             case _:
@@ -84,6 +88,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
             schedules.append(warmup)
             boundaries.append(warmup_steps)
+
+        if stable_steps != 0:
+            stable = optax.constant_schedule(self.learning_rate)
+            schedules.append(stable)
+            boundaries.append(warmup_steps + stable_steps)
 
         schedules.append(schedule)
 

@@ -1399,6 +1399,8 @@ class ChunkCacheBroker:
             return self.chunks[chunk_idx]
         elif self._is_finished:
             return None
+        elif self._finished_promise.exception() is not None:
+            raise self._finished_promise.exception()  # type: ignore
         else:
             if chunk_idx not in self._reader_promises:
                 self._reader_promises[chunk_idx] = asyncio.Future()
@@ -1637,6 +1639,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
                     next_time = time.time()
                     current_timeout *= 2
                     current_timeout = min(current_timeout, 100)
+                    continue
+                except asyncio.exceptions.InvalidStateError:
+                    self.logger.warning(f"Invalid state waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
+                    next_time = time.time()
+                    current_timeout *= 2
+                    current_timeout = min(current_timeout, 100)
+                    time.sleep(current_timeout)
                     continue
 
                 if chunk is None:
