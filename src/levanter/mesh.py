@@ -48,7 +48,7 @@ def process_mesh_mapping(mesh) -> dict[int, int]:
         if upper_left_process not in leftmost2uid:
             leftmost2uid[upper_left_process] = uid
             uid += 1
-        uid = leftmost2uid[upper_left_process]
-        result[process_index] = uid
+        this_uid = leftmost2uid[upper_left_process]
+        result[process_index] = this_uid
 
     return result
