@@ -39,7 +39,7 @@ def process_mesh_mapping(mesh) -> dict[int, int]:
     i = 0
     leftmost2uid = {}
 
-    for i in jax.process_count():
+    for i in range(jax.process_count()):
         upper_left_position = np.array([np.min(axis) for axis in local_device_grid_positions(mesh, i)])
         upper_left_position[2] = 0  # we want the device with TP group index 0 in the same DP/FSDP group
         upper_left_process = devices[upper_left_position].process_index
