@@ -395,8 +395,23 @@ bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
 
 This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
 
+
+```
+cat > .config <<EOF
+env:
+    WANDB_API_KEY:  ...
+    WANDB_ENTITY: ...
+    WANDB_PROJECT: levanter
+    HF_TOKEN: ...
+
+docker_repository: levanter
+zone: us-west4-a
+tpu: test-tpu
+EOF
+```
+
 ```bash
-gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
 ## Monitoring

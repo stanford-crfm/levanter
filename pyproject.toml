@@ -67,8 +67,6 @@ dev-mode-dirs = [".", "src"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
-
-
 [tool.hatch.build.targets.wheel]
 packages = ["levanter"]
 
@@ -108,4 +106,14 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
     "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "flake8",
+    "pytest",
+    "soundfile",
+    "librosa",
+    "pytest-forked"
 ]

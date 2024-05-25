@@ -1,5 +1,8 @@
 /scratch
 
+# Configuration for TPU launches/secrets
+.config
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -140,6 +143,7 @@ dmypy.json
 /wandb
 
 # dataset cache files
+/cache
 *.parquet
 ledger.json
 

@@ -189,7 +189,7 @@ bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
 This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
 
 ```bash
-gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_asr.py --config_path gs://path/to/config.yaml"
+python infra/launch.py -- python levanter/src/levanter/main/train_asr.py --config_path gs://path/to/config.yaml"
 ```
 
 ### GPU

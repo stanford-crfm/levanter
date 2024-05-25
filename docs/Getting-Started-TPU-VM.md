@@ -85,18 +85,40 @@ the VM. That's explained down below in the [Running Levanter GPT-2](#running-lev
 ## Running Levanter GPT-2
 Now that you have a TPU VM instance, you can follow the [Getting Started](Getting-Started-Training.md) steps, but here are a few shortcuts:
 
-### Launch a GPT-2 Small in unattended mode (using nohup)
-```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+### Launch a GPT-2 Small in unattended mode
+
+You will need a [Docker installation](https://docs.docker.com/engine/install/)
+on your development machine to build and run images on TPUs.
+
+First create a configuration file for future launches in your Levanter directory:
+
+```
+cat > .config <<EOF
+env:
+    WANDB_API_KEY:  ...
+    WANDB_ENTITY: ...
+    WANDB_PROJECT: levanter
+    HF_TOKEN: ...
+
+docker_repository: levanter
+zone: us-west4-a
+tpu: test-tpu
+EOF
 ```
 
-`launch.sh` will run the command in the background and redirect stdout and stderr to a log file in the home directory
-on each worker.
+Everything after the `--` is run on each worker.
+
+```bash
+python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+```
+
+`launch.py` will package your directory and create and deploy a Docker image  on each worker.
 
 ### Launch a GPT-2 Small in interactive mode
-This version writes to the terminal, you should use tmux or something for long running jobs for this version. It's mostly for debugging.
+
+To run in the foreground, use `--foreground` with the `launch.py` script. You should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Babysitting Script
@@ -113,11 +135,12 @@ You can run it like this:
 
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible]  -- \
-    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
+    python infra/launch.py -- levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
 ```
 
-That `--` is important! It separates the spin up args from the running args. Also, you should never use `launch.sh`
-with `babysit`, because nohup exits immediately with exit code 0.
+That `--` is important! It separates the spin up args from the running args.
+Also you should always use `--foregrouund` with `babysit-tpu-vm`, as the
+background mode will always return immediately.
 
 ### Running your own config
 
@@ -132,7 +155,7 @@ Afterward, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
 infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
-    WANDB_API_KEY=... levanter/infra/run.sh python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
+    python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
     --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
