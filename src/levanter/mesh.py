@@ -10,36 +10,39 @@ def local_device_grid_positions(mesh, process_index: Optional[int] = None) -> tu
     Analogous to what np.where would return."""
     if process_index is None:
         process_index = jax.process_index()
-    # our device indices are [process_index * num_devices_per_node, (process_index + 1) * num_devices_per_node)
-    # we could be clever here and do math to figure out where we are in the grid, but it's simpler and less
-    # fragile to just search the grid for our devices
+
     my_device_pos = np.vectorize(lambda dev: dev.process_index == process_index)(mesh.devices)
     return my_device_pos.nonzero()
 
 
 def local_devices_mapping(mesh: Mesh, process_index: Optional[int] = None) -> dict[int, int]:
-    """Returns a mapping from local devices' DP/FSDP group index in global mesh to local indices"""
+    """
+    Handles the case when different devices in same process share the same data in TP.
+    Returns a mapping from local devices' DP/FSDP group index in global mesh to local indices
+    """
     local_device_pos = local_device_grid_positions(mesh, process_index)[:2]  # first 2 axes are DP axes.
     result = {}
     uid = 0
     for local_device_index in range(len(local_device_pos[0])):
         key = local_device_pos[0][local_device_index] * mesh.devices.shape[1] + local_device_pos[1][local_device_index]
         if key not in result:
-            result[key] = uid  # in case of TP=2, local device 0 and 2 will be mapped to same key.
+            # when two devices maps to the same key (different TP index), they will get the same data
+            result[key] = uid
             uid += 1
     return result
 
 
 def process_mesh_mapping(mesh) -> dict[int, int]:
     """
+    Handles the case when different processes share the same data in TP.
     If we envision each process as a subgrid of the mesh for its devices, this is the position of the process
     in the coarsened process-level mesh
     """
     devices = mesh.devices
-    result = {}  # maps process index to leftmost process index in DP/FSDP group
+    result = {}
     uid = 0
     leftmost2uid = {}
-
+    # basic logic: process index -> upper-left device -> TP index 0 device -> process index -> uid
     for process_index in range(jax.process_count()):
         tmp = [np.min(axis) for axis in local_device_grid_positions(mesh, process_index)]
         tmp[-1] = 0  # we want the device with TP group index 0 in the same DP/FSDP group
