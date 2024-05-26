@@ -53,12 +53,21 @@ def get_all_olmo_runs(project_name: str = PROJECT_OLMO_1B):
     df_all.to_csv(out_file, index=False)
 
 
+def smooth_column(df: pd.DataFrame, col: str, window_size: int = 256):
+    """Smooth a column with a rolling average"""
+    df[col] = df[col].rolling(window=window_size, center=True).mean()
+    return df
+
+
 def get_marin_run(run_id: str):
     api = wandb.Api(timeout=TIMEOUT)
     path = f"{ENTITY_MARIN}/{PROJECT_MARIN}"
     run = api.run(f"{path}/{run_id}")
     keys = get_marin_metrics_keys()
     df_history = run.history(samples=N_SAMPLES, keys=keys)
+    # df_history = run.history(samples=N_SAMPLES)
+    # df_history = smooth_column(df_history, "train/loss", window_size=512)
+    
     out_file = f"{OUT_DIR}/marin_{run_id}.csv"
     print(f"Saving {df_history.shape[0]} rows to {out_file}")
     df_history.to_csv(out_file, index=False)
