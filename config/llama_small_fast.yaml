@@ -21,7 +21,7 @@ trainer:
       tags: [ "openwebtext", "llama", "itest"]
 
   mp: p=f32,c=bfloat16
-  model_ici_axis_size: 1
+  model_axis_size: 1
   per_device_parallelism: -1
 
   train_batch_size: 256

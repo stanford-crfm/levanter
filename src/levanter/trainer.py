@@ -543,10 +543,9 @@ class TrainerConfig:
 
     """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings"""
     replica_ici_axis_size: int = 1
-    model_ici_axis_size: int = 1
-    """how many devices within each slice for sharding with DP and TP. The rest of the devices is for FSDP."""
+    model_axis_size: int = 1
+    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
     replica_dcn_axis_size: int = 1
-    model_dcn_axis_size: int = 1
     """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
@@ -632,13 +631,13 @@ class TrainerConfig:
         is_multislice = hasattr(jax.devices()[0], "slice_index")
         if is_multislice:
             devices = mesh_utils.create_hybrid_device_mesh(
-                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
-                (self.replica_dcn_axis_size, self.data_dcn_axis_size, self.model_dcn_axis_size),
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
+                (self.replica_dcn_axis_size, self.data_dcn_axis_size, 1),
                 allow_split_physical_axes=True,
             )
         else:
             devices = mesh_utils.create_device_mesh(
-                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_ici_axis_size),
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
                 allow_split_physical_axes=True,
             )
         # devices = jax.devices()
@@ -664,14 +663,14 @@ class TrainerConfig:
     @property
     def data_ici_axis_size(self):
         """size of the FSDP axis within slices"""
-        assert self.num_local_devices % (self.replica_ici_axis_size * self.model_ici_axis_size) == 0
-        return self.num_local_devices // (self.replica_ici_axis_size * self.model_ici_axis_size)
+        assert self.num_local_devices % (self.replica_ici_axis_size * self.model_axis_size) == 0
+        return self.num_local_devices // (self.replica_ici_axis_size * self.model_axis_size)
 
     @property
     def data_dcn_axis_size(self):
         """size of the FSDP axis across slices"""
-        assert self.num_slices % (self.replica_dcn_axis_size * self.model_dcn_axis_size) == 0
-        return self.num_slices // (self.replica_dcn_axis_size * self.model_dcn_axis_size)
+        assert self.num_slices % self.replica_dcn_axis_size == 0
+        return self.num_slices // self.replica_dcn_axis_size
 
     @property
     def data_axis_size(self):
@@ -684,11 +683,6 @@ class TrainerConfig:
     def replica_axis_size(self):
         """size of the data parallel/batch parallel axis."""
         return self.replica_dcn_axis_size * self.replica_ici_axis_size
-
-    @property
-    def model_axis_size(self):
-        """size of the data parallel/batch parallel axis."""
-        return self.model_dcn_axis_size * self.model_ici_axis_size
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:

@@ -157,7 +157,7 @@ trainer:
     tags: [ "openwebtext", "gpt2"]
 
   mp: p=f32,c=bfloat16
-  model_ici_axis_size: 1
+  model_axis_size: 1
   per_device_parallelism: 4
 
   train_batch_size: 512
