@@ -46,7 +46,7 @@ use_hf_model_config: true
 trainer:
   ray:
     auto_start_cluster: false
-  seed: 0
+  seed: 42
   checkpointer:
     keep:
       - every: 1
