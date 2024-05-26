@@ -204,14 +204,7 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
             begin = self.local_devices_map[device_pos] * self.per_device_batch_size
             end = begin + self.per_device_batch_size
-            if end > len(local_batch):
-                logger.info(self.mesh.devices)
-                logger.info(self.process_mesh_map)
-                logger.info(self.local_devices_map)
-                logger.info(global_begin)
-                logger.info(device_pos)
-                logger.info(begin)
-                assert False
+
             return local_batch[begin:end]
 
         while True:
