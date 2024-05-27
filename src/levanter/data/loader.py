@@ -174,7 +174,6 @@ class ShardedBatchLoader(BatchLoader[Ex]):
 
         process_mesh_map = process_mesh_mapping(self.mesh)
         local_devices_map = local_devices_mapping(self.mesh)
-        logger.info(process_mesh_map, local_devices_map)
         process_data_pos = override_process_data_pos or process_mesh_map[jax.process_index()]
         num_data_process_groups = override_process_data_groups or max(process_mesh_map.values()) + 1
 
