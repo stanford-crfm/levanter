@@ -15,8 +15,11 @@ def plot_comparison(
     df_marin: pd.DataFrame, df_olmo: pd.DataFrame, marin_key: str, olmo_key: str, run_id: str, note: str = ""
 ):
     # get proper limit to y-axis by taking the min and max after running for 5000 steps
-    df_marin_limit = df_marin[df_marin["_step"] >= 5000]
-    df_olmo_limit = df_olmo[df_olmo["_step"] >= 5000]
+    df_marin_limit = df_marin[df_marin["_step"] >= 2000]
+    df_olmo_limit = df_olmo[df_olmo["_step"] >= 2000]
+    # remove outliers
+    df_marin_limit = df_marin_limit[df_marin_limit[marin_key] < df_marin_limit[marin_key].quantile(0.95)]
+    df_olmo_limit = df_olmo_limit[df_olmo_limit[olmo_key] < df_olmo_limit[olmo_key].quantile(0.95)]
     min_val = min(df_marin_limit[marin_key].min(), df_olmo_limit[olmo_key].min()) * 0.9
     max_val = max(df_marin_limit[marin_key].max(), df_olmo_limit[olmo_key].max()) * 1.1
 
@@ -41,6 +44,12 @@ def plot_comparison(
     plt.savefig(out_file)
     print(f"Saved plot to {out_file}")
     plt.close()
+
+
+def smooth_column(df: pd.DataFrame, col, window_size: int = 256):
+    """Smooth a column with a rolling average"""
+    df[col] = df[col].rolling(window=window_size, center=True).mean()
+    return df
 
 
 def compare_marin_to_olmo(marin_run_id: str = "eo302w0523"):
@@ -79,10 +88,7 @@ def compare_marin_to_olmo(marin_run_id: str = "eo302w0523"):
 
 
 def compare_marin_to_olmo_train_loss(marin_run_id: str = "eo302w0523", smooth: bool = False, window_size: int = 256):
-    if smooth:
-        marin_train_data_path = f"{DATA_DIR}/marin_{marin_run_id}_train_smooth_{window_size}.csv"
-    else:
-        marin_train_data_path = f"{DATA_DIR}/marin_{marin_run_id}_train.csv"
+    marin_train_data_path = f"{DATA_DIR}/marin_{marin_run_id}_train.csv"
     for path in [marin_train_data_path, OLMO_1B_TRAIN_DATA_PATH]:
         assert Path(path).exists(), f"File not found at {path}"
     df_marin_train = pd.read_csv(marin_train_data_path)
@@ -109,9 +115,12 @@ def compare_marin_to_olmo_train_loss(marin_run_id: str = "eo302w0523", smooth: b
             print(f"Skipping {marin_key} with only one unique value")
             continue
 
-        note = ""
         if smooth:
-            note = f"smoothed with window size {window_size}"
+            smooth_column(df_marin, marin_key, window_size)
+            smooth_column(df_olmo, olmo_key, window_size)
+            note = "smoothed with window size " + str(window_size)
+        else:
+            note = ""
         plot_comparison(df_marin, df_olmo, marin_key, olmo_key, marin_run_id, note)
 
 

@@ -59,14 +59,7 @@ def get_all_olmo_runs(project_name: str = PROJECT_OLMO_1B, target: str = "eval")
     df_all.to_csv(out_file, index=False)
 
 
-def smooth_column(df: pd.DataFrame, cols: List[str], window_size: int = 256):
-    """Smooth a column with a rolling average"""
-    for col in cols:
-        df[col] = df[col].rolling(window=window_size, center=True).mean()
-    return df
-
-
-def get_marin_run(run_id: str, target="eval", smooth: bool = False, window_size: int = 256):
+def get_marin_run(run_id: str, target="eval"):
     if target == "eval":
         keys = get_marin_metrics_keys()
     elif target == "train":
@@ -74,14 +67,16 @@ def get_marin_run(run_id: str, target="eval", smooth: bool = False, window_size:
     api = wandb.Api(timeout=TIMEOUT)
     path = f"{ENTITY_MARIN}/{PROJECT_MARIN}"
     run = api.run(f"{path}/{run_id}")
-    df_history = run.history(samples=N_SAMPLES, keys=keys)
-    if smooth and target == "train":
-        df_history = smooth_column(df_history, keys, window_size=window_size)
+    if target == "train":
+        # for some reason, we cannot extract enough train loss data with explicit keys
+        df_history = run.history(samples=N_SAMPLES)  # , keys=keys)
+        target_keys = keys + ["_step"]
+        df_history = df_history[target_keys]
+    else:
+        df_history = run.history(samples=N_SAMPLES, keys=keys)
+    print(f"Found {df_history.shape[0]} rows for {run_id} with keys: {keys}")
 
-    out_name = f"marin_{run_id}_{target}"
-    if smooth:
-        out_name += f"_smooth_{window_size}"
-    out_file = f"{OUT_DIR}/{out_name}.csv"
+    out_file = f"{OUT_DIR}/marin_{run_id}_{target}.csv"
     print(f"Saving {df_history.shape[0]} rows to {out_file}")
     df_history.to_csv(out_file, index=False)
 
