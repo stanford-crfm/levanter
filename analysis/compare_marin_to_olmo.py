@@ -6,25 +6,33 @@ from analysis.wandb_metrics import get_marin_olmo_metrics_mapping
 
 DATA_DIR = "scratch/data"
 OUTPUT_DIR = "scratch/output"
-OLMO_1B_DATA_PATH = f"{DATA_DIR}/OLMo-1B.csv"
+OLMO_1B_TRAIN_DATA_PATH = f"{DATA_DIR}/OLMo-1B_train.csv"
+OLMO_1B_EVAL_DATA_PATH = f"{DATA_DIR}/OLMo-1B_eval.csv"
 Path(OUTPUT_DIR).mkdir(exist_ok=True, parents=True)
 
 
 def compare_marin_to_olmo(marin_run_id: str = "eo302w0523"):
-    marin_data_path = f"{DATA_DIR}/marin_{marin_run_id}.csv"
-    assert Path(marin_data_path).exists(), f"Marin data not found at {marin_data_path}"
-    assert Path(OLMO_1B_DATA_PATH).exists(), f"OLMo-1B data not found at {OLMO_1B_DATA_PATH}"
-    df_marin = pd.read_csv(marin_data_path)
-    df_olmo = pd.read_csv(OLMO_1B_DATA_PATH)
+    marin_train_data_path = f"{DATA_DIR}/marin_{marin_run_id}_train.csv"
+    marin_eval_data_path = f"{DATA_DIR}/marin_{marin_run_id}_eval.csv"
+    for path in [marin_train_data_path, marin_eval_data_path, OLMO_1B_TRAIN_DATA_PATH, OLMO_1B_EVAL_DATA_PATH]:
+        assert Path(path).exists(), f"File not found at {path}"
+
+    df_marin_train = pd.read_csv(marin_train_data_path)
+    df_marin_eval = pd.read_csv(marin_eval_data_path)
+    df_olmo_train = pd.read_csv(OLMO_1B_TRAIN_DATA_PATH)
+    df_olmo_eval = pd.read_csv(OLMO_1B_EVAL_DATA_PATH)
 
     # Limit OLMo-1B data to the same steps as Marin data
-    max_step = df_marin["_step"].max()
+    max_step = df_marin_train["_step"].max()
     print(f"Limiting OLMo-1B data to steps <= {max_step}")
-    df_olmo = df_olmo[df_olmo["_step"] <= max_step]
+    df_olmo_train = df_olmo_train[df_olmo_train["_step"] <= max_step]
+    df_olmo_eval = df_olmo_eval[df_olmo_eval["_step"] <= max_step]
 
     # compare metrics
     metrics_mapping = get_marin_olmo_metrics_mapping()
     for marin_key, olmo_key in metrics_mapping.items():
+        df_marin = df_marin_train if "train" in marin_key else df_marin_eval
+        df_olmo = df_olmo_train if "train" in olmo_key else df_olmo_eval
         if marin_key not in df_marin:
             print(f"Missing key {marin_key} in Marin data")
             continue
