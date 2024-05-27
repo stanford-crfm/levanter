@@ -549,13 +549,14 @@ class TrainerConfig:
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    axis_resources: Mapping[str, Any] = field(default_factory=dict)
+    axis_resources: Mapping[str, Union[Tuple[str], str]] = field(default_factory=dict)
     """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
-    parameter_axis_resources: Mapping[str, Any] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    parameter_axis_resources: Mapping[str, Union[Tuple[str], str]] = field(
+        default_factory=dict
+    )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
 
-    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings"""
+    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
     replica_ici_axis_size: int = 1
     model_axis_size: int = 1
     """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
@@ -661,21 +662,21 @@ class TrainerConfig:
     def eval_batch_size(self):
         return self.per_device_eval_parallelism * self.data_axis_size
 
-    @property
+    @cached_property
     def num_slices(self):
         """number of nodes"""
-        return getattr(jax.devices()[-1], "slice_index", 0) + 1
+        return max(getattr(device, "slice_index", 0) for device in jax.devices()) + 1
 
     @property
-    def num_local_devices(self):
+    def num_devices_per_slice(self):
         """number of devices within a slice"""
         return jax.device_count() // self.num_slices
 
     @property
     def data_ici_axis_size(self):
         """size of the FSDP axis within slices"""
-        assert self.num_local_devices % (self.replica_ici_axis_size * self.model_axis_size) == 0
-        return self.num_local_devices // (self.replica_ici_axis_size * self.model_axis_size)
+        assert self.num_devices_per_slice % (self.replica_ici_axis_size * self.model_axis_size) == 0
+        return self.num_devices_per_slice // (self.replica_ici_axis_size * self.model_axis_size)
 
     @property
     def data_dcn_axis_size(self):
@@ -707,7 +708,7 @@ class TrainerConfig:
             axes_to_return[axis] = ResourceAxis.MODEL
 
         if self.batch_axis is not None:
-            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)
+            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)  # type: ignore
 
         return axes_to_return
 

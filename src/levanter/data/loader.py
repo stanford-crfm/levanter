@@ -16,7 +16,6 @@ from haliax import NamedArray
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
-# import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
 from levanter.mesh import local_devices_mapping, process_mesh_mapping
