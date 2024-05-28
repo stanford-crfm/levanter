@@ -1,7 +1,7 @@
 cache_dir: "gs://marin-data/tokenized/OLMo-1B/dolma-v1.7"
 tokenizer: "allenai/OLMo-1B"  # requires `pip install ai2-olmo`
 # tokenizer: "meta-llama/Llama-2-7b-hf"
-stop_strategy: all_exhausted
+stop_strategy: restart_strategy
 configs:
   dolma-algebraic-stack:
     train_urls:
