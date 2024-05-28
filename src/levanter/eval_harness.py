@@ -66,14 +66,14 @@ logger = logging.getLogger(__name__)
 # - loop
 
 
-class RequestType:
+class _RequestType:
     LOG_LIKELIHOOD = 0
     GENERATE_UNTIL = 1
     LOG_LIKELIHOOD_ROLLING = 2
     FINISHED = 3
 
 
-class InternalLMAdaptor:
+class _InternalLMAdaptor:
     def __init__(self, EvalBatch: hax.Axis, model: LmHeadModel, axis_resources):
         self.EvalBatch = EvalBatch
         self.model = model
@@ -104,11 +104,11 @@ class InternalLMAdaptor:
         return self._jit_loglikelihood(self.model, examples)
 
     def do_request(self, request_type, example):
-        if request_type == RequestType.LOG_LIKELIHOOD:
+        if request_type == _RequestType.LOG_LIKELIHOOD:
             return self.loglikelihood(example)
-        elif request_type == RequestType.GENERATE_UNTIL:
+        elif request_type == _RequestType.GENERATE_UNTIL:
             raise NotImplementedError()
-        elif request_type == RequestType.LOG_LIKELIHOOD_ROLLING:
+        elif request_type == _RequestType.LOG_LIKELIHOOD_ROLLING:
             raise NotImplementedError()
         else:
             raise ValueError(f"Invalid request type {request_type}")
@@ -116,20 +116,20 @@ class InternalLMAdaptor:
     def worker_loop(self):
         dummy_example = self.dummy_example
         while True:
-            request_type, request = broadcast_one_to_all((RequestType.FINISHED, dummy_example), is_source=False)
+            request_type, request = broadcast_one_to_all((_RequestType.FINISHED, dummy_example), is_source=False)
 
-            if request_type == RequestType.FINISHED:
+            if request_type == _RequestType.FINISHED:
                 break
 
             self.do_request(request_type, request)
 
     def finish(self):
         assert jax.process_index() == 0
-        broadcast_one_to_all((RequestType.FINISHED, self.dummy_example), is_source=True)
+        broadcast_one_to_all((_RequestType.FINISHED, self.dummy_example), is_source=True)
 
 
 class LevanterHarnessLM(LM):
-    def __init__(self, adaptor: InternalLMAdaptor, tokenizer):
+    def __init__(self, adaptor: _InternalLMAdaptor, tokenizer):
         super().__init__()
         self.adaptor = adaptor
         self.tokenizer = tokenizer
@@ -173,7 +173,7 @@ class LevanterHarnessLM(LM):
         result: list[tuple[float, bool]] = []
         for batch in batched(tqdm(examples, desc="examples", leave=False), self.adaptor.EvalBatch.size):
             batch_example = self._stack_batch(batch)
-            out_lls, out_correct = self._dispatch(RequestType.LOG_LIKELIHOOD, batch_example)
+            out_lls, out_correct = self._dispatch(_RequestType.LOG_LIKELIHOOD, batch_example)
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
         # skip padding
@@ -211,7 +211,7 @@ class LevanterHarnessLM(LM):
 
 
 def run_lm_eval_harness(task_spec: list[str], model, tokenizer, EvalBatch, axis_resources, max_examples=None):
-    adaptor = InternalLMAdaptor(EvalBatch, model, axis_resources)
+    adaptor = _InternalLMAdaptor(EvalBatch, model, axis_resources)
     harness = LevanterHarnessLM(adaptor, tokenizer)
     tasks_to_run = tasks.get_task_dict(task_spec)
     if jax.process_index() == 0:
