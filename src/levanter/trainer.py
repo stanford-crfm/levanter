@@ -592,7 +592,7 @@ class TrainerConfig:
 
     @property
     def TrainBatch(self):
-        if self.batch_size <= 0:
+        if self.train_batch_size <= 0:
             raise ValueError("batch_size must be positive. Did you call initialize?")
         return Axis("batch", self.train_batch_size)
 

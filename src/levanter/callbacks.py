@@ -15,11 +15,13 @@ import jax
 from tqdm import tqdm
 
 import levanter.tracker
+from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import StepInfo
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
+from levanter.utils.tree_utils import inference_mode
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
@@ -333,3 +335,38 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs
+
+
+def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_resources):
+    from levanter.eval_harness import run_lm_eval_harness
+
+    def lm_eval_harness(step: StepInfo, force=False):
+        if step.step == 0 and not force:
+            return  # don't run eval on the first step
+
+        model = inference_mode(step.model, True)
+        outputs = run_lm_eval_harness(model, config.task_spec_or_default(), tokenizer, EvalBatch, axis_resources, max_examples=config.max_examples)
+
+        if jax.process_index() == 0:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
+                import json
+
+                json.dump(outputs, f)
+                levanter.tracker.current_tracker().log_artifact(f.name, name=f"lm_eval_output.{step.step}", type="lm_eval_output")
+
+            # also log accuracy statistics etc
+            metrics_to_log = {}
+            for task, metrics in outputs["results"]:
+                for metric, value in metrics.items():
+                    if metric.endswith(",none"):
+                        metric = metric[:-len(",none")]
+
+                    if metric != "alias":
+                        # levanter.tracker.log_metrics({f"lm_eval/{task}/{metric}": value}, step=step.step)
+                        metrics_to_log[f"lm_eval/{task}/{metric}"] = value
+
+
+            levanter.tracker.log_metrics(metrics_to_log, step=step.step)
+
+
+    return lm_eval_harness

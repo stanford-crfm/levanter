@@ -210,7 +210,7 @@ class LevanterHarnessLM(LM):
         raise NotImplementedError()
 
 
-def run_lm_eval_harness(task_spec: list[str], model, tokenizer, EvalBatch, axis_resources, max_examples=None):
+def run_lm_eval_harness(model, task_spec: list[str], tokenizer, EvalBatch, axis_resources, max_examples=None) -> dict:
     adaptor = _InternalLMAdaptor(EvalBatch, model, axis_resources)
     harness = LevanterHarnessLM(adaptor, tokenizer)
     tasks_to_run = tasks.get_task_dict(task_spec)
@@ -230,6 +230,23 @@ def run_lm_eval_harness(task_spec: list[str], model, tokenizer, EvalBatch, axis_
 class LmEvalHarnessConfig:
     task_spec: Optional[list[str]] = None
     max_examples: Optional[int] = None
+
+    def task_spec_or_default(self):
+        return self.task_spec or [
+            # "lambada",
+            # "piqa",
+            "hellaswag",
+            # "winogrande",
+            # "mathqa",
+            # "pubmedqa",
+            # "boolq",
+            # "cb",
+            # "copa",
+            # "multirc",
+            # "record",
+            # "wic",
+            # "wsc",
+        ]
 
 
 @dataclass(frozen=True)
@@ -254,22 +271,7 @@ def run_eval_harness_main(config: EvalHarnessConfig):
     config.trainer.initialize()
     tokenizer = config.the_tokenizer
 
-    task_spec = config.eval_harness.task_spec or [
-        # "lambada",
-        # "piqa",
-        "hellaswag",
-        # "winogrande",
-        # "mathqa",
-        # "pubmedqa",
-        # "boolq",
-        # "cb",
-        # "copa",
-        # "multirc",
-        # "record",
-        # "wic",
-        # "wsc",
-    ]
-
+    task_spec = config.eval_harness.task_spec_or_default()
     max_examples = config.eval_harness.max_examples
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
@@ -295,14 +297,8 @@ def run_eval_harness_main(config: EvalHarnessConfig):
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
             logger.info("Running LM eval harness....")
-            outputs = run_lm_eval_harness(
-                task_spec,
-                model,
-                tokenizer,
-                config.EvalBatch,
-                axis_resources=compute_axis_mapping,
-                max_examples=max_examples,
-            )
+            outputs = run_lm_eval_harness(model, task_spec, tokenizer, config.EvalBatch,
+                                          axis_resources=compute_axis_mapping, max_examples=max_examples)
 
             logger.info("Finished running LM eval harness")
             # log the results as json
