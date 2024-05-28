@@ -41,10 +41,10 @@ def test_sharded_data_loading_model_axis_2():
     model_axis_size = 2
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -60,10 +60,10 @@ def test_sharded_data_loading_model_axis_1():
     model_axis_size = 1
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         seq_len = 128
         cache = _small_dataset(seq_len)
         Batch = Axis("batch", len(devices))
@@ -104,10 +104,10 @@ def test_structured_batches_model_axis_1():
     model_axis_size = 1
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
@@ -140,8 +140,11 @@ def test_can_batch_named_scalars():
     devices = jax.devices()
     model_axis_size = 1
 
-    mesh = Mesh(np.array(devices).reshape(-1, model_axis_size), (ResourceAxis.DATA, ResourceAxis.MODEL))
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    mesh = Mesh(
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
+    )
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         dataset = ScalarDataset(0, 256, 1)
         Batch = Axis("batch", len(devices))
         loader = ShardedBatchLoader(dataset, mesh, Batch)
@@ -157,10 +160,10 @@ def test_structured_batches_model_axis_2():
     model_axis_size = 2
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         seq_len = 128
         dataset = StructuredDataset(seq_len, 0, 256, 1)
         Batch = Axis("batch", len(devices))
@@ -213,10 +216,10 @@ def test_structured_batches_model_axis_1_with_names():
     model_axis_size = 1
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
@@ -234,10 +237,10 @@ def test_structured_batches_model_axis_2_with_names():
     model_axis_size = 2
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
@@ -256,12 +259,12 @@ def test_structured_batches_model_axis_2_subsharded():
     model_axis_size = 2
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
     Height = Axis("Height", 16)
     Width = Axis("Width", 16)
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA), Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
         Batch = Axis("batch", len(devices))
         loader = ShardedBatchLoader(dataset, mesh, Batch)
@@ -276,10 +279,10 @@ def test_sharded_loader_doesnt_throw_away_data():
     model_axis_size = 1
 
     mesh = Mesh(
-        np.array(devices).reshape(-1, model_axis_size),
-        (ResourceAxis.DATA, ResourceAxis.MODEL),
+        np.array(devices).reshape(1, -1, model_axis_size),
+        (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL),
     )
-    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+    with mesh, hax.axis_mapping({"batch": (ResourceAxis.REPLICA, ResourceAxis.DATA)}):
         dataset = ScalarDataset(0, 256, 1)
         Batch = Axis("batch", len(devices))
         loader = ShardedBatchLoader(dataset, mesh, Batch)
