@@ -720,7 +720,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
-    stop_strategy: str = field(default=StopStrategy.FIRST_STOP_STRATEGY)
+    stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
 
     def __post_init__(self):
         if len(self.configs) == 0:
