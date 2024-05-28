@@ -40,7 +40,7 @@ data:
 
 model:
   type: olmo
-initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step1000-tokens4B"
+initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step10000-tokens42B"
 use_hf_model_config: true
 
 trainer:
@@ -50,8 +50,6 @@ trainer:
   checkpointer:
     keep:
       - every: 1
-        until: 10
-      - every: 10
         until: 20
       - every: 100
         until: 1000
