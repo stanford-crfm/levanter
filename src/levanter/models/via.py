@@ -80,7 +80,7 @@ def connector_only(model):
     return eqx.tree_at(
         lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias, tree.connector),
         frozen_tree,
-        (True, True, True, True),
+        (True, True, True, False),
     )
 
 
