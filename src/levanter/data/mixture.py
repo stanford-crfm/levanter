@@ -7,7 +7,7 @@ from jaxtyping import PRNGKeyArray
 from haliax.util import StringHolderEnum
 
 from levanter.data import ShardableDataset
-
+import time
 
 T = TypeVar("T")
 
@@ -52,6 +52,7 @@ class MixtureDataset(ShardableDataset[T]):
             key = jax.random.randint(key, (), 0, 2**20).item()
 
         self.key = key
+        self.datasets_exhausted = set()
 
     @staticmethod
     def _normalize_weights(weights: Dict[str, float]):
@@ -77,7 +78,9 @@ class MixtureDataset(ShardableDataset[T]):
                 item = next(iterators[dataset_name])
                 yield item
             except StopIteration:
-                print(f"=====dataset {dataset_name} exhausted=====")
+                if dataset_name not in self.datasets_exhausted:
+                    print(f"=====dataset {dataset_name} first exhausted on time {time.time()}=====")
+                    self.datasets_exhausted.add(dataset_name)
                 match self.stop_strategy:
                     case StopStrategy.RESTART_STRATEGY:
                         iterators[dataset_name] = iter(self.datasets[dataset_name])
