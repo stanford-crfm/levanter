@@ -50,6 +50,7 @@ class MixtureDataset(ShardableDataset[T]):
 
         if not isinstance(key, int):
             key = jax.random.randint(key, (), 0, 2**20).item()
+            key = jax.random.PRNGKey(key)
 
         self.key = key
         self.datasets_exhausted = set()
