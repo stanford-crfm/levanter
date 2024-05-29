@@ -1589,6 +1589,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         try:
             return ShardCache.load(cache_dir, batch_size)
         except FileNotFoundError:
+            print(f"=====Error loading cache from {cache_dir}=====")
             broker = _get_broker_actor(cache_dir, shard_source, processor, rows_per_chunk)
             return ShardCache(cache_dir, batch_size, None, broker)
 
@@ -1695,7 +1696,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
                 if not loop:
                     break
-
+                print(f"====iter_batches_from_chunks: loop={loop}, self.cache_dir={self.cache_dir}, num_chunks={num_chunks}, shard_offset={shard_offset}====")
                 shard_offset = i % len(self._ledger.chunks)
         else:
             assert self._broker is not None
@@ -1712,6 +1713,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                         assert num_chunks is not None
 
                         i = i % num_chunks
+                        print(f"====iter_batches_from_chunks - IndexError: loop={loop}, self.cache_dir={self.cache_dir}, num_chunks={num_chunks}, i={i}====")
                     else:
                         break
                 except Exception as e:

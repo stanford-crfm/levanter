@@ -77,6 +77,7 @@ class MixtureDataset(ShardableDataset[T]):
                 item = next(iterators[dataset_name])
                 yield item
             except StopIteration:
+                print(f"=====dataset {dataset_name} exhausted=====")
                 match self.stop_strategy:
                     case StopStrategy.RESTART_STRATEGY:
                         iterators[dataset_name] = iter(self.datasets[dataset_name])
