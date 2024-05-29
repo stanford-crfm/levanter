@@ -8,7 +8,7 @@ import ray
 
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_cache
-from levanter.data.sharded_dataset import ShardedDataset
+from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -320,3 +320,48 @@ def test_serial_cache_writer():
             return tuple(batch["test"].values.to_numpy())
 
         assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)
+
+
+@pytest.mark.ray
+def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(f"{tmpdir}/data.txt", "w") as f:
+            f.write("")
+
+        with pytest.raises(ValueError):
+            TextUrlDataset(
+                [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt"],
+            )
+
+        with open(f"{tmpdir}/data.txt.1", "w") as f:
+            f.write("")
+
+            dataset = TextUrlDataset(
+                [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt.1"],
+            )
+
+            build_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
+
+
+@pytest.mark.ray
+def test_shard_cache_fails_gracefully_with_unknown_file_type():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
+            f.write("")
+
+        dataset = TextUrlDataset(
+            [f"{tmpdir}/data.not_a_real_extension"],
+        )
+
+        with pytest.raises(ValueError):
+            build_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
+
+        # now make sure it works in non-blocking mode
+
+        cache = build_cache(tmpdir, dataset, TestProcessor(), await_finished=False)
+
+        with pytest.raises(ValueError):
+            cache.get_chunk(0, timeout=5)
+
+        with pytest.raises(ValueError):
+            cache.await_finished(timeout=10)

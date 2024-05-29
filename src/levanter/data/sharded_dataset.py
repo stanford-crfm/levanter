@@ -308,6 +308,9 @@ def _sniff_format_for_dataset(url):
             format_from_url = format
             break
 
+    if format_from_url is None:
+        raise ValueError(f"Unknown format for {url}")
+
     if format_from_url == ".json":
         # unfortunately, HF (and others) will use "json" for jsonl files,
         # so we have to do some extra work to distinguish them.
@@ -422,6 +425,8 @@ def _mk_shard_name_mapping(urls):
                 shard_name = shard_name[1:]
 
         shard_name = shard_name.replace(".", "_")
+        if shard_name in _shard_name_to_url_mapping:
+            raise ValueError(f"Duplicate shard name {shard_name}")
         _shard_name_to_url_mapping[shard_name] = url
 
     if missing_urls:

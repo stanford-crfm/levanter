@@ -30,7 +30,7 @@ import jax
 import jmp
 import numpy as np
 from draccus import field
-from jax.experimental import multihost_utils
+from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation
@@ -549,12 +549,19 @@ class TrainerConfig:
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    axis_resources: Mapping[str, str] = field(default_factory=dict)
+    axis_resources: Mapping[str, Union[Tuple[str], str]] = field(default_factory=dict)
     """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
-    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    parameter_axis_resources: Mapping[str, Union[Tuple[str], str]] = field(
+        default_factory=dict
+    )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
-    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
+
+    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
+    replica_ici_axis_size: int = 1
+    model_axis_size: int = 1
+    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
+    replica_dcn_axis_size: int = 1
+    """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
     train_batch_size: int = 512
@@ -636,19 +643,58 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        devices = jax.devices()
-        devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
-        return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
+        is_multislice = hasattr(jax.devices()[0], "slice_index")
+        if is_multislice:
+            devices = mesh_utils.create_hybrid_device_mesh(
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
+                (self.replica_dcn_axis_size, self.data_dcn_axis_size, 1),
+                allow_split_physical_axes=True,
+            )
+        else:
+            devices = mesh_utils.create_device_mesh(
+                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
+                allow_split_physical_axes=True,
+            )
+
+        return Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
 
     @property
     def eval_batch_size(self):
         return self.per_device_eval_parallelism * self.data_axis_size
 
+    @cached_property
+    def num_slices(self):
+        """number of nodes"""
+        return max(getattr(device, "slice_index", 0) for device in jax.devices()) + 1
+
+    @property
+    def num_devices_per_slice(self):
+        """number of devices within a slice"""
+        return jax.device_count() // self.num_slices
+
+    @property
+    def data_ici_axis_size(self):
+        """size of the FSDP axis within slices"""
+        assert self.num_devices_per_slice % (self.replica_ici_axis_size * self.model_axis_size) == 0
+        return self.num_devices_per_slice // (self.replica_ici_axis_size * self.model_axis_size)
+
+    @property
+    def data_dcn_axis_size(self):
+        """size of the FSDP axis across slices"""
+        assert self.num_slices % self.replica_dcn_axis_size == 0
+        return self.num_slices // self.replica_dcn_axis_size
+
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
-        assert jax.device_count() % self.model_axis_size == 0
-        return jax.device_count() // self.model_axis_size
+        return (
+            self.data_dcn_axis_size * self.data_ici_axis_size * self.replica_dcn_axis_size * self.replica_ici_axis_size
+        )
+
+    @property
+    def replica_axis_size(self):
+        """size of the data parallel/batch parallel axis."""
+        return self.replica_dcn_axis_size * self.replica_ici_axis_size
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:
@@ -662,7 +708,7 @@ class TrainerConfig:
             axes_to_return[axis] = ResourceAxis.MODEL
 
         if self.batch_axis is not None:
-            axes_to_return[self.batch_axis] = ResourceAxis.DATA
+            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)  # type: ignore
 
         return axes_to_return
 

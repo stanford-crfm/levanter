@@ -174,20 +174,3 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'sudo r
 
 **and then you have to ctrl-c this after about 10 seconds**. Otherwise, gcloud will think the command failed and will
 try again, and get stuck in a loop forever. (You can ctrl-c it at any point after 10 seconds.)
-
-
-## Random Tricks
-
-I (@dlwh) personally like to use pdsh instead of gcloud to run commands on all workers. It doesn't have the reboot
-issue, and seems to work better for long-lived jobs and such. You can install it with `sudo apt-get install pdsh`.
-You can then get the ips for your machines like so:
-
-```bash
-gcloud compute tpus tpu-vm describe --zone us-east1-d $name | awk '/externalIp: (.*)/ {print $2}'  > my-hosts
-```
-
-Then you can run a command on all workers like so:
-
-```bash
-pdsh -R ssh -w ^my-hosts 'echo hello'
-```

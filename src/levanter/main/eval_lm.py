@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import equinox as eqx
@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
-    trainer: TrainerConfig = TrainerConfig()
-    data: LMDatasetConfig = LMDatasetConfig()
-    model: LmConfig = Gpt2Config()
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
 
     compare_torch: bool = False
     eval_on_train: bool = False

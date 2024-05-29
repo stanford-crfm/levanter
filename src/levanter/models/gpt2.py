@@ -26,7 +26,7 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.py_utils import cached_classproperty
 
@@ -64,7 +64,8 @@ class Gpt2Config(HFCompatConfig):
 
     use_bias: bool = True
 
-    use_flash_attention: bool = True  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    use_flash_attention: Optional[bool] = None
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     # Axes
@@ -191,14 +192,14 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             mask=mask,
             inference=self.inference,
             use_flash=self.config.use_flash_attention,
+            attn_backend=self.config.attn_backend,
             flash_block_size=self.config.flash_attention_block_size,
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
-        attn_output = self.c_proj(attn_output, key=k_out)
 
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.c_proj(attn_output, key=k_out)
 
         return attn_output
 
@@ -341,7 +342,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte", "position_embeddings": "wpe"}
