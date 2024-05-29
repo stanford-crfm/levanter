@@ -64,7 +64,7 @@ class MixtureDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded datasets"""
         sharded = {name: dset.shard(shard_id, num_shards) for name, dset in self.datasets.items()}
-        my_key = int(jax.random.randint(self.key, (num_shards,), 0, 2**20)[shard_id])
+        my_key = int(jax.random.randint(jax.random.PRNGKey(self.key), (num_shards,), 0, 2**20)[shard_id])
         return MixtureDataset(datasets=sharded, weights=self.weights, stop_strategy=self.stop_strategy, key=my_key)
 
     def __iter__(self) -> Iterator[np.ndarray]:
