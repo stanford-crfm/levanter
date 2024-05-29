@@ -50,7 +50,6 @@ class MixtureDataset(ShardableDataset[T]):
 
         if not isinstance(key, int):
             key = jax.random.randint(key, (), 0, 2**20).item()
-            key = jax.random.PRNGKey(key)
         self.key = key
         self.datasets_exhausted = set()
 
@@ -65,8 +64,7 @@ class MixtureDataset(ShardableDataset[T]):
     def shard(self, shard_id: int, num_shards: int) -> "MixtureDataset":
         """Return a MixtureDataset with the sharded datasets"""
         sharded = {name: dset.shard(shard_id, num_shards) for name, dset in self.datasets.items()}
-        # initialize a key for each shard using jax.random.PRNGKey
-        my_key = jax.random.split(self.key, num_shards)[shard_id]
+        my_key = int(jax.random.randint(jax.random.PRNGKey(self.key), (num_shards,), 0, 2**20)[shard_id])
         return MixtureDataset(datasets=sharded, weights=self.weights, stop_strategy=self.stop_strategy, key=my_key)
 
     def __iter__(self) -> Iterator[np.ndarray]:
