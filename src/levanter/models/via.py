@@ -33,8 +33,8 @@ class ViaConfig(HFCompatConfig, ASRConfig):
     dec_config: LlamaConfig = field(default_factory=LlamaConfig)
 
     # Connector Config
-    # pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
-    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000])
+    pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000, 128006, 882, 128007, 271])
+    # pre_audio_prompt: Sequence[int] = field(default_factory=lambda: [128000])
     pre_text_prompt: Sequence[int] = field(default_factory=lambda: [128009, 128006, 78191, 128007, 271])
 
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
@@ -72,7 +72,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/via-llama3-ps")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama")
 
 
 def connector_only(model):
