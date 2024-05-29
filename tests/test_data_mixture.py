@@ -38,6 +38,7 @@ def test_stop_strategies():
             datasets=datasets,
             weights={"1": 1.0, "2": 0.0},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
+            key=0,
         )
         counter = 0
         for batch in mixture_1_only:
@@ -50,6 +51,7 @@ def test_stop_strategies():
             datasets=datasets,
             weights={"1": 0.5, "2": 0.5},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
+            key=0,
         )
         counter_first = sum([1 for _ in mixture_balanced_first])
 
@@ -57,6 +59,7 @@ def test_stop_strategies():
             datasets=datasets,
             weights={"1": 0.5, "2": 0.5},
             stop_strategy=StopStrategy.ALL_STOP_STRATEGY,
+            key=0,
         )
         counter_all = sum([1 for _ in mixture_balanced_all])
         assert counter_first < counter_all
@@ -66,6 +69,7 @@ def test_stop_strategies():
             datasets=datasets,
             weights={"1": 2.0, "2": 2.0},
             stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
+            key=0,
         )
         assert mixture_normalized.weights["1"] == mixture_normalized.weights["2"] == 0.5
 
@@ -81,6 +85,7 @@ def test_restart_strategy_gets_the_right_average():
         datasets=datasets,  # type: ignore
         weights={"1": 0.6, "2": 0.4},
         stop_strategy=StopStrategy.RESTART_STRATEGY,
+        key=0,
     )
 
     # ensure we get the right long run average
@@ -108,6 +113,7 @@ def test_restart_strategy_gets_the_right_average():
         datasets=datasets,  # type: ignore
         weights={"1": 0.6, "2": 0.4},
         stop_strategy=StopStrategy.FIRST_STOP_STRATEGY,
+        key=0,
     )
 
     for i, ex in enumerate(mixture_balanced_first):
