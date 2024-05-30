@@ -125,5 +125,5 @@ def compare_marin_to_olmo_train_loss(marin_run_id: str = "eo302w0523", smooth: b
 
 
 if __name__ == "__main__":
-    # fire.Fire(compare_marin_to_olmo)
-    fire.Fire(compare_marin_to_olmo_train_loss)
+    fire.Fire(compare_marin_to_olmo)
+    # fire.Fire(compare_marin_to_olmo_train_loss)
