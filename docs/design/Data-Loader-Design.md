@@ -1,4 +1,153 @@
 # Data Loader Design
+
+## Proposed random sampling for 2024-05-29
+
+### Current State
+#### Cache
+
+There is one cache for each data mixture component/source (e.g. dolma-cc, stackexchange). A cache consists of a list of “chunk” files of a few thousand docs/rows (set by config) that have been tokenized, along with some metadata about how big each chunk is. Chunks are grouped by what shard of the source they’re from:
+
+E.g.
+
+```
+wikitext
+	├── train
+	│   ├── 0
+	│   │   ├── chunk-0.parquet
+	│   │   ├── chunk-1.parquet
+	│   │   ├── chunk-10.parquet
+	│   │   ├── chunk-11.parquet
+	│   │   ├── chunk-12.parquet
+	│   │   ├── chunk-13.parquet
+…
+          ├── 1
+	│   │   ├── chunk-0.parquet
+	│   │   ├── chunk-1.parquet
+	│   │   ├── chunk-10.parquet
+	│   │   ├── chunk-11.parquet
+	│   │   ├── chunk-12.parquet
+	│   │   ├── chunk-13.parquet
+	│   │   ├── chunk-14.parquet
+	│   │   ├── chunk-15.parquet
+	│   │   ├── chunk-16.parquet
+	│   │   ├── chunk-17.parquet
+```
+
+
+When loading from a cache, we arrange the chunks into a linear order.
+
+```
+wikitext/train/0/chunk-0.parquet, wikitext/train/1/chunk-0.parquet, wikitext/train/N/chunk-0.parquet, wikitext/train/1/chunk-1.parquet, ...
+```
+
+During training, we loop these chunks so that the list is infinite. 
+
+The cache is sharded so that each process loads from chunks (process_index + i * num_processes). For instance, if there are two processes, process 1 would load from:
+
+```
+wikitext/train/0/chunk-1.parquet, wikitext/train/1/chunk-1.parquet, …, wikitext/train/N/chunk-1.parquet, … , wikitext/train/0/chunk-3.parquet,...
+```
+
+#### Loading from a Cache
+
+Currently, loading from a cache works by streaming tokens of WINDOW_SIZE in order from the linear order for each process. If docs are long, this means that we load multiple examples from the same doc. Mixtures mitigate this.
+
+
+#### Mixtures
+
+When using mixtures, we give a weight to each domain:
+
+```yaml
+train_weights:
+ # sampling proportion comes from https://huggingface.co/datasets/allenai/dolma
+ dolma-algebraic-stack: 12.6 # 12.6 * 1.0
+ dolma-arxiv: 28.0 # 28.0 * 1.0
+ dolma-gutenberg: 5.3 # 5.3 * 1.0
+ dolma-c4: 69.2 # 138.4 * 0.5
+ dolma-cc: 597.75 # 1,195.5 * 0.5
+ dolma-cc-news: 14.3 # 1.0
+ dolma-falcon: 456.4 # 1.0, refined web
+ dolma-megawika: 4.6 # 1.0
+ dolma-owmath: 12.6 # 1.0
+ dolma-pes2o: 57.2 # 1.0
+ dolma-reddit: 79.9 # 1.0
+ dolma-stackexchange: 19.6 # 1.0
+ dolma-starcoder: 263.8 # 1.0
+ dolma-flan: 16.5 # 6.5 * 1.0
+ dolma-wiki: 7.4 # 3.7 * 2.0
+```
+
+
+There is one cache for each domain/source. Each cache is sharded independently, so, for say, process 0, we would have:
+
+```
+Wikitext: wikitext/train/0/chunk-1.parquet, wikitext/train/1/chunk-1.parquet, …, wikitext/train/N/chunk-1.parquet, … , wikitext/train/0/chunk-3.parquet,...
+Reddit: reddit/train/0/chunk-1.parquet, reddit/train/1/chunk-1.parquet, …, reddit/train/N/chunk-1.parquet, … , reddit/train/0/chunk-3.parquet,...
+```
+
+Each process then, for each example, chooses a cache, then loads the next example from that cache.
+This still has the problem of correlated examples, but it's better because we're reading from multiple caches within a batch.
+
+#### Thoughts
+
+What we like about the current cache system:
+* It’s fairly fast from cold-start
+* cache construction can be resumed reliably
+* It’s fairly flexible: it wasn’t that hard for Will to add support for audio/text data, and it handles purely-row-based as well as the slicing/concatenating thing we do for documents
+* Shards fairly well for large datasets
+* Fully deterministic for fixed number of readers
+* Number of processors doesn't affect cache determinism
+
+What we don’t like:
+* No random access
+* We never implemented any kind of “seek” so training resume is slow
+* No randomness either.
+* We could implement reservoir sampling, but this keeps resume slow.
+* Because everything is chunk-oriented, if the number of docs is small (e.g. gutenberg) there might not be enough chunks for shards, which means multiple processes will read from the same chunks.
+
+### Proposal: Row Group random access + “growing window sampling”
+
+#### Row Groups Random Access
+Parquet is a column store, which seemed like a fine idea at the time since it works well for concatenating sequences. But that means that reading individual rows isn’t that efficient or even easy.
+
+However, Parquet stores groups of rows and there's efficient access to row groups. We already create these implicitly.
+
+So instead we can jump to random row groups, then read a window of rows from that group. If we select row groups uniformly
+(and then select rows/sequences uniformly from that group), then we get a uniform sample of the data.
+
+So the new policy would be for each process/reader to select a random row group from anywhere in its allowed range (see below)
+and then read data from that row group, possibly by sampling a random row or sequence of tokens.
+
+#### Growing Window Sampling
+
+(This is a term I made up.) We're trying to balance four things:
+
+1. We want to start training as soon as possible.
+2. We want to sample randomly, ideally uniformly from all data.
+3. We want to preserve determinism.
+4. We want to resume training quickly.
+
+Starting as soon as possible means we want to start training as soon as some data is available.
+To actually sample uniformly, we need to read from all data. So these two fundamentally conflict.
+
+Reservoir sampling is an approximation to uniform sampling, but it's not perfect. It can struggle with correlated batches,
+and it's also slow to resume unless you serialize data loader state.
+
+Instead, we can think of every prefix of our dataset as a uniform sample of the data, which is the same
+assumption that reservoir sampling makes. So we can start training with a small window, and then increase that window
+over time. By the end of training we should be sampling uniformly from the data.
+
+Importantly, for determinism, the window needs to increase as a function of steps, not as a function of wall time.
+The window ideally needs to increase faster than training but slower than cache creation.
+
+As a strawman, let's say that a chunk has 8192
+
+This way, we can start training with a small window, but we'll eventually be reading from all chunks.
+
+
+
+
+
 ## Design as of 2023-04-18
 
 ### Goals

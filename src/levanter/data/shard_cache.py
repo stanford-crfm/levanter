@@ -126,6 +126,7 @@ class ChunkMetadata:
     num_rows: int
     field_counts: Dict[str, int]
     num_record_batches: Optional[int] = None
+    version: str = "2"
 
     # row_offsets_by_group: Optional[List[int]] = None
     # field_offsets_by_group: Optional[Dict[str, list[int]]] = None
@@ -557,7 +558,7 @@ class ShardGroupTaskGroup(PriorityWorkTaskGroup):
                 raise e
 
     @property
-    def name(self):
+    def name(self) -> str:
         return self.spec.name
 
     def items(self) -> Sequence["PriorityWorkItem"]:
@@ -673,8 +674,8 @@ def _serialize_json_and_commit(path, obj):
 
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
+    ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
     try:
-        ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
         logger.debug(f"Attempting to load cache ledger from {ledger_path}")
         with fsspec.open(ledger_path) as file:
             cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
@@ -1671,12 +1672,17 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def get_record_batch_async(self, index: int) -> dict:
+    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_record_batch(self, index: int) -> dict:
-        """Returns the record batch for a given index"""
+    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
+        """Returns the record batch for a given index
+
+        Args:
+            index: The index of the record batch to return (within the global cache)
+            timeout: The maximum time to wait for the record batch to be available
+        """
         raise NotImplementedError
 
     def _read_chunk(self, chunk):
@@ -1721,7 +1727,7 @@ class FinishedShardCache(ShardCache):
     async def get_chunk_async(self, index: int) -> "ChunkMetadata":
         return self.get_chunk(index)
 
-    def get_record_batch(self, index: int) -> dict:
+    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
         # TODO: This doesn't respect the sharding
         rb_offsets = self._ledger.record_batch_offsets
         # binary search for the chunk that contains the row
@@ -1733,7 +1739,10 @@ class FinishedShardCache(ShardCache):
         chunk = self.get_chunk(chunk_idx)
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
 
-        return reader.get_row(index - rb_offsets[chunk_idx])
+        return reader.get_record_batch(index - rb_offsets[chunk_idx])
+
+    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
+        return self.get_record_batch(index)
 
 
     def final_chunk_count(self) -> Optional[int]:
@@ -1810,8 +1819,8 @@ class InProgressShardCache(ShardCache):
         mapped_index = self._map_chunk_index_for_sharding(index)
         time_in = time.time()
         next_time = time_in
+        current_timeout = 20.0
         while timeout is None or next_time - time_in < timeout:
-            current_timeout = 20.0
             if timeout is not None:
                 current_timeout = min(current_timeout, timeout - (next_time - time_in))
             try:
@@ -1820,7 +1829,7 @@ class InProgressShardCache(ShardCache):
                 self.logger.warning(f"Waiting for chunk {mapped_index} for {int(next_time - time_in)} seconds")
                 next_time = time.time()
                 current_timeout *= 2
-                current_timeout = min(current_timeout, 100)
+                current_timeout = min(current_timeout, 160)
                 continue
             except asyncio.exceptions.InvalidStateError:
                 self.logger.warning(
@@ -1828,7 +1837,7 @@ class InProgressShardCache(ShardCache):
                 )
                 next_time = time.time()
                 current_timeout *= 2
-                current_timeout = min(current_timeout, 100)
+                current_timeout = min(current_timeout, 160)
                 time.sleep(current_timeout)
                 continue
 
@@ -1847,6 +1856,19 @@ class InProgressShardCache(ShardCache):
         if chunk is None:
             raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
         return chunk
+
+    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
+        return ray.get(self.get_record_batch_async(index), timeout=timeout)
+
+    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
+        """Returns the record batch for a given index
+
+        Args:
+            index: The index of the record batch to return (within the global cache)
+        """
+        chunk_metadata, offset = self._broker.get_chunk_for_record_batch.remote(index)
+        reader = _ChunkReader.from_metadata(self.cache_dir, ray.get(chunk_metadata), self._batch_size)
+        return reader.get_record_batch(index - offset)
 
     def final_chunk_count(self) -> Optional[int]:
         """Returns the number of chunks in the cache, if known"""
@@ -1959,20 +1981,19 @@ class _ChunkReader:
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
 
-
-    @property
-    def _field_offsets(self):
-        if self.metadata.field_offsets_by_group is not None:
-            return self.metadata.field_offsets_by_group
-
-        return self._computed_offsets[0]
-
-    @property
-    def _row_offsets(self):
-        if self.metadata.row_offsets_by_group is not None:
-            return self.metadata.row_offsets_by_group
-
-        return self._computed_offsets[1]
+    # @property
+    # def _field_offsets(self):
+    #     if self.metadata.field_offsets_by_group is not None:
+    #         return self.metadata.field_offsets_by_group
+    #
+    #     return self._computed_offsets[0]
+    #
+    # @property
+    # def _row_offsets(self):
+    #     if self.metadata.row_offsets_by_group is not None:
+    #         return self.metadata.row_offsets_by_group
+    #
+    #     return self._computed_offsets[1]
 
     @cached_property
     def _computed_offsets(self):
@@ -1999,18 +2020,18 @@ class _ChunkReader:
     def get_record_batch(self, index: int) -> pa.RecordBatch:
         return next(self.file.iter_batches(row_groups=[index]))
 
-    def get_row(self, index: int) -> dict:
-        row_offsets = self._row_offsets
-        row_group = bisect.bisect_right(row_offsets, index) - 1
-
-        if row_group < 0:
-            raise IndexError(f"Row index out of bounds: {index}")
-
-        out: pa.RecordBatch = self.get_record_batch(row_group)
-
-        row_offset = index - row_offsets[row_group]
-
-        return dict_from_record_batch(out.slice(row_offset, 1))
+    # def get_row(self, index: int) -> dict:
+    #     row_offsets = self._row_offsets
+    #     row_group = bisect.bisect_right(row_offsets, index) - 1
+    #
+    #     if row_group < 0:
+    #         raise IndexError(f"Row index out of bounds: {index}")
+    #
+    #     out: pa.RecordBatch = self.get_record_batch(row_group)
+    #
+    #     row_offset = index - row_offsets[row_group]
+    #
+    #     return dict_from_record_batch(out.slice(row_offset, 1))
 
 
 
