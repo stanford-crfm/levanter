@@ -318,7 +318,7 @@ class LlamaRMSNorm(eqx.Module):
     dtype: Optional[jnp.dtype] = eqx.static_field(default=jnp.float32)
 
     @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-5, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
+    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
         if use_weight:
             weight = hax.ones(axis)
         else:
