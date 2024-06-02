@@ -118,6 +118,17 @@ So instead we can jump to random row groups, then read a window of rows from tha
 So the new policy would be for each process/reader to select a random row group from anywhere in its allowed range (see below)
 and then read data from that row group, possibly by sampling a random row or sequence of tokens.
 
+
+#### Nuance: rows vs tokens
+
+For pre-training we actually typically sample sequences of tokens, not rows, because of Transformers' fixed sequence length.
+To sample a sequence uniformly at random, we have to sample row groups with probability proportional to the number of tokens in the row group.
+To do this, we can make a note of the number of tokens in each row group when we create the cache, and then sample row groups
+with probability proportional to the number of tokens in the row group.
+
+Because the data type that Parquet exposes is a RecordBatch/row group, we have to return a row group and an offset. (NB if
+the row group is too small we'll need the next row group(s) too.)
+
 #### Growing Window Sampling
 
 (This is a term I made up.) We're trying to balance four things:
@@ -130,20 +141,21 @@ and then read data from that row group, possibly by sampling a random row or seq
 Starting as soon as possible means we want to start training as soon as some data is available.
 To actually sample uniformly, we need to read from all data. So these two fundamentally conflict.
 
-Reservoir sampling is an approximation to uniform sampling, but it's not perfect. It can struggle with correlated batches,
-and it's also slow to resume unless you serialize data loader state.
+We can use a buffered shuffle from PyTorch is an approximation to uniform sampling, but it's not perfect. 
+For this kind of data (where the underlying data isn't actually shuffled because of long docs), it can struggle with correlated batches.
+It's also slow to resume unless you serialize data loader state.
 
-Instead, we can think of every prefix of our dataset as a uniform sample of the data, which is the same
-assumption that reservoir sampling makes. So we can start training with a small window, and then increase that window
+every prefix of our dataset as a uniform sample of the data, (which is the same assumption that reservoir sampling makes. So we can start training with a small window, and then increase that window
 over time. By the end of training we should be sampling uniformly from the data.
 
 Importantly, for determinism, the window needs to increase as a function of steps, not as a function of wall time.
 The window ideally needs to increase faster than training but slower than cache creation.
 
-As a strawman, let's say that a chunk has 8192
+As a strawman, we can start with a
+window of 10x batch_size, then increase the sampling window by 10x batch_size every step until we can sample 
+from all the data.
 
-This way, we can start training with a small window, but we'll eventually be reading from all chunks.
-
+PyTorch's reservoir sampling uses a reservoir of 50K elements, 
 
 
 

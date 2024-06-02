@@ -17,10 +17,11 @@ from typing import IO, Any, Callable, Dict, Iterable, Iterator, List, Optional, 
 
 import fsspec.core
 import jax
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ray
-from dataclasses_json import dataclass_json
+from dataclasses_json import config, dataclass_json
 from fsspec import AbstractFileSystem
 from pyarrow._parquet import FileMetaData, RowGroupMetaData
 from ray.actor import ActorHandle
@@ -119,17 +120,50 @@ def build_cache(
     return cache
 
 
+def _offset_array_decoder(data):
+    return np.asarray(data, dtype=np.int64)
+
+def _offset_array_encoder(data):
+    return data.tolist()
+
+def _dict_offset_array_decoder(data):
+    if data is None:
+        return None
+    return {k: np.asarray(v, dtype=np.int64) for k, v in data.items()}  # type: ignore
+
+def _dict_offset_array_encoder(data):
+    if data is None:
+        return None
+
+    return {k: v.tolist() for k, v in data.items()}  # type: ignore
+
+NP_INT64_CODEC = config(decoder=_offset_array_decoder, encoder=_offset_array_encoder)
+
+DICT_NP_INT64_CODEC = config(
+    decoder=_dict_offset_array_decoder,
+    encoder=_dict_offset_array_encoder,
+)
+
+
 @dataclass_json
 @dataclass
 class ChunkMetadata:
     name: str
     num_rows: int
     field_counts: Dict[str, int]
-    num_record_batches: Optional[int] = None
+
+    row_offsets_by_group: Optional[np.ndarray] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
+    field_offsets_by_group: Optional[Dict[str, list[int]]] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
     version: str = "2"
 
-    # row_offsets_by_group: Optional[List[int]] = None
-    # field_offsets_by_group: Optional[Dict[str, list[int]]] = None
+    @property
+    def num_record_batches(self):
+        return len(self.row_offsets_by_group) - 1
+
+    @staticmethod
+    def load(path: str) -> "ChunkMetadata":
+        with fsspec.open(path, "r") as file:
+            return ChunkMetadata.from_json(file.read())
 
 
 @dataclass_json
@@ -146,6 +180,11 @@ class ShardMetadata:
     def total_chunks_produced(self):
         return len(self.chunks)
 
+    @classmethod
+    def load(cls, shard_path):
+        with fsspec.open(shard_path, "r") as file:
+            return cls.from_json(file.read())
+
 
 @dataclass_json
 @dataclass
@@ -159,13 +198,6 @@ class CacheLedger:
         Returns the row offsets for each chunk.
         """
         return [0] + list(itertools.accumulate(chunk.num_rows for chunk in self.chunks))
-
-    @cached_property
-    def record_batch_offsets(self):
-        """
-        Returns the row offsets for each chunk.
-        """
-        return [0] + list(itertools.accumulate(chunk.num_record_batches for chunk in self.chunks))
 
     @property
     def total_rows(self):
@@ -260,7 +292,8 @@ class _ChunkWriter:
         self.num_rows = 0
         self.field_counts: Dict[str, int] = {}
 
-        self.actual_rows_per_chunk: list[int] = []
+        self.row_offsets: list[int] = []
+        self.field_offsets: Dict[str, list[int]] = {}
 
         self.is_finished = False
 
@@ -281,7 +314,7 @@ class _ChunkWriter:
         assert not self.is_finished
         assert self.writer is not None
         self.writer.write_batch(batch)
-        self.actual_rows_per_chunk.append(batch.num_rows)
+        self.row_offsets.append(batch.num_rows)
         self.num_rows += batch.num_rows
 
         for i in range(batch.num_columns):
@@ -289,14 +322,24 @@ class _ChunkWriter:
             value = batch.column(i)
             if isinstance(value, pa.ListArray):
                 value = value.flatten()
-                self.field_counts[name] = self.field_counts.get(name, 0) + len(value)
+                num_values = len(value)
             elif isinstance(value, pa.ChunkedArray):
-                self.field_counts[name] = self.field_counts.get(name, 0) + value.length()
+                num_values = value.length()
+            else:
+                continue
+
+            self.field_counts[name] = self.field_counts.get(name, 0) + num_values
+
+            current_offset_array = self.field_offsets.get(name, [0])
+            current_offset_array.append(current_offset_array[-1] + num_values)
+            self.field_offsets[name] = current_offset_array
 
     def get_metadata(self) -> ChunkMetadata:
         if not self.is_finished:
             raise RuntimeError("Cannot get metadata for unfinished chunk")
-        return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts)
+        return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts,
+                             row_offsets=np.asarray(self.row_offsets, dtype=np.int64),
+                             field_offsets={k: np.asarray(v, dtype=np.int64) for k, v in self.field_offsets})
 
 
 class _ShardMetadataWriter:
@@ -1981,30 +2024,45 @@ class _ChunkReader:
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{metadata.name}.parquet"), "rb").open())
         return _ChunkReader(metadata, file, batch_size)
 
-    # @property
-    # def _field_offsets(self):
-    #     if self.metadata.field_offsets_by_group is not None:
-    #         return self.metadata.field_offsets_by_group
-    #
-    #     return self._computed_offsets[0]
-    #
-    # @property
-    # def _row_offsets(self):
-    #     if self.metadata.row_offsets_by_group is not None:
-    #         return self.metadata.row_offsets_by_group
-    #
-    #     return self._computed_offsets[1]
+    def get_record_batch(self, index: int) -> pa.RecordBatch:
+        return next(self.file.iter_batches(row_groups=[index]))
 
-    @cached_property
-    def _computed_offsets(self):
-        # otherwise we have to compute it from the parquet metadata
-        field_offsets, row_offsets = self._construct_row_group_offsets(self.file)
+    def get_row(self, index: int) -> pa.RecordBatch:
+        row_group_for_row = np.searchsorted(self.metadata.row_offsets_by_group, index, side="right") - 1
+        row_group = self.get_record_batch(row_group_for_row)
+        pos_within_group = index - self.metadata.row_offsets_by_group[row_group_for_row]
+        return row_group.slice(pos_within_group, pos_within_group + 1)
 
-        return field_offsets, row_offsets
+    def get_record_batch_for_field_offset(self, field: str, field_offset: int) -> tuple[pa.RecordBatch, int]:
+        """
+        Returns the record batch that contains the field offset and the position within the column's values
+        of the field offset.
+        """
+        field_offsets = self.metadata.field_offsets_by_group[field]
 
-    def _construct_row_group_offsets(self, file):
+        # find the row group that contains the field offset
+        row_group_idx = np.searchsorted(field_offsets, field_offset, side="right") - 1
+        if row_group_idx < 0:
+            raise ValueError(f"Field offset {field_offset} is out of bounds for field {field}")
+
+        # find the row group that contains the field offset
+        row_group = self.get_record_batch(row_group_idx)
+        pos_within_group = field_offset - field_offsets[row_group_idx]
+
+        return row_group, pos_within_group
+
+
+def _migrate_cache_to_add_offsets(cache_dir: str):
+    # one-time migration that can repair a cache that was built without offsets
+    # works both with and without a cache ledger.
+    # We store this metadata in 3 locations:
+    # 1) in the cache ledger (if it exists)
+    # 2) in the chunk metadata json files
+    # 3) in the shard-level metadata json files
+
+    def _construct_row_group_offsets(metadata, file):
         row_offsets = [0]
-        field_offsets = {name: [0] for name in self.metadata.field_counts.keys()}
+        field_offsets = {name: [0] for name in metadata.field_counts.keys()}
         file_md: FileMetaData = file.metadata
         field_names = file.schema.names
         for i in range(file_md.num_row_groups):
@@ -2015,29 +2073,93 @@ class _ChunkReader:
                 column = rg.column(col)
                 num_values = column.num_values
                 field_offsets[field_names[col]].append(field_offsets[field_names[col]][-1] + num_values)
-        return field_offsets, row_offsets
+        return np.asarray(field_offsets, dtype=np.int64), {k: np.asarray(v, dtype=np.int64) for k, v in field_offsets.items()}
 
-    def get_record_batch(self, index: int) -> pa.RecordBatch:
-        return next(self.file.iter_batches(row_groups=[index]))
+    try:
+        ledger = _load_cache_ledger(cache_dir)
+        # if we already have ledger metadata, see if we have offsets
+        if ledger.chunks[0].field_offsets_by_group is not None:
+            logger.info("Offsets already present in ledger, skipping migration")
+            return
 
-    # def get_row(self, index: int) -> dict:
-    #     row_offsets = self._row_offsets
-    #     row_group = bisect.bisect_right(row_offsets, index) - 1
-    #
-    #     if row_group < 0:
-    #         raise IndexError(f"Row index out of bounds: {index}")
-    #
-    #     out: pa.RecordBatch = self.get_record_batch(row_group)
-    #
-    #     row_offset = index - row_offsets[row_group]
-    #
-    #     return dict_from_record_batch(out.slice(row_offset, 1))
+    except FileNotFoundError:
+        logger.warning("No ledger found, skipping ledger migration.")
+        ledger = None
+
+    logger.warning("Migrating cache to add offsets. This is a one-time operation and may take some time.")
+
+    # first, find all chunk metadates, which are, by convention named <chunk_name>.json
+    # nb these can be nested in subdirs.
+
+    fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(cache_dir)[0]
+    all_chunk_paths = fs.glob(os.path.join(cache_dir, "**/chunk-*.json"))
+
+    # ledger = _load_cache_ledger(cache_dir)
+    # for chunk in ledger.chunks:
+    #     file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{chunk.name}.parquet"), "rb").open())
+    #     field_offsets, row_offsets = _construct_row_group_offsets(chunk, file)
+    #     # gross mutation
+    #     chunk.field_offsets_by_group = field_offsets
+    #     chunk.row_offsets_by_group = row_offsets
+    #     # write the chunk back
+    #     _serialize_json_and_commit(os.path.join(cache_dir, f"{chunk.name}.json"), chunk)
+
+    all_chunks = {}
+
+    for chunk_path in all_chunk_paths:
+        chunk = ChunkMetadata.load(chunk_path)
+        file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{chunk.name}.parquet"), "rb").open())
+        field_offsets, row_offsets = _construct_row_group_offsets(chunk, file)
+        # gross mutation
+        chunk.field_offsets_by_group = field_offsets
+        chunk.row_offsets_by_group = row_offsets
+        # write the chunk back
+        _serialize_json_and_commit(chunk_path, chunk)
+        assert chunk.name not in all_chunks
+        all_chunks[chunk.name] = chunk
+
+    # now we have to do the same for the shard metadata, which are just lists of chunk metadatas
+    # these are named <shard_name>.json. We find them because they're not chunks nad not hte ledger
+    _migrate_shard_metadatas(all_chunk_paths, all_chunks, cache_dir, fs, ledger)
+    _migrate_ledger(all_chunks, cache_dir, ledger)
 
 
+def _migrate_ledger(all_chunks, cache_dir, ledger):
+    found = set()
+    if ledger is not None:
+        for chunk in ledger.chunks:
+            if chunk.name not in all_chunks:
+                raise ValueError(f"Chunk {chunk.name} in ledger but not found in cache")
+
+            chunk.field_offsets = all_chunks[chunk.name].field_offsets
+            chunk.row_offsets = all_chunks[chunk.name].row_offsets
+            found.add(chunk.name)
+
+        missing_chunks = set(all_chunks.keys()) - found
+
+        if len(missing_chunks) > 0:
+            raise ValueError(f"Found chunks in cache but not in ledger: {missing_chunks}")
+
+        _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE_NAME), ledger)
 
 
+def _migrate_shard_metadatas(all_chunk_paths, all_chunks, cache_dir, fs, ledger):
+    all_json = fs.glob(os.path.join(cache_dir, "**/*.json"))
+    all_chunk_paths_set = set(all_chunk_paths)
+    all_shard_paths = [p for p in all_json if p not in all_chunk_paths_set and os.path.basename(p) != LEDGER_FILE_NAME]
+    found = set()
+    for shard_path in all_shard_paths:
+        shard = ShardMetadata.load(shard_path)
+        for chunk in shard.chunks:
+            if chunk.name not in all_chunks:
+                raise ValueError(f"Chunk {chunk.name} in shard {shard.name} but not found in cache")
+            chunk.field_offsets = all_chunks[chunk.name].field_offsets
+            chunk.row_offsets = all_chunks[chunk.name].row_offsets
+            found.add(chunk.name)
+        _serialize_json_and_commit(shard_path, shard)
+    if ledger is not None:
+        missing_chunks = set(all_chunks.keys()) - found
+        if len(missing_chunks) > 0:
+            raise ValueError(f"Found chunks in cache but not in ledger: {missing_chunks}")
 
-
-
-
-
+        _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE_NAME), ledger)
