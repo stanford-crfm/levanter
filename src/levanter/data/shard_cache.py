@@ -197,7 +197,7 @@ class CacheLedger:
         """
         Returns the row offsets for each chunk.
         """
-        return [0] + list(itertools.accumulate(chunk.num_rows for chunk in self.chunks))
+        return np.array([0] + list(itertools.accumulate(chunk.num_rows for chunk in self.chunks)), dtype=np.int64)
 
     @property
     def total_rows(self):
@@ -209,7 +209,7 @@ class CacheLedger:
         Returns a running count of the number of each field in the cache.
         """
         return {
-            field: [0] + list(itertools.accumulate(chunk.field_counts.get(field, 0) for chunk in self.chunks))
+            field: np.array([0] + list(itertools.accumulate(chunk.field_counts.get(field, 0) for chunk in self.chunks)), dtype=np.int64)
             for field in self.all_fields
         }
 
@@ -1728,6 +1728,17 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def get_field_slice(self, field: str, start: int, end: int, *, timeout: Optional[float] = None) -> np.ndarray:
+        """Returns a slice of a field from the cache."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_field_slice_async(self, field: str, start: int, end: int) -> np.ndarray:
+        """Returns a slice of a field from the cache."""
+        raise NotImplementedError
+
+
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
         for batch in reader:
@@ -1786,6 +1797,22 @@ class FinishedShardCache(ShardCache):
 
     async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
         return self.get_record_batch(index)
+
+    def get_field_slice(self, field: str, start: int, end: int, *, timeout: Optional[float] = None) -> np.ndarray:
+        """Returns a slice of a field from the cache."""
+        # TODO: This doesn't respect the sharding
+        field_offsets = self._ledger.field_count_offsets[field]
+        begin_chunk_idx = np.searchsorted(field_offsets, start, side="right") - 1
+        end_chunk_idx = np.searchsorted(field_offsets, end, side="right") - 1
+
+        if begin_chunk_idx < 0 or end_chunk_idx < 0:
+            raise IndexError(f"Row index out of bounds: {start} {end}")
+
+        out_pieces = []
+        for chunk_idx in range(begin_chunk_idx, end_chunk_idx + 1):
+            chunk = self.get_chunk(chunk_idx)
+            reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+            max_in_this_chunk = field_offsets[chunk_idx + 1] if chunk_idx + 1 < len(field_offsets) else end
 
 
     def final_chunk_count(self) -> Optional[int]:
@@ -2033,23 +2060,19 @@ class _ChunkReader:
         pos_within_group = index - self.metadata.row_offsets_by_group[row_group_for_row]
         return row_group.slice(pos_within_group, pos_within_group + 1)
 
-    def get_record_batch_for_field_offset(self, field: str, field_offset: int) -> tuple[pa.RecordBatch, int]:
-        """
-        Returns the record batch that contains the field offset and the position within the column's values
-        of the field offset.
-        """
+    def field_slice(self, field: str, start: int, end: int) -> np.ndarray:
         field_offsets = self.metadata.field_offsets_by_group[field]
+        start_group = np.searchsorted(field_offsets, start, side="right") - 1
 
-        # find the row group that contains the field offset
-        row_group_idx = np.searchsorted(field_offsets, field_offset, side="right") - 1
-        if row_group_idx < 0:
-            raise ValueError(f"Field offset {field_offset} is out of bounds for field {field}")
+        if start_group < 0:
+            raise ValueError(f"Start index {start} is out of bounds for field {field}")
 
-        # find the row group that contains the field offset
-        row_group = self.get_record_batch(row_group_idx)
-        pos_within_group = field_offset - field_offsets[row_group_idx]
+        end_group = np.searchsorted(field_offsets, end, side="right") - 1
+        if end_group < 0:
+            raise ValueError(f"End index {end} is out of bounds for field {field}")
 
-        return row_group, pos_within_group
+        data: pa.Table = self.file.read_row_groups(list(range(start_group, end_group + 1)), columns=[field])
+        return data.column(0).to_numpy()[start - field_offsets[start_group] : end - field_offsets[start_group]]
 
 
 def _migrate_cache_to_add_offsets(cache_dir: str):

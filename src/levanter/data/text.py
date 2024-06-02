@@ -121,6 +121,38 @@ class CausalLmDataset(ShardableDataset[LmExample]):
                 yield example
 
 
+
+class TokenSeqSampler:
+
+    def __init__(self, doc_cache, seq_len, seed: int, field_name: str = "input_ids"):
+        self.doc_cache = doc_cache
+        self.seq_len = seq_len
+        self.seed = seed
+        self.field_name = field_name
+
+        self.num_tokens_in_dataset = self.doc_cache.total_field_count(field_name)
+
+    def sample(self, step: int):
+        # mix the seed with the step
+        rng = np.random.default_rng(self.seed + step)
+        out = []
+        while len(out) < self.seq_len:
+            idx = rng.integers(0, self.num_tokens_in_dataset, size=1)[0]
+            out.extend(self.doc_cache.take_from_field(self.field_name, idx, self.seq_len - len(out)))
+
+        return np.array(out)
+
+class RowSampler:
+    def __init__(self, doc_cache, seed: int):
+        self.doc_cache = doc_cache
+        self.seed = seed
+        self.num_rows = self.doc_cache.num_rows
+
+    def sample(self, step: int):
+        rng = np.random.default_rng(self.seed + step)
+        idx = rng.integers(0, self.num_rows, size=1)[0]
+        return self.doc_cache.get_row(idx)
+
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
