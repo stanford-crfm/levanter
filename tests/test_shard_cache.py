@@ -7,7 +7,13 @@ import pytest
 import ray
 
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_cache
+from levanter.data.shard_cache import (
+    ChunkMetadata,
+    FinishedShardCache,
+    SerialCacheWriter,
+    _get_broker_actor,
+    build_cache,
+)
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
@@ -365,3 +371,38 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
 
         with pytest.raises(ValueError):
             cache.await_finished(timeout=10)
+
+
+@pytest.mark.ray
+def test_shard_cache_get_by_field_offsets():
+    class ShardSource(ShardedDataset[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return ["shard_0", "shard_1", "shard_2", "shard_3"]
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            shard_num = int(shard_name.split("_")[1])
+            for i in range(row, 10):
+                yield [shard_num * 10 + i] * 10
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        c_ray = build_cache(tmpdir, ShardSource(), TestProcessor(), await_finished=True)
+
+        c_finished = FinishedShardCache.load(tmpdir, 1)
+
+        for cache in [c_finished, c_ray]:
+            assert list(cache.get_field_slice("test", 0, 10)) == [0] * 10
+            assert list(cache.get_field_slice("test", 10, 20)) == [1] * 10
+
+            # test spanning multiple shards (which also tests multiple chunk files)
+            NUM_TOKENS_IN_SHARD = 10 * 10
+            assert (
+                list(cache.get_field_slice("test", NUM_TOKENS_IN_SHARD - 10, NUM_TOKENS_IN_SHARD + 10))
+                == [9] * 10 + [10] * 10
+            )
+
+            # test mid document
+            assert (
+                list(cache.get_field_slice("test", NUM_TOKENS_IN_SHARD * 3 - 5, NUM_TOKENS_IN_SHARD * 3 + 15))
+                == [29] * 5 + [30] * 10 + [31] * 5
+            )

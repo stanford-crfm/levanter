@@ -1,17 +1,14 @@
 # Dataset for preprocessing data, tokenizing, and caching to disk.
 import abc
 import asyncio
-import bisect
 import dataclasses
 import heapq
-import itertools
 import logging as pylogging
 import os
 import threading
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from functools import cached_property
 from queue import PriorityQueue
 from typing import IO, Any, Callable, Dict, Iterable, Iterator, List, Optional, Protocol, Sequence, TypeVar, Union
 
@@ -123,19 +120,23 @@ def build_cache(
 def _offset_array_decoder(data):
     return np.asarray(data, dtype=np.int64)
 
+
 def _offset_array_encoder(data):
     return data.tolist()
+
 
 def _dict_offset_array_decoder(data):
     if data is None:
         return None
     return {k: np.asarray(v, dtype=np.int64) for k, v in data.items()}  # type: ignore
 
+
 def _dict_offset_array_encoder(data):
     if data is None:
         return None
 
     return {k: v.tolist() for k, v in data.items()}  # type: ignore
+
 
 NP_INT64_CODEC = config(decoder=_offset_array_decoder, encoder=_offset_array_encoder)
 
@@ -152,18 +153,19 @@ class ChunkMetadata:
     num_rows: int
     field_counts: Dict[str, int]
 
-    row_offsets_by_group: Optional[np.ndarray] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
-    field_offsets_by_group: Optional[Dict[str, list[int]]] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
+    # these are running totals into row groups
+    row_offsets: Optional[np.ndarray] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
+    field_offsets: Optional[Dict[str, list[int]]] = dataclasses.field(metadata=DICT_NP_INT64_CODEC, default=None)
     version: str = "2"
 
     @property
     def num_record_batches(self):
-        return len(self.row_offsets_by_group) - 1
+        return len(self.row_offsets) - 1
 
     @staticmethod
     def load(path: str) -> "ChunkMetadata":
         with fsspec.open(path, "r") as file:
-            return ChunkMetadata.from_json(file.read())
+            return ChunkMetadata.from_json(file.read())  # type: ignore
 
 
 @dataclass_json
@@ -190,40 +192,22 @@ class ShardMetadata:
 @dataclass
 class CacheLedger:
     """Written at the end of the cache build process. Contains the global chunk order."""
+
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
-
-    @cached_property
-    def row_offsets_for_chunks(self):
-        """
-        Returns the row offsets for each chunk.
-        """
-        return np.array([0] + list(itertools.accumulate(chunk.num_rows for chunk in self.chunks)), dtype=np.int64)
-
-    @property
-    def total_rows(self):
-        return self.row_offsets_for_chunks[-1]
-
-    @cached_property
-    def field_count_offsets(self):
-        """
-        Returns a running count of the number of each field in the cache.
-        """
-        return {
-            field: np.array([0] + list(itertools.accumulate(chunk.field_counts.get(field, 0) for chunk in self.chunks)), dtype=np.int64)
-            for field in self.all_fields
-        }
+    row_offsets: np.ndarray = dataclasses.field(metadata=NP_INT64_CODEC, default=np.ndarray([0], dtype=np.int64))
+    field_offsets: Dict[str, np.ndarray] = dataclasses.field(metadata=DICT_NP_INT64_CODEC, default_factory=dict)
 
     @property
     def all_fields(self):
-        # assume that all chunks have the same fields
-        return self.chunks[0].field_counts.keys()
+        return self.field_offsets.keys()
 
     @property
     def field_totals(self):
-        return {field: self.field_count_offsets[field][-1] for field in self.all_fields}
+        return {field: offsets[-1] for field, offsets in self.field_offsets.items()}
 
 
 class SerialCacheWriter(AbstractContextManager):
+    # TODO: serial cache writer needs to track offsets
     """
     Writes ShardCache-compatible caches to disk. This is a serial version of ShardCacheWriter that doesn't use Ray.
     Mostly for scripts and debugging.
@@ -314,8 +298,8 @@ class _ChunkWriter:
         assert not self.is_finished
         assert self.writer is not None
         self.writer.write_batch(batch)
-        self.row_offsets.append(batch.num_rows)
         self.num_rows += batch.num_rows
+        self.row_offsets.append(self.num_rows)
 
         for i in range(batch.num_columns):
             name = batch.field(i).name
@@ -337,9 +321,13 @@ class _ChunkWriter:
     def get_metadata(self) -> ChunkMetadata:
         if not self.is_finished:
             raise RuntimeError("Cannot get metadata for unfinished chunk")
-        return ChunkMetadata(self.chunk_name, self.num_rows, self.field_counts,
-                             row_offsets=np.asarray(self.row_offsets, dtype=np.int64),
-                             field_offsets={k: np.asarray(v, dtype=np.int64) for k, v in self.field_offsets})
+        return ChunkMetadata(
+            self.chunk_name,
+            self.num_rows,
+            self.field_counts,
+            row_offsets=np.asarray(self.row_offsets, dtype=np.int64),
+            field_offsets={k: np.asarray(v, dtype=np.int64) for k, v in self.field_offsets.items()},
+        )
 
 
 class _ShardMetadataWriter:
@@ -421,11 +409,14 @@ class PriorityWorkTaskGroupSpec(Protocol):
 
 
 class PriorityWorkTaskGroup(Protocol):
-    name: str
     spec: PriorityWorkTaskGroupSpec
 
     def items(self) -> Sequence["PriorityWorkItem"]:
         raise NotImplementedError()
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
 
 
 class PriorityWorkItem(Protocol):
@@ -600,10 +591,6 @@ class ShardGroupTaskGroup(PriorityWorkTaskGroup):
                 self.spec.writer[shard_name].shard_failed.remote(ser_exc_info())
                 raise e
 
-    @property
-    def name(self) -> str:
-        return self.spec.name
-
     def items(self) -> Sequence["PriorityWorkItem"]:
         return self._items
 
@@ -718,6 +705,7 @@ def _serialize_json_and_commit(path, obj):
 
 def _load_cache_ledger(cache_dir) -> CacheLedger:
     ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
+
     try:
         logger.debug(f"Attempting to load cache ledger from {ledger_path}")
         with fsspec.open(ledger_path) as file:
@@ -1194,7 +1182,7 @@ class _ChunkCollator:
     def _attempt_to_write_chunk_fragments(self, chunk_id) -> Optional[ChunkMetadata]:
         if chunk_id in self.failed_chunks:
             logger.error(f"Chunk {chunk_id} of shard {self.shard_name} already failed, not writing more")
-            raise self.failed_chunks[chunk_id].restore()
+            raise self.failed_chunks[chunk_id].restore()[1]
 
         if chunk_id in self.chunk_partial_batches:
             chunk_batches = self.chunk_partial_batches[chunk_id]
@@ -1440,6 +1428,9 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
+    _in_progress_row_offsets: np.ndarray
+    _in_progress_field_offsets: Dict[str, np.ndarray]
+
     def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.chunks = []
@@ -1448,6 +1439,10 @@ class ChunkCacheBroker:
         self._source = source
         self._processor = processor
         self._cache_dir = cache_dir
+
+        self._in_progress_row_offsets = np.asarray([0], dtype=np.int64)
+        self._in_progress_field_offsets = {}
+
         self._rows_per_chunk = rows_per_chunk
         self._finished_promise = asyncio.Future()
         # used to subscribe to metrics updates
@@ -1499,6 +1494,26 @@ class ChunkCacheBroker:
                 self._reader_promises[chunk_idx] = asyncio.Future()
             return await self._reader_promises[chunk_idx]
 
+    async def chunk_for_field_offset(self, field: str, offset: int) -> Optional[tuple[ChunkMetadata, int]]:
+        """
+        Get the chunk that contains the field at the given offset. Returns the chunk as well as the offset within the chunk.
+        """
+
+        if offset < 0:
+            raise ValueError(f"Offset must be non-negative, got {offset}")
+
+        while offset >= self._in_progress_field_offsets[field][-1]:
+            if self._is_finished:
+                return None
+            else:
+                # need to wait until we get more chunks
+                await self.get_chunk(len(self.chunks) - 1)
+
+        chunk_idx = np.searchsorted(self._in_progress_field_offsets[field], offset, side="right") - 1
+        print(f"Found chunk {chunk_idx} for offset {offset}: {self._in_progress_field_offsets[field]}")
+
+        return self.chunks[chunk_idx], offset - self._in_progress_field_offsets[field][chunk_idx]
+
     async def final_chunk_count(self) -> Optional[int]:
         if self._is_finished:
             return len(self.chunks)
@@ -1508,6 +1523,15 @@ class ChunkCacheBroker:
     def _append_chunks(self, *chunks: ChunkMetadata):
         for chunk in chunks:
             self.chunks.append(chunk)
+
+            self._in_progress_row_offsets = np.append(
+                self._in_progress_row_offsets, chunk.num_rows + self._in_progress_row_offsets[-1]
+            )
+            for field, count in chunk.field_counts.items():
+                field_offsets = self._in_progress_field_offsets.get(field, np.asarray([0], dtype=np.int64))
+                field_offsets = np.append(field_offsets, count + field_offsets[-1])
+                self._in_progress_field_offsets[field] = field_offsets
+
             chunk_idx = len(self.chunks) - 1
             self.logger.debug(f"Received chunk {chunk_idx}")
             if chunk_idx in self._reader_promises:
@@ -1535,7 +1559,10 @@ class ChunkCacheBroker:
 
         self._reader_promises = {}
 
-        self._finished_promise.set_exception(info[1])
+        if not self._finished_promise.done():
+            self._finished_promise.set_exception(info[1])
+        else:
+            assert self._finished_promise.exception() is not None
         self._do_notify()
 
     def _finalize(self):
@@ -1545,7 +1572,9 @@ class ChunkCacheBroker:
             future.set_result(None)
 
         # write ledger
-        _serialize_json_and_commit(os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks))
+        ledger_path = os.path.join(self._cache_dir, LEDGER_FILE_NAME)
+        ledger = CacheLedger(self.chunks, self._in_progress_row_offsets, self._in_progress_field_offsets)
+        _serialize_json_and_commit(ledger_path, ledger)
 
         self._reader_promises = {}
         # TODO: For some reason this crashes other actors with weird reference counting assertion errors.
@@ -1666,8 +1695,10 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         try:
             return FinishedShardCache.load(cache_dir, batch_size)
         except FileNotFoundError:
-            broker = _get_broker_actor(cache_dir, shard_source, processor, rows_per_chunk)
-            return InProgressShardCache(cache_dir, batch_size, broker)
+            pass
+
+        broker = _get_broker_actor(cache_dir, shard_source, processor, rows_per_chunk)
+        return InProgressShardCache(cache_dir, batch_size, broker)
 
     @staticmethod
     def load(cache_dir: str, batch_size: int) -> "ShardCache":
@@ -1715,20 +1746,6 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
-        """Returns the record batch for a given index
-
-        Args:
-            index: The index of the record batch to return (within the global cache)
-            timeout: The maximum time to wait for the record batch to be available
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def get_field_slice(self, field: str, start: int, end: int, *, timeout: Optional[float] = None) -> np.ndarray:
         """Returns a slice of a field from the cache."""
         raise NotImplementedError
@@ -1737,7 +1754,6 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
     def get_field_slice_async(self, field: str, start: int, end: int) -> np.ndarray:
         """Returns a slice of a field from the cache."""
         raise NotImplementedError
-
 
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
@@ -1765,6 +1781,7 @@ class FinishedShardCache(ShardCache):
     def load(cache_dir: str, batch_size: int) -> "FinishedShardCache":
         """Loads a cache from disk. Raises FileNotFoundError if the cache doesn't exist"""
         logger.info(f"Loading cache from {cache_dir}")
+        _migrate_cache_to_add_offsets(cache_dir)
         ledger = _load_cache_ledger(cache_dir)
         return FinishedShardCache(cache_dir, batch_size, ledger)
 
@@ -1781,27 +1798,10 @@ class FinishedShardCache(ShardCache):
     async def get_chunk_async(self, index: int) -> "ChunkMetadata":
         return self.get_chunk(index)
 
-    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
-        # TODO: This doesn't respect the sharding
-        rb_offsets = self._ledger.record_batch_offsets
-        # binary search for the chunk that contains the row
-        chunk_idx = bisect.bisect_right(rb_offsets, index) - 1
-
-        if chunk_idx < 0:
-            raise IndexError(f"Row index out of bounds: {index}")
-
-        chunk = self.get_chunk(chunk_idx)
-        reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-
-        return reader.get_record_batch(index - rb_offsets[chunk_idx])
-
-    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
-        return self.get_record_batch(index)
-
     def get_field_slice(self, field: str, start: int, end: int, *, timeout: Optional[float] = None) -> np.ndarray:
         """Returns a slice of a field from the cache."""
         # TODO: This doesn't respect the sharding
-        field_offsets = self._ledger.field_count_offsets[field]
+        field_offsets = self._ledger.field_offsets[field]
         begin_chunk_idx = np.searchsorted(field_offsets, start, side="right") - 1
         end_chunk_idx = np.searchsorted(field_offsets, end, side="right") - 1
 
@@ -1809,11 +1809,24 @@ class FinishedShardCache(ShardCache):
             raise IndexError(f"Row index out of bounds: {start} {end}")
 
         out_pieces = []
+        current_start = start
         for chunk_idx in range(begin_chunk_idx, end_chunk_idx + 1):
-            chunk = self.get_chunk(chunk_idx)
+            chunk = self._ledger.chunks[chunk_idx]
             reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
-            max_in_this_chunk = field_offsets[chunk_idx + 1] if chunk_idx + 1 < len(field_offsets) else end
+            max_readable = min(end, int(field_offsets[chunk_idx + 1]))
+            this_slice = reader.field_slice(
+                field, int(current_start - field_offsets[chunk_idx]), int(max_readable - field_offsets[chunk_idx])
+            )
+            out_pieces.append(this_slice)
+            current_start = max_readable
 
+        if len(out_pieces) == 1:
+            return out_pieces[0]
+
+        return np.concatenate(out_pieces)
+
+    async def get_field_slice_async(self, field: str, start: int, end: int) -> np.ndarray:
+        return self.get_field_slice(field, start, end)
 
     def final_chunk_count(self) -> Optional[int]:
         """Returns the number of chunks in the cache, if known"""
@@ -1873,6 +1886,7 @@ class InProgressShardCache(ShardCache):
         num_readers: int = 1,
     ):
         super().__init__(cache_dir, batch_size, reader_offset, num_readers)
+        _migrate_cache_to_add_offsets(cache_dir)
         self._broker = _broker
 
     def finished_sentinel(self):
@@ -1927,18 +1941,35 @@ class InProgressShardCache(ShardCache):
             raise IndexError(f"Chunk index {index} out of bounds. (Mapped index {mapped_index})")
         return chunk
 
-    def get_record_batch(self, index: int, *, timeout: Optional[float] = None) -> pa.RecordBatch:
-        return ray.get(self.get_record_batch_async(index), timeout=timeout)
+    def get_field_slice(self, field: str, start: int, end: int, *, timeout: Optional[float] = None) -> np.ndarray:
+        # return ray.get(self.get_field_slice_async(field, start, end), timeout=timeout)
+        # have to use asyncio
+        # TODO: respect timeout
+        return asyncio.run(self.get_field_slice_async(field, start, end))
 
-    async def get_record_batch_async(self, index: int) -> pa.RecordBatch:
-        """Returns the record batch for a given index
+    async def get_field_slice_async(self, field: str, start: int, end: int) -> np.ndarray:
+        out = []
 
-        Args:
-            index: The index of the record batch to return (within the global cache)
-        """
-        chunk_metadata, offset = self._broker.get_chunk_for_record_batch.remote(index)
-        reader = _ChunkReader.from_metadata(self.cache_dir, ray.get(chunk_metadata), self._batch_size)
-        return reader.get_record_batch(index - offset)
+        pos_read_so_far = start
+        while pos_read_so_far < end:
+            response = await self._broker.chunk_for_field_offset.remote(field, pos_read_so_far)
+            if response is None:
+                raise IndexError(f"Field index out of bounds: {start} {end}")
+
+            chunk_to_read, offset_within_chunk = response
+
+            reader = _ChunkReader.from_metadata(self.cache_dir, chunk_to_read, self._batch_size)
+            end_within_this_chunk = min(
+                end - pos_read_so_far + offset_within_chunk, reader.metadata.field_counts[field]
+            )
+            slice = reader.field_slice(field, offset_within_chunk, end_within_this_chunk)
+            out.append(slice)
+            pos_read_so_far += len(slice)
+
+        if len(out) == 1:
+            return out[0]
+
+        return np.concatenate(out)
 
     def final_chunk_count(self) -> Optional[int]:
         """Returns the number of chunks in the cache, if known"""
@@ -2020,9 +2051,6 @@ class _ChunkReader:
     file: pq.ParquetFile
     batch_size: int
 
-    # TODO: seek by doc
-    # TODO: seek by token etc
-
     def __init__(self, metadata: ChunkMetadata, file: pq.ParquetFile, batch_size: int):
         self.metadata = metadata
         self.file = file
@@ -2055,24 +2083,42 @@ class _ChunkReader:
         return next(self.file.iter_batches(row_groups=[index]))
 
     def get_row(self, index: int) -> pa.RecordBatch:
-        row_group_for_row = np.searchsorted(self.metadata.row_offsets_by_group, index, side="right") - 1
+        row_group_for_row = np.searchsorted(self.metadata.row_offsets, index, side="right") - 1
         row_group = self.get_record_batch(row_group_for_row)
-        pos_within_group = index - self.metadata.row_offsets_by_group[row_group_for_row]
+        pos_within_group = index - self.metadata.row_offsets[row_group_for_row]  # type: ignore
         return row_group.slice(pos_within_group, pos_within_group + 1)
 
     def field_slice(self, field: str, start: int, end: int) -> np.ndarray:
-        field_offsets = self.metadata.field_offsets_by_group[field]
+        field_offsets = self.metadata.field_offsets[field]  # type: ignore
         start_group = np.searchsorted(field_offsets, start, side="right") - 1
 
         if start_group < 0:
-            raise ValueError(f"Start index {start} is out of bounds for field {field}")
+            raise ValueError(f"Start index {start} is out of bounds for field {field}: {field_offsets}")
 
         end_group = np.searchsorted(field_offsets, end, side="right") - 1
         if end_group < 0:
             raise ValueError(f"End index {end} is out of bounds for field {field}")
 
-        data: pa.Table = self.file.read_row_groups(list(range(start_group, end_group + 1)), columns=[field])
-        return data.column(0).to_numpy()[start - field_offsets[start_group] : end - field_offsets[start_group]]
+        out = []
+        pos_to_read = start - field_offsets[start_group]
+        total_read = 0
+        for batch in self.file.iter_batches(
+            row_groups=list(range(start_group, min(end_group + 1, self.file.num_row_groups))), columns=[field]
+        ):
+            if total_read >= end - start:
+                break
+
+            values = batch.column(0).flatten().to_numpy()
+            out.append(values[pos_to_read : min(len(values), end - total_read)])
+            total_read += len(out[-1])
+            pos_to_read = 0
+
+        assert total_read == end - start
+
+        if len(out) == 1:
+            return out[0]
+
+        return np.concatenate(out)
 
 
 def _migrate_cache_to_add_offsets(cache_dir: str):
@@ -2096,12 +2142,14 @@ def _migrate_cache_to_add_offsets(cache_dir: str):
                 column = rg.column(col)
                 num_values = column.num_values
                 field_offsets[field_names[col]].append(field_offsets[field_names[col]][-1] + num_values)
-        return np.asarray(field_offsets, dtype=np.int64), {k: np.asarray(v, dtype=np.int64) for k, v in field_offsets.items()}
+        return np.asarray(field_offsets, dtype=np.int64), {
+            k: np.asarray(v, dtype=np.int64) for k, v in field_offsets.items()
+        }
 
     try:
         ledger = _load_cache_ledger(cache_dir)
         # if we already have ledger metadata, see if we have offsets
-        if ledger.chunks[0].field_offsets_by_group is not None:
+        if ledger.chunks[0].field_offsets is not None:
             logger.info("Offsets already present in ledger, skipping migration")
             return
 
@@ -2134,8 +2182,8 @@ def _migrate_cache_to_add_offsets(cache_dir: str):
         file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{chunk.name}.parquet"), "rb").open())
         field_offsets, row_offsets = _construct_row_group_offsets(chunk, file)
         # gross mutation
-        chunk.field_offsets_by_group = field_offsets
-        chunk.row_offsets_by_group = row_offsets
+        chunk.field_offsets = field_offsets
+        chunk.row_offsets = row_offsets
         # write the chunk back
         _serialize_json_and_commit(chunk_path, chunk)
         assert chunk.name not in all_chunks
