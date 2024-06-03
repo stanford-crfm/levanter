@@ -1523,15 +1523,16 @@ class ChunkCacheBroker:
                     await self._metrics_condition.wait()
 
         chunk_idx = np.searchsorted(self._in_progress_field_offsets[field], offset, side="right") - 1
-        print(f"Found chunk {chunk_idx} for offset {offset}: {self._in_progress_field_offsets[field]}")
-
         return self.chunks[chunk_idx], offset - self._in_progress_field_offsets[field][chunk_idx]
 
-    async def final_chunk_count(self) -> Optional[int]:
-        if self._is_finished:
-            return len(self.chunks)
-        else:
-            return None
+    def current_chunk_count(self) -> int:
+        return len(self.chunks)
+
+    def current_row_count(self) -> int:
+        return int(self._in_progress_row_offsets[-1])
+
+    def current_field_count(self, field: str) -> int:
+        return int(self._in_progress_field_offsets.get(field, np.asarray([0], dtype=np.int64))[-1])
 
     def _append_chunks(self, *chunks: ChunkMetadata):
         for chunk in chunks:
@@ -1746,8 +1747,8 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def final_chunk_count(self) -> Optional[int]:
-        """Returns the number of chunks in the cache, if known"""
+    def final_chunk_count(self, *, timeout: Optional[float] = None) -> int:
+        """Returns the number of chunks in the cache. Blocks until the cache is finished."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -1775,6 +1776,10 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
         for batch in reader:
             yield batch
+
+    @abc.abstractmethod
+    def final_field_count(self, field_name, *, timeout: Optional[float] = None) -> int:
+        raise NotImplementedError
 
 
 class FinishedShardCache(ShardCache):
@@ -1844,9 +1849,12 @@ class FinishedShardCache(ShardCache):
     async def get_field_slice_async(self, field: str, start: int, end: int) -> np.ndarray:
         return self.get_field_slice(field, start, end)
 
-    def final_chunk_count(self) -> Optional[int]:
+    def final_chunk_count(self, *, timeout: Optional[float] = None) -> int:
         """Returns the number of chunks in the cache, if known"""
         return len(self._ledger.chunks)
+
+    def final_field_count(self, field_name, *, timeout: Optional[float] = None) -> int:
+        return self._ledger.field_totals[field_name]
 
     def iter_batches_from_chunks(self, loop: bool = False):
         shard_offset = self._reader_offset
@@ -1966,8 +1974,6 @@ class InProgressShardCache(ShardCache):
         while pos_read_so_far < end:
             time_in = time.time()
             time_to_wait = None if timeout is None else timeout - time_waited
-            offsets = ray.get(self._broker.in_progress_field_offsets.remote(field))
-            print(f"Offsets: {offsets}", flush=True)
             response = ray.get(
                 self._broker.chunk_for_field_offset.remote(field, pos_read_so_far), timeout=time_to_wait
             )
@@ -2016,9 +2022,14 @@ class InProgressShardCache(ShardCache):
 
         return np.concatenate(out)
 
-    def final_chunk_count(self) -> Optional[int]:
+    def final_chunk_count(self, *, timeout: Optional[float] = None) -> int:
         """Returns the number of chunks in the cache, if known"""
-        return ray.get(self._broker.final_chunk_count.remote())
+        self.await_finished(timeout)
+        return ray.get(self._broker.current_chunk_count.remote())
+
+    def final_field_count(self, field_name, *, timeout: Optional[float] = None):
+        self.await_finished(timeout)
+        return ray.get(self._broker.current_field_count.remote(field_name))
 
     def iter_batches_from_chunks(self, loop: bool = False):
         shard_offset = self._reader_offset

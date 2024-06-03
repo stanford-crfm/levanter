@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, BatchEncoding
 
 from levanter.data.shard_cache import build_cache
 from levanter.data.sharded_dataset import ShardedDataset
-from levanter.data.text import TokenizedDocumentCache
+from levanter.data.text import TokenizedDocumentCache, TokenSeqSampler
 from levanter.utils.py_utils import logical_cpu_core_count
 from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource
 
@@ -176,3 +176,29 @@ def _unbatch_encoding(enc: BatchEncoding):
     for i in range(len(enc["input_ids"])):
         docs.append(BatchEncoding(data={k: [v[i]] for k, v in enc.items()}))
     return docs
+
+
+@pytest.mark.ray
+def test_doc_cache_sampler_basics():
+    def batch_docs(doc_ids):
+        return BatchEncoding(data=dict(input_ids=[list(range(10 * i, 10 * (i + 1))) for i in doc_ids]))
+
+    num_docs = 32
+    batches = [batch_docs([j, j + 1]) for j in range(0, num_docs, 8)]
+
+    linearized_docs = sum([b["input_ids"][0] + b["input_ids"][1] for b in batches], start=[])
+
+    source = ShardsDataset([[b] for b in batches])
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = build_cache(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
+        sampler = TokenSeqSampler(cache, seq_len=10, seed=0)
+
+        def list_in_list(a, b):
+            """checks if a is a contiguous sublist of b"""
+            n = len(a)
+            return any((list(a) == list(b[i : i + n])) for i in range(len(b) - n + 1))
+
+        for i in range(10):
+            sample = sampler.sample(i)
+            assert len(sample) == 10
+            assert list_in_list(sample, linearized_docs)

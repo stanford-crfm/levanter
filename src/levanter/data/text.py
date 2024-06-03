@@ -121,26 +121,26 @@ class CausalLmDataset(ShardableDataset[LmExample]):
                 yield example
 
 
-
 class TokenSeqSampler:
-
-    def __init__(self, doc_cache, seq_len, seed: int, field_name: str = "input_ids"):
+    def __init__(self, doc_cache: ShardCache, seq_len, seed: int, field_name: str = "input_ids"):
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self.seed = seed
         self.field_name = field_name
 
-        self.num_tokens_in_dataset = self.doc_cache.total_field_count(field_name)
+        self.num_tokens_in_dataset = self.doc_cache.final_field_count(field_name)
 
     def sample(self, step: int):
         # mix the seed with the step
         rng = np.random.default_rng(self.seed + step)
-        out = []
+        out: list = []
         while len(out) < self.seq_len:
-            idx = rng.integers(0, self.num_tokens_in_dataset, size=1)[0]
-            out.extend(self.doc_cache.take_from_field(self.field_name, idx, self.seq_len - len(out)))
+            remaining = self.seq_len - len(out)
+            idx = int(rng.integers(0, self.num_tokens_in_dataset - remaining, size=1)[0])
+            out.extend(self.doc_cache.get_field_slice(self.field_name, idx, idx + remaining))
 
         return np.array(out)
+
 
 class RowSampler:
     def __init__(self, doc_cache, seed: int):
@@ -152,6 +152,7 @@ class RowSampler:
         rng = np.random.default_rng(self.seed + step)
         idx = rng.integers(0, self.num_rows, size=1)[0]
         return self.doc_cache.get_row(idx)
+
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
