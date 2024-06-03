@@ -130,7 +130,7 @@ class TokenSeqSampler:
 
         self.num_tokens_in_dataset = self.doc_cache.final_field_count(field_name)
 
-    def sample(self, step: int):
+    def sample(self, step: int) -> np.ndarray:
         # mix the seed with the step
         rng = np.random.default_rng(self.seed + step)
         out: list = []
