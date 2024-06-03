@@ -7,23 +7,26 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 import braceexpand
 import datasets
 import equinox as eqx
 import fsspec
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import regex
 from draccus import field
+from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis
 
 from levanter.data.mixture import MixtureDataset, StopStrategy
+from levanter.data.sampler import ItemSampler
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -58,7 +61,6 @@ from levanter.utils.jax_utils import use_cpu_device  # noqa
 logger = logging.getLogger("levanter.data.text")
 
 # TASKS:
-# TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
 LEDGER_FILE = "ledger.json"
@@ -121,37 +123,44 @@ class CausalLmDataset(ShardableDataset[LmExample]):
                 yield example
 
 
-class TokenSeqSampler:
-    def __init__(self, doc_cache: ShardCache, seq_len, seed: int, field_name: str = "input_ids"):
+class CausalLmSampler(ItemSampler[LmExample]):
+    def __init__(self, token_sampler, QPos: Axis, field_name: str = "input_ids"):
+        self.token_sampler = token_sampler
+        self.QPos = QPos
+
+    def sample(self, index, *, key: PRNGKey) -> LmExample:
+        tokens = self.token_sampler.sample(index, key=key)
+        return LmExample.causal(tokens=hax.named(tokens, self.QPos), ignore_id=DEFAULT_IGNORE_INDEX)
+
+
+class TokenSeqSampler(ItemSampler[np.ndarray]):
+    def __init__(self, doc_cache: ShardCache, seq_len, field_name: str = "input_ids"):
         self.doc_cache = doc_cache
         self.seq_len = seq_len
-        self.seed = seed
         self.field_name = field_name
 
         self.num_tokens_in_dataset = self.doc_cache.final_field_count(field_name)
 
-    def sample(self, step: int) -> np.ndarray:
-        # mix the seed with the step
-        rng = np.random.default_rng(self.seed + step)
-        out: list = []
-        while len(out) < self.seq_len:
-            remaining = self.seq_len - len(out)
-            idx = int(rng.integers(0, self.num_tokens_in_dataset - remaining, size=1)[0])
-            out.extend(self.doc_cache.get_field_slice(self.field_name, idx, idx + remaining))
+    def sample(self, index, *, key: PRNGKey) -> np.ndarray:
+        max_index = self.num_tokens_in_dataset - self.seq_len
+        index = index % max_index
 
-        return np.array(out)
+        return self.doc_cache.get_field_slice(self.field_name, index, index + self.seq_len)
 
 
-class RowSampler:
-    def __init__(self, doc_cache: ShardCache, seed: int):
-        self.doc_cache = doc_cache
-        self.seed = seed
-        self.num_rows = self.doc_cache.final_row_count()
+T = TypeVar("T")
 
-    def sample(self, step: int):
-        rng = np.random.default_rng(self.seed + step)
-        idx = rng.integers(0, self.num_rows, size=1)[0]
-        return self.doc_cache.get_row(idx)
+
+class MixtureSampler(ItemSampler[T]):
+    def __init__(self, samplers: List[ItemSampler[T]], weights: List[float], key: PRNGKey):
+        self.samplers = samplers
+        self.weights = jnp.array(weights, dtype=jnp.float32)
+        self.key = key
+
+    def sample(self, index, *, key: PRNGKey) -> T:
+        key, subkey = jax.random.split(key)
+        i = jax.random.choice(subkey, len(self.samplers), shape=(), p=self.weights)
+        return self.samplers[i].sample(index, key=key)
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
@@ -606,6 +615,10 @@ class LMTaskConfig(abc.ABC):
         pass
 
     @abc.abstractmethod
+    def train_sampler(self, seq_len, monitors: Union[bool, List[MetricsMonitor]] = True) -> ItemSampler[np.ndarray]:
+        pass
+
+    @abc.abstractmethod
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, ShardableDataset[np.ndarray]]:
@@ -636,6 +649,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if ds is None:
             raise ValueError("No training set!")
         return ds
+
+    def train_sampler(self, seq_len, monitors: Union[bool, List[MetricsMonitor]] = True) -> ItemSampler[np.ndarray]:
+        cache = self.build_or_load_cache("train", monitors=monitors)
+        return TokenSeqSampler(cache.chunk_cache, seq_len)  # type: ignore
 
     def validation_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -765,6 +782,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
                 f" {self.train_weights.keys()}"
             )
+
+    def train_sampler(self, seq_len, monitors: Union[bool, List[MetricsMonitor]] = True) -> ItemSampler[np.ndarray]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = {name: TokenSeqSampler(cache.chunk_cache, seq_len) for name, cache in doc_caches.items()}
+        return MixtureSampler(
+            list(token_datasets.values()), list(self.train_weights.values()), key=jax.random.key(self.seed)
+        )
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True

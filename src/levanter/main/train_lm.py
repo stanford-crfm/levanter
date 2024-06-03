@@ -14,7 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import CausalLmDataset, CausalLmSampler, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -103,9 +103,7 @@ def main(config: TrainLmConfig):
         KeyPos = config.model.KeyPos
 
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
-        train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
-        )
+        train_dataset = CausalLmSampler(config.data.train_sampler(Pos.size), Pos)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of

@@ -18,6 +18,7 @@ from haliax.util import is_named_array
 
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
+from levanter.data.sampler import ItemSampler
 from levanter.mesh import local_devices_mapping, process_mesh_mapping
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
@@ -158,9 +159,11 @@ class ShardedBatchLoader(BatchLoader[Ex]):
     :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
     """
 
+    # TODO: clean this up
+
     def __init__(
         self,
-        local_dataset: ShardableDataset[Ex],
+        local_dataset: ShardableDataset[Ex] | ItemSampler[Ex],
         mesh: Mesh,
         Batch: hax.Axis,
         axis_resources: Optional[ResourceMapping] = None,
@@ -188,10 +191,21 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.local_devices_map = local_devices_map
         self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
 
-        self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+        if isinstance(local_dataset, ShardableDataset):
+            self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
+            self.is_dataset = True
+        else:
+            self.item_dataset = local_dataset  # type: ignore
+            self.is_dataset = False
+
         super().__init__(max_capacity, axis_resources)
 
     def _produce_batches(self) -> Iterator[PyTree]:
+
+        if isinstance(self.item_dataset, ItemSampler):
+            yield from self._produce_batches_from_sampler()
+            return
+
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
 
@@ -211,6 +225,26 @@ class ShardedBatchLoader(BatchLoader[Ex]):
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
                 get_batch_items=batch_callback,
+            )
+
+            yield batch
+
+    def _produce_batches_from_sampler(self) -> Iterator[PyTree]:
+        def batch_callback(step, global_begin, global_end):
+            key = jax.random.PRNGKey(step)
+            elems = []
+            for i in range(global_begin, global_end):
+                elems.append(self.item_dataset.sample(step * self.batch_size + i, key=key))
+
+            return elems
+
+        exemplar = self.item_dataset.sample(0, key=jax.random.PRNGKey(0))  # type: ignore
+
+        step = 0
+        while True:
+            batch = self._construct_global_array_for_tree(
+                item_exemplar=exemplar,
+                get_batch_items=lambda global_begin, global_end: batch_callback(step, global_begin, global_end),
             )
 
             yield batch

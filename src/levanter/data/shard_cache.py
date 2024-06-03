@@ -156,7 +156,6 @@ class ChunkMetadata:
     # these are running totals into row groups
     row_offsets: Optional[np.ndarray] = dataclasses.field(metadata=NP_INT64_CODEC, default=None)
     field_offsets: Optional[Dict[str, list[int]]] = dataclasses.field(metadata=DICT_NP_INT64_CODEC, default=None)
-    version: str = "2"
 
     @property
     def num_record_batches(self):
@@ -2243,7 +2242,7 @@ def _migrate_cache_to_add_offsets(cache_dir: str):
     try:
         ledger = _load_cache_ledger(cache_dir)
         # if we already have ledger metadata, see if we have offsets
-        if ledger.chunks[0].field_offsets is not None:
+        if len(ledger.field_offsets):
             logger.info("Offsets already present in ledger, skipping migration")
             return
 
@@ -2256,26 +2255,36 @@ def _migrate_cache_to_add_offsets(cache_dir: str):
     # now we have to do the same for the shard metadata, which are just lists of chunk metadatas
     # these are named <shard_name>.json. We find them because they're not chunks nad not hte ledger
     all_chunks = _migrate_shard_metadatas(cache_dir)
-    _migrate_ledger(all_chunks, cache_dir, ledger)
+
+    if ledger is not None:
+        _migrate_ledger(all_chunks, cache_dir, ledger)
 
 
 def _migrate_ledger(all_chunks, cache_dir, ledger):
     found = set()
-    if ledger is not None:
-        for chunk in ledger.chunks:
-            if chunk.name not in all_chunks:
-                raise ValueError(f"Chunk {chunk.name} in ledger but not found in cache")
+    global_row_offsets = [0]
+    global_field_offsets = {name: [0] for name in ledger.chunks[0].field_counts.keys()}
+    for chunk in ledger.chunks:
+        if chunk.name not in all_chunks:
+            raise ValueError(f"Chunk {chunk.name} in ledger but not found in cache")
 
-            chunk.field_offsets = all_chunks[chunk.name].field_offsets
-            chunk.row_offsets = all_chunks[chunk.name].row_offsets
-            found.add(chunk.name)
+        chunk.field_offsets = all_chunks[chunk.name].field_offsets
+        chunk.row_offsets = all_chunks[chunk.name].row_offsets
+        global_row_offsets.append(global_row_offsets[-1] + chunk.num_rows)
+        for field, count in chunk.field_counts.items():
+            global_field_offsets[field].append(global_field_offsets[field][-1] + count)
 
-        missing_chunks = set(all_chunks.keys()) - found
+        found.add(chunk.name)
 
-        if len(missing_chunks) > 0:
-            raise ValueError(f"Found chunks in cache but not in ledger: {missing_chunks}")
+    ledger.row_offsets = np.asarray(global_row_offsets, dtype=np.int64)
+    ledger.field_offsets = {k: np.asarray(v, dtype=np.int64) for k, v in global_field_offsets.items()}
 
-        _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE_NAME), ledger)
+    missing_chunks = set(all_chunks.keys()) - found
+
+    if len(missing_chunks) > 0:
+        raise ValueError(f"Found chunks in cache but not in ledger: {missing_chunks}")
+
+    _serialize_json_and_commit(os.path.join(cache_dir, LEDGER_FILE_NAME), ledger)
 
 
 def _migrate_shard_metadatas(cache_dir):
