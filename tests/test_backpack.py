@@ -83,7 +83,7 @@ def test_backpack_nano_compare():
     # now compare levanter
     with tempfile.TemporaryDirectory() as tmpdir:
         lev_config = converter.config_from_hf_config(config)
-        model.save_pretrained(tmpdir)
+        model.save_pretrained(tmpdir, safe_serialization=False)
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
     roundtrip_hf_config = converter.hf_config_from_config(lev_config)
