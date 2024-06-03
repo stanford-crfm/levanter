@@ -2292,7 +2292,10 @@ def _migrate_shard_metadatas(cache_dir):
     all_chunks = {}
     all_json = fs.glob(os.path.join(cache_dir, "**/*.json"))
     all_shard_paths = [p for p in all_json if os.path.basename(p) != LEDGER_FILE_NAME]
+    protocol, _ = fsspec.core.split_protocol(cache_dir)
     for shard_path in all_shard_paths:
+        if protocol is not None:
+            shard_path = f"{protocol}://{shard_path}"
         shard = ShardMetadata.load(shard_path)
         for chunk in shard.chunks:
             file = pq.ParquetFile(fsspec.open(os.path.join(cache_dir, f"{chunk.name}.parquet"), "rb").open())
