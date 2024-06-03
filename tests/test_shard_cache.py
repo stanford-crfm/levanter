@@ -406,3 +406,53 @@ def test_shard_cache_get_by_field_offsets():
                 list(cache.get_field_slice("test", NUM_TOKENS_IN_SHARD * 3 - 5, NUM_TOKENS_IN_SHARD * 3 + 15))
                 == [29] * 5 + [30] * 10 + [31] * 5
             )
+
+
+@pytest.mark.ray
+def test_shard_cache_get_by_field_offsets_with_slow_shard():
+    # Tests that the behavior is correct if a shard isn't ready yet, similar to test_can_get_chunk_before_finished
+
+    @ray.remote
+    class Blocker:
+        def __init__(self):
+            self.future = asyncio.Future()
+
+        async def block(self):
+            await self.future
+
+        def unblock(self):
+            self.future.set_result(None)
+
+    blocker_to_wait_on_test = Blocker.remote()
+
+    class SlowShardSource(ShardedDataset[List[int]]):
+        @property
+        def shard_names(self) -> Sequence[str]:
+            return ["shard_0"]
+
+        def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[List[int]]:
+            for i in range(10):
+                yield [i] * 10
+            ray.get(blocker_to_wait_on_test.block.remote())
+            for i in range(10, 20):
+                yield [i] * 10
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = build_cache(
+            tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
+        )
+
+        slice1 = cache.get_field_slice("test", 0, 10)
+        assert list(slice1) == [0] * 10
+
+        with pytest.raises(TimeoutError):
+            cache.get_field_slice("test", 105, 125, timeout=0.1)
+
+        print("here")
+
+        ray.get(blocker_to_wait_on_test.unblock.remote())
+
+        slice2 = cache.get_field_slice("test", 105, 125)
+        assert list(slice2) == [10] * 5 + [11] * 10 + [12] * 5
+
+        cache.await_finished(timeout=10)
