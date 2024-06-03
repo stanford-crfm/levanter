@@ -205,6 +205,10 @@ class CacheLedger:
     def field_totals(self):
         return {field: offsets[-1] for field, offsets in self.field_offsets.items()}
 
+    @property
+    def total_rows(self):
+        return self.row_offsets[-1]
+
 
 class SerialCacheWriter(AbstractContextManager):
     # TODO: serial cache writer needs to track offsets
@@ -1498,6 +1502,9 @@ class ChunkCacheBroker:
     def in_progress_field_offsets(self, field: str) -> np.ndarray:
         return self._in_progress_field_offsets.get(field, np.asarray([0], dtype=np.int64))
 
+    def current_row_count(self) -> int:
+        return int(self._in_progress_row_offsets[-1])
+
     async def chunk_for_field_offset(self, field: str, offset: int) -> Optional[tuple[ChunkMetadata, int]]:
         """
         Get the chunk that contains the field at the given offset. Returns the chunk as well as the offset within the chunk.
@@ -1509,7 +1516,6 @@ class ChunkCacheBroker:
         if field not in self._in_progress_field_offsets:
             if self._is_finished:
                 raise ValueError(f"Field {field} not found in cache")
-            # need to wait until we get more chunks
             async with self._metrics_condition:
                 await self._metrics_condition.wait()
 
@@ -1525,11 +1531,24 @@ class ChunkCacheBroker:
         chunk_idx = np.searchsorted(self._in_progress_field_offsets[field], offset, side="right") - 1
         return self.chunks[chunk_idx], offset - self._in_progress_field_offsets[field][chunk_idx]
 
+    async def chunk_for_row(self, row: int) -> Optional[tuple[ChunkMetadata, int]]:
+        """
+        Get the chunk that contains the row at the given index. Returns the chunk as well as the row index within the chunk.
+        """
+        if row < 0:
+            raise ValueError(f"Row must be non-negative, got {row}")
+
+        if row >= self._in_progress_row_offsets[-1]:
+            if self._is_finished:
+                return None
+            async with self._metrics_condition:
+                await self._metrics_condition.wait()
+
+        chunk_idx = np.searchsorted(self._in_progress_row_offsets, row, side="right") - 1
+        return self.chunks[chunk_idx], row - self._in_progress_row_offsets[chunk_idx]
+
     def current_chunk_count(self) -> int:
         return len(self.chunks)
-
-    def current_row_count(self) -> int:
-        return int(self._in_progress_row_offsets[-1])
 
     def current_field_count(self, field: str) -> int:
         return int(self._in_progress_field_offsets.get(field, np.asarray([0], dtype=np.int64))[-1])
@@ -1772,6 +1791,14 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
         """Returns a slice of a field from the cache."""
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def get_row(self, idx, *, timeout: Optional[float] = None) -> pa.RecordBatch:
+        pass
+
+    @abc.abstractmethod
+    async def get_row_async(self, idx) -> pa.RecordBatch:
+        pass
+
     def _read_chunk(self, chunk):
         reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
         for batch in reader:
@@ -1779,6 +1806,10 @@ class ShardCache(Iterable[pa.RecordBatch], abc.ABC):
 
     @abc.abstractmethod
     def final_field_count(self, field_name, *, timeout: Optional[float] = None) -> int:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def final_row_count(self, *, timeout: Optional[float] = None) -> int:
         raise NotImplementedError
 
 
@@ -1856,6 +1887,9 @@ class FinishedShardCache(ShardCache):
     def final_field_count(self, field_name, *, timeout: Optional[float] = None) -> int:
         return self._ledger.field_totals[field_name]
 
+    def final_row_count(self, *, timeout: Optional[float] = None) -> int:
+        return int(self._ledger.total_rows)
+
     def iter_batches_from_chunks(self, loop: bool = False):
         shard_offset = self._reader_offset
         num_chunks = len(self._ledger.chunks)
@@ -1875,16 +1909,6 @@ class FinishedShardCache(ShardCache):
             shard_offset = i % len(self._ledger.chunks)
 
     def shard(self, offset, num_readers):
-        """
-        Returns a shard of this shard cache. This method shards w.r.t the current shard cache, not the base shard cache.
-
-        Args:
-            offset:
-            num_readers:
-
-        Returns:
-            (ShardCache): A shard of this shard cache.
-        """
         if offset >= num_readers:
             raise ValueError(f"Shard index {offset} is out of range")
 
@@ -1893,7 +1917,16 @@ class FinishedShardCache(ShardCache):
 
         new_offset = self._reader_offset * num_readers + offset
         new_num_readers = self._num_readers * num_readers
-        return ShardCache(self.cache_dir, self._batch_size, self._ledger, new_offset, new_num_readers)
+        return FinishedShardCache(self.cache_dir, self._batch_size, self._ledger, new_offset, new_num_readers)
+
+    def get_row(self, idx, *, timeout: Optional[float] = None) -> pa.RecordBatch:
+        chunk_idx = np.searchsorted(self._ledger.row_offsets, idx, side="right") - 1
+        chunk = self._ledger.chunks[chunk_idx]
+        reader = _ChunkReader.from_metadata(self.cache_dir, chunk, self._batch_size)
+        return reader.get_row(idx - self._ledger.row_offsets[chunk_idx])
+
+    async def get_row_async(self, idx) -> pa.RecordBatch:
+        return self.get_row(idx)
 
 
 class InProgressShardCache(ShardCache):
@@ -2022,6 +2055,24 @@ class InProgressShardCache(ShardCache):
 
         return np.concatenate(out)
 
+    def get_row(self, idx, *, timeout: Optional[float] = None) -> pa.RecordBatch:
+        response = ray.get(self._broker.chunk_for_row.remote(idx))
+        if response is None:
+            raise IndexError(f"Row index out of bounds: {idx}")
+
+        chunk_to_read, offset_within_chunk = response
+        reader = _ChunkReader.from_metadata(self.cache_dir, chunk_to_read, self._batch_size)
+        return reader.get_row(offset_within_chunk)
+
+    async def get_row_async(self, idx) -> pa.RecordBatch:
+        response = await self._broker.chunk_for_row.remote(idx)
+        if response is None:
+            raise IndexError(f"Row index out of bounds: {idx}")
+
+        chunk_to_read, offset_within_chunk = response
+        reader = _ChunkReader.from_metadata(self.cache_dir, chunk_to_read, self._batch_size)
+        return reader.get_row(offset_within_chunk)
+
     def final_chunk_count(self, *, timeout: Optional[float] = None) -> int:
         """Returns the number of chunks in the cache, if known"""
         self.await_finished(timeout)
@@ -2030,6 +2081,10 @@ class InProgressShardCache(ShardCache):
     def final_field_count(self, field_name, *, timeout: Optional[float] = None):
         self.await_finished(timeout)
         return ray.get(self._broker.current_field_count.remote(field_name))
+
+    def final_row_count(self, *, timeout: Optional[float] = None) -> int:
+        self.await_finished(timeout)
+        return ray.get(self._broker.current_row_count.remote())
 
     def iter_batches_from_chunks(self, loop: bool = False):
         shard_offset = self._reader_offset

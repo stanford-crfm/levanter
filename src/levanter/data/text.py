@@ -143,10 +143,10 @@ class TokenSeqSampler:
 
 
 class RowSampler:
-    def __init__(self, doc_cache, seed: int):
+    def __init__(self, doc_cache: ShardCache, seed: int):
         self.doc_cache = doc_cache
         self.seed = seed
-        self.num_rows = self.doc_cache.num_rows
+        self.num_rows = self.doc_cache.final_row_count()
 
     def sample(self, step: int):
         rng = np.random.default_rng(self.seed + step)
