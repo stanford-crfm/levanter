@@ -29,8 +29,8 @@ class ConvertLmConfig:
 
     model: LmConfig = OlmoConfig()
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
-    tokenizer: str = "allenai/OLMo-7B-hf"
-    override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config
+    tokenizer: str = "allenai/OLMo-1.7-7B-hf"
+    override_vocab_size: Optional[int] = 50304  # if specified, override the vocab size in the config
 
     config_overrides: Optional[dict] = None  # if specified, override the config with these values
 
