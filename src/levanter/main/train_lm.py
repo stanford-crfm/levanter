@@ -89,6 +89,7 @@ def main(config: TrainLmConfig):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
+        
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
         # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
@@ -104,7 +105,7 @@ def main(config: TrainLmConfig):
 
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id, shuffle=True, shuffle_seed=seed
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to

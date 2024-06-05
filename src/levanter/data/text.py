@@ -64,8 +64,6 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
-
-
 class CausalLmDataset(ShardableDataset[LmExample]):
     def __init__(
         self,
@@ -75,6 +73,8 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         fcm_prob: float = 0.0,
         key: Optional[PRNGKeyArray] = None,
         ignore_index: Optional[int] = None,
+        shuffle: bool = False,  # Add shuffle parameter
+        shuffle_seed: int = 42  # Add shuffle_seed parameter
     ):
         self.dataset = dataset
         self.QPos = QPos
@@ -82,14 +82,15 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         self.fcm_prob = fcm_prob
         self.key = key
         self.ignore_id = ignore_index
-        print(f" key is {key}", flush=True)
+        self.shuffle = shuffle  # Initialize shuffle
+        self.shuffle_seed = shuffle_seed  # Initialize shuffle_seed
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
         return CausalLmDataset(
-            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id, self.shuffle, self.shuffle_seed
         )
 
     def __iter__(self) -> Iterator[LmExample]:
@@ -117,9 +118,16 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
                 return example
 
-            for tokens in self.dataset:
+            tokens_list = list(self.dataset)
+
+            if self.shuffle:
+                rng = np.random.default_rng(self.shuffle_seed)
+                rng.shuffle(tokens_list)
+
+            for tokens in tokens_list:
                 example = _create_lm_example(tokens, key)
                 yield example
+
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
