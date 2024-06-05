@@ -227,8 +227,8 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
 
-        attn_output = attn_output.astype(x.dtype)
         attn_output = self.out_proj(attn_output, key=k_out)
+        attn_output = attn_output.astype(x.dtype)
 
         return attn_output
 
