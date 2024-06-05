@@ -63,7 +63,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     # Attention-related config
     upcast_attn: bool = True
     use_flash_attention: bool = False
-    attn_backend: Optional[AttentionBackend] = AttentionBackend.VANILLA
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     @property
