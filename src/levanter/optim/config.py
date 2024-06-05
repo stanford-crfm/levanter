@@ -109,10 +109,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                     if should_decay:
                         break
 
-                if should_decay is None and should_use_default:
-                    should_decay = True
-                else:
-                    should_decay = False
+                if should_decay is None:
+                    if should_use_default:
+                        should_decay = True
+                    else:
+                        should_decay = False
 
                 if should_decay:
                     decayed_paths.append(from_root_key_path)
